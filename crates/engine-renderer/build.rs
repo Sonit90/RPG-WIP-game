@@ -568,6 +568,14 @@ const ICONS: &[IconEntry] = &[
         file: "ui/move.svg",
         constant: "UI_MOVE",
     },
+    IconEntry {
+        file: "ui/key.svg",
+        constant: "UI_KEY",
+    },
+    IconEntry {
+        file: "ui/dice.svg",
+        constant: "UI_DICE",
+    },
     // The buffs and debuffs that have no ability icon of their own to borrow: shown under
     // nameplates, beside the player's frame and on the party's.
     IconEntry {

@@ -292,9 +292,9 @@ fn the_player_dying_is_heard() {
     assert!(!simulation.player_alive(), "the player is dead");
     director.observe(&simulation, &mut audio);
     assert_eq!(
-        audio.playing(SoundId::Death),
+        audio.playing(SoundId::PlayerDeath),
         1,
-        "the player's death plays the death sound"
+        "the player's death plays the player's own death sound"
     );
 }
 
@@ -316,4 +316,5 @@ fn a_skeleton_dies_as_bones_and_the_player_does_not() {
         "bones, not the common death"
     );
     assert_eq!(audio.playing(SoundId::Death), 0);
+    assert_eq!(audio.playing(SoundId::PlayerDeath), 0);
 }

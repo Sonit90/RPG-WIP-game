@@ -2435,6 +2435,7 @@ impl App {
                 .update(&ui_input, &self.snapshot, viewport)
             {
                 CharacterMenuOutcome::Move { from, to } if self.online.is_some() => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
                     // Online the character is the server's: the move is a request, and the
                     // sheet changes when the API answers with the validated loadout.
                     if let Some(online) = self.online.as_mut() {
@@ -2442,6 +2443,7 @@ impl App {
                     }
                 }
                 CharacterMenuOutcome::Move { from, to } => {
+                    self.play_ui_sound(engine_audio::SoundId::UiClick);
                     self.simulation
                         .push_command(PlayerCommand::MoveItem { from, to });
                     // Written on the drop rather than on the way out: a crash between
@@ -2464,8 +2466,14 @@ impl App {
                 .is_some_and(|online| online.is_engaged());
             self.talent_menu.set_locked(locked);
             match self.talent_menu.update(&ui_input, &self.snapshot, viewport) {
-                TalentMenuOutcome::Purchase(talent) => self.change_talents(Some(talent)),
-                TalentMenuOutcome::Reset => self.change_talents(None),
+                TalentMenuOutcome::Purchase(talent) => {
+                    self.play_ui_sound(engine_audio::SoundId::UiSelect);
+                    self.change_talents(Some(talent));
+                }
+                TalentMenuOutcome::Reset => {
+                    self.play_ui_sound(engine_audio::SoundId::UiCancel);
+                    self.change_talents(None);
+                }
                 TalentMenuOutcome::Idle | TalentMenuOutcome::Closed => {}
             }
             return;
@@ -2487,6 +2495,7 @@ impl App {
             && recount_button.contains(ui_input.pointer.0, ui_input.pointer.1)
         {
             self.recount.toggle();
+            self.play_ui_sound(engine_audio::SoundId::UiClick);
             return;
         }
 
@@ -2517,6 +2526,7 @@ impl App {
             && modifier_button.contains(ui_input.pointer.0, ui_input.pointer.1)
         {
             self.modifier_window.toggle();
+            self.play_ui_sound(engine_audio::SoundId::UiClick);
             return;
         }
 
@@ -6540,6 +6550,7 @@ impl Application for App {
                     crate::online::Directive::OpenCharacterMenu => {
                         self.open_sheet_next_frame = true;
                     }
+                    crate::online::Directive::PlaySound(sound) => self.play_ui_sound(sound),
                     crate::online::Directive::ApplyTalents(hero, keys, total_points) => {
                         let grid =
                             engine_game::talent::TalentGrid::from_keys(hero, &keys, total_points)

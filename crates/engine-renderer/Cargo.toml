@@ -59,6 +59,8 @@ features = [
 # takes an opaque `isize` handle so the layering stays one-directional.
 [dev-dependencies]
 engine-platform = { workspace = true }
+# The icon contact sheets (an ignored dev test) rasterize the SVGs the way build.rs does.
+resvg = { version = "0.48", default-features = false }
 
 [lints]
 workspace = true

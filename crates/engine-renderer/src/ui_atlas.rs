@@ -552,6 +552,8 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::ControlSnap => raster::UI_SNAP,
         UiIcon::ControlReset => raster::UI_RESET,
         UiIcon::ControlMove => raster::UI_MOVE,
+        UiIcon::ControlKey => raster::UI_KEY,
+        UiIcon::ControlDice => raster::UI_DICE,
         UiIcon::AuraBurning => raster::AURA_BURNING,
         UiIcon::AuraBleeding => raster::AURA_BLEEDING,
         UiIcon::AuraRecovering => raster::AURA_RECOVERING,

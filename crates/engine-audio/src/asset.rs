@@ -345,10 +345,116 @@ pub enum SoundId {
     LootEpic,
     /// A trinket being used: a bell-like swell with a rising shimmer.
     TrinketUse,
+    /// War Stomp: a boot on stone, a low thump with dust behind it.
+    WarStomp,
+    /// Colossus Strike: the overhead swing, a whoosh that rises to the blow.
+    ColossusStrike,
+    /// Shield Charge: a rush of air with plate rattling in it.
+    ShieldCharge,
+    /// Shield Bash: a struck sheet of metal.
+    ShieldBash,
+    /// Shield Block: the shield coming up, a short metallic ring.
+    ShieldBlock,
+    /// Puncture Blood: a sharp slice with something wet under it.
+    PunctureBlood,
+    /// Adrenaline: a pulse racing up.
+    Adrenaline,
+    /// Battle Trance: a low resolve swelling and holding.
+    BattleTrance,
+    /// Spell Reflect going up: glass catching the light.
+    SpellReflect,
+    /// A spell thrown back: a ricochet ping.
+    SpellReflectHit,
+    /// Taunt: a shout, low and falling.
+    Taunt,
+    /// Last Stand: a defiant swell.
+    LastStand,
+    /// Recuperate: a steadying breath.
+    HealRecuperate,
+    /// Moonfire: a silvery flick.
+    MoonfireCast,
+    /// Sunfire: a warm sweep.
+    SunfireCast,
+    /// Wrath: a wooden crack and a rush of leaves.
+    WrathCast,
+    /// Nature damage landing: bark and green wood.
+    NatureImpact,
+    /// Rejuvenation: two soft chimes.
+    HealRejuvenation,
+    /// Regrowth: a rising three-note chime.
+    HealRegrowth,
+    /// Lifebloom: one bell, blooming.
+    HealLifebloom,
+    /// Nourish: a warmer, lower pair of notes.
+    HealNourish,
+    /// Wild Growth: rustling leaves with chimes through them.
+    WildGrowth,
+    /// Swiftmend: a quick zip upward.
+    Swiftmend,
+    /// Nature's Cleanse: clear glass falling away.
+    NaturesCleanse,
+    /// Wild Rush: a fast rush with an animal rumble.
+    WildRush,
+    /// Astral Power: a cold hum rising.
+    AstralPower,
+    /// Tranquility: a long calm bowl.
+    Tranquility,
+    /// A point of Valor: a small tick.
+    ValorGain,
+    /// The Valor bar filling: three rising notes.
+    ValorFull,
+    /// Battle Fervor arriving: a roar of power.
+    BattleFervor,
+    /// An ordinary physical hit: a thud.
+    HitPhysical,
+    /// A critical physical hit: a crunch with a ring on it.
+    HitPhysicalCritical,
+    /// The local player taking a hit: felt more than placed.
+    PlayerHurt,
+    /// A player falling: a long sinking tone.
+    PlayerDeath,
+    /// A boss winding up a quick attack. Loops for as long as the cast does.
+    BossCastQuick,
+    /// A boss winding up a sweeping attack. Loops for as long as the cast does.
+    BossCastSweep,
+    /// A boss winding up a heavy attack. Loops for as long as the cast does.
+    BossCastHeavy,
+    /// A boss attack going off: a bigger burst than the common one.
+    BossTelegraphBurst,
+    /// A boss turning on the party: a roar.
+    BossEngage,
+    /// A boss changing phase or empowering: a surge of power.
+    BossPhase,
+    /// A chest opening: a creak and a latch.
+    ChestOpen,
+    /// A rare dropping: two bright notes.
+    LootRare,
+    /// An item of 105 per cent quality or more: a sparkling sting.
+    LootJackpot,
+    /// Something refused: a low buzz.
+    UiError,
+    /// The queue being joined.
+    QueueJoin,
+    /// A party found: the ready check popping, loud and bright on purpose.
+    MatchFound,
+    /// The ready check accepted.
+    ReadyAccept,
+    /// Everybody accepted: a warm rising chord.
+    PartyFormed,
+    /// A key turning in the lock: metal on metal.
+    KeyInsert,
+    /// One second of the countdown: a short beep.
+    CountdownTick,
+    /// The barrier lifting: a bright rising GO.
+    CountdownGo,
+    /// The boss is down: a fanfare.
+    DungeonComplete,
+    /// The run failed: a falling sting.
+    DungeonFail,
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 59;
+pub const SOUND_COUNT: usize = 112;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
@@ -412,6 +518,59 @@ impl SoundId {
         Self::LootDrop,
         Self::LootEpic,
         Self::TrinketUse,
+        Self::WarStomp,
+        Self::ColossusStrike,
+        Self::ShieldCharge,
+        Self::ShieldBash,
+        Self::ShieldBlock,
+        Self::PunctureBlood,
+        Self::Adrenaline,
+        Self::BattleTrance,
+        Self::SpellReflect,
+        Self::SpellReflectHit,
+        Self::Taunt,
+        Self::LastStand,
+        Self::HealRecuperate,
+        Self::MoonfireCast,
+        Self::SunfireCast,
+        Self::WrathCast,
+        Self::NatureImpact,
+        Self::HealRejuvenation,
+        Self::HealRegrowth,
+        Self::HealLifebloom,
+        Self::HealNourish,
+        Self::WildGrowth,
+        Self::Swiftmend,
+        Self::NaturesCleanse,
+        Self::WildRush,
+        Self::AstralPower,
+        Self::Tranquility,
+        Self::ValorGain,
+        Self::ValorFull,
+        Self::BattleFervor,
+        Self::HitPhysical,
+        Self::HitPhysicalCritical,
+        Self::PlayerHurt,
+        Self::PlayerDeath,
+        Self::BossCastQuick,
+        Self::BossCastSweep,
+        Self::BossCastHeavy,
+        Self::BossTelegraphBurst,
+        Self::BossEngage,
+        Self::BossPhase,
+        Self::ChestOpen,
+        Self::LootRare,
+        Self::LootJackpot,
+        Self::UiError,
+        Self::QueueJoin,
+        Self::MatchFound,
+        Self::ReadyAccept,
+        Self::PartyFormed,
+        Self::KeyInsert,
+        Self::CountdownTick,
+        Self::CountdownGo,
+        Self::DungeonComplete,
+        Self::DungeonFail,
     ];
 
     /// Its index into [`SOUNDS`] and into any per-sound array.
@@ -1199,6 +1358,684 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     )
     .gain(0.7)
     .limit(2, 0.15),
+    // ---- The Warrior, the Druid, bosses, loot and the front-end (the audio pass) -------
+    SoundDesc::sfx(
+        "war_stomp",
+        ABILITIES,
+        Recipe::new(0.7)
+            .noise(1.0, 900.0, 120.0)
+            .tone(0.9, 90.0, 38.0)
+            .crackle(0.3, 50.0)
+            .envelope(0.002, 0.0, 2.2),
+        PRIORITY_IMPACT,
+    )
+    .variations(2)
+    .gain(0.9)
+    .carries(5.0, 60.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "colossus_strike",
+        ABILITIES,
+        Recipe::new(0.8)
+            .noise(0.8, 400.0, 3_000.0)
+            .tone(0.6, 70.0, 150.0)
+            .envelope(0.2, 0.0, 1.6),
+        PRIORITY_CAST,
+    )
+    .gain(0.85)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "shield_charge",
+        ABILITIES,
+        Recipe::new(0.7)
+            .noise(0.9, 400.0, 3_500.0)
+            .tone(0.4, 160.0, 520.0)
+            .harmonic(0.25, 2.76)
+            .envelope(0.1, 0.2, 1.8),
+        PRIORITY_CAST,
+    )
+    .gain(0.8)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "shield_bash",
+        ABILITIES,
+        Recipe::new(0.45)
+            .noise(0.5, 6_000.0, 1_500.0)
+            .tone(0.8, 520.0, 380.0)
+            .harmonic(0.6, 2.76)
+            .crackle(0.3, 160.0)
+            .envelope(0.001, 0.0, 2.6),
+        PRIORITY_IMPACT,
+    )
+    .gain(0.8)
+    .limit(2, 0.06),
+    SoundDesc::sfx(
+        "shield_block",
+        ABILITIES,
+        Recipe::new(0.6)
+            .noise(0.3, 3_000.0, 800.0)
+            .tone(0.7, 320.0, 300.0)
+            .harmonic(0.5, 2.4)
+            .envelope(0.004, 0.05, 2.0),
+        PRIORITY_CAST,
+    )
+    .gain(0.75)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "puncture_blood",
+        ABILITIES,
+        Recipe::new(0.35)
+            .noise(1.0, 7_000.0, 900.0)
+            .tone(0.35, 900.0, 200.0)
+            .crackle(0.4, 100.0)
+            .envelope(0.001, 0.0, 3.0),
+        PRIORITY_IMPACT,
+    )
+    .variations(2)
+    .gain(0.7)
+    .limit(3, 0.06),
+    SoundDesc::sfx(
+        "adrenaline",
+        ABILITIES,
+        Recipe::new(0.9)
+            .noise(0.3, 1_500.0, 3_500.0)
+            .tone(0.7, 140.0, 420.0)
+            .harmonic(0.4, 1.5)
+            .tremolo(9.0, 0.6)
+            .envelope(0.04, 0.2, 1.6),
+        PRIORITY_CAST,
+    )
+    .gain(0.7),
+    SoundDesc::sfx(
+        "battle_trance",
+        ABILITIES,
+        Recipe::new(1.2)
+            .noise(0.35, 500.0, 1_400.0)
+            .tone(0.8, 110.0, 165.0)
+            .harmonic(0.5, 2.0)
+            .tremolo(3.0, 0.4)
+            .envelope(0.25, 0.2, 1.5),
+        PRIORITY_CAST,
+    )
+    .gain(0.7),
+    SoundDesc::sfx(
+        "spell_reflect",
+        ABILITIES,
+        Recipe::new(0.6)
+            .noise(0.2, 8_000.0, 5_000.0)
+            .tone(0.8, 1_400.0, 2_400.0)
+            .harmonic(0.5, 1.5)
+            .envelope(0.002, 0.05, 2.0),
+        PRIORITY_CAST,
+    )
+    .gain(0.65),
+    SoundDesc::sfx(
+        "spell_reflect_hit",
+        ABILITIES,
+        Recipe::new(0.35)
+            .noise(0.4, 7_000.0, 2_000.0)
+            .tone(0.9, 2_400.0, 900.0)
+            .harmonic(0.6, 2.76)
+            .crackle(0.2, 120.0)
+            .envelope(0.001, 0.0, 2.8),
+        PRIORITY_IMPACT,
+    )
+    .variations(2)
+    .gain(0.8)
+    .limit(3, 0.06),
+    SoundDesc::sfx(
+        "taunt",
+        ABILITIES,
+        Recipe::new(0.55)
+            .noise(0.5, 900.0, 500.0)
+            .tone(0.9, 200.0, 110.0)
+            .harmonic(0.5, 1.5)
+            .envelope(0.03, 0.15, 1.8),
+        PRIORITY_CAST,
+    )
+    .gain(0.75)
+    .limit(2, 0.2),
+    SoundDesc::sfx(
+        "last_stand",
+        ABILITIES,
+        Recipe::new(1.4)
+            .noise(0.5, 400.0, 2_200.0)
+            .tone(0.9, 70.0, 140.0)
+            .harmonic(0.5, 2.0)
+            .crackle(0.15, 30.0)
+            .envelope(0.3, 0.2, 1.5),
+        PRIORITY_CAST,
+    )
+    .gain(0.8)
+    .carries(5.0, 60.0),
+    SoundDesc::sfx(
+        "heal_recuperate",
+        ABILITIES,
+        Recipe::new(0.7)
+            .noise(0.4, 900.0, 500.0)
+            .tone(0.5, 220.0, 330.0)
+            .envelope(0.08, 0.1, 1.8),
+        PRIORITY_CAST,
+    )
+    .gain(0.6),
+    SoundDesc::sfx(
+        "moonfire_cast",
+        ABILITIES,
+        Recipe::new(0.5)
+            .noise(0.5, 2_500.0, 6_000.0)
+            .tone(0.5, 1_600.0, 900.0)
+            .harmonic(0.4, 1.5)
+            .envelope(0.02, 0.05, 2.2),
+        PRIORITY_CAST,
+    )
+    .variations(2)
+    .gain(0.55),
+    SoundDesc::sfx(
+        "sunfire_cast",
+        ABILITIES,
+        Recipe::new(0.8)
+            .noise(0.9, 800.0, 2_600.0)
+            .tone(0.3, 220.0, 330.0)
+            .crackle(0.2, 40.0)
+            .envelope(0.12, 0.15, 1.6),
+        PRIORITY_CAST,
+    )
+    .gain(0.7)
+    .carries(4.0, 60.0),
+    SoundDesc::sfx(
+        "wrath_cast",
+        ABILITIES,
+        Recipe::new(0.4)
+            .noise(0.7, 1_800.0, 500.0)
+            .tone(0.6, 300.0, 140.0)
+            .crackle(0.4, 120.0)
+            .envelope(0.002, 0.02, 2.6),
+        PRIORITY_CAST,
+    )
+    .variations(3)
+    .gain(0.55),
+    SoundDesc::sfx(
+        "nature_impact",
+        IMPACTS,
+        Recipe::new(0.4)
+            .noise(0.9, 3_000.0, 700.0)
+            .tone(0.5, 480.0, 200.0)
+            .crackle(0.5, 140.0)
+            .envelope(0.001, 0.02, 2.6),
+        PRIORITY_IMPACT,
+    )
+    .variations(3)
+    .gain(0.55)
+    .limit(5, 0.04),
+    SoundDesc::sfx(
+        "heal_rejuvenation",
+        ABILITIES,
+        Recipe::new(0.55)
+            .tone(0.7, 880.0, 1_320.0)
+            .harmonic(0.4, 2.0)
+            .steps(2)
+            .envelope(0.004, 0.05, 1.9),
+        PRIORITY_CAST,
+    )
+    .gain(0.5),
+    SoundDesc::sfx(
+        "heal_regrowth",
+        ABILITIES,
+        Recipe::new(0.8)
+            .tone(0.7, 523.0, 784.0)
+            .harmonic(0.35, 2.0)
+            .steps(3)
+            .envelope(0.005, 0.1, 1.8),
+        PRIORITY_CAST,
+    )
+    .gain(0.5),
+    SoundDesc::sfx(
+        "heal_lifebloom",
+        ABILITIES,
+        Recipe::new(0.9)
+            .noise(0.08, 6_000.0, 3_000.0)
+            .tone(0.7, 660.0, 660.0)
+            .harmonic(0.6, 2.0)
+            .envelope(0.004, 0.15, 1.6),
+        PRIORITY_CAST,
+    )
+    .gain(0.5),
+    SoundDesc::sfx(
+        "heal_nourish",
+        ABILITIES,
+        Recipe::new(0.7)
+            .tone(0.7, 392.0, 523.0)
+            .harmonic(0.4, 1.5)
+            .steps(2)
+            .envelope(0.006, 0.1, 1.8),
+        PRIORITY_CAST,
+    )
+    .gain(0.5),
+    SoundDesc::sfx(
+        "wild_growth",
+        ABILITIES,
+        Recipe::new(1.0)
+            .noise(0.6, 1_000.0, 3_500.0)
+            .tone(0.4, 523.0, 988.0)
+            .harmonic(0.3, 2.0)
+            .steps(4)
+            .tremolo(6.0, 0.3)
+            .envelope(0.15, 0.25, 1.6),
+        PRIORITY_CAST,
+    )
+    .gain(0.6)
+    .carries(4.0, 60.0),
+    SoundDesc::sfx(
+        "swiftmend",
+        ABILITIES,
+        Recipe::new(0.4)
+            .noise(0.3, 3_000.0, 7_000.0)
+            .tone(0.7, 500.0, 1_800.0)
+            .harmonic(0.4, 1.5)
+            .envelope(0.002, 0.05, 2.4),
+        PRIORITY_CAST,
+    )
+    .gain(0.55),
+    SoundDesc::sfx(
+        "natures_cleanse",
+        ABILITIES,
+        Recipe::new(0.7)
+            .noise(0.15, 7_000.0, 4_000.0)
+            .tone(0.8, 1_318.0, 880.0)
+            .harmonic(0.5, 1.5)
+            .steps(3)
+            .envelope(0.003, 0.1, 1.9),
+        PRIORITY_CAST,
+    )
+    .gain(0.5),
+    SoundDesc::sfx(
+        "wild_rush",
+        ABILITIES,
+        Recipe::new(0.6)
+            .noise(1.0, 600.0, 4_000.0)
+            .tone(0.4, 130.0, 300.0)
+            .tremolo(10.0, 0.4)
+            .envelope(0.05, 0.2, 1.8),
+        PRIORITY_CAST,
+    )
+    .gain(0.7),
+    SoundDesc::sfx(
+        "astral_power",
+        ABILITIES,
+        Recipe::new(1.2)
+            .noise(0.2, 3_000.0, 8_000.0)
+            .tone(0.7, 330.0, 990.0)
+            .harmonic(0.5, 1.5)
+            .tremolo(5.0, 0.35)
+            .envelope(0.2, 0.2, 1.6),
+        PRIORITY_CAST,
+    )
+    .gain(0.6),
+    SoundDesc::sfx(
+        "tranquility",
+        ABILITIES,
+        Recipe::new(1.8)
+            .noise(0.15, 800.0, 500.0)
+            .tone(0.7, 220.0, 220.0)
+            .harmonic(0.5, 2.0)
+            .tremolo(2.0, 0.3)
+            .envelope(0.4, 0.3, 1.5),
+        PRIORITY_CAST,
+    )
+    .gain(0.6)
+    .carries(6.0, 70.0),
+    SoundDesc::sfx(
+        "valor_gain",
+        ABILITIES,
+        Recipe::new(0.18)
+            .tone(0.8, 700.0, 900.0)
+            .harmonic(0.3, 2.0)
+            .envelope(0.002, 0.0, 2.4),
+        PRIORITY_CAST,
+    )
+    .gain(0.3)
+    .limit(2, 0.05),
+    SoundDesc::sfx(
+        "valor_full",
+        ABILITIES,
+        Recipe::new(0.6)
+            .tone(0.8, 392.0, 587.0)
+            .harmonic(0.4, 2.0)
+            .steps(3)
+            .envelope(0.003, 0.1, 1.8),
+        PRIORITY_CAST,
+    )
+    .gain(0.6),
+    SoundDesc::sfx(
+        "battle_fervor",
+        ABILITIES,
+        Recipe::new(0.9)
+            .noise(0.4, 800.0, 4_000.0)
+            .tone(0.8, 160.0, 480.0)
+            .harmonic(0.5, 2.0)
+            .crackle(0.2, 40.0)
+            .envelope(0.04, 0.2, 1.7),
+        PRIORITY_CAST,
+    )
+    .gain(0.75),
+    SoundDesc::sfx(
+        "hit_physical",
+        IMPACTS,
+        Recipe::new(0.18)
+            .noise(0.9, 2_200.0, 500.0)
+            .tone(0.7, 180.0, 90.0)
+            .envelope(0.001, 0.0, 3.0),
+        PRIORITY_IMPACT,
+    )
+    .variations(3)
+    .gain(0.4)
+    .jitter(0.08, 0.15)
+    .limit(5, 0.035),
+    SoundDesc::sfx(
+        "hit_physical_critical",
+        IMPACTS,
+        Recipe::new(0.32)
+            .noise(1.0, 4_500.0, 600.0)
+            .tone(0.8, 260.0, 70.0)
+            .harmonic(0.3, 2.76)
+            .crackle(0.3, 110.0)
+            .envelope(0.001, 0.01, 2.6),
+        PRIORITY_CRITICAL,
+    )
+    .variations(3)
+    .gain(0.75)
+    .jitter(0.05, 0.1)
+    .limit(4, 0.04),
+    SoundDesc::sfx(
+        "player_hurt",
+        IMPACTS,
+        Recipe::new(0.3)
+            .noise(0.6, 1_400.0, 400.0)
+            .tone(0.8, 190.0, 90.0)
+            .envelope(0.002, 0.0, 2.4),
+        PRIORITY_CRITICAL,
+    )
+    .variations(3)
+    .gain(0.5)
+    .limit(1, 0.3),
+    SoundDesc::sfx(
+        "player_death",
+        IMPACTS,
+        Recipe::new(1.4)
+            .noise(0.5, 1_500.0, 120.0)
+            .tone(0.8, 260.0, 55.0)
+            .harmonic(0.3, 1.5)
+            .envelope(0.01, 0.1, 1.7),
+        PRIORITY_DEATH,
+    )
+    .gain(0.8)
+    .limit(2, 0.2),
+    SoundDesc::sfx(
+        "boss_cast_quick",
+        ABILITIES,
+        Recipe::new(0.5)
+            .noise(0.6, 500.0, 800.0)
+            .tone(0.4, 90.0, 110.0)
+            .tremolo(10.0, 0.35)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.5)
+    .limit(2, 0.0),
+    SoundDesc::sfx(
+        "boss_cast_sweep",
+        ABILITIES,
+        Recipe::new(0.7)
+            .noise(0.8, 400.0, 800.0)
+            .tone(0.5, 70.0, 100.0)
+            .harmonic(0.3, 1.5)
+            .tremolo(6.0, 0.4)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.55)
+    .limit(2, 0.0),
+    SoundDesc::sfx(
+        "boss_cast_heavy",
+        ABILITIES,
+        Recipe::new(1.0)
+            .noise(0.6, 250.0, 500.0)
+            .tone(0.6, 55.0, 75.0)
+            .harmonic(0.4, 2.0)
+            .tremolo(3.0, 0.4)
+            .looped(),
+        PRIORITY_CAST,
+    )
+    .gain(0.6)
+    .limit(2, 0.0),
+    SoundDesc::sfx(
+        "boss_telegraph_burst",
+        IMPACTS,
+        Recipe::new(1.3)
+            .noise(1.0, 2_500.0, 120.0)
+            .tone(1.0, 100.0, 30.0)
+            .crackle(0.5, 60.0)
+            .envelope(0.002, 0.04, 2.0),
+        PRIORITY_IMPACT,
+    )
+    .variations(2)
+    .gain(0.95)
+    .carries(8.0, 90.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "boss_engage",
+        ABILITIES,
+        Recipe::new(1.6)
+            .noise(0.8, 900.0, 300.0)
+            .tone(0.9, 85.0, 45.0)
+            .harmonic(0.5, 1.5)
+            .tremolo(14.0, 0.25)
+            .envelope(0.12, 0.25, 1.6),
+        PRIORITY_CRITICAL,
+    )
+    .gain(0.9)
+    .carries(12.0, 110.0)
+    .limit(1, 4.0),
+    SoundDesc::sfx(
+        "boss_phase",
+        ABILITIES,
+        Recipe::new(1.4)
+            .noise(0.7, 600.0, 3_500.0)
+            .tone(0.9, 60.0, 220.0)
+            .harmonic(0.5, 2.0)
+            .crackle(0.3, 50.0)
+            .envelope(0.3, 0.1, 1.6),
+        PRIORITY_CRITICAL,
+    )
+    .gain(0.9)
+    .carries(12.0, 110.0)
+    .limit(1, 1.0),
+    SoundDesc::sfx(
+        "chest_open",
+        UI,
+        Recipe::new(0.9)
+            .noise(0.5, 900.0, 3_000.0)
+            .tone(0.4, 140.0, 260.0)
+            .crackle(0.4, 22.0)
+            .envelope(0.05, 0.15, 1.7),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.2),
+    SoundDesc::sfx(
+        "loot_rare",
+        UI,
+        Recipe::new(0.5)
+            .tone(0.8, 988.0, 1_480.0)
+            .harmonic(0.4, 2.0)
+            .steps(2)
+            .envelope(0.002, 0.06, 2.0),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.42)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "loot_jackpot",
+        UI,
+        Recipe::new(1.1)
+            .noise(0.1, 7_000.0, 4_000.0)
+            .tone(0.8, 1_046.0, 1_568.0)
+            .harmonic(0.5, 2.0)
+            .steps(3)
+            .envelope(0.004, 0.2, 1.6),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.4),
+    SoundDesc::sfx(
+        "ui_error",
+        UI,
+        Recipe::new(0.22)
+            .noise(0.2, 1_500.0, 800.0)
+            .tone(0.9, 220.0, 150.0)
+            .harmonic(0.5, 1.06)
+            .envelope(0.002, 0.02, 2.2),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.4)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "queue_join",
+        UI,
+        Recipe::new(0.4)
+            .tone(0.8, 660.0, 988.0)
+            .harmonic(0.3, 2.0)
+            .steps(2)
+            .envelope(0.003, 0.05, 2.0),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.4)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.3),
+    SoundDesc::sfx(
+        "match_found",
+        UI,
+        Recipe::new(1.6)
+            .noise(0.1, 6_000.0, 3_000.0)
+            .tone(0.9, 659.0, 988.0)
+            .harmonic(0.6, 2.0)
+            .steps(3)
+            .tremolo(7.0, 0.2)
+            .envelope(0.003, 0.3, 1.5),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.7)
+    .jitter(0.0, 0.0)
+    .limit(1, 1.0),
+    SoundDesc::sfx(
+        "ready_accept",
+        UI,
+        Recipe::new(0.22)
+            .tone(0.8, 784.0, 1_175.0)
+            .harmonic(0.3, 2.0)
+            .steps(2)
+            .envelope(0.002, 0.03, 2.2),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.4)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "party_formed",
+        UI,
+        Recipe::new(0.9)
+            .tone(0.8, 440.0, 659.0)
+            .harmonic(0.4, 2.0)
+            .steps(3)
+            .envelope(0.004, 0.15, 1.7),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(1, 1.0),
+    SoundDesc::sfx(
+        "key_insert",
+        UI,
+        Recipe::new(0.6)
+            .noise(0.4, 4_000.0, 800.0)
+            .tone(0.7, 300.0, 180.0)
+            .harmonic(0.6, 2.76)
+            .crackle(0.3, 80.0)
+            .envelope(0.001, 0.0, 2.4),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.55)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.5),
+    SoundDesc::sfx(
+        "countdown_tick",
+        UI,
+        Recipe::new(0.12)
+            .tone(0.9, 880.0, 880.0)
+            .envelope(0.001, 0.0, 3.0),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.4)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.3),
+    SoundDesc::sfx(
+        "countdown_go",
+        UI,
+        Recipe::new(0.7)
+            .tone(0.9, 880.0, 1_760.0)
+            .harmonic(0.4, 1.5)
+            .steps(2)
+            .envelope(0.002, 0.1, 1.8),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.55)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.5),
+    SoundDesc::sfx(
+        "dungeon_complete",
+        UI,
+        Recipe::new(2.4)
+            .noise(0.05, 6_000.0, 3_000.0)
+            .tone(0.8, 392.0, 587.0)
+            .harmonic(0.6, 2.0)
+            .steps(3)
+            .envelope(0.004, 0.3, 1.4),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.65)
+    .jitter(0.0, 0.0)
+    .limit(1, 5.0),
+    SoundDesc::sfx(
+        "dungeon_fail",
+        UI,
+        Recipe::new(1.8)
+            .noise(0.15, 600.0, 200.0)
+            .tone(0.8, 392.0, 262.0)
+            .harmonic(0.4, 1.19)
+            .steps(3)
+            .envelope(0.01, 0.3, 1.5),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.6)
+    .jitter(0.0, 0.0)
+    .limit(1, 5.0),
 ];
 
 /// One sound's samples: mono PCM and the rate it was authored at.
@@ -1552,6 +2389,54 @@ mod tests {
             }
         }
         assert!(bank.bytes() > 0);
+    }
+
+    #[test]
+    fn every_sound_renders_audibly_within_length_and_peak_limits() {
+        // The whole catalogue, rendered: nothing may come out silent, clipped, runaway-long
+        // or non-finite, whatever recipe a future sound is written with.
+        let bank = SoundBank::synthesised(8_000);
+        for id in SoundId::ALL {
+            for variation in 0..bank.variations(id) {
+                let asset = bank.get(id, variation).expect("a variation exists");
+                let samples = asset.samples();
+                let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+                let rms =
+                    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+                assert!(peak > 0.5 && peak <= 1.0, "{id:?} peaks at {peak}");
+                assert!(rms > 0.01, "{id:?} is effectively silent (rms {rms})");
+                assert!(samples.iter().all(|s| s.is_finite()), "{id:?}");
+                let longest = 3.0;
+                assert!(
+                    asset.duration() > 0.05 && asset.duration() <= longest,
+                    "{id:?} lasts {} s",
+                    asset.duration()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_interface_family_is_on_the_interface_bus() {
+        for id in [
+            SoundId::UiError,
+            SoundId::QueueJoin,
+            SoundId::MatchFound,
+            SoundId::ReadyAccept,
+            SoundId::PartyFormed,
+            SoundId::KeyInsert,
+            SoundId::CountdownTick,
+            SoundId::CountdownGo,
+            SoundId::DungeonComplete,
+            SoundId::DungeonFail,
+            SoundId::ChestOpen,
+            SoundId::LootRare,
+            SoundId::LootJackpot,
+        ] {
+            assert_eq!(id.desc().category, AudioCategory::Ui, "{id:?}");
+            assert!(!id.is_looping(), "{id:?}");
+        }
+        assert!(SoundId::MatchFound.desc().priority >= PRIORITY_UI);
     }
 
     #[test]

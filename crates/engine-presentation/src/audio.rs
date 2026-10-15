@@ -42,9 +42,11 @@
 
 use engine_audio::{AudioStats, AudioSystem, Listener, SoundCue, SoundId, VoiceHandle};
 use engine_core::math::Vec3;
+use engine_game::character::{DefenseOutcome, ItemProps, ItemQuality};
+use engine_game::combat::DamageType;
 use engine_game::enemy::{EnemyAbility, EnemyCue};
 use engine_game::entity::EntityId;
-use engine_game::event::CombatEvent;
+use engine_game::event::{AggroChange, CombatEvent};
 use engine_game::firemage::FireAbility;
 use engine_game::sim::{CastEnd, Simulation};
 use engine_render_data::Camera;
@@ -110,8 +112,9 @@ pub struct AudioDirector {
     areas: Vec<Held<u32>>,
     /// The whistle of each rock on its way down, by where it will land.
     incoming: Vec<Held<u32>>,
-    /// The rising sound under each enemy attack that is coming, by telegraph id.
-    telegraphs: Vec<Held<u32>>,
+    /// The rising sound under each enemy attack that is coming, by telegraph id, with the
+    /// burst it ends in (a boss's is bigger than a monster's).
+    telegraphs: Vec<(Held<u32>, SoundId)>,
     /// The gathering sound on each enemy that is casting, by entity slot.
     enemy_casts: Vec<Held<u32>>,
     /// The roar of each other player's Moving Fire Beam, by entity slot.
@@ -215,7 +218,7 @@ impl AudioDirector {
     fn advance_chest(&mut self, delta: f32, audio: &mut AudioSystem) {
         for (list, sound, pitch) in [
             (&mut self.chest_thuds, SoundId::HeavyImpact, 0.55),
-            (&mut self.chest_chimes, SoundId::FireMasteryActivate, 1.6),
+            (&mut self.chest_chimes, SoundId::LootDrop, 0.8),
         ] {
             let mut due = 0;
             list.retain_mut(|remaining| {
@@ -313,13 +316,18 @@ impl AudioDirector {
             // An enemy attack that is coming. The sound rises where the attack will land,
             // not where the caster is: what the player needs to hear is *where not to be*.
             CombatEvent::TelegraphStarted {
-                id, anchor, ..
+                id, anchor, source, ..
             } => {
+                let burst = if self.is_boss(source, simulation) {
+                    SoundId::BossTelegraphBurst
+                } else {
+                    SoundId::EnemyTelegraphBurst
+                };
                 if let Some(handle) = self.request(
                     SoundCue::at(SoundId::EnemyTelegraph, anchor).looped(true),
                     audio,
                 ) {
-                    self.telegraphs.push(Held { key: id, handle });
+                    self.telegraphs.push((Held { key: id, handle }, burst));
                 }
             }
             CombatEvent::TelegraphEnded {
@@ -328,12 +336,18 @@ impl AudioDirector {
                 resolved,
                 ..
             } => {
-                if let Some(index) = self.telegraphs.iter().position(|held| held.key == id) {
-                    let held = self.telegraphs.swap_remove(index);
+                let mut burst = SoundId::EnemyTelegraphBurst;
+                if let Some(index) = self
+                    .telegraphs
+                    .iter()
+                    .position(|(held, _)| held.key == id)
+                {
+                    let (held, sound) = self.telegraphs.swap_remove(index);
                     audio.stop(held.handle);
+                    burst = sound;
                 }
                 if resolved {
-                    self.request(SoundCue::at(SoundId::EnemyTelegraphBurst, anchor), audio);
+                    self.request(SoundCue::at(burst, anchor), audio);
                 }
             }
             // A cast started: the gathering bed runs for exactly as long as the cast does,
@@ -439,24 +453,27 @@ impl AudioDirector {
                 ) {
                     return;
                 }
-                let sound = if damage.critical {
-                    SoundId::HitCritical
-                } else if damage.amount >= HEAVY_DAMAGE {
-                    SoundId::HeavyImpact
-                } else {
-                    SoundId::HitNormal
-                };
+                // Nor is a tick of damage over time: the hit that applied it was the sound.
+                if damage.periodic {
+                    return;
+                }
+                let sound = hit_sound(damage.damage_type, damage.critical, damage.amount);
                 let position = damage.position + Vec3::new(0.0, 1.0, 0.0);
                 self.request(SoundCue::at(sound, position), audio);
+                // The local player is told they were hurt, whatever else the hit sounds like.
+                // Throttled by the catalogue so a swarm is one grunt, not a stutter.
+                if damage.target == simulation.player().entity && damage.amount > 0.0 {
+                    self.request(SoundCue::ui(SoundId::PlayerHurt), audio);
+                }
             }
             CombatEvent::Death { entity, .. } => {
                 let position = self.chest_of(entity, simulation);
                 self.extinguish(entity, audio);
-                // An enemy dies the way its body would; the player, and anything without a
-                // body of its own, gets the common death.
+                // An enemy dies the way its body would; a player, who has no brain, has a
+                // death of their own.
                 let sound = simulation
                     .brain(entity)
-                    .map_or(SoundId::Death, |brain| {
+                    .map_or(SoundId::PlayerDeath, |brain| {
                         death_sound(brain.archetype().look.model)
                     });
                 self.request(SoundCue::at(sound, position), audio);
@@ -467,12 +484,15 @@ impl AudioDirector {
                 self.request(SoundCue::at(SoundId::BlinkDepart, from + lift), audio);
                 self.request(SoundCue::at(SoundId::BlinkArrive, to + lift), audio);
             }
-            // The plague debuff is not a burn: no fire bed for a status the cloud keeps
-            // refreshing. The burst and the arming have sounds of their own.
+            // Battle Fervor arriving is the Warrior's payoff for a full Valor bar.
             CombatEvent::StatusApplied {
-                status: engine_game::status::StatusKind::Plagued,
+                target,
+                status: engine_game::status::StatusKind::BattleFervor,
                 ..
-            } => {}
+            } => {
+                let origin = self.chest_of(target, simulation);
+                self.request(SoundCue::at(SoundId::BattleFervor, origin), audio);
+            }
             // A dungeon modifier. All three are existing-recipe style cues chosen by what they
             // are: a hum where the beams meet, a bubbling tick on a corpse, a wet burst.
             CombatEvent::ModifierBeamsStarted { center, .. } => {
@@ -485,35 +505,50 @@ impl AudioDirector {
                 self.request(SoundCue::at(SoundId::ModifierPlagueExplode, position), audio);
             }
             // Burning: one bed per target, refreshed rather than stacked, and capped by the
-            // catalogue so a pack on fire is a fire rather than a wall.
-            CombatEvent::StatusApplied { target, .. } => self.ignite(target, simulation, audio),
+            // catalogue so a pack on fire is a fire rather than a wall. Every other status is
+            // not a burn - not the plague the cloud keeps refreshing, not a heal over time -
+            // and has its own sound (the ability's) or none.
+            CombatEvent::StatusApplied {
+                target,
+                status: engine_game::status::StatusKind::Burning,
+                ..
+            } => self.ignite(target, simulation, audio),
+            CombatEvent::StatusApplied { .. } => {}
             CombatEvent::StatusRemoved { target, .. } => self.extinguish(target, audio),
-            // The Warrior's defensive stream. Every cue here is an **existing** sound
-            // chosen by shape, exactly as the Warrior's and the Druid's ability sounds are:
-            // a block is a heavy impact, an attack that touched nothing is the fizzle that
-            // already means "that did not happen", and a cooldown coming up is the
-            // activation the class's other cooldowns use. No new audio assets are authored
-            // for this class.
+            // The Warrior's defensive stream: a block rings, a parry strikes sparks off the
+            // shield, and an attack that touched nothing is the fizzle that already means
+            // "that did not happen".
             CombatEvent::AttackDefended {
                 defender, outcome, ..
             } => {
-                let sound = if outcome.is_avoided() {
-                    SoundId::CastFizzle
-                } else {
-                    SoundId::HeavyImpact
+                let sound = match outcome {
+                    DefenseOutcome::Blocked => SoundId::ShieldBlock,
+                    DefenseOutcome::Parried => SoundId::ShieldBash,
+                    DefenseOutcome::Dodged | DefenseOutcome::Hit => SoundId::CastFizzle,
                 };
                 let origin = self.chest_of(defender, simulation);
                 self.request(SoundCue::at(sound, origin), audio);
             }
-            // The fifth Valor is the one moment worth a sound: it empties the bar and Battle
-            // Fervor arrives. The four before it are silent.
+            // Every point of Valor ticks, rising with the bar; the fifth empties it and the
+            // Battle Fervor it bought follows as a status.
             CombatEvent::ValorGained {
                 entity,
-                filled: true,
+                value,
+                filled,
                 ..
             } => {
                 let origin = self.chest_of(entity, simulation);
-                self.request(SoundCue::at(SoundId::FireMasteryActivate, origin), audio);
+                if filled {
+                    self.request(SoundCue::at(SoundId::ValorFull, origin), audio);
+                } else {
+                    self.request(
+                        SoundCue {
+                            pitch: 1.0 + 0.12 * f32::from(value),
+                            ..SoundCue::at(SoundId::ValorGain, origin)
+                        },
+                        audio,
+                    );
+                }
             }
             CombatEvent::AbsorbApplied { target, .. } => {
                 let origin = self.chest_of(target, simulation);
@@ -529,7 +564,7 @@ impl AudioDirector {
             }
             CombatEvent::SpellReflected { source, .. } => {
                 let origin = self.chest_of(source, simulation);
-                self.request(SoundCue::at(SoundId::DetonateExplosion, origin), audio);
+                self.request(SoundCue::at(SoundId::SpellReflectHit, origin), audio);
             }
             CombatEvent::ControlApplied { target, .. } => {
                 let origin = self.chest_of(target, simulation);
@@ -555,8 +590,7 @@ impl AudioDirector {
                 );
             }
             CombatEvent::DungeonCompleted { .. } => {
-                let origin = self.chest_of(simulation.player().entity, simulation);
-                self.request(SoundCue::at(SoundId::FireMasteryActivate, origin), audio);
+                self.request(SoundCue::ui(SoundId::DungeonComplete), audio);
             }
             // The chest. The thud is not positional: it lands once, with a bang a player ought
             // to hear wherever the camera happens to be, and it is held until the chest has
@@ -565,26 +599,19 @@ impl AudioDirector {
                 self.chest_thuds.push(fall_seconds);
             }
             CombatEvent::ChestOpened { .. } => {
-                self.request(
-                    SoundCue {
-                        pitch: 0.65,
-                        ..SoundCue::ui(SoundId::BlinkArrive)
-                    },
-                    audio,
-                );
+                self.request(SoundCue::ui(SoundId::ChestOpen), audio);
                 self.chest_chimes.push(crate::chest::ANTICIPATION_SECONDS);
             }
             // Only the local player hears their own reward.
-            CombatEvent::LootAwarded { player, .. } => {
+            CombatEvent::LootAwarded {
+                player,
+                item,
+                props,
+                ..
+            } => {
                 if player == simulation.player().entity {
                     self.request(SoundCue::ui(SoundId::UiSelect), audio);
-                    self.request(
-                        SoundCue {
-                            pitch: 1.35,
-                            ..SoundCue::ui(SoundId::FireMasteryActivate)
-                        },
-                        audio,
-                    );
+                    self.play_loot(item, props, audio);
                 }
             }
             CombatEvent::LootMailed { player, .. } | CombatEvent::MailTaken { player, .. } => {
@@ -593,17 +620,14 @@ impl AudioDirector {
                 }
             }
             // A monster's drop chimes for the player it dropped for; an epic rings lower.
-            CombatEvent::MobLoot { player, item, .. } => {
+            CombatEvent::MobLoot {
+                player,
+                item,
+                props,
+                ..
+            } => {
                 if player == simulation.player().entity {
-                    let epic = engine_game::character::item(item).is_some_and(|def| {
-                        def.quality >= engine_game::character::ItemQuality::Epic
-                    });
-                    let sound = if epic {
-                        SoundId::LootEpic
-                    } else {
-                        SoundId::LootDrop
-                    };
-                    self.request(SoundCue::ui(sound), audio);
+                    self.play_loot(item, props, audio);
                 }
             }
             CombatEvent::MailBagFull { .. } | CombatEvent::MobCurrency { .. } => {}
@@ -634,17 +658,29 @@ impl AudioDirector {
                 self.request(SoundCue::at(SoundId::BeamEnd, origin), audio);
             }
             CombatEvent::BeamYaw { .. } => {}
-            // Nothing to hear, or a state the frame synchronises instead. A phase change is
-            // seen rather than heard: this phase authors no new cues. A point of Valor
-            // short of a full bar is deliberately silent: the cast that paid it has already
-            // made its own sound.
+            // A boss changing phase is the one phase change worth hearing; the rest are seen.
+            CombatEvent::PhaseChanged { entity, .. } => {
+                if self.is_boss(entity, simulation) {
+                    let origin = self.chest_of(entity, simulation);
+                    self.request(SoundCue::at(SoundId::BossPhase, origin), audio);
+                }
+            }
+            // A boss turning on the party is a roar. Throttled by the catalogue, so every
+            // member of the party being turned on is one roar.
+            CombatEvent::Aggro {
+                enemy,
+                change: AggroChange::Gained,
+                ..
+            } if self.is_boss(enemy, simulation) => {
+                let origin = self.chest_of(enemy, simulation);
+                self.request(SoundCue::at(SoundId::BossEngage, origin), audio);
+            }
+            // Nothing to hear, or a state the frame synchronises instead.
             // Jumping and landing are seen, not heard: the movement they belong to is
             // constant, and a cue on every hop turns traversal into noise.
             CombatEvent::Jumped { .. }
             | CombatEvent::Landed { .. }
             | CombatEvent::Healing { .. }
-            | CombatEvent::PhaseChanged { .. }
-            | CombatEvent::ValorGained { .. }
             | CombatEvent::AstralPowerGained { .. }
             | CombatEvent::AstralPowerArmed { .. }
             | CombatEvent::AstralPowerSpent { .. }
@@ -652,7 +688,7 @@ impl AudioDirector {
             | CombatEvent::ManaRestored { .. }
             | CombatEvent::DungeonProgress { .. }
             | CombatEvent::Dispelled { .. }
-            // Aggro is read, not heard: it is floating text over the enemy.
+            // Every other aggro change is read, not heard: it is floating text over the enemy.
             | CombatEvent::Aggro { .. } => {}
         }
     }
@@ -696,11 +732,7 @@ impl AudioDirector {
         // By the ability's own cue rather than by a row per attack: gameplay says what kind of
         // gathering it is, and this is the one place that decides what that kind sounds
         // like.
-        let sound = match ability.definition().cue {
-            EnemyCue::Heavy => SoundId::EnemyCastHeavy,
-            EnemyCue::Sweep => SoundId::EnemyCastSweep,
-            EnemyCue::Quick => SoundId::EnemyCastQuick,
-        };
+        let sound = enemy_cast_sound(ability.definition().cue, self.is_boss(source, simulation));
         let origin = self.chest_of(source, simulation);
         let key = source.index() as u32;
         if let Some(handle) = self.request(
@@ -906,7 +938,8 @@ impl AudioDirector {
         }
         self.areas.retain(|held| audio.is_playing(held.handle));
         self.incoming.retain(|held| audio.is_playing(held.handle));
-        self.telegraphs.retain(|held| audio.is_playing(held.handle));
+        self.telegraphs
+            .retain(|(held, _)| audio.is_playing(held.handle));
         self.enemy_casts
             .retain(|held| audio.is_playing(held.handle));
         self.beams.retain(|held| audio.is_playing(held.handle));
@@ -921,6 +954,29 @@ impl AudioDirector {
             {
                 *held = None;
             }
+        }
+    }
+
+    /// Whether `entity` is a boss, which sounds bigger than a monster of any other tier.
+    fn is_boss(&self, entity: EntityId, simulation: &Simulation) -> bool {
+        simulation
+            .brain(entity)
+            .is_some_and(|brain| brain.kind().is_boss())
+    }
+
+    /// The sound of an item arriving: its rarity's chime, and the jackpot sting over it if it
+    /// rolled well.
+    fn play_loot(
+        &mut self,
+        item: engine_game::character::ItemId,
+        props: ItemProps,
+        audio: &mut AudioSystem,
+    ) {
+        let quality = engine_game::character::item(item).map(|def| def.quality);
+        let (chime, sting) = loot_sounds(quality.unwrap_or_default(), props);
+        self.request(SoundCue::ui(chime), audio);
+        if let Some(sting) = sting {
+            self.request(SoundCue::ui(sting), audio);
         }
     }
 
@@ -945,6 +1001,10 @@ impl AudioDirector {
 ///
 /// `None` for the abilities whose *whole* sound is somewhere else: Flame Lance and Pyroblast
 /// are their cast beds and then their impacts, and Blink is its two ends.
+///
+/// Every ability of the Warrior and the Druid has a sound of its own: grouped by what it is
+/// made of (metal for the shield, a chime for a heal, wood and leaves for nature damage) and
+/// told apart inside the group by pitch and shape.
 #[must_use]
 pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
     match ability {
@@ -955,41 +1015,88 @@ pub fn activation_sound(ability: FireAbility) -> Option<SoundId> {
         FireAbility::Detonate => Some(SoundId::DetonateCast),
         FireAbility::FireMastery => Some(SoundId::FireMasteryActivate),
         FireAbility::FlameShield => Some(SoundId::FlameShieldActivate),
-        // The Warrior and the Druid borrow the sounds whose *shape* matches what they do:
-        // a swing is an impact, a cleave is a cone, a placed circle of stars is a placed
-        // area, and a heal is a soft activation. Sounds of their own are art this phase does
-        // not have, and silence would be worse than a stand-in that is the right length.
-        FireAbility::Recuperate => Some(SoundId::FireboltCast),
-        FireAbility::WarStomp => Some(SoundId::FlameConeCast),
-        FireAbility::ColossusStrike => Some(SoundId::MeteorImpact),
-        FireAbility::ShieldCharge => Some(SoundId::FlameShieldActivate),
-        FireAbility::ShieldBash => Some(SoundId::HeavyImpact),
-        FireAbility::ShieldBlock => Some(SoundId::FlameShieldActivate),
-        FireAbility::PunctureBlood => Some(SoundId::HitCritical),
-        FireAbility::Adrenaline
-        | FireAbility::BattleTrance
-        | FireAbility::LastStand
-        | FireAbility::Taunt => Some(SoundId::FireMasteryActivate),
-        FireAbility::SpellReflect => Some(SoundId::FlameShieldActivate),
-        FireAbility::Moonfire | FireAbility::Wrath => Some(SoundId::FireboltCast),
-        FireAbility::Sunfire => Some(SoundId::FlameConeCast),
-        // Every heal in the kit is a soft activation, and the two buttons beside the bar are
-        // the same: what they have in common is that nothing is thrown at anybody.
-        FireAbility::Rejuvenation
-        | FireAbility::Regrowth
-        | FireAbility::Lifebloom
-        | FireAbility::WildGrowth
-        | FireAbility::Swiftmend
-        | FireAbility::Nourish
-        | FireAbility::NaturesCleanse
-        | FireAbility::WildRush
-        | FireAbility::AstralPower
-        | FireAbility::Tranquility => Some(SoundId::FireMasteryActivate),
+        // The Warrior: weight, metal and breath.
+        FireAbility::Recuperate => Some(SoundId::HealRecuperate),
+        FireAbility::WarStomp => Some(SoundId::WarStomp),
+        FireAbility::ColossusStrike => Some(SoundId::ColossusStrike),
+        FireAbility::ShieldCharge => Some(SoundId::ShieldCharge),
+        FireAbility::ShieldBash => Some(SoundId::ShieldBash),
+        FireAbility::ShieldBlock => Some(SoundId::ShieldBlock),
+        FireAbility::PunctureBlood => Some(SoundId::PunctureBlood),
+        FireAbility::Adrenaline => Some(SoundId::Adrenaline),
+        FireAbility::BattleTrance => Some(SoundId::BattleTrance),
+        FireAbility::LastStand => Some(SoundId::LastStand),
+        FireAbility::Taunt => Some(SoundId::Taunt),
+        FireAbility::SpellReflect => Some(SoundId::SpellReflect),
+        // The Druid: leaves, light and bells.
+        FireAbility::Moonfire => Some(SoundId::MoonfireCast),
+        FireAbility::Wrath => Some(SoundId::WrathCast),
+        FireAbility::Sunfire => Some(SoundId::SunfireCast),
+        FireAbility::Rejuvenation => Some(SoundId::HealRejuvenation),
+        FireAbility::Regrowth => Some(SoundId::HealRegrowth),
+        FireAbility::Lifebloom => Some(SoundId::HealLifebloom),
+        FireAbility::Nourish => Some(SoundId::HealNourish),
+        FireAbility::WildGrowth => Some(SoundId::WildGrowth),
+        FireAbility::Swiftmend => Some(SoundId::Swiftmend),
+        FireAbility::NaturesCleanse => Some(SoundId::NaturesCleanse),
+        FireAbility::WildRush => Some(SoundId::WildRush),
+        FireAbility::AstralPower => Some(SoundId::AstralPower),
+        FireAbility::Tranquility => Some(SoundId::Tranquility),
         FireAbility::FlameLance | FireAbility::Pyroblast => None,
         // Its sound is the channel's events, not the cast's: a surge, a roar, a gutter.
         FireAbility::FireBeam => None,
         FireAbility::Blink | FireAbility::Ignite => None,
     }
+}
+
+/// What an enemy's wind-up sounds like, by how it gathers and whether a boss is gathering.
+#[must_use]
+pub fn enemy_cast_sound(cue: EnemyCue, boss: bool) -> SoundId {
+    match (cue, boss) {
+        (EnemyCue::Heavy, false) => SoundId::EnemyCastHeavy,
+        (EnemyCue::Sweep, false) => SoundId::EnemyCastSweep,
+        (EnemyCue::Quick, false) => SoundId::EnemyCastQuick,
+        (EnemyCue::Heavy, true) => SoundId::BossCastHeavy,
+        (EnemyCue::Sweep, true) => SoundId::BossCastSweep,
+        (EnemyCue::Quick, true) => SoundId::BossCastQuick,
+    }
+}
+
+/// What a hit sounds like: physical blows thud, magic crackles, and a critical rings.
+#[must_use]
+pub fn hit_sound(school: DamageType, critical: bool, amount: f32) -> SoundId {
+    let physical = school == DamageType::Physical;
+    if critical {
+        return if physical {
+            SoundId::HitPhysicalCritical
+        } else {
+            SoundId::HitCritical
+        };
+    }
+    if amount >= HEAVY_DAMAGE {
+        return SoundId::HeavyImpact;
+    }
+    match school {
+        DamageType::Physical => SoundId::HitPhysical,
+        DamageType::Nature => SoundId::NatureImpact,
+        DamageType::Fire | DamageType::Arcane => SoundId::HitNormal,
+    }
+}
+
+/// The 'quality' per cent at which an item is a jackpot.
+pub const JACKPOT_QUALITY: u8 = 105;
+
+/// What an item arriving sounds like: the chime of its rarity, and a jackpot sting over it
+/// when it rolled at [`JACKPOT_QUALITY`] per cent or better.
+#[must_use]
+pub fn loot_sounds(quality: ItemQuality, props: ItemProps) -> (SoundId, Option<SoundId>) {
+    let chime = match quality {
+        ItemQuality::Poor | ItemQuality::Common | ItemQuality::Uncommon => SoundId::LootDrop,
+        ItemQuality::Rare => SoundId::LootRare,
+        ItemQuality::Epic | ItemQuality::Legendary => SoundId::LootEpic,
+    };
+    let sting = (props.quality >= JACKPOT_QUALITY).then_some(SoundId::LootJackpot);
+    (chime, sting)
 }
 
 /// The bed that runs while an ability is being cast, if it has a cast at all.
@@ -1029,6 +1136,7 @@ pub fn impact_sound(ability: FireAbility) -> SoundId {
         FireAbility::Pyroblast => SoundId::PyroblastImpact,
         FireAbility::Meteor => SoundId::MeteorImpact,
         FireAbility::Detonate => SoundId::DetonateExplosion,
+        FireAbility::Moonfire | FireAbility::Wrath => SoundId::NatureImpact,
         _ => SoundId::FireboltImpact,
     }
 }
@@ -1106,5 +1214,122 @@ mod tests {
         director.set_enabled(false, &mut audio);
         director.play_ui(SoundId::UiClick, &mut audio);
         assert!(audio.is_idle());
+    }
+
+    #[test]
+    fn every_warrior_and_druid_ability_has_a_sound_of_its_own() {
+        // Neither class borrows from the Fire Mage any more, and no two abilities of one
+        // class share a sound.
+        let mage: Vec<SoundId> = Hero::FireMage
+            .abilities()
+            .iter()
+            .filter_map(|ability| activation_sound(*ability))
+            .collect();
+        for hero in [Hero::Warrior, Hero::Druid] {
+            let mut seen: Vec<SoundId> = Vec::new();
+            for ability in hero.abilities().iter().copied() {
+                let sound = activation_sound(ability)
+                    .unwrap_or_else(|| panic!("{ability:?} makes no sound when it is used"));
+                assert!(!mage.contains(&sound), "{ability:?} borrows {sound:?}");
+                assert!(!seen.contains(&sound), "{ability:?} repeats {sound:?}");
+                seen.push(sound);
+            }
+        }
+    }
+
+    #[test]
+    fn the_abilities_without_an_activation_sound_are_the_ones_with_another_trigger() {
+        for ability in FireAbility::ALL {
+            let silent = activation_sound(ability).is_none();
+            let elsewhere = matches!(
+                ability,
+                FireAbility::FlameLance
+                    | FireAbility::Pyroblast
+                    | FireAbility::FireBeam
+                    | FireAbility::Blink
+                    | FireAbility::Ignite
+            );
+            assert_eq!(silent, elsewhere, "{ability:?}");
+        }
+    }
+
+    #[test]
+    fn every_enemy_cue_has_a_distinct_sound_and_bosses_have_their_own() {
+        let cues = [EnemyCue::Quick, EnemyCue::Sweep, EnemyCue::Heavy];
+        let mut seen: Vec<SoundId> = Vec::new();
+        for boss in [false, true] {
+            for cue in cues {
+                let sound = enemy_cast_sound(cue, boss);
+                assert!(sound.is_looping(), "{sound:?} is held for the cast");
+                assert!(!seen.contains(&sound), "{sound:?} is shared");
+                seen.push(sound);
+            }
+        }
+        for ability in EnemyAbility::ALL {
+            // Every attack in the game resolves to a wind-up sound by its cue.
+            let _ = enemy_cast_sound(ability.definition().cue, false);
+        }
+    }
+
+    #[test]
+    fn a_hit_sounds_like_what_hit() {
+        use DamageType::{Arcane, Fire, Nature, Physical};
+        assert_eq!(hit_sound(Physical, false, 5.0), SoundId::HitPhysical);
+        assert_eq!(hit_sound(Physical, true, 5.0), SoundId::HitPhysicalCritical);
+        assert_eq!(hit_sound(Fire, false, 5.0), SoundId::HitNormal);
+        assert_eq!(hit_sound(Arcane, true, 5.0), SoundId::HitCritical);
+        assert_eq!(hit_sound(Nature, false, 5.0), SoundId::NatureImpact);
+        assert_eq!(
+            hit_sound(Physical, false, HEAVY_DAMAGE),
+            SoundId::HeavyImpact
+        );
+    }
+
+    #[test]
+    fn loot_chimes_by_rarity_and_stings_at_a_jackpot() {
+        let standard = ItemProps::STANDARD;
+        let lucky = ItemProps::new(JACKPOT_QUALITY, 0, false);
+        assert_eq!(
+            loot_sounds(ItemQuality::Common, standard),
+            (SoundId::LootDrop, None)
+        );
+        assert_eq!(
+            loot_sounds(ItemQuality::Rare, standard),
+            (SoundId::LootRare, None)
+        );
+        assert_eq!(
+            loot_sounds(ItemQuality::Epic, standard),
+            (SoundId::LootEpic, None)
+        );
+        assert_eq!(
+            loot_sounds(ItemQuality::Common, lucky),
+            (SoundId::LootDrop, Some(SoundId::LootJackpot))
+        );
+        let almost = ItemProps::new(JACKPOT_QUALITY - 1, 0, false);
+        assert_eq!(loot_sounds(ItemQuality::Epic, almost).1, None);
+    }
+
+    #[test]
+    fn the_interface_sounds_all_play_without_the_world() {
+        let mut audio = runtime();
+        let mut director = AudioDirector::new();
+        for sound in [
+            SoundId::UiClick,
+            SoundId::UiSelect,
+            SoundId::UiCancel,
+            SoundId::UiError,
+            SoundId::QueueJoin,
+            SoundId::MatchFound,
+            SoundId::ReadyAccept,
+            SoundId::PartyFormed,
+            SoundId::KeyInsert,
+            SoundId::CountdownTick,
+            SoundId::CountdownGo,
+            SoundId::DungeonComplete,
+            SoundId::DungeonFail,
+        ] {
+            director.play_ui(sound, &mut audio);
+            assert_eq!(audio.playing(sound), 1, "{sound:?}");
+        }
     }
 }
