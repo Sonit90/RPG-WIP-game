@@ -204,7 +204,7 @@ fn shockwave_widens_war_stomp_and_stacks_sundered_faster() {
 }
 
 #[test]
-fn shockwave_hits_war_stomp_harder_and_slows_its_cooldown() {
+fn shockwave_hits_war_stomp_harder_without_slowing_it() {
     let stomp = |talents: &[WarriorTalent]| {
         let mut simulation = warrior_with(talents);
         close_to_target(&mut simulation, 3.0);
@@ -219,8 +219,8 @@ fn shockwave_hits_war_stomp_harder_and_slows_its_cooldown() {
     };
     let (plain, plain_cooldown) = stomp(&[]);
     let (wide, wide_cooldown) = stomp(&[WarriorTalent::Shockwave]);
-    assert!((wide / plain - 1.3).abs() < 0.02, "{}", wide / plain);
-    assert!((wide_cooldown - plain_cooldown - 1.0).abs() < 0.05);
+    assert!((wide / plain - 1.4).abs() < 0.02, "{}", wide / plain);
+    assert!((wide_cooldown - plain_cooldown).abs() < 0.05);
     // Colossus Strike is untouched.
     let smash = |talents: &[WarriorTalent]| {
         let mut simulation = warrior_with(talents);
