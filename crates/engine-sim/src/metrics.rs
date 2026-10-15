@@ -78,6 +78,8 @@ pub struct ResourceUse {
     pub astral_generated: f64,
     /// Astral Power spent on empowerments (Druid).
     pub astral_spent: f64,
+    /// How many empowerments that bought (Druid): the cost differs with Astral Attunement.
+    pub empowerments: f64,
     /// Heat the casts generated at their rows' nominal values (FireMage).
     pub heat_generated: f64,
 }
@@ -142,6 +144,7 @@ impl Metrics {
         mine.mana_restored = f(mine.mana_restored, theirs.mana_restored);
         mine.astral_generated = f(mine.astral_generated, theirs.astral_generated);
         mine.astral_spent = f(mine.astral_spent, theirs.astral_spent);
+        mine.empowerments = f(mine.empowerments, theirs.empowerments);
         mine.heat_generated = f(mine.heat_generated, theirs.heat_generated);
     }
 
@@ -311,6 +314,7 @@ impl Recorder {
                 }
                 CombatEvent::AstralPowerSpent { entity, amount, .. } if entity == player => {
                     metrics.resources.astral_spent += f64::from(amount);
+                    metrics.resources.empowerments += 1.0;
                 }
                 _ => {}
             }

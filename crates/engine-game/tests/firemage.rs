@@ -698,7 +698,7 @@ fn moving_cancels_a_cast_and_it_is_counted() {
 
 #[test]
 fn every_talent_can_be_taken_and_given_back_cleanly() {
-    let baseline = TalentGrid::with_points(0).effects();
+    let baseline = engine_game::firemage::TalentEffects::default();
     for talent in TalentId::ALL {
         let mut simulation = arena();
         simulation
@@ -712,9 +712,10 @@ fn every_talent_can_be_taken_and_given_back_cleanly() {
 
         // And the world still runs with it on.
         simulation.step_many(60);
-        simulation
-            .mage_mut()
-            .set_talents(TalentGrid::with_points(0));
+        simulation.mage_mut().set_talents(TalentGrid::with_points(
+            engine_game::hero::Hero::FireMage,
+            0,
+        ));
         assert_eq!(*simulation.mage().effects(), baseline, "{talent:?} stuck");
     }
 }

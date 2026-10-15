@@ -149,6 +149,8 @@ pub fn matchmaking_tick(ctx: &ReducerContext, _timer: MatchmakingTimer) -> Resul
                 level: ticket.level,
                 gear_score: ticket.gear_score,
                 loadout: ticket.loadout.clone(),
+                talents: ticket.talents.clone(),
+                talent_points: ticket.talent_points,
                 key_dungeon_id: ticket.key_dungeon_id.clone(),
                 key_level: ticket.key_level,
                 ready: ReadyTag::Pending,

@@ -84,8 +84,8 @@ impl Simulation {
         if !self.is_druid() {
             return Ok(());
         }
-        let druid_row = ability.definition().druid();
-        if druid_row.mana_cost > 0.0 && !self.druid.mana.can_pay(druid_row.mana_cost) {
+        let cost = self.druid_mana_cost(ability);
+        if cost > 0.0 && !self.druid.mana.can_pay(cost) {
             return Err(AbilityError::NotEnoughMana);
         }
         match ability {
@@ -149,9 +149,35 @@ impl Simulation {
 
     // --------------------------------------------------------------- resources
 
+    /// What `ability` costs in Mana right now: its row, with Tranquil Mind applied.
+    #[must_use]
+    pub fn druid_mana_cost(&self, ability: FireAbility) -> f32 {
+        let cost = ability.definition().druid().mana_cost;
+        if ability == FireAbility::Tranquility {
+            cost * self.druid.effects().tranquility_mana_scale
+        } else {
+            cost
+        }
+    }
+
+    /// The cast time of `ability`: Swift Wrath makes every Nth consecutive Wrath instant.
+    #[must_use]
+    pub(super) fn druid_cast_time(&self, ability: FireAbility, cast_time: f32) -> f32 {
+        let every = self.druid.effects().swift_wrath_every;
+        if self.is_druid()
+            && ability == FireAbility::Wrath
+            && every > 0
+            && (self.druid.wrath_streak + 1) % every == 0
+        {
+            0.0
+        } else {
+            cast_time
+        }
+    }
+
     /// Pays this ability's Mana, if it costs any, and announces it.
     pub(super) fn spend_mana(&mut self, ability: FireAbility) {
-        let cost = ability.definition().druid().mana_cost;
+        let cost = self.druid_mana_cost(ability);
         if !self.is_druid() || cost <= 0.0 || !self.druid.mana.pay(cost) {
             return;
         }
@@ -168,9 +194,13 @@ impl Simulation {
 
     /// Gives this ability's Astral Power back to the bar, and announces it.
     pub(super) fn gain_astral(&mut self, ability: FireAbility) {
-        let generated = ability.definition().druid().astral_generation;
+        let mut generated = ability.definition().druid().astral_generation;
         if !self.is_druid() || generated <= 0.0 {
             return;
+        }
+        let every = self.druid.effects().swift_wrath_every;
+        if ability == FireAbility::Wrath && every > 0 && self.druid.wrath_streak % every == 0 {
+            generated *= self.druid.effects().swift_wrath_astral_scale;
         }
         let applied = self.druid.astral.gain(generated);
         if applied <= 0.0 {
@@ -204,7 +234,7 @@ impl Simulation {
         let tick = self.tick;
         self.events.push(CombatEvent::AstralPowerSpent {
             entity: self.player.entity,
-            amount: ASTRAL_SPEND,
+            amount: self.druid.astral.spend_cost(),
             value,
             ability: AbilityId::from_fire(ability),
             tick,
@@ -260,6 +290,13 @@ impl Simulation {
     /// ability can be cast for free by forgetting a line.
     pub(super) fn land_druid(&mut self, ability: FireAbility, hits: usize) -> u32 {
         self.spend_mana(ability);
+        // Swift Wrath counts Wraths in a row; any other spell breaks the run (the Astral
+        // Power button is not a spell cast at an enemy and does not).
+        match ability {
+            FireAbility::Wrath => self.druid.wrath_streak += 1,
+            FireAbility::AstralPower => {}
+            _ => self.druid.wrath_streak = 0,
+        }
         let affected = match ability {
             FireAbility::Moonfire => self.cast_moonfire(),
             FireAbility::Sunfire => self.cast_sunfire(),
@@ -277,6 +314,8 @@ impl Simulation {
             // owes — the empowerment, the pulse clock — was settled when it started.
             FireAbility::Tranquility => {
                 self.druid.channel.active = false;
+                let cut = self.druid.effects().tranquility_cooldown_cut;
+                self.cut_cooldown(FireAbility::Tranquility, cut);
                 0
             }
             _ => hits as u32,
@@ -293,8 +332,9 @@ impl Simulation {
         let ability = FireAbility::Moonfire;
         let definition = *ability.definition();
         let empowered = self.take_empowerment(ability);
+        let attune = self.druid.effects().empowerment_scale;
         let scale = if empowered {
-            1.0 + ASTRAL_MOONFIRE_DAMAGE
+            1.0 + ASTRAL_MOONFIRE_DAMAGE * attune
         } else {
             1.0
         };
@@ -343,8 +383,11 @@ impl Simulation {
         let ability = FireAbility::Sunfire;
         let definition = *ability.definition();
         let empowered = self.take_empowerment(ability);
+        let attune = self.druid.effects().empowerment_scale;
+        let tick_scale = self.druid.effects().sunfire_tick_scale;
+        let radius = definition.radius * self.druid.effects().sunfire_radius_scale;
         let scale = if empowered {
-            1.0 + ASTRAL_SUNFIRE_DAMAGE
+            1.0 + ASTRAL_SUNFIRE_DAMAGE * attune
         } else {
             1.0
         };
@@ -353,12 +396,7 @@ impl Simulation {
         };
         let centre = self.world.position(primary).unwrap_or(Vec3::ZERO);
         self.hits.clear();
-        self.collect_in_shape(
-            centre,
-            ZoneShape::Circle {
-                radius: definition.radius,
-            },
-        );
+        self.collect_in_shape(centre, ZoneShape::Circle { radius });
         if !self.hits.contains(&primary) {
             self.hits.push(primary);
         }
@@ -383,7 +421,7 @@ impl Simulation {
                 source,
                 AbilityId::from_fire(ability),
                 definition.duration,
-                definition.base_tick_damage(&stats) * scale,
+                definition.base_tick_damage(&stats) * scale * tick_scale,
             )
             .every(definition.tick_interval)
             .with_haste()
@@ -398,7 +436,8 @@ impl Simulation {
                     AbilityId::from_fire(ability),
                     ASTRAL_SUNFIRE_DURATION,
                     0.0,
-                );
+                )
+                .with_magnitude(ASTRAL_SUNFIRE_CONVERSION * attune);
                 self.apply_status(target, conversion, ASTRAL_SUNFIRE_DURATION);
             }
             affected += 1;
@@ -475,14 +514,17 @@ impl Simulation {
     ///
     /// The stack ceiling is the status kind's own, so nothing here can overshoot it.
     fn apply_natures_exposure(&mut self, target: EntityId) {
+        let effects = *self.druid.effects();
+        let duration = NATURES_EXPOSURE_DURATION * effects.exposure_duration_scale;
         let status = Status::new(
             StatusKind::NaturesExposure,
             self.player.entity,
             AbilityId::from_fire(FireAbility::Wrath),
-            NATURES_EXPOSURE_DURATION,
+            duration,
             0.0,
-        );
-        self.apply_status(target, status, NATURES_EXPOSURE_DURATION);
+        )
+        .stacking_to(effects.exposure_max_stacks());
+        self.apply_status(target, status, duration);
     }
 
     /// Astral Wrath's area application: the same stack, on everything around the primary.
@@ -522,15 +564,16 @@ impl Simulation {
         let empowered = self.take_empowerment(ability);
         let stats = self.mage.stats();
         let definition = *ability.definition();
-        let scale = Druid::heal_scale(empowered);
+        let scale = Druid::heal_scale_with(empowered, self.druid.effects().empowerment_scale);
         let Some(target) = self.hits.first().copied() else {
             return 0;
         };
-        self.heal_ally(
+        let restored = self.heal_ally(
             target,
             definition.base_damage(&stats) * scale,
             AbilityId::from_fire(ability),
         );
+        self.plant_seed(target, restored);
         self.apply_hot_to(target, ability, StatusKind::Regrowth, empowered, 0.0);
         1
     }
@@ -589,8 +632,14 @@ impl Simulation {
             tick,
         });
         let stats = self.mage.stats();
-        let amount = ability.definition().base_damage(&stats) * Druid::heal_scale(empowered);
-        self.heal_ally(target, amount, AbilityId::from_fire(ability));
+        let scale = Druid::heal_scale_with(empowered, self.druid.effects().empowerment_scale);
+        let amount = ability.definition().base_damage(&stats) * scale;
+        let restored = self.heal_ally(target, amount, AbilityId::from_fire(ability));
+        self.plant_seed(target, restored);
+        // Overgrowth: a faster Swiftmend that gives some Astral Power back.
+        let effects = *self.druid.effects();
+        self.cut_cooldown(FireAbility::Swiftmend, effects.swiftmend_cooldown_cut);
+        self.refund_astral(effects.swiftmend_astral_refund, ability);
         1
     }
 
@@ -606,8 +655,9 @@ impl Simulation {
         // design states the thirty per cent applies *after* the count.
         let hots = self.druid_hot_count(target);
         let scaling = 1.0 + hots as f32 * NOURISH_PER_HOT;
-        let amount =
-            ability.definition().base_damage(&stats) * scaling * Druid::heal_scale(empowered);
+        let amount = ability.definition().base_damage(&stats)
+            * scaling
+            * Druid::heal_scale_with(empowered, self.druid.effects().empowerment_scale);
         self.heal_ally(target, amount, AbilityId::from_fire(ability));
         1
     }
@@ -674,6 +724,33 @@ impl Simulation {
             0.0,
         );
         self.apply_status(source, status, definition.duration);
+        // Barkskin Instinct: the allies standing near share a smaller helping.
+        let effects = *self.druid.effects();
+        if effects.wild_rush_ally_radius > 0.0 {
+            let origin = self.world.position(source).unwrap_or(Vec3::ZERO);
+            self.hits.clear();
+            self.collect_friendly_in_shape(
+                origin,
+                ZoneShape::Circle {
+                    radius: effects.wild_rush_ally_radius,
+                },
+            );
+            for index in 0..self.hits.len() {
+                let ally = self.hits[index];
+                if ally == source {
+                    continue;
+                }
+                let bark = Status::new(
+                    StatusKind::Barkskin,
+                    source,
+                    AbilityId::from_fire(ability),
+                    effects.wild_rush_ally_duration,
+                    0.0,
+                )
+                .with_magnitude(effects.wild_rush_ally_reduction);
+                self.apply_status(ally, bark, effects.wild_rush_ally_duration);
+            }
+        }
         1
     }
 
@@ -718,7 +795,7 @@ impl Simulation {
     ) {
         let definition = *ability.definition();
         let stats = self.mage.stats();
-        let scale = Druid::heal_scale(empowered);
+        let scale = Druid::heal_scale_with(empowered, self.druid.effects().empowerment_scale);
         let status = Status::new(
             kind,
             self.player.entity,
@@ -761,6 +838,13 @@ impl Simulation {
     /// fixed step rounds.
     pub(super) fn tick_druid(&mut self, step: f32) {
         self.druid.tick(step);
+        if !self.seeds.is_empty() {
+            let owner = self.player.entity;
+            for seed in self.seeds.iter_mut().filter(|seed| seed.owner == owner) {
+                seed.remaining -= step;
+            }
+            self.seeds.retain(|seed| seed.remaining > 0.0);
+        }
         if !self.druid.channel.active {
             return;
         }
@@ -795,8 +879,10 @@ impl Simulation {
         let ability = FireAbility::Tranquility;
         let definition = *ability.definition();
         let stats = self.mage.stats();
-        let amount =
-            definition.base_tick_damage(&stats) * Druid::heal_scale(self.druid.channel.empowered);
+        let effects = *self.druid.effects();
+        let amount = definition.base_tick_damage(&stats)
+            * Druid::heal_scale_with(self.druid.channel.empowered, effects.empowerment_scale)
+            * effects.tranquility_heal_scale;
         let origin = self
             .world
             .position(self.player.entity)
@@ -946,19 +1032,26 @@ impl Simulation {
         if self.converting || dealt <= 0.0 {
             return;
         }
-        let marked = self
+        let Some(mark) = self
             .world
             .statuses(target)
-            .is_some_and(|statuses| statuses.has(StatusKind::AstralSunfire));
-        if !marked {
+            .and_then(|statuses| statuses.get(StatusKind::AstralSunfire))
+            .map(|status| status.magnitude)
+        else {
             return;
-        }
+        };
         // Only what the party dealt. An enemy that damages another enemy standing in a
         // Sunfire heals nobody.
         if !self.party.contains(source) {
             return;
         }
-        let amount = dealt * ASTRAL_SUNFIRE_CONVERSION;
+        // A mark with no strength of its own (one applied by hand) converts the base share.
+        let share = if mark > 0.0 {
+            mark
+        } else {
+            ASTRAL_SUNFIRE_CONVERSION
+        };
+        let amount = dealt * share;
         if amount <= 0.0 {
             return;
         }
@@ -968,6 +1061,80 @@ impl Simulation {
             self.heal_ally(member, amount, AbilityId::from_fire(FireAbility::Sunfire));
         }
         self.converting = false;
+    }
+
+    /// Living Seed: leaves a seed on `target` worth a share of the heal that just landed.
+    fn plant_seed(&mut self, target: EntityId, healed: f32) {
+        let effects = *self.druid.effects();
+        if effects.seed_fraction <= 0.0 || healed <= 0.0 {
+            return;
+        }
+        let owner = self.player.entity;
+        self.seeds
+            .retain(|seed| !(seed.owner == owner && seed.target == target));
+        self.seeds.push(crate::druid::Seed {
+            owner,
+            target,
+            amount: healed * effects.seed_fraction,
+            remaining: effects.seed_window,
+        });
+    }
+
+    /// Pays every seed on `target`, now that it has taken damage. Called where damage lands,
+    /// in whichever player's context that is: the seed's owner is made active to heal.
+    pub(super) fn pay_living_seeds(&mut self, target: EntityId) {
+        if !self.seeds.iter().any(|seed| seed.target == target) {
+            return;
+        }
+        let mut due = Vec::new();
+        self.seeds.retain(|seed| {
+            if seed.target == target {
+                due.push(*seed);
+                false
+            } else {
+                true
+            }
+        });
+        for seed in due {
+            let _ = self.with_player(seed.owner, |sim| {
+                sim.heal_ally(
+                    target,
+                    seed.amount,
+                    AbilityId::from_fire(FireAbility::Regrowth),
+                )
+            });
+        }
+    }
+
+    /// Takes `seconds` off the recharge of `ability` on the active player's book.
+    fn cut_cooldown(&mut self, ability: FireAbility, seconds: f32) {
+        if seconds <= 0.0 {
+            return;
+        }
+        let effects = *self.mage.effects();
+        self.mage
+            .abilities
+            .reduce_cooldown(ability, seconds, &effects);
+    }
+
+    /// Gives `amount` Astral Power back, and announces it.
+    fn refund_astral(&mut self, amount: f32, ability: FireAbility) {
+        if amount <= 0.0 {
+            return;
+        }
+        let applied = self.druid.astral.gain(amount);
+        if applied <= 0.0 {
+            return;
+        }
+        let value = self.druid.astral.value();
+        let tick = self.tick;
+        self.events.push(CombatEvent::AstralPowerGained {
+            entity: self.player.entity,
+            amount: applied,
+            value,
+            ability: AbilityId::from_fire(ability),
+            tick,
+        });
     }
 
     /// Pays out a Lifebloom that ran out of time on its own.

@@ -18,6 +18,8 @@ pub struct RunRewards {
     pub experience: u32,
     /// Resources granted, as `(resource id, amount)`.
     pub resources: Vec<(String, u32)>,
+    /// Talent points granted: one per success, one more at a high enough key level.
+    pub talent_points: u32,
     /// The key owner's new key level after a success; `None` for everyone else and after a
     /// failure (the key is unchanged).
     pub key_level_after: Option<u32>,
@@ -58,6 +60,7 @@ pub fn run_rewards(
     let steps = key_level.saturating_sub(1);
     let table = &dungeon.reward_table;
     RunRewards {
+        talent_points: crate::talents::points_for_run(success, key_level),
         experience: table
             .experience
             .saturating_add(table.experience_per_level.saturating_mul(steps)),

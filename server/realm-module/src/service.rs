@@ -55,6 +55,8 @@ pub fn svc_enqueue(
     role: RoleTag,
     key_dungeon_id: String,
     key_level: u32,
+    talents: String,
+    talent_points: u32,
 ) -> Result<(), String> {
     let config = require_service(ctx)?;
     let identity = player_identity(&config, &account_id);
@@ -107,6 +109,8 @@ pub fn svc_enqueue(
             level,
             gear_score,
             loadout,
+            talents,
+            talent_points,
             dungeon_id: dungeon_id.clone(),
             role,
             key_dungeon_id,
@@ -140,6 +144,47 @@ pub fn svc_take_results(ctx: &mut spacetimedb::ProcedureContext) -> Vec<PendingR
     ctx.with_tx(|tx| match require_service(tx) {
         Ok(_) => tx.db.pending_result().iter().take(100).collect(),
         Err(_) => Vec::new(),
+    })
+}
+
+/// Whether an account is engaged with the realm, for the API's lock on talents and equipment.
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct Engagement {
+    /// Queued, in a party or in an instance.
+    pub engaged: bool,
+    /// `"none"`, `"queued"`, `"party"` or `"instance"`; `"refused"` to anyone but the bridge.
+    pub state: String,
+}
+
+/// Whether the account has a character in the queue, in a party (ready check, key selection)
+/// or in an instance - disconnected-in-grace included, because a disconnected member keeps
+/// their row until the grace runs out. The API asks before it changes talents or equipment:
+/// the realm holds a snapshot of both for the run.
+///
+/// Fails closed: anyone but the bridge is told the account is engaged.
+#[spacetimedb::procedure]
+pub fn svc_engagement(ctx: &mut spacetimedb::ProcedureContext, account_id: String) -> Engagement {
+    ctx.with_tx(|tx| {
+        let Ok(config) = require_service(tx) else {
+            return Engagement {
+                engaged: true,
+                state: "refused".to_owned(),
+            };
+        };
+        let identity = player_identity(&config, &account_id);
+        let state = if tx.db.instance_player().identity().find(identity).is_some() {
+            "instance"
+        } else if tx.db.party_member().identity().find(identity).is_some() {
+            "party"
+        } else if tx.db.queue_ticket().identity().find(identity).is_some() {
+            "queued"
+        } else {
+            "none"
+        };
+        Engagement {
+            engaged: state != "none",
+            state: state.to_owned(),
+        }
     })
 }
 

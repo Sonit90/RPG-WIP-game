@@ -29,9 +29,8 @@ use crate::ability::AbilityId;
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
 use crate::firemage::{
-    AbilityError, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, MOLTEN_GROUND_INTERVAL,
-    MOLTEN_GROUND_TICK_COEFFICIENT, MOLTEN_GROUND_VULNERABILITY, PendingImpact, TargetMode,
-    VULNERABILITY_DURATION, Zone, ZoneKind, ZoneShape, ZoneTick,
+    AbilityError, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, PendingImpact, TargetMode, Zone,
+    ZoneKind, ZoneShape, ZoneTick,
 };
 use crate::hero::Hero;
 use crate::sim::CastEnd;
@@ -222,7 +221,7 @@ impl Simulation {
         self.fire.casts_started += 1;
 
         let stats = self.mage.stats();
-        let cast_time = definition.cast_time_with(&stats);
+        let cast_time = self.druid_cast_time(ability, definition.cast_time_with(&stats));
         if cast_time > 0.0 {
             let ground = match aim {
                 CastAim::Ground(position) => Some(position),
@@ -598,9 +597,9 @@ impl Simulation {
                 position: impact.position,
                 shape,
                 remaining: effects.meteor_ground_duration,
-                until_tick: MOLTEN_GROUND_INTERVAL,
-                interval: MOLTEN_GROUND_INTERVAL,
-                coefficient: MOLTEN_GROUND_TICK_COEFFICIENT,
+                until_tick: effects.meteor_ground_interval,
+                interval: effects.meteor_ground_interval,
+                coefficient: effects.meteor_ground_coefficient,
                 ignite_stacks: 0,
                 ignite_chance: 0.0,
             });
@@ -630,7 +629,7 @@ impl Simulation {
             if tick.kind.applies_vulnerability() {
                 self.mage
                     .vulnerability
-                    .apply(target, VULNERABILITY_DURATION);
+                    .apply(target, self.mage.effects().vulnerability_duration());
             }
             self.strike(target, base, tick.source, true, 0.0);
             if tick.ignite_stacks > 0 && self.mage.rng.chance(tick.ignite_chance) {
@@ -1163,7 +1162,7 @@ impl Simulation {
             * self
                 .mage
                 .vulnerability
-                .multiplier(target, MOLTEN_GROUND_VULNERABILITY);
+                .multiplier(target, self.mage.effects().meteor_ground_vulnerability);
 
         let crit = allow_crit && self.mage.roll_crit();
         if crit {

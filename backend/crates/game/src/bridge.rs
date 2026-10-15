@@ -11,7 +11,7 @@
 //! module accepts `svc_*` calls from that identity and nobody else. The realm never calls out,
 //! so it needs no secret and no route to this service.
 
-use engine_realm::api::{DungeonResult, LootDelivery};
+use engine_realm::api::{DungeonResult, Engagement, LootDelivery};
 use engine_realm::meter::DamageReport;
 use engine_realm::Role;
 use serde::Deserialize;
@@ -52,6 +52,10 @@ pub struct Snapshot {
     pub key_dungeon_id: String,
     /// The key's level; 0 when it has no key.
     pub key_level: u32,
+    /// The character's talents, by key: the realm builds the fight from these.
+    pub talents: Vec<String>,
+    /// Every talent point the character has (starting plus earned): what the keys must fit in.
+    pub talent_points: u32,
 }
 
 /// SpacetimeDB's JSON for a unit enum variant: the variant's name in snake_case.
@@ -83,6 +87,38 @@ struct PendingRow {
     resources: String,
     /// JSON text of an `engine_realm::meter::DamageReport`; empty when there is none.
     damage_report: String,
+    talent_points: u32,
+}
+
+/// What a realm answer means for a change to a character's talents or equipment.
+///
+/// Engaged is a 409 with the player-facing sentence. An unreachable realm also refuses (a 500):
+/// the lock fails closed, because an unchecked change could slip in while the player is queued.
+///
+/// # Errors
+///
+/// The change must not happen.
+pub fn lock_decision(
+    answer: Result<Engagement, BridgeError>,
+) -> Result<(), generic_auth_core::AppError> {
+    match answer {
+        Ok(Engagement { engaged: false, .. }) => Ok(()),
+        Ok(_) => Err(generic_auth_core::AppError::Conflict(
+            engine_realm::api::ENGAGED_MESSAGE.into(),
+        )),
+        Err(BridgeError::Refused(message)) => {
+            tracing::warn!(%message, "realm refused the engagement check");
+            Err(generic_auth_core::AppError::internal(
+                "The game server is unavailable.",
+            ))
+        }
+        Err(BridgeError::Unavailable(reason)) => {
+            tracing::error!(%reason, "realm unavailable for the engagement check");
+            Err(generic_auth_core::AppError::internal(
+                "The game server is unavailable.",
+            ))
+        }
+    }
 }
 
 /// The resources a result row carries. Malformed text pays nothing (and says so).
@@ -187,10 +223,27 @@ impl RealmBridge {
                 role_json(role),
                 snapshot.key_dungeon_id,
                 snapshot.key_level,
+                engine_realm::talents::encode_keys(&snapshot.talents),
+                snapshot.talent_points,
             ]),
         )
         .await
         .map(|_| ())
+    }
+
+    /// Whether the account has a character queued, in a party or in an instance.
+    pub async fn engagement(
+        &self,
+        token: &str,
+        account_id: &str,
+    ) -> Result<Engagement, BridgeError> {
+        let body = self
+            .call(token, "svc_engagement", json!([account_id]))
+            .await?;
+        // A product value comes back as an array in field order: `[true, "queued"]`.
+        let (engaged, state): (bool, String) = serde_json::from_str(&body)
+            .map_err(|e| BridgeError::Unavailable(format!("unreadable engagement: {e}")))?;
+        Ok(Engagement { engaged, state })
     }
 
     /// Results waiting in the realm's outbox.
@@ -213,6 +266,7 @@ impl RealmBridge {
                 key_level: row.key_level,
                 key_owner: row.key_owner,
                 key_level_after: row.key_level_after,
+                talent_points: row.talent_points,
             })
             .collect())
     }
@@ -283,7 +337,7 @@ mod tests {
 
     #[test]
     fn pending_rows_read_positionally() {
-        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]",""]]"#;
+        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]","",2]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert_eq!(rows[0].result_id, "12:acct");
         assert!(rows[0].success);
@@ -291,6 +345,7 @@ mod tests {
         assert_eq!(rows[0].key_level, 3);
         assert!(rows[0].key_owner);
         assert_eq!(rows[0].key_level_after, 4);
+        assert_eq!(rows[0].talent_points, 2);
         assert_eq!(
             parse_resources(&rows[0].resources, "12:acct"),
             vec![("crypt_dust".to_string(), 9)]
@@ -317,7 +372,7 @@ mod tests {
     #[test]
     fn a_non_owner_row_without_resources_reads() {
         let body =
-            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]",""]]"#;
+            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]","",0]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert!(!rows[0].key_owner);
         assert!(parse_resources(&rows[0].resources, "12:b").is_empty());
@@ -341,6 +396,32 @@ mod tests {
         assert_eq!(rows[0].loot_id, "12:acct:loot");
         assert_eq!(rows[0].state, "mail");
         assert_eq!(rows[0].reason, "unclaimed");
+    }
+
+    fn engaged(state: &str) -> Result<Engagement, BridgeError> {
+        Ok(Engagement {
+            engaged: state != "none",
+            state: state.to_owned(),
+        })
+    }
+
+    #[test]
+    fn an_engaged_account_is_locked_out_with_the_players_sentence() {
+        assert!(lock_decision(engaged("none")).is_ok());
+        for state in ["queued", "party", "instance"] {
+            match lock_decision(engaged(state)) {
+                Err(generic_auth_core::AppError::Conflict(message)) => {
+                    assert_eq!(message, engine_realm::api::ENGAGED_MESSAGE);
+                }
+                other => panic!("{state}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_lock_fails_closed_when_the_realm_cannot_answer() {
+        assert!(lock_decision(Err(BridgeError::Unavailable("down".into()))).is_err());
+        assert!(lock_decision(Err(BridgeError::Refused("no".into()))).is_err());
     }
 
     #[test]

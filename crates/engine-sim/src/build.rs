@@ -7,10 +7,10 @@
 //! module decides which *combinations* to try; it does not restate what any of them do.
 
 use engine_game::character::stat::{Stat, StatBlock, rating_for_fraction};
-use engine_game::firemage::{
-    DEFAULT_TALENT_BUDGET, FireMastery, Gear, TALENT_COUNT, TalentGrid, TalentId,
-};
+use engine_game::firemage::{DEFAULT_TALENT_BUDGET, FireMastery, Gear, TALENT_COUNT, TalentId};
 use engine_game::sim::Simulation;
+use engine_game::talent::druid::DruidTalent;
+use engine_game::talent::{TalentGrid, TalentKey};
 
 use crate::ai::{DruidRotation, Rotation, RotationAi, Style, WarriorRotation};
 use crate::class::Class;
@@ -95,10 +95,7 @@ impl Build {
     /// What the talents cost.
     #[must_use]
     pub fn cost(&self) -> u32 {
-        self.talents
-            .iter()
-            .map(|talent| talent.definition().cost)
-            .sum()
+        self.talents.iter().map(|talent| talent.spec().cost).sum()
     }
 
     /// The talent names, joined for a report line.
@@ -109,7 +106,7 @@ impl Build {
         }
         self.talents
             .iter()
-            .map(|talent| talent.definition().name)
+            .map(|talent| talent.spec().name.as_str())
             .collect::<Vec<_>>()
             .join(" + ")
     }
@@ -172,7 +169,7 @@ pub fn designed_crit_build() -> Build {
 pub fn maximal_combinations(budget: u32) -> Vec<Vec<TalentId>> {
     let costs: Vec<u32> = TalentId::ALL
         .iter()
-        .map(|talent| talent.definition().cost)
+        .map(|talent| talent.spec().cost)
         .collect();
     let mut out = Vec::new();
 
@@ -272,11 +269,52 @@ pub struct WarriorBuild {
     pub name: String,
 }
 
-/// A Druid build: nothing to choose yet, for the same reason as [`WarriorBuild`].
+/// A Druid build: a name and the talents bought.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DruidBuild {
     /// What to call it in the report.
     pub name: String,
+    /// Which talents are bought.
+    pub talents: Vec<DruidTalent>,
+}
+
+impl DruidBuild {
+    /// A build of `talents`.
+    #[must_use]
+    pub fn new(name: &str, talents: &[DruidTalent]) -> Self {
+        Self {
+            name: name.to_owned(),
+            talents: talents.to_vec(),
+        }
+    }
+}
+
+/// The Druid's damage build: the rotation's levers (Wrath, Nature's Exposure, Astral Power).
+#[must_use]
+pub fn druid_damage_build() -> DruidBuild {
+    DruidBuild::new(
+        "Build A",
+        &[
+            DruidTalent::SwiftWrath,
+            DruidTalent::DeepExposure,
+            DruidTalent::AstralAttunement,
+            DruidTalent::Overgrowth,
+        ],
+    )
+}
+
+/// The Druid's area build: a wider Sunfire first.
+#[must_use]
+pub fn druid_area_build() -> DruidBuild {
+    DruidBuild::new(
+        "Build B",
+        &[
+            DruidTalent::VerdantSunfire,
+            DruidTalent::SwiftWrath,
+            DruidTalent::AstralAttunement,
+            DruidTalent::Overgrowth,
+        ],
+    )
 }
 
 /// **A build of any class.** The one type the matrix, the encounter and the report handle.
@@ -327,9 +365,15 @@ impl ClassBuild {
 
     /// Puts the build's talents and specialisation on a simulation whose hero is already set.
     pub fn apply(&self, simulation: &mut Simulation) {
-        if let Self::Mage(build) = self {
-            simulation.mage_mut().set_talents(build.talents());
-            simulation.mage_mut().mastery = build.mastery;
+        match self {
+            Self::Mage(build) => {
+                simulation.mage_mut().set_talents(build.talents());
+                simulation.mage_mut().mastery = build.mastery;
+            }
+            Self::Druid(build) => {
+                simulation.set_talents(TalentGrid::from_talents(&build.talents));
+            }
+            Self::Warrior(_) => {}
         }
     }
 
@@ -338,7 +382,14 @@ impl ClassBuild {
     pub fn talent_names(&self) -> String {
         match self {
             Self::Mage(build) => build.talent_names(),
-            Self::Warrior(_) | Self::Druid(_) => "NONE (class has no talents yet)".to_owned(),
+            Self::Warrior(_) => "NONE (class has no talents yet)".to_owned(),
+            Self::Druid(build) if build.talents.is_empty() => "NONE".to_owned(),
+            Self::Druid(build) => build
+                .talents
+                .iter()
+                .map(|talent| talent.spec().name.as_str())
+                .collect::<Vec<_>>()
+                .join(" + "),
         }
     }
 }
@@ -353,9 +404,11 @@ pub fn builds_for(class: Class) -> Vec<ClassBuild> {
         Class::Warrior => vec![ClassBuild::Warrior(WarriorBuild {
             name: "Default".to_owned(),
         })],
-        Class::Druid => vec![ClassBuild::Druid(DruidBuild {
-            name: "Default".to_owned(),
-        })],
+        Class::Druid => vec![
+            ClassBuild::Druid(DruidBuild::new("Default", &[])),
+            ClassBuild::Druid(druid_damage_build()),
+            ClassBuild::Druid(druid_area_build()),
+        ],
         Class::Mage => vec![
             // No talents: the class as it is before a single point is spent, played with the
             // Detonation rotation because that rotation needs nothing from the grid.
@@ -377,7 +430,7 @@ mod tests {
         assert!(!combinations.is_empty());
 
         for talents in &combinations {
-            let cost: u32 = talents.iter().map(|talent| talent.definition().cost).sum();
+            let cost: u32 = talents.iter().map(|talent| talent.spec().cost).sum();
             assert!(cost <= budget, "{talents:?} costs {cost}");
 
             // Maximal: nothing that was *left out* would still fit in what is left over.
@@ -385,11 +438,21 @@ mod tests {
             let addable = TalentId::ALL
                 .into_iter()
                 .filter(|talent| !talents.contains(talent))
-                .any(|talent| talent.definition().cost <= unspent);
+                .any(|talent| talent.spec().cost <= unspent);
             assert!(
                 !addable || talents.len() == TALENT_COUNT,
                 "{talents:?} left {unspent} points that another talent would have fitted in"
             );
+        }
+    }
+
+    #[test]
+    fn the_druid_builds_fit_the_default_budget_and_buy_what_they_name() {
+        for build in [druid_damage_build(), druid_area_build()] {
+            let cost: u32 = build.talents.iter().map(|talent| talent.spec().cost).sum();
+            assert!(cost <= default_budget(), "{}", build.name);
+            let grid = TalentGrid::from_talents(&build.talents);
+            assert_eq!(grid.purchased_count() as usize, build.talents.len());
         }
     }
 

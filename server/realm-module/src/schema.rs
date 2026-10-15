@@ -228,6 +228,11 @@ pub struct QueueTicket {
     pub gear_score: u32,
     /// Its loadout as JSON, from the persistence API: what it wears into the fight.
     pub loadout: String,
+    /// Its talents, comma-separated keys, from the persistence API. Part of the immutable
+    /// snapshot: the fight is built from this, whatever the character does meanwhile.
+    pub talents: String,
+    /// Every talent point it had when it queued: what the keys must fit in.
+    pub talent_points: u32,
     /// Which dungeon.
     #[index(btree)]
     pub dungeon_id: String,
@@ -299,6 +304,10 @@ pub struct PartyMember {
     pub gear_score: u32,
     /// Its loadout as JSON.
     pub loadout: String,
+    /// Its talents, comma-separated keys (the snapshot's).
+    pub talents: String,
+    /// Every talent point it had when it queued.
+    pub talent_points: u32,
     /// The dungeon their key opens. Empty: no key.
     pub key_dungeon_id: String,
     /// Their key's level. Zero: no key.
@@ -507,7 +516,7 @@ pub struct ChatMessage {
 ///
 /// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
 /// here is appended after the last one and added there, at the same position
-/// (`key_level`, `key_owner`, `key_level_after`, `resources`, `damage_report` follow
+/// (`key_level`, `key_owner`, `key_level_after`, `resources`, `damage_report`, `talent_points` follow
 /// `created_at`).
 #[spacetimedb::table(accessor = pending_result)]
 #[derive(Debug, Clone)]
@@ -542,6 +551,8 @@ pub struct PendingResult {
     /// The player's damage report (`engine_realm::meter::DamageReport`) as JSON text: an
     /// aggregate computed from the server's own combat events. Empty when there is none.
     pub damage_report: String,
+    /// Talent points awarded.
+    pub talent_points: u32,
 }
 
 /// What a finished run paid one player, for their results screen. Kept until the instance is

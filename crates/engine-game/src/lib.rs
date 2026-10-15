@@ -111,6 +111,8 @@ pub mod party;
 pub mod playground;
 pub mod sim;
 pub mod status;
+/// Talents for every hero: the generic table, grid and effects framework.
+pub mod talent;
 pub mod targeting;
 pub mod telemetry;
 /// The Warrior: Valor, Battle Fervor, and the state its eleven abilities leave behind.

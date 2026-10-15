@@ -18,7 +18,6 @@ use engine_core::math::{Quat, Vec3};
 
 use crate::character::ItemSlot;
 use crate::entity::EntityId;
-use crate::firemage::TalentId;
 
 /// One thing the player wants to happen.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,8 +67,11 @@ pub enum PlayerCommand {
     /// [`PlayerCommand::UseAbility`] is: what sits in the slot is the hero's business, and a
     /// replay that named a spell would cast a different one after a swap.
     UseExtra(usize),
-    /// Buy a talent. A menu action, in the command stream so it is ordered with the fight.
-    PurchaseTalent(TalentId),
+    /// Buy the active hero's talent in this table row. A menu action, in the command stream so
+    /// it is ordered with the fight.
+    PurchaseTalent(usize),
+    /// Refund every talent of the active hero.
+    ResetTalents,
     /// Move an item between two slots: equip, unequip, swap or rearrange.
     ///
     /// A command like a talent purchase, and for the same reason: dragging a ring onto a

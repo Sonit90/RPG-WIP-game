@@ -20,6 +20,8 @@ pub(super) struct SvcEnqueueArgs {
     pub role: RoleTag,
     pub key_dungeon_id: String,
     pub key_level: u32,
+    pub talents: String,
+    pub talent_points: u32,
 }
 
 impl From<SvcEnqueueArgs> for super::Reducer {
@@ -36,6 +38,8 @@ impl From<SvcEnqueueArgs> for super::Reducer {
             role: args.role,
             key_dungeon_id: args.key_dungeon_id,
             key_level: args.key_level,
+            talents: args.talents,
+            talent_points: args.talent_points,
         }
     }
 }
@@ -68,6 +72,8 @@ pub trait svc_enqueue {
         role: RoleTag,
         key_dungeon_id: String,
         key_level: u32,
+        talents: String,
+        talent_points: u32,
     ) -> __sdk::Result<()> {
         self.svc_enqueue_then(
             account_id,
@@ -81,6 +87,8 @@ pub trait svc_enqueue {
             role,
             key_dungeon_id,
             key_level,
+            talents,
+            talent_points,
             |_, _| {},
         )
     }
@@ -104,6 +112,8 @@ pub trait svc_enqueue {
         role: RoleTag,
         key_dungeon_id: String,
         key_level: u32,
+        talents: String,
+        talent_points: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -125,6 +135,8 @@ impl svc_enqueue for super::RemoteReducers {
         role: RoleTag,
         key_dungeon_id: String,
         key_level: u32,
+        talents: String,
+        talent_points: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -143,6 +155,8 @@ impl svc_enqueue for super::RemoteReducers {
                 role,
                 key_dungeon_id,
                 key_level,
+                talents,
+                talent_points,
             },
             callback,
         )

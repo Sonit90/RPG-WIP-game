@@ -2,16 +2,24 @@
 //!
 //! ```text
 //! talent button (top right) -> TalentMenu -> click a node -> TalentMenuOutcome::Purchase
+//!                                         -> click RESET   -> TalentMenuOutcome::Reset
 //! ```
 //!
 //! The menu owns no talent state. It reads the grid out of the frame's [`UiSnapshot`] - which
 //! is the simulation's own answer about what is owned, what is affordable and how many points
 //! are left - and it emits a purchase for the application to apply. Buying is a command like
 //! any other, so the same click is reproducible in a replay.
+//!
+//! It is generic over the hero: the snapshot lists whichever hero's table is in force, in table
+//! order, and the menu lays out whatever it finds. A hero with no talents yet shows a
+//! placeholder, and a Warrior tree needs no change here once it has rows.
+//!
+//! While the character is **locked** (queued, in a party, in a dungeon) the menu still opens and
+//! shows the build, with a banner saying why nothing can be changed, and emits nothing.
 
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 
-use engine_game::firemage::{TALENT_TIERS, TalentId};
+use engine_game::talent::TALENT_TIERS;
 
 use super::input::UiInput;
 use crate::snapshot::{TalentView, UiSnapshot};
@@ -37,6 +45,10 @@ mod layout {
     pub const NODE_GAP: f32 = 10.0;
     /// Width of the tier label column.
     pub const TIER_LABEL: f32 = 74.0;
+    /// Width of the reset button.
+    pub const RESET_WIDTH: f32 = 130.0;
+    /// Height of the reset button.
+    pub const RESET_HEIGHT: f32 = 30.0;
 }
 
 /// Every talent-menu measurement, converted from its design size to physical pixels once.
@@ -63,6 +75,10 @@ pub struct TalentMetrics {
     pub node_gap: f32,
     /// `layout::TIER_LABEL` in physical pixels.
     pub tier_label: f32,
+    /// `layout::RESET_WIDTH` in physical pixels.
+    pub reset_width: f32,
+    /// `layout::RESET_HEIGHT` in physical pixels.
+    pub reset_height: f32,
 }
 
 impl TalentMetrics {
@@ -79,6 +95,8 @@ impl TalentMetrics {
             node_height: scale.px(layout::NODE_HEIGHT),
             node_gap: scale.px(layout::NODE_GAP),
             tier_label: scale.px(layout::TIER_LABEL),
+            reset_width: scale.px(layout::RESET_WIDTH),
+            reset_height: scale.px(layout::RESET_HEIGHT),
         }
     }
 }
@@ -94,8 +112,10 @@ impl Default for TalentMetrics {
 pub enum TalentMenuOutcome {
     /// Nothing happened.
     Idle,
-    /// The player asked to buy a talent.
-    Purchase(TalentId),
+    /// The player asked to buy the talent in this row of the hero's table.
+    Purchase(usize),
+    /// The player asked for every talent to be refunded.
+    Reset,
     /// The menu was closed.
     Closed,
 }
@@ -104,7 +124,11 @@ pub enum TalentMenuOutcome {
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct TalentMenu {
     open: bool,
-    hovered: Option<TalentId>,
+    hovered: Option<usize>,
+    /// Whether the build cannot be changed right now (queued, in a party, in a dungeon).
+    locked: bool,
+    /// Whether the pointer is over the reset button.
+    reset_hovered: bool,
     /// Every measurement, already converted to physical pixels for the current UI scale.
     metrics: TalentMetrics,
 }
@@ -122,6 +146,8 @@ impl TalentMenu {
         Self {
             open: false,
             hovered: None,
+            locked: false,
+            reset_hovered: false,
             metrics: TalentMetrics::new(scale),
         }
     }
@@ -152,10 +178,34 @@ impl TalentMenu {
         self.open
     }
 
-    /// Which talent the pointer is over, if any.
+    /// Which talent the pointer is over, if any: its row in the hero's table.
     #[must_use]
-    pub fn hovered(&self) -> Option<TalentId> {
+    pub fn hovered(&self) -> Option<usize> {
         self.hovered
+    }
+
+    /// Tells the menu whether the build is locked. Set by the application every frame from
+    /// what the realm says about the character; a locked menu emits no purchase and no reset.
+    pub fn set_locked(&mut self, locked: bool) {
+        self.locked = locked;
+    }
+
+    /// Whether the build is locked.
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Where the reset button sits: the header's right-hand side, under the point total.
+    #[must_use]
+    pub fn reset_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let panel = self.panel_rect(viewport);
+        UiRect::new(
+            panel.right() - self.metrics.padding - self.metrics.reset_width,
+            panel.y + self.metrics.padding + self.metrics.header * 0.55,
+            self.metrics.reset_width,
+            self.metrics.reset_height,
+        )
     }
 
     /// Opens it.
@@ -199,11 +249,22 @@ impl TalentMenu {
         for (index, talent) in snapshot.talents.iter().enumerate() {
             let rect = self.node_rect(index, snapshot, viewport);
             if rect.contains(input.pointer.0, input.pointer.1) {
-                self.hovered = Some(talent.id);
+                self.hovered = Some(talent.index);
                 if input.pointer_pressed {
-                    clicked = Some(talent.id);
+                    clicked = Some(talent.index);
                 }
             }
+        }
+
+        // Reset: refunds everything, so only offered when there is something to refund.
+        let reset = self.reset_rect(viewport);
+        self.reset_hovered = reset.contains(input.pointer.0, input.pointer.1);
+        if self.reset_hovered
+            && input.pointer_pressed
+            && !self.locked
+            && snapshot.talent_points < snapshot.talent_points_total
+        {
+            return TalentMenuOutcome::Reset;
         }
 
         // The close button, and clicking outside the panel.
@@ -214,8 +275,8 @@ impl TalentMenu {
         }
 
         match clicked {
-            Some(id) => TalentMenuOutcome::Purchase(id),
-            None => TalentMenuOutcome::Idle,
+            Some(index) if !self.locked => TalentMenuOutcome::Purchase(index),
+            _ => TalentMenuOutcome::Idle,
         }
     }
 
@@ -343,9 +404,12 @@ pub fn push_talent_menu(
     list.rect(panel, theme.panel);
     list.outline(panel, scale.px(2.0), theme.border);
 
+    scratch.clear();
+    scratch.push_str(snapshot.talent_hero.name());
+    scratch.push_str(" TALENTS");
     list.text_at(
         (panel.x + metrics.padding, panel.y + scale.px(16.0)),
-        "TALENTS",
+        scratch,
         theme.title,
         scale.text(3.0),
     );
@@ -353,6 +417,8 @@ pub fn push_talent_menu(
     scratch.clear();
     scratch.push_str("POINTS ");
     push_integer(scratch, snapshot.talent_points);
+    scratch.push_str(" / ");
+    push_integer(scratch, snapshot.talent_points_total);
     list.text_aligned(
         (panel.right() - metrics.padding, panel.y + scale.px(22.0)),
         scratch,
@@ -360,6 +426,54 @@ pub fn push_talent_menu(
         scale.text(2.0),
         TextAlign::Right,
     );
+
+    // The reset button, dimmed when there is nothing to refund or the build is locked.
+    let reset = menu.reset_rect(viewport);
+    let can_reset = !menu.is_locked() && snapshot.talent_points < snapshot.talent_points_total;
+    list.rect(
+        reset,
+        if can_reset {
+            theme.affordable
+        } else {
+            theme.locked
+        },
+    );
+    if can_reset && menu.reset_hovered {
+        list.outline(reset, scale.px(2.0), theme.hover);
+    } else {
+        list.outline(reset, scale.px(1.0), theme.border);
+    }
+    list.text_aligned(
+        (reset.x + reset.width * 0.5, reset.y + scale.px(9.0)),
+        "RESET",
+        if can_reset {
+            theme.text
+        } else {
+            theme.text_dim
+        },
+        scale.text(1.5),
+        TextAlign::Center,
+    );
+
+    if menu.is_locked() {
+        list.text_at(
+            (panel.x + metrics.padding, panel.y + scale.px(44.0)),
+            "LOCKED: TALENTS CANNOT CHANGE WHILE YOU ARE IN A DUNGEON OR QUEUE",
+            theme.hover,
+            scale.text(1.5),
+        );
+    }
+
+    if snapshot.talents.is_empty() {
+        list.text_aligned(
+            (panel.x + panel.width * 0.5, panel.y + panel.height * 0.45),
+            "NO TALENTS YET. THIS HERO'S TREE IS COMING.",
+            theme.text_dim,
+            scale.text(2.0),
+            TextAlign::Center,
+        );
+        return;
+    }
 
     // Tier labels down the left-hand side.
     for tier in 1..=TALENT_TIERS {
@@ -387,7 +501,7 @@ pub fn push_talent_menu(
             list,
             rect,
             talent,
-            menu.hovered() == Some(talent.id),
+            menu.hovered() == Some(talent.index),
             theme,
             scratch,
             scale,
@@ -396,7 +510,11 @@ pub fn push_talent_menu(
 
     list.text_at(
         (panel.x + metrics.padding, panel.bottom() - scale.px(26.0)),
-        "CLICK A TALENT TO LEARN IT. ESCAPE CLOSES.",
+        if menu.is_locked() {
+            "ESCAPE CLOSES."
+        } else {
+            "CLICK A TALENT TO LEARN IT. RESET REFUNDS EVERYTHING. ESCAPE CLOSES."
+        },
         theme.text_dim,
         scale.text(1.0),
     );
@@ -453,14 +571,22 @@ fn push_node(
         TextAlign::Right,
     );
 
-    // The description, wrapped to what fits the node.
+    // The description, wrapped at word boundaries to what fits the node.
     let mut line = 0;
-    let mut start = 0;
-    let characters: Vec<char> = talent.description.chars().collect();
-    while start < characters.len() && line < 3 {
-        let end = (start + DESCRIPTION_COLUMNS).min(characters.len());
+    let mut words = talent.description.split_whitespace().peekable();
+    while words.peek().is_some() && line < DESCRIPTION_LINES {
         scratch.clear();
-        scratch.extend(characters[start..end].iter());
+        while let Some(word) = words.peek() {
+            let needed = scratch.chars().count() + usize::from(!scratch.is_empty()) + word.len();
+            if !scratch.is_empty() && needed > DESCRIPTION_COLUMNS {
+                break;
+            }
+            if !scratch.is_empty() {
+                scratch.push(' ');
+            }
+            scratch.push_str(word);
+            words.next();
+        }
         list.text_at(
             (
                 rect.x + scale.px(6.0),
@@ -470,13 +596,15 @@ fn push_node(
             theme.text_dim,
             1.0,
         );
-        start = end;
         line += 1;
     }
 }
 
 /// Characters of a description that fit one line of a node.
 const DESCRIPTION_COLUMNS: usize = 34;
+
+/// Lines of a description a node has room for.
+const DESCRIPTION_LINES: usize = 4;
 
 /// Writes an integer into `out` without allocating.
 fn push_integer(out: &mut String, value: u32) {
@@ -492,7 +620,8 @@ fn push_integer(out: &mut String, value: u32) {
 mod tests {
     use super::*;
     use engine_game::arena::{self, ArenaConfig};
-    use engine_game::firemage::TALENTS;
+    use engine_game::hero::Hero;
+    use engine_game::talent::hero_talents;
     use engine_render_data::ui::UiCommand;
 
     const VIEWPORT: (u32, u32) = (1600, 900);
@@ -549,10 +678,10 @@ mod tests {
         let snapshot = snapshot();
         let drawn = texts(&render(&menu, &snapshot));
 
-        assert!(drawn.contains(&"TALENTS".to_owned()), "{drawn:?}");
-        for talent in &TALENTS {
+        assert!(drawn.contains(&"FIREMAGE TALENTS".to_owned()), "{drawn:?}");
+        for talent in &hero_talents(Hero::FireMage).talents {
             assert!(
-                drawn.iter().any(|text| text == talent.name),
+                drawn.contains(&talent.name),
                 "{} is missing from the menu",
                 talent.name
             );
@@ -600,7 +729,10 @@ mod tests {
 
         let rect = menu.node_rect(0, &snapshot, VIEWPORT);
         let outcome = menu.update(&click(rect.x + 10.0, rect.y + 10.0), &snapshot, VIEWPORT);
-        assert_eq!(outcome, TalentMenuOutcome::Purchase(snapshot.talents[0].id));
+        assert_eq!(
+            outcome,
+            TalentMenuOutcome::Purchase(snapshot.talents[0].index)
+        );
         assert!(menu.is_open(), "buying closed the menu");
     }
 
@@ -616,7 +748,7 @@ mod tests {
             &snapshot,
             VIEWPORT,
         );
-        assert_eq!(menu.hovered(), Some(snapshot.talents[3].id));
+        assert_eq!(menu.hovered(), Some(snapshot.talents[3].index));
 
         menu.update(&UiInput::new().with_pointer(1.0, 1.0), &snapshot, VIEWPORT);
         assert_eq!(menu.hovered(), None);
@@ -654,11 +786,10 @@ mod tests {
         simulation.step_once();
         let before = UiSnapshot::build(&simulation);
 
-        let first = before.talents[0].id;
+        let first = before.talents[0].index;
         simulation
-            .mage_mut()
-            .purchase_talent(first)
-            .expect("testing mode pays for it");
+            .purchase_talent_index(first)
+            .expect("the starting points pay for the first talent");
         let after = UiSnapshot::build(&simulation);
 
         let mut menu = TalentMenu::new();
@@ -678,5 +809,92 @@ mod tests {
         assert!(menu.is_open());
         menu.toggle();
         assert!(!menu.is_open());
+    }
+
+    #[test]
+    fn a_locked_menu_shows_why_and_emits_nothing() {
+        let mut menu = TalentMenu::new();
+        menu.open();
+        menu.set_locked(true);
+        let snapshot = snapshot();
+        assert!(
+            texts(&render(&menu, &snapshot))
+                .iter()
+                .any(|text| text.starts_with("LOCKED")),
+            "the banner is missing"
+        );
+        let rect = menu.node_rect(0, &snapshot, VIEWPORT);
+        let outcome = menu.update(&click(rect.x + 10.0, rect.y + 10.0), &snapshot, VIEWPORT);
+        assert_eq!(outcome, TalentMenuOutcome::Idle);
+        menu.set_locked(false);
+        let outcome = menu.update(&click(rect.x + 10.0, rect.y + 10.0), &snapshot, VIEWPORT);
+        assert!(matches!(outcome, TalentMenuOutcome::Purchase(_)));
+    }
+
+    #[test]
+    fn reset_is_offered_only_when_something_was_bought() {
+        let mut menu = TalentMenu::new();
+        menu.open();
+        let fresh = snapshot();
+        let reset = menu.reset_rect(VIEWPORT);
+        let press = click(reset.x + 5.0, reset.y + 5.0);
+        assert_eq!(
+            menu.update(&press, &fresh, VIEWPORT),
+            TalentMenuOutcome::Idle
+        );
+
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        simulation.step_once();
+        simulation.purchase_talent_index(0).expect("buys");
+        let bought = UiSnapshot::build(&simulation);
+        assert_eq!(
+            menu.update(&press, &bought, VIEWPORT),
+            TalentMenuOutcome::Reset
+        );
+        menu.set_locked(true);
+        assert_eq!(
+            menu.update(&press, &bought, VIEWPORT),
+            TalentMenuOutcome::Idle
+        );
+    }
+
+    #[test]
+    fn the_menu_draws_whichever_heros_tree_is_selected() {
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        simulation.step_once();
+        let mut menu = TalentMenu::new();
+        menu.open();
+
+        simulation.set_hero(Hero::Druid);
+        simulation.step_once();
+        let druid = UiSnapshot::build(&simulation);
+        let drawn = texts(&render(&menu, &druid));
+        assert!(drawn.contains(&"DRUID TALENTS".to_owned()), "{drawn:?}");
+        for talent in &hero_talents(Hero::Druid).talents {
+            assert!(drawn.contains(&talent.name), "{}", talent.name);
+        }
+
+        simulation.set_hero(Hero::Warrior);
+        simulation.step_once();
+        let warrior = UiSnapshot::build(&simulation);
+        let drawn = texts(&render(&menu, &warrior));
+        assert!(
+            drawn.iter().any(|text| text.starts_with("NO TALENTS YET")),
+            "{drawn:?}"
+        );
+    }
+
+    #[test]
+    fn every_description_fits_its_node() {
+        for hero in Hero::ALL {
+            for talent in &hero_talents(hero).talents {
+                assert!(
+                    talent.description.len() <= DESCRIPTION_COLUMNS * DESCRIPTION_LINES - 26,
+                    "{} is too long for a node: {}",
+                    talent.name,
+                    talent.description.len()
+                );
+            }
+        }
     }
 }

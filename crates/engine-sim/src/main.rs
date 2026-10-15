@@ -82,6 +82,12 @@ impl Default for Options {
 }
 
 fn main() {
+    // The talent numbers the game ships, from assets/catalog/talents.json: builds read the
+    // same tree the client and the server do.
+    if let Err(error) = engine_realm::talents::install_builtin() {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
     let options = match parse_options(std::env::args().skip(1)) {
         Ok(Some(options)) => options,
         Ok(None) => return,

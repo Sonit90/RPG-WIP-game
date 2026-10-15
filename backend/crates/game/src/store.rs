@@ -25,6 +25,8 @@ pub struct CharacterRow {
     pub experience: i64,
     pub loadout: Json<Loadout>,
     pub talents: Json<Vec<String>>,
+    /// Talent points earned from runs; the starting points come from the catalog.
+    pub talent_points_earned: i32,
 }
 
 /// A character's dungeon key.
@@ -39,7 +41,8 @@ fn db(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
-const COLUMNS: &str = "id, account_id, definition_id, name, level, experience, loadout, talents";
+const COLUMNS: &str =
+    "id, account_id, definition_id, name, level, experience, loadout, talents, talent_points_earned";
 
 /// The account's characters, creating one of each starter definition it does not have yet.
 pub async fn list_or_provision(
@@ -209,6 +212,9 @@ where
 }
 
 /// Replaces a character's talents. `false` if it is not the account's.
+///
+/// The caller has validated the set against the character's points (see
+/// [`engine_realm::talents::validate`]).
 pub async fn save_talents(
     pool: &PgPool,
     account_id: Uuid,
@@ -353,6 +359,18 @@ pub fn damage_report_row(result: &DungeonResult) -> Option<DamageReportRow> {
     })
 }
 
+/// The talent points a result grants: what the realm reported, and only for a success.
+///
+/// A failure carries none, whatever the row says - the same rule resources follow.
+#[must_use]
+pub fn granted_talent_points(result: &DungeonResult) -> u32 {
+    if result.success {
+        result.talent_points.min(10)
+    } else {
+        0
+    }
+}
+
 /// Applies one realm result exactly once. Returns whether it was new.
 ///
 /// Inside one transaction: record the result under its idempotency key; if that key was
@@ -369,8 +387,8 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
     let recorded = sqlx::query(
         "INSERT INTO game.dungeon_results
             (result_id, account_id, character_id, dungeon_id, success, duration_us, experience,
-             key_level, key_owner, key_level_after, resources)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             key_level, key_owner, key_level_after, resources, talent_points)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (result_id) DO NOTHING",
     )
     .bind(&result.result_id)
@@ -384,6 +402,7 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
     .bind(result.key_owner)
     .bind(i32::try_from(result.key_level_after).unwrap_or(i32::MAX))
     .bind(Json(&result.resources))
+    .bind(i32::try_from(granted_talent_points(result)).unwrap_or(i32::MAX))
     .execute(&mut *tx)
     .await
     .map_err(db)?;
@@ -415,13 +434,18 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
                 u64::try_from(experience).unwrap_or(0),
                 u64::from(result.experience),
             );
+            // Granted with the result, in the same transaction that recorded its id, so a
+            // re-delivered result cannot grant twice.
             sqlx::query(
-                "UPDATE game.characters SET level = $2, experience = $3, loadout = $4, updated_at = now() WHERE id = $1",
+                "UPDATE game.characters SET level = $2, experience = $3, loadout = $4,
+                    talent_points_earned = LEAST(talent_points_earned + $5, 1000000),
+                    updated_at = now() WHERE id = $1",
             )
             .bind(character_id)
             .bind(i32::try_from(level).unwrap_or(1))
             .bind(i64::try_from(experience).unwrap_or(0))
             .bind(Json(&loadout))
+            .bind(i32::try_from(granted_talent_points(result)).unwrap_or(0))
             .execute(&mut *tx)
             .await
             .map_err(db)?;
@@ -613,6 +637,14 @@ mod tests {
             key_level_after: 0,
             resources: Vec::new(),
             damage_report: report,
+            talent_points: 0,
+        }
+    }
+
+    fn result_with_points(success: bool, talent_points: u32) -> DungeonResult {
+        DungeonResult {
+            talent_points,
+            ..result(success, None)
         }
     }
 
@@ -671,5 +703,12 @@ mod tests {
             r.boss_kill_seconds = Some(bad);
             assert!(damage_report_row(&result(true, Some(r))).is_none());
         }
+    }
+
+    #[test]
+    fn only_a_success_grants_talent_points_and_never_an_absurd_number() {
+        assert_eq!(granted_talent_points(&result_with_points(true, 2)), 2);
+        assert_eq!(granted_talent_points(&result_with_points(false, 2)), 0);
+        assert_eq!(granted_talent_points(&result_with_points(true, u32::MAX)), 10);
     }
 }

@@ -138,11 +138,11 @@ executor, the interface or the tests writes one down.
 ### Wrath — `3`
 
 * **Purpose:** the free filler, and the debuff the whole party's magic is amplified by.
-* **1.5 s cast**, 30 m, **0 Mana**, +15 Astral Power. Nature damage, 220 %.
+* **1.5 s cast**, 30 m, **0 Mana**, +15 Astral Power. Nature damage, 185 %.
 * Each successful cast has a **25 % chance to restore 1 % of maximum Mana**, through the
   class's own seeded random source so a replay restores it on the same casts.
-* Applies **Nature's Exposure** to the target: **+3 % Nature and Arcane damage taken per
-  stack, to 15 stacks (+45 %)**, 15 s, refreshed by every application. Read in
+* Applies **Nature's Exposure** to the target: **+2 % Nature and Arcane damage taken per
+  stack, to 10 stacks (+20 %)**, 15 s, refreshed by every application. Read in
   `deal_damage`, so it amplifies *any* source's Nature and Arcane damage — not only the
   Druid's — and leaves Physical and Fire alone.
 * **Astral:** grants **Astral Wrath** for 15 s. While it is up, every Wrath also applies the
@@ -307,6 +307,42 @@ than to full so there is always something to heal and always somewhere for an ov
 * `R` — the reset key — puts it back to half, not to full.
 
 ---
+
+
+## Talents
+
+Eight talents, bought with talent points (tiers 1-4 cost 3 / 4 / 4 / 5). The rows and every
+number live in `assets/catalog/talents.json`; `engine-game/src/talent/druid.rs` is the
+behaviour (`DruidTalentEffects`, one field per number the executor reads). A character starts
+with 5 points and earns 1 per successful run (+1 at key level 3 or higher).
+
+| Talent (tier, cost) | Effect |
+|---|---|
+| Swift Wrath (1, 3) | Every 4th consecutive Wrath is instant and generates double Astral Power. Any other spell (not the Astral Power button) breaks the run. |
+| Verdant Sunfire (1, 3) | Sunfire radius +50 %, Sunfire tick damage -20 %. |
+| Deep Exposure (2, 4) | Nature's Exposure maximum +4 stacks, its duration -30 %. |
+| Living Seed (2, 4) | Regrowth and Swiftmend leave a seed worth 30 % of the heal, paid when the target next takes damage within 10 s. Pays under Regrowth's name. |
+| Overgrowth (3, 4) | Swiftmend cooldown -3 s; each Swiftmend refunds 10 Astral Power. |
+| Astral Attunement (3, 4) | Empowerment costs 75 Astral Power; every empowered bonus (Moonfire, Sunfire, the conversion, the healing bonus) is 15 % weaker. |
+| Barkskin Instinct (4, 5) | Wild Rush also gives allies within 8 m 25 % damage reduction for 4 s (the `Barkskin` status). |
+| Tranquil Mind (4, 5) | Tranquility cooldown -40 s, Mana cost -50 %, healing -15 %. |
+
+## Damage balance (talent pass)
+
+The Druid is a healer; its damage was too high (Wrath ~66 % of it, Nature's Exposure averaging
+~11 stacks). Single-target DPS with no talents went from 239 / 297 / 379 (none / medium /
+top gear) to **188 / 232 / 294, about 78 %** (`engine-sim --class druid --iterations 20`). No
+healing number was touched. The levers, in the order they were pulled:
+
+* Nature's Exposure **maximum stacks 15 -> 10** and **per stack 3 % -> 2 %** (ceiling
+  +45 % -> +20 %): it amplifies every Nature and Arcane hit the Druid deals, so it was the
+  biggest single multiplier. Deep Exposure gives four stacks back.
+* **Wrath coefficient 220 % -> 185 %**: Wrath is still the largest share, but a third of the
+  throughput now comes from the debuff being cheaper rather than from the filler hitting
+  softer.
+* Empowered Moonfire (+50 %, permanent) is unchanged.
+
+Eight-target throughput fell less (677 -> 620 at top gear) because Sunfire carries it.
 
 ## Tests
 

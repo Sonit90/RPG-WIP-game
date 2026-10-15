@@ -2418,11 +2418,16 @@ impl App {
 
         // The talent menu, which covers everything while it is up.
         if self.talent_menu.is_open() {
+            // Locked while the realm holds a snapshot of the character: queued, in a party,
+            // in a dungeon. The menu shows why and emits nothing.
+            let locked = self
+                .online
+                .as_ref()
+                .is_some_and(|online| online.is_engaged());
+            self.talent_menu.set_locked(locked);
             match self.talent_menu.update(&ui_input, &self.snapshot, viewport) {
-                TalentMenuOutcome::Purchase(talent) => {
-                    self.simulation
-                        .push_command(PlayerCommand::PurchaseTalent(talent));
-                }
+                TalentMenuOutcome::Purchase(talent) => self.change_talents(Some(talent)),
+                TalentMenuOutcome::Reset => self.change_talents(None),
                 TalentMenuOutcome::Idle | TalentMenuOutcome::Closed => {}
             }
             return;
@@ -2757,6 +2762,35 @@ impl App {
             self.simulation.spawn_loot_chest_at(at);
             log::info!("dev: loot chest dropped at {at:?}");
         }
+    }
+
+    /// Buys talent row `talent` of the active hero's tree, or (`None`) refunds all of them.
+    ///
+    /// Offline it is a command like any other. Online the new build is applied at once and sent
+    /// to the API, whose answer (the stored character) settles it; the API refuses it while the
+    /// character is engaged, and the menu does not offer it then.
+    fn change_talents(&mut self, talent: Option<usize>) {
+        let Some(online) = self.online.as_mut() else {
+            self.simulation.push_command(match talent {
+                Some(index) => PlayerCommand::PurchaseTalent(index),
+                None => PlayerCommand::ResetTalents,
+            });
+            return;
+        };
+        if online.is_engaged() {
+            return;
+        }
+        let mut grid = self.simulation.talent_grid();
+        match talent {
+            Some(index) => {
+                if grid.purchase_index(index).is_err() {
+                    return;
+                }
+            }
+            None => grid.reset(),
+        }
+        online.save_talents(grid.purchased_keys());
+        self.simulation.set_talents(grid);
     }
 
     /// Opens the talent window, closing the character sheet.
@@ -6306,6 +6340,16 @@ impl Application for App {
                     }
                     crate::online::Directive::OpenCharacterMenu => {
                         self.open_sheet_next_frame = true;
+                    }
+                    crate::online::Directive::ApplyTalents(hero, keys, total_points) => {
+                        let grid =
+                            engine_game::talent::TalentGrid::from_keys(hero, &keys, total_points)
+                                // A stored set that no longer fits is shown empty; the realm drops it
+                                // the same way.
+                                .unwrap_or_else(|_| {
+                                    engine_game::talent::TalentGrid::with_points(hero, total_points)
+                                });
+                        self.simulation.set_talents(grid);
                     }
                     crate::online::Directive::ApplyLoadout(hero, loadout) => {
                         *self.simulation.roster_mut().sheet_mut(hero) =

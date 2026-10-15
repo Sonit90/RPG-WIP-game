@@ -55,3 +55,4 @@ engine-game = { version = "0.1.0", path = "../../../crates/engine-game" }
 [dev-dependencies]
 http-body-util = "0.1"
 tower = { workspace = true }
+engine-game = { path = "../../../crates/engine-game" }

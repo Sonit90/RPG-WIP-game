@@ -166,6 +166,9 @@ pub enum Directive {
     ApplyLoadout(Hero, engine_realm::loadout::Loadout),
     /// Open the character sheet (the hub's Equipment button).
     OpenCharacterMenu,
+    /// Set this hero's talents to the persistent character's: its saved keys, and every point
+    /// it has (starting plus earned).
+    ApplyTalents(Hero, Vec<String>, u32),
 }
 
 /// One other player, as the world shows them.
@@ -640,6 +643,24 @@ impl OnlineSession {
             from: to_ref(from),
             to: to_ref(to),
         });
+    }
+
+    /// Whether the realm has the account queued, in a party or in an instance. While it does,
+    /// talents and equipment cannot change (the API refuses too).
+    #[must_use]
+    pub fn is_engaged(&self) -> bool {
+        self.mirror.is_engaged()
+    }
+
+    /// Asks the API to replace the selected character's talents. The answer is the character,
+    /// which re-applies them; a refusal re-fetches it so the menu shows what is stored.
+    pub fn save_talents(&mut self, talents: Vec<String>) {
+        if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone()) {
+            self.client.send(NetCommand::SaveTalents {
+                character_id,
+                talents,
+            });
+        }
     }
 
     /// Takes mail `mail_id`'s item into the bag, on the persistent character. The API answers
@@ -1126,6 +1147,11 @@ impl OnlineSession {
                     });
                     self.stored_loadout = Some((hero, loadout.clone()));
                     self.directives.push(Directive::ApplyLoadout(hero, loadout));
+                    self.directives.push(Directive::ApplyTalents(
+                        hero,
+                        detail.talents.clone(),
+                        detail.talent_points_total,
+                    ));
                 }
                 // Keep the list's copy in step (gear score, level after a result).
                 if let Some(entry) = self
@@ -1176,6 +1202,12 @@ impl OnlineSession {
             NetEvent::Failed { action, error } => {
                 self.busy = None;
                 log::info!("online: {action:?} refused: {}", error.message);
+                if action == Action::Talents
+                    && let Some(id) = self.selected_character_summary().map(|c| c.id.clone())
+                {
+                    // Show what is stored, not what was optimistically bought.
+                    self.client.send(NetCommand::FetchCharacter(id));
+                }
                 if action == Action::LeaveParty {
                     // Still in the run: the panel's button works again.
                     self.returning = None;

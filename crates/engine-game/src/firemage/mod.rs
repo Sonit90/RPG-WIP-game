@@ -39,6 +39,7 @@ pub mod zone;
 use engine_core::math::Vec3;
 
 use crate::entity::EntityId;
+use crate::hero::Hero;
 
 // The shared ability types live in `crate::ability`; the FireMage's own rows are in
 // `abilities`. Re-exported here because the FireMage owns the one ability clock
@@ -63,10 +64,8 @@ pub use stats::{
     BASE_CRIT_CHANCE, BASE_CRIT_DAMAGE, BASE_HASTE, BASE_SPELL_POWER, FireMastery, Gear, Stats,
 };
 pub use talent::{
-    CRIT_FEEDBACK_CAP, DEFAULT_TALENT_BUDGET, MOLTEN_GROUND_INTERVAL,
-    MOLTEN_GROUND_TICK_COEFFICIENT, MOLTEN_GROUND_VULNERABILITY, TALENT_COUNT, TALENT_TIERS,
-    TALENTS, TESTING_MODE, TalentDef, TalentEffects, TalentError, TalentGrid, TalentId,
-    starting_talent_points, total_talent_cost,
+    CRIT_FEEDBACK_CAP, DEFAULT_TALENT_BUDGET, TALENT_COUNT, TALENT_TIERS, TalentEffects,
+    TalentError, TalentGrid, TalentId, total_talent_cost,
 };
 pub use zone::{PendingImpact, Zone, ZoneField, ZoneKind, ZoneShape, ZoneTick};
 
@@ -80,12 +79,6 @@ pub const GLOBAL_COOLDOWN: f32 = 1.5;
 
 /// Damage reduction while Flame Shield is up.
 pub const FLAME_SHIELD_REDUCTION: f32 = 0.30;
-
-/// How long Molten Meteor's fire vulnerability lasts once applied, in seconds.
-///
-/// Twice the ground's tick interval, so standing in it keeps the debuff up and stepping out
-/// of it lets the debuff lapse rather than ending it on the frame the foot leaves.
-pub const VULNERABILITY_DURATION: f32 = MOLTEN_GROUND_INTERVAL * 2.0;
 
 /// A timer that counts down and reports whether it is running.
 ///
@@ -266,8 +259,8 @@ impl FireMage {
     /// A fresh FireMage with the starting talent points.
     #[must_use]
     pub fn new(seed: u64) -> Self {
-        let talents = TalentGrid::new();
-        let effects = talents.effects();
+        let talents = TalentGrid::new(Hero::FireMage);
+        let effects = TalentEffects::from_grid(&talents);
         Self {
             abilities: AbilityBook::new(&effects),
             heat: Heat::new(),
@@ -385,7 +378,7 @@ impl FireMage {
     /// Recomputes the derived effects and lets the ability book grow into new charges.
     pub fn refresh_talents(&mut self) {
         let before = self.effects;
-        self.effects = self.talents.effects();
+        self.effects = TalentEffects::from_grid(&self.talents);
         for ability in FireAbility::ALL {
             let was = ability.definition().charges_with(&before);
             let now = ability.definition().charges_with(&self.effects);
@@ -566,6 +559,7 @@ mod tests {
     fn buying_infernal_capacity_raises_the_maximum_everywhere() {
         let mut mage = FireMage::new(1);
         assert_eq!(mage.ignite_max(), 5);
+        mage.talents.grant_points(100);
         mage.purchase_talent(TalentId::InfernalCapacity)
             .expect("testing mode pays for it");
         assert_eq!(mage.ignite_max(), 6);
@@ -615,6 +609,7 @@ mod tests {
     #[test]
     fn furnace_mastery_lengthens_the_state_through_the_talent_effects() {
         let mut mage = FireMage::new(1);
+        mage.talents.grant_points(100);
         mage.purchase_talent(TalentId::FurnaceMastery)
             .expect("affordable");
         mage.gain_heat(100.0);
@@ -635,6 +630,7 @@ mod tests {
     #[test]
     fn dual_fire_mastery_splits_the_grant_across_both_stats() {
         let mut mage = FireMage::new(1);
+        mage.talents.grant_points(100);
         mage.purchase_talent(TalentId::DualFireMastery)
             .expect("affordable");
         mage.mastery_buff.start(20.0);
@@ -686,6 +682,7 @@ mod tests {
             .apply(target, 5, mage.ignite_max(), mage.ignite_duration());
         let full = mage.remaining_ignite_damage(target);
 
+        mage.talents.grant_points(100);
         mage.purchase_talent(TalentId::VolatileIgnition)
             .expect("affordable");
         let weakened = mage.remaining_ignite_damage(target);
@@ -712,18 +709,19 @@ mod tests {
         let target = crate::entity::EntityId::new(4, 1);
         assert!(!mage.vulnerability.has(target));
 
-        mage.vulnerability.apply(target, VULNERABILITY_DURATION);
+        let duration = mage.effects().vulnerability_duration();
+        mage.vulnerability.apply(target, duration);
         assert!(mage.vulnerability.has(target));
         assert!(
             (mage
                 .vulnerability
-                .multiplier(target, MOLTEN_GROUND_VULNERABILITY)
+                .multiplier(target, mage.effects().meteor_ground_vulnerability)
                 - 1.03)
                 .abs()
                 < 1e-6
         );
 
-        mage.tick(VULNERABILITY_DURATION + 0.1);
+        mage.tick(duration + 0.1);
         assert!(!mage.vulnerability.has(target));
     }
 
@@ -773,6 +771,7 @@ mod tests {
     #[test]
     fn resetting_returns_a_fight_to_its_start_but_keeps_the_build() {
         let mut mage = FireMage::new(1);
+        mage.talents.grant_points(100);
         mage.purchase_talent(TalentId::InfernalCapacity)
             .expect("affordable");
         mage.mastery = FireMastery::Crit;

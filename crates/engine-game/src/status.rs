@@ -21,7 +21,10 @@
 use crate::ability::AbilityId;
 use crate::character::Stat;
 use crate::combat::DamageType;
-use crate::druid::tuning::{NATURES_EXPOSURE_PER_STACK, WILD_RUSH_REDUCTION, WILD_RUSH_SPEED};
+use crate::druid::tuning::{
+    NATURES_EXPOSURE_PER_STACK, NATURES_EXPOSURE_STACK_CEILING, WILD_RUSH_REDUCTION,
+    WILD_RUSH_SPEED,
+};
 use crate::entity::EntityId;
 use crate::warrior::tuning::{
     FERVOR_DAMAGE_PER_STACK, FERVOR_DAMAGE_TAKEN_PER_STACK, FERVOR_DURATION,
@@ -69,7 +72,7 @@ pub enum StatusKind {
     /// It deals nothing itself. It is a *mark*, and the conversion happens in the one place
     /// damage is applied.
     AstralSunfire,
-    /// Wrath's debuff: more Nature and Arcane damage taken, per stack, to fifteen.
+    /// Wrath's debuff: more Nature and Arcane damage taken, per stack, to ten.
     NaturesExposure,
     /// Rejuvenation's healing over time.
     Rejuvenation,
@@ -139,6 +142,9 @@ pub enum StatusKind {
     /// [`Status::magnitude`] (the modifier's data), read in the one place health is restored.
     /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
     Plagued,
+    /// Barkskin Instinct: an ally's share of Wild Rush. The damage reduction is the
+    /// status's own [`Status::magnitude`], which the talent's data decides.
+    Barkskin,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -248,6 +254,8 @@ pub enum EffectModifier {
         /// Fraction per stack.
         per_stack: f32,
     },
+    /// A flat share taken off every hit, equal to the status's own magnitude. Does not stack.
+    DamageReductionMagnitude,
     /// A flat share taken off every hit, where hits are mitigated. Does not stack.
     DamageReduction {
         /// Fraction, `0..1`.
@@ -339,7 +347,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 29;
+pub const STATUS_KIND_COUNT: usize = 30;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -373,6 +381,7 @@ impl StatusKind {
         Self::MagicVulnerability,
         Self::BattleFervor,
         Self::Plagued,
+        Self::Barkskin,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -601,11 +610,11 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         id: "natures_exposure",
         overlay_name: "NATURES EXPOSURE",
         name: "Nature's Exposure",
-        description: "Taking 3% more Nature and Arcane damage per stack.",
+        description: "Taking 2% more Nature and Arcane damage per stack.",
         dispel: Some(DispelSchool::Magic),
-        // Fifteen, which is the forty-five per cent ceiling the design states divided by
-        // the three per cent one stack is worth. One number, in one place.
-        max_stacks: 15,
+        // The table's ceiling: the base maximum plus everything Deep Exposure can add. Each
+        // application narrows it to the caster's own (`Status::stacking_to`).
+        max_stacks: NATURES_EXPOSURE_STACK_CEILING,
         modifiers: &[EffectModifier::DamageTaken {
             schools: Schools::NATURE_ARCANE,
             per_stack: NATURES_EXPOSURE_PER_STACK,
@@ -879,6 +888,16 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         modifiers: &[EffectModifier::HealingReduced],
         generic: GenericApplication::new(3.0, 0.0, 0.2),
         ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Barkskin,
+        id: "barkskin",
+        overlay_name: "BARKSKIN",
+        name: "Barkskin",
+        description: "Taking less damage, shared by a Druid's Wild Rush.",
+        modifiers: &[EffectModifier::DamageReductionMagnitude],
+        generic: GenericApplication::new(4.0, 0.0, 0.25),
+        ..BUFF
     },
 ];
 
@@ -1317,9 +1336,15 @@ impl StatusSet {
     #[must_use]
     pub fn damage_reduction(&self) -> f32 {
         let mut kept = 1.0;
-        for (_, modifier) in self.modifiers() {
-            if let EffectModifier::DamageReduction { fraction } = *modifier {
-                kept *= 1.0 - fraction.clamp(0.0, 1.0);
+        for (status, modifier) in self.modifiers() {
+            match *modifier {
+                EffectModifier::DamageReduction { fraction } => {
+                    kept *= 1.0 - fraction.clamp(0.0, 1.0);
+                }
+                EffectModifier::DamageReductionMagnitude => {
+                    kept *= 1.0 - status.magnitude.clamp(0.0, 1.0);
+                }
+                _ => {}
             }
         }
         1.0 - kept
@@ -1879,7 +1904,7 @@ mod tests {
         statuses.apply(effect(StatusKind::Sundered, 8));
         assert!((statuses.attack_speed_scale() - 0.84).abs() < 1e-6);
         statuses.apply(effect(StatusKind::NaturesExposure, 10));
-        assert!((statuses.damage_taken_multiplier(DamageType::Nature) - 1.30).abs() < 1e-6);
+        assert!((statuses.damage_taken_multiplier(DamageType::Nature) - 1.20).abs() < 1e-6);
         assert_eq!(statuses.damage_taken_multiplier(DamageType::Fire), 1.0);
         statuses.apply(effect(StatusKind::Crippled, 1).with_magnitude(0.4));
         statuses.apply(effect(StatusKind::WildRush, 1));

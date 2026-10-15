@@ -422,6 +422,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 .find(|(account, _)| *account == player.account_id)
                 .map(|(_, report)| report.clone())
                 .unwrap_or_default(),
+            talent_points: rewards.talent_points,
         });
         ctx.db.run_summary().insert(RunSummary {
             result_id: format!("{instance_id}:{}", player.account_id),

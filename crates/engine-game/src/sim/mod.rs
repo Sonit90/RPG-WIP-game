@@ -84,6 +84,8 @@ mod playground_exec;
 /// A networked client's simulation: the server runs the fight, this one presents it.
 pub mod remote;
 pub mod respawn;
+/// Talents: the active hero's grid, seen through the simulation.
+pub mod talent_exec;
 /// Casting the Warrior: Valor, the incoming-damage pipeline and the charge.
 mod warrior_exec;
 
@@ -478,6 +480,14 @@ pub struct Simulation {
     /// per class that is always present is a great deal less to go wrong than a block that
     /// appears and disappears with the hero.
     druid: Druid,
+    /// The Warrior's talents and what they mean. Nothing reads the effects yet; the grid is
+    /// here so the Warrior's tree needs only rows and effect hooks.
+    warrior_talents: crate::talent::TalentGrid,
+    /// Living Seeds in the fight, whoever planted them: held on the simulation rather than on
+    /// the Druid because the damage that pays one lands in another player's context.
+    seeds: Vec<crate::druid::Seed>,
+    /// What the Warrior's talents mean.
+    warrior_effects: crate::talent::warrior::WarriorTalentEffects,
     /// Whether a damage-to-healing conversion is already running.
     ///
     /// Astral Sunfire's guard against feeding itself. Healing is not damage and cannot
@@ -668,6 +678,9 @@ impl Simulation {
             mage: FireMage::new(seed),
             warrior: Warrior::new(),
             druid: Druid::new(),
+            warrior_talents: crate::talent::TalentGrid::new(Hero::Warrior),
+            seeds: Vec::new(),
+            warrior_effects: crate::talent::warrior::WarriorTalentEffects::default(),
             converting: false,
             stat_bonus: crate::character::StatBlock::zero(),
             last_defense: None,
@@ -766,6 +779,8 @@ impl Simulation {
         self.mage.reset();
         self.warrior.reset();
         self.druid.reset();
+        let leaving = self.player.entity;
+        self.seeds.retain(|seed| seed.owner != leaving);
         // The old hero's own effects go with them: a Wild Rush on a character who has just
         // become a Warrior is a buff nobody can explain.
         if let Some(statuses) = self.world.statuses_mut(self.player.entity) {
@@ -1655,9 +1670,10 @@ impl Simulation {
                         let _ = self.cast(ability);
                     }
                 }
-                PlayerCommand::PurchaseTalent(talent) => {
-                    let _ = self.mage.purchase_talent(talent);
+                PlayerCommand::PurchaseTalent(index) => {
+                    let _ = self.purchase_talent_index(index);
                 }
+                PlayerCommand::ResetTalents => self.reset_talents(),
                 PlayerCommand::MoveItem { from, to } => {
                     // A refused move is not an error the tick should fail on, for the same
                     // reason an ability that cannot be cast is not: a command is a request.
@@ -2663,6 +2679,10 @@ impl Simulation {
         // **Astral Sunfire.** A share of what the party dealt to a marked enemy becomes
         // healing, from the one place the damage that actually landed is known.
         self.convert_astral_sunfire(source, target, result.applied);
+        // **Living Seed.** Healing held back until its target is next hurt.
+        if !result.killed {
+            self.pay_living_seeds(target);
+        }
 
         // Being hit is what makes an enemy angry. Threat is fed here, in the one place damage
         // lands, so no ability can deal damage without generating threat. The rate is the
@@ -2904,6 +2924,7 @@ impl Simulation {
         self.mage.reset();
         self.warrior.reset();
         self.druid.reset();
+        self.seeds.clear();
         // The player's own buffs and burns are part of the state the control exists to clear.
         if let Some(statuses) = self.world.statuses_mut(self.player.entity) {
             statuses.clear();

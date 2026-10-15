@@ -214,11 +214,11 @@ pub(crate) fn token(ability: FireAbility, key: &str) -> Option<TextValue> {
     use TextValue::{Percent, Seconds};
     Some(match (ability, key) {
         (FireAbility::FlameLance, "crit_reduction") => {
-            Seconds(crate::firemage::talent::CRIT_FEEDBACK_BASE)
+            Seconds(crate::firemage::TalentEffects::default().flame_lance_crit_reduction)
         }
         (FireAbility::Detonate, "fraction") => Percent(crate::sim::DETONATE_FRACTION),
         (FireAbility::FireMastery, "bonus") => {
-            Percent(crate::firemage::talent::MASTERY_ACTIVE_SINGLE)
+            Percent(crate::firemage::TalentEffects::default().mastery_active_bonus)
         }
         (FireAbility::FlameShield, "reduction") => Percent(crate::firemage::FLAME_SHIELD_REDUCTION),
         _ => return None,

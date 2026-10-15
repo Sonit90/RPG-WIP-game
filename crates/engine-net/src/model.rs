@@ -387,6 +387,15 @@ pub struct RealmMirror {
 }
 
 impl RealmMirror {
+    /// Whether the account is queued, in a party or in an instance: the realm holds a snapshot
+    /// of the character's talents and equipment for the run, so neither may change meanwhile.
+    ///
+    /// The API enforces the same rule; this is what lets the interface say so before asking.
+    #[must_use]
+    pub fn is_engaged(&self) -> bool {
+        self.ticket.is_some() || self.party.is_some() || self.instance.is_some()
+    }
+
     /// Applies one update.
     pub fn apply(&mut self, update: RealmUpdate) {
         self.revision = self.revision.wrapping_add(1);

@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 engine-core = { workspace = true }
 engine-game = { workspace = true }
+engine-realm = { workspace = true }
 
 [[bin]]
 name = "engine-sim"

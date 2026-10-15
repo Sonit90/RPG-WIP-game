@@ -39,7 +39,25 @@ disagree with it.
   Both answer with the character in full, which the client applies exactly as it applies a
   move, so the mailbox window redraws from the server's copy.
 * `PUT /api/v1/characters/{id}/talents` — every key must be a talent the character's hero
-  has.
+  has and the set must cost no more than the character's points (400 / 409), and the
+  character must not be engaged (409, see below). Answers with the character.
+
+**Talent points** are `starting_points` (`assets/catalog/talents.json`, 5) plus
+`game.characters.talent_points_earned` (migration `0007_talent_points.sql`). The realm computes
+what a run grants (`engine_realm::rewards`: 1 per success, +1 at key level 3+) and carries it on
+`pending_result`; `apply_result` adds it inside the transaction that records the result id, so a
+re-delivered result grants nothing twice. `GET` reports `talent_points_total` and
+`talent_points_available`.
+
+**The lock.** Talents and equipment (move, salvage, taking mail) cannot change while the
+character is queued, in a party (ready check, key selection) or in an instance, disconnected
+members included: the realm holds a snapshot for the run. Before each such change the API calls
+the realm procedure `svc_engagement(account_id)` and answers 409 "Your talents and equipment are
+locked while you are in a dungeon or queue." if engaged; if the realm cannot answer, the change
+is refused too (fail closed). The snapshot (`svc_enqueue` carries talent keys and the total
+points) is copied ticket -> party member -> fight and is never re-read, so a run and a
+reconnect see the same build. The realm validates keys and cost again when it builds the fight
+and drops all talents (logged) if they do not fit.
 
 Every query is `WHERE id = $1 AND account_id = $2`: ownership is the query, not a check after
 it. Another account's character is a 404 (tested).

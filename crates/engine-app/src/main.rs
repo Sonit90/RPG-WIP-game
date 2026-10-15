@@ -29,6 +29,11 @@ fn main() -> ExitCode {
         eprintln!("fatal: failed to install logger: {error}");
         return ExitCode::FAILURE;
     }
+    // The shipped talent numbers (assets/catalog/talents.json), online or not.
+    if let Err(error) = engine_realm::talents::install_builtin() {
+        eprintln!("fatal: {error}");
+        return ExitCode::FAILURE;
+    }
 
     #[cfg(feature = "standalone")]
     standalone::install();

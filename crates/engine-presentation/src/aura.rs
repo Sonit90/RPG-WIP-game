@@ -103,6 +103,7 @@ impl AuraKind {
                 StatusKind::MagicVulnerability => UiIcon::AuraMagicVulnerability,
                 StatusKind::BattleFervor => UiIcon::BattleFervor,
                 StatusKind::Plagued => UiIcon::AuraPlagued,
+                StatusKind::Barkskin => UiIcon::WildRush,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,
@@ -364,7 +365,7 @@ pub fn fill_auras(simulation: &Simulation, entity: EntityId, list: &mut AuraList
         list.push(Aura::timed(
             AuraKind::Scorched,
             scorch,
-            engine_game::firemage::VULNERABILITY_DURATION,
+            mage.effects().vulnerability_duration(),
         ));
     }
 

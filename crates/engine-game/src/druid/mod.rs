@@ -50,7 +50,11 @@
 //! executor, the interface or the tests writes one down.
 
 use crate::combat::Resource;
+use crate::entity::EntityId;
 use crate::firemage::Timer;
+use crate::hero::Hero;
+use crate::talent::TalentGrid;
+use crate::talent::druid::DruidTalentEffects;
 
 /// The Druid's rows of the ability table.
 pub mod abilities;
@@ -107,7 +111,14 @@ pub mod tuning {
     pub const ASTRAL_HEAL_BONUS: f32 = 0.30;
 
     /// Nature and Arcane damage one stack of Nature's Exposure adds, as a fraction.
-    pub const NATURES_EXPOSURE_PER_STACK: f32 = 0.03;
+    pub const NATURES_EXPOSURE_PER_STACK: f32 = 0.02;
+
+    /// The most stacks of Nature's Exposure a Druid with no talents can put on a target.
+    pub const NATURES_EXPOSURE_MAX_STACKS: u8 = 10;
+
+    /// The tallest the status table lets Nature's Exposure stack: the base maximum plus
+    /// everything Deep Exposure can add. Each application narrows it to its caster's own.
+    pub const NATURES_EXPOSURE_STACK_CEILING: u8 = 20;
 
     /// Seconds a stack of Nature's Exposure lasts, refreshed by every Wrath.
     pub const NATURES_EXPOSURE_DURATION: f32 = 15.0;
@@ -157,6 +168,8 @@ use tuning::*;
 pub struct AstralPower {
     value: f32,
     armed: bool,
+    /// What an empowerment costs: [`ASTRAL_SPEND`], or less with Astral Attunement.
+    spend: f32,
 }
 
 impl Default for AstralPower {
@@ -172,7 +185,19 @@ impl AstralPower {
         Self {
             value: 0.0,
             armed: false,
+            spend: ASTRAL_SPEND,
         }
+    }
+
+    /// What an empowerment costs.
+    #[must_use]
+    pub fn spend_cost(&self) -> f32 {
+        self.spend
+    }
+
+    /// Sets what an empowerment costs (a talent). Clamped to the bar.
+    pub fn set_spend(&mut self, spend: f32) {
+        self.spend = spend.clamp(1.0, ASTRAL_MAXIMUM);
     }
 
     /// Sets the stored Astral Power (clamped): an authoritative correction.
@@ -215,7 +240,7 @@ impl AstralPower {
     /// silently does nothing.
     #[must_use]
     pub fn can_arm(&self) -> bool {
-        !self.armed && self.value + f32::EPSILON >= ASTRAL_SPEND
+        !self.armed && self.value + f32::EPSILON >= self.spend
     }
 
     /// Adds `amount`, and reports how much actually went in.
@@ -248,21 +273,24 @@ impl AstralPower {
     ///
     /// Returns whether the caller is empowered. The one place the resource goes down.
     pub fn consume(&mut self) -> bool {
-        if !self.armed || self.value + f32::EPSILON < ASTRAL_SPEND {
+        if !self.armed || self.value + f32::EPSILON < self.spend {
             // An arming that can no longer be paid for is dropped rather than left dangling:
             // there is nothing that can take the resource away, so this is a guard on a
             // future one.
             self.armed = false;
             return false;
         }
-        self.value = (self.value - ASTRAL_SPEND).max(0.0);
+        self.value = (self.value - self.spend).max(0.0);
         self.armed = false;
         true
     }
 
     /// Back to nothing banked and nothing armed.
     pub fn clear(&mut self) {
-        *self = Self::empty();
+        *self = Self {
+            spend: self.spend,
+            ..Self::empty()
+        };
     }
 }
 
@@ -290,6 +318,19 @@ pub struct Channel {
     pub active: bool,
 }
 
+/// A Living Seed: healing held back until its target is next hurt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Seed {
+    /// The Druid whose heal left it, and who pays it out.
+    pub owner: EntityId,
+    /// Who carries it.
+    pub target: EntityId,
+    /// Healing it pays out.
+    pub amount: f32,
+    /// Seconds left before it withers.
+    pub remaining: f32,
+}
+
 /// Everything the Druid is, at rest or in a fight.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Druid {
@@ -299,6 +340,13 @@ pub struct Druid {
     pub astral: AstralPower,
     /// Tranquility's channel, if one is running.
     pub channel: Channel,
+    /// Which talents are bought.
+    pub talents: TalentGrid,
+    /// What those talents mean. Recomputed whenever the grid changes.
+    effects: DruidTalentEffects,
+    /// Wraths cast in a row, for Swift Wrath. Any other cast breaks the run.
+    pub wrath_streak: u32,
+
     /// How long the Druid has been out of a global cooldown, unused today.
     ///
     /// Kept so the class has somewhere to grow a clock without a structural change; ticked
@@ -316,12 +364,48 @@ impl Druid {
     /// A Druid at rest: full Mana, no Astral Power, nothing channelling.
     #[must_use]
     pub fn new() -> Self {
+        let talents = TalentGrid::new(Hero::Druid);
         Self {
             mana: Resource::new(MANA_MAXIMUM, MANA_REGEN_PER_SECOND),
             astral: AstralPower::empty(),
             channel: Channel::default(),
+            effects: DruidTalentEffects::from_grid(&talents),
+            talents,
+            wrath_streak: 0,
             idle: Timer::idle(),
         }
+    }
+
+    /// What the talents currently mean.
+    #[must_use]
+    pub fn effects(&self) -> &DruidTalentEffects {
+        &self.effects
+    }
+
+    /// Replaces the whole build. What a respec, the server and the simulator do.
+    pub fn set_talents(&mut self, talents: TalentGrid) {
+        self.talents = talents;
+        self.refresh_talents();
+    }
+
+    /// Recomputes the derived effects after the grid changed.
+    pub fn refresh_talents(&mut self) {
+        self.effects = DruidTalentEffects::from_grid(&self.talents);
+        self.astral.set_spend(self.effects.astral_spend);
+    }
+
+    /// Buys a talent and rebuilds the derived effects.
+    ///
+    /// # Errors
+    ///
+    /// The talent is owned already or cannot be afforded.
+    pub fn purchase_talent(
+        &mut self,
+        talent: crate::talent::druid::DruidTalent,
+    ) -> Result<(), crate::talent::TalentError> {
+        self.talents.purchase(talent)?;
+        self.refresh_talents();
+        Ok(())
     }
 
     /// **What Astral Power multiplies a healing event by.**
@@ -331,8 +415,14 @@ impl Druid {
     /// so a spell cannot be empowered twice and cannot be missed.
     #[must_use]
     pub fn heal_scale(empowered: bool) -> f32 {
+        Self::heal_scale_with(empowered, 1.0)
+    }
+
+    /// The same, with the empowered bonus scaled (Astral Attunement weakens it).
+    #[must_use]
+    pub fn heal_scale_with(empowered: bool, bonus_scale: f32) -> f32 {
         if empowered {
-            1.0 + ASTRAL_HEAL_BONUS
+            1.0 + ASTRAL_HEAL_BONUS * bonus_scale
         } else {
             1.0
         }
@@ -364,6 +454,7 @@ impl Druid {
         self.mana.restore();
         self.astral.clear();
         self.channel = Channel::default();
+        self.wrath_streak = 0;
         self.idle.clear();
     }
 }
@@ -403,10 +494,10 @@ mod tests {
     }
 
     #[test]
-    fn natures_exposure_is_three_per_cent_a_stack_to_forty_five() {
+    fn natures_exposure_is_two_per_cent_a_stack_to_twenty() {
         assert!((Druid::exposure_multiplier(0) - 1.0).abs() < 1e-6);
-        assert!((Druid::exposure_multiplier(1) - 1.03).abs() < 1e-6);
-        assert!((Druid::exposure_multiplier(15) - 1.45).abs() < 1e-6);
+        assert!((Druid::exposure_multiplier(1) - 1.02).abs() < 1e-6);
+        assert!((Druid::exposure_multiplier(NATURES_EXPOSURE_MAX_STACKS) - 1.20).abs() < 1e-6);
     }
 
     #[test]
