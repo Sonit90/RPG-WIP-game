@@ -346,3 +346,46 @@ fn talents_that_do_not_fit_are_dropped_whole() {
         Some(5)
     );
 }
+
+#[test]
+fn a_reroll_changes_the_live_modifiers_and_the_reward_bonus() {
+    use crate::modifiers::KeyModifier;
+    let (scene, barriers, players) = crypt();
+    let catalog = Catalog::builtin().expect("catalog");
+    let rules = catalog.modifiers();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    assert_eq!(fight.reward_bonus(), 0);
+    let mods = vec![KeyModifier::base("rotating_beams")];
+    fight.set_modifiers(rules.resolve(5, &mods));
+    assert_eq!(fight.simulation().modifiers().active().len(), 1);
+    let before = fight.simulation().modifiers().active()[0].magnitude;
+    // The reroll: new magnitude, resolved again and set on the live fight.
+    let stronger = vec![KeyModifier {
+        id: "rotating_beams".into(),
+        magnitude_pct: 20,
+    }];
+    fight.set_modifiers(rules.resolve(5, &stronger));
+    fight.set_reward_bonus(25);
+    let after = fight.simulation().modifiers().active()[0].magnitude;
+    assert!((after / before - 1.2).abs() < 1e-4, "{before} -> {after}");
+    assert_eq!(fight.reward_bonus(), 25);
+}
+
+#[test]
+fn the_operator_can_clear_half_the_dungeon_to_unlock_a_reroll() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let (killed, total) = fight.kill_progress();
+    assert_eq!(killed, 0);
+    assert!(total > 2);
+    let slain = fight.slay_placed_until(0.5);
+    let (killed, total_after) = fight.kill_progress();
+    assert_eq!(
+        total_after, total,
+        "the count of placed monsters does not change"
+    );
+    assert_eq!(killed, slain);
+    assert!(killed * 2 >= total, "{killed} of {total}");
+    // Asking again for the same share slays nobody more.
+    assert_eq!(fight.slay_placed_until(0.5), 0);
+}

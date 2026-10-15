@@ -376,8 +376,10 @@ pub fn party_insert_key(ctx: &ReducerContext) -> Result<(), String> {
             "key_inserted",
             NoticeLevel::Info,
             format!(
-                "{} inserted a level {} key. They lead the party.",
-                member.character_name, member.key_level
+                "{} inserted a level {} key{}. They lead the party.",
+                member.character_name,
+                member.key_level,
+                modifier_summary(&member.key_modifiers)
             ),
         );
     }
@@ -388,6 +390,25 @@ pub fn party_insert_key(ctx: &ReducerContext) -> Result<(), String> {
         member.key_level
     );
     Ok(())
+}
+
+/// " (Rotating Beams, Plague Explosion)" for a key's stored modifiers; empty for a plain key.
+fn modifier_summary(json: &str) -> String {
+    let catalog = crate::level::catalog().ok();
+    let names: Vec<String> = engine_realm::modifiers::decode_modifiers(json)
+        .into_iter()
+        .map(|modifier| {
+            catalog
+                .as_ref()
+                .and_then(|catalog| catalog.modifiers().modifier(&modifier.id))
+                .map_or(modifier.id, |definition| definition.name.clone())
+        })
+        .collect();
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", names.join(", "))
+    }
 }
 
 /// Takes the key back out: the party chooses again. Key owner only.
@@ -491,6 +512,14 @@ pub fn depart(ctx: &ReducerContext, loaded: &Loaded, leaving: &PartyMember, how:
             );
         }
         DepartureEffect::ContinueWithout => {
+            // What they spent on a reroll is spent, even though they will get no result.
+            if let Some(instance) = loaded
+                .party
+                .instance_id
+                .and_then(|id| ctx.db.dungeon_instance().id().find(id))
+            {
+                crate::instance::settle_spend(ctx, &instance, Some(&leaving.account_id));
+            }
             ctx.db.party_member().identity().delete(leaving.identity);
             ctx.db.instance_player().identity().delete(leaving.identity);
             let remaining: Vec<PartyMember> = loaded
@@ -563,6 +592,7 @@ fn requeue(ctx: &ReducerContext, loaded: &Loaded, member: &PartyMember) {
         role: member.role,
         key_dungeon_id: member.key_dungeon_id.clone(),
         key_level: member.key_level,
+        key_modifiers: member.key_modifiers.clone(),
         enqueued_at: member.enqueued_at,
         status: TicketStatus::Searching,
         party_id: None,

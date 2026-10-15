@@ -13,6 +13,7 @@
 
 use engine_realm::api::{DungeonResult, Engagement, LootDelivery};
 use engine_realm::meter::DamageReport;
+use engine_realm::modifiers::{encode_modifiers, KeyModifier};
 use engine_realm::Role;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -52,6 +53,8 @@ pub struct Snapshot {
     pub key_dungeon_id: String,
     /// The key's level; 0 when it has no key.
     pub key_level: u32,
+    /// The key's modifiers, as stored: every party member sees them before the key goes in.
+    pub key_modifiers: Vec<KeyModifier>,
     /// The character's talents, by key: the realm builds the fight from these.
     pub talents: Vec<String>,
     /// Every talent point the character has (starting plus earned): what the keys must fit in.
@@ -88,6 +91,10 @@ struct PendingRow {
     /// JSON text of an `engine_realm::meter::DamageReport`; empty when there is none.
     damage_report: String,
     talent_points: u32,
+    /// JSON text: `[["aether_shard", 1], ...]`, what the character spent during the run.
+    currency_spent: String,
+    participant_key_bump: bool,
+    own_key_level: u32,
 }
 
 /// What a realm answer means for a change to a character's talents or equipment.
@@ -225,6 +232,7 @@ impl RealmBridge {
                 snapshot.key_level,
                 engine_realm::talents::encode_keys(&snapshot.talents),
                 snapshot.talent_points,
+                encode_modifiers(&snapshot.key_modifiers),
             ]),
         )
         .await
@@ -255,6 +263,7 @@ impl RealmBridge {
             .into_iter()
             .map(|row| DungeonResult {
                 resources: parse_resources(&row.resources, &row.result_id),
+                currency_spent: parse_resources(&row.currency_spent, &row.result_id),
                 damage_report: parse_report(&row.damage_report, &row.result_id),
                 result_id: row.result_id,
                 account_id: row.account_id,
@@ -267,6 +276,8 @@ impl RealmBridge {
                 key_owner: row.key_owner,
                 key_level_after: row.key_level_after,
                 talent_points: row.talent_points,
+                participant_key_bump: row.participant_key_bump,
+                own_key_level: row.own_key_level,
             })
             .collect())
     }
@@ -337,7 +348,7 @@ mod tests {
 
     #[test]
     fn pending_rows_read_positionally() {
-        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]","",2]]"#;
+        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]","",2,"[[\"aether_shard\",1]]",false,0]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert_eq!(rows[0].result_id, "12:acct");
         assert!(rows[0].success);
@@ -350,14 +361,36 @@ mod tests {
             parse_resources(&rows[0].resources, "12:acct"),
             vec![("crypt_dust".to_string(), 9)]
         );
+        assert_eq!(
+            parse_resources(&rows[0].currency_spent, "12:acct"),
+            vec![("aether_shard".to_string(), 1)]
+        );
+        assert!(!rows[0].participant_key_bump);
+        assert_eq!(rows[0].own_key_level, 0);
     }
 
     #[test]
     fn a_row_carries_its_damage_report() {
         let report = r#"{"party":[{"account_id":"acct","character_name":"Ash","class":"Fire Mage","role":"dps"}],"total_damage":1200,"dps":40.0,"duration_seconds":30.0,"boss_kill_seconds":12.5,"abilities":[{"ability":"Firebolt","damage":1200,"casts":10}]}"#;
         let body = serde_json::json!([[
-            "12:acct", "acct", "char", "graveyard_crypt", 12, true, 5_000_000, 250, [1], 3, true,
-            4, "[]", report
+            "12:acct",
+            "acct",
+            "char",
+            "graveyard_crypt",
+            12,
+            true,
+            5_000_000,
+            250,
+            [1],
+            3,
+            true,
+            4,
+            "[]",
+            report,
+            0,
+            "[]",
+            false,
+            0
         ]])
         .to_string();
         let rows: Vec<PendingRow> = serde_json::from_str(&body).unwrap();
@@ -371,11 +404,12 @@ mod tests {
 
     #[test]
     fn a_non_owner_row_without_resources_reads() {
-        let body =
-            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]","",0]]"#;
+        let body = r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]","",0,"[]",true,2]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert!(!rows[0].key_owner);
         assert!(parse_resources(&rows[0].resources, "12:b").is_empty());
+        assert!(rows[0].participant_key_bump);
+        assert_eq!(rows[0].own_key_level, 2);
     }
 
     #[test]

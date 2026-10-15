@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::catalog::{CatalogError, KeyRules};
+use crate::error::RealmError;
 
 /// How a reroll changes a modifier.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,6 +110,152 @@ impl Default for MagnitudeLimits {
     }
 }
 
+/// The reroll and cleanse tunables (`config` in `modifiers.json`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModifierConfig {
+    /// The fraction of the dungeon's placed monsters that must be dead before a reroll is
+    /// allowed, `0..=1`.
+    pub reroll_unlock_fraction: f32,
+    /// The resource a reroll costs.
+    pub reroll_resource: String,
+    /// How much of it one reroll costs.
+    pub reroll_cost: u32,
+    /// How many rerolls a run allows, for the whole party together.
+    pub max_rerolls_per_run: u32,
+    /// The reward bonus, per cent, a run that was rerolled pays on success.
+    pub reroll_reward_bonus_pct: u32,
+    /// What a cleanse costs, in gold.
+    pub cleanse_gold_cost: u32,
+}
+
+impl Default for ModifierConfig {
+    fn default() -> Self {
+        Self {
+            reroll_unlock_fraction: 0.5,
+            reroll_resource: "aether_shard".to_owned(),
+            reroll_cost: 1,
+            max_rerolls_per_run: 1,
+            reroll_reward_bonus_pct: 25,
+            cleanse_gold_cost: 100,
+        }
+    }
+}
+
+/// How much of the dungeon is cleared: `killed / total`, zero for a dungeon with nothing placed.
+#[must_use]
+pub fn kill_fraction(progress: (u32, u32)) -> f32 {
+    let (killed, total) = progress;
+    if total == 0 {
+        0.0
+    } else {
+        (killed as f32 / total as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// Everything a reroll's checks look at, gathered by the caller from its own state.
+#[derive(Debug, Clone, Copy)]
+pub struct RerollRequest<'a> {
+    /// The key's modifiers as they stand.
+    pub mods: &'a [KeyModifier],
+    /// Which of them the caller asked to reroll.
+    pub index: usize,
+    /// The fight's `(killed, total)` placed monsters.
+    pub progress: (u32, u32),
+    /// Rerolls the run has used.
+    pub rerolls_done: u32,
+    /// The caller's balance of the reroll resource when the run began.
+    pub balance: u64,
+    /// What the caller has already spent of it this run.
+    pub spent: u64,
+}
+
+/// A reroll that passed every check, with what it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reroll {
+    /// Which modifier.
+    pub index: usize,
+    /// Its catalog id.
+    pub id: String,
+    /// The change the dice made, per cent (positive: stronger).
+    pub delta_pct: i16,
+    /// The modifier's magnitude after, per cent, held to the catalog's limits.
+    pub magnitude_pct: i16,
+    /// The cost, in the reroll resource.
+    pub cost: u32,
+}
+
+impl Reroll {
+    /// Whether the dice strengthened the modifier.
+    #[must_use]
+    pub fn strengthened(&self) -> bool {
+        self.delta_pct > 0
+    }
+
+    /// `mods` with this reroll applied.
+    #[must_use]
+    pub fn apply(&self, mods: &[KeyModifier]) -> Vec<KeyModifier> {
+        let mut out = mods.to_vec();
+        if let Some(target) = out.get_mut(self.index) {
+            target.magnitude_pct = self.magnitude_pct;
+        }
+        out
+    }
+}
+
+/// The last reroll of a run, as the instance row carries it for the clients' reveal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RerollEvent {
+    /// Counts the run's rerolls from 1; a client plays the reveal when it grows.
+    pub seq: u32,
+    /// The character that paid for it.
+    pub by: String,
+    /// The modifier's catalog id.
+    pub modifier: String,
+    /// The change, per cent (positive: stronger).
+    pub delta_pct: i16,
+    /// The magnitude after, per cent.
+    pub magnitude_pct: i16,
+}
+
+impl RerollEvent {
+    /// Whether the reroll strengthened the modifier.
+    #[must_use]
+    pub fn strengthened(&self) -> bool {
+        self.delta_pct > 0
+    }
+
+    /// The JSON the instance row stores.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The record in `text`; `None` for empty or unreadable text.
+    #[must_use]
+    pub fn from_json(text: &str) -> Option<Self> {
+        serde_json::from_str(text).ok()
+    }
+}
+
+/// A key's modifiers as the JSON the tables and the API store.
+#[must_use]
+pub fn encode_modifiers(mods: &[KeyModifier]) -> String {
+    serde_json::to_string(mods).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// The modifiers in stored JSON. Empty or unreadable text is a key with none: a key written by
+/// a build that did not know modifiers still opens its dungeon.
+#[must_use]
+pub fn decode_modifiers(text: &str) -> Vec<KeyModifier> {
+    serde_json::from_str(text).unwrap_or_default()
+}
+
+/// The signed per-cent text of a magnitude: `+17%`, `-12%`, `+0%`.
+#[must_use]
+pub fn magnitude_text(pct: i16) -> String {
+    format!("{pct:+}%")
+}
+
 /// A modifier as a key stores it. Serialises into the `dungeon_keys.modifiers` JSON column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyModifier {
@@ -136,9 +283,16 @@ pub struct ModifierCatalog {
     modifiers: Vec<ModifierDefinition>,
     progression: Vec<ProgressionRow>,
     limits: MagnitudeLimits,
+    config: ModifierConfig,
 }
 
 impl ModifierCatalog {
+    /// The reroll and cleanse tunables.
+    #[must_use]
+    pub fn config(&self) -> &ModifierConfig {
+        &self.config
+    }
+
     /// Every modifier, in catalog order.
     #[must_use]
     pub fn modifiers(&self) -> &[ModifierDefinition] {
@@ -291,11 +445,132 @@ impl ModifierCatalog {
                 notes: row.notes,
             });
         }
+        let config = ModifierConfig {
+            reroll_unlock_fraction: file.config.reroll_unlock_fraction,
+            reroll_resource: file.config.reroll_resource,
+            reroll_cost: file.config.reroll_cost,
+            max_rerolls_per_run: file.config.max_rerolls_per_run,
+            reroll_reward_bonus_pct: file.config.reroll_reward_bonus_pct,
+            cleanse_gold_cost: file.config.cleanse_gold_cost,
+        };
+        if !(0.0..=1.0).contains(&config.reroll_unlock_fraction)
+            || config.reroll_resource.trim().is_empty()
+            || config.reroll_cost == 0
+        {
+            return Err(CatalogError(
+                "modifiers.json: config needs an unlock fraction in 0..1, a reroll resource and a cost above zero"
+                    .into(),
+            ));
+        }
         Ok(Self {
             modifiers,
             progression,
             limits,
+            config,
         })
+    }
+
+    /// `mods` as a key of `level` may carry them: unknown and repeated modifiers dropped,
+    /// magnitudes held to the limits, no more than the level has slots for.
+    ///
+    /// What the realm runs on a snapshot the API handed it; the API's own writes are already
+    /// in this shape, so on a healthy system it changes nothing.
+    #[must_use]
+    pub fn sanitize(&self, level: u32, mods: &[KeyModifier]) -> Vec<KeyModifier> {
+        let mut out: Vec<KeyModifier> = Vec::with_capacity(mods.len());
+        for modifier in mods {
+            if self.modifier(&modifier.id).is_none() || out.iter().any(|m| m.id == modifier.id) {
+                continue;
+            }
+            out.push(KeyModifier {
+                id: modifier.id.clone(),
+                magnitude_pct: modifier
+                    .magnitude_pct
+                    .clamp(self.limits.min_pct, self.limits.max_pct),
+            });
+        }
+        out.truncate(self.slots(level));
+        out
+    }
+
+    /// Whether `progress` (`(killed, total)`) has reached the reroll's unlock fraction.
+    #[must_use]
+    pub fn reroll_unlocked(&self, progress: (u32, u32)) -> bool {
+        progress.1 > 0 && kill_fraction(progress) >= self.config.reroll_unlock_fraction
+    }
+
+    /// Whether a reroll is allowed, and if so what the dice made of it.
+    ///
+    /// `roll_a` and `roll_b` are the server's numbers in `[0, 1)` (see [`reroll_outcome`]).
+    /// Checked in the order a player would fix them: the dungeon is cleared enough, the run
+    /// has a reroll left, the modifier exists and can move, the caller can pay.
+    /// `resource_name` is what the cost is called in the refusal.
+    ///
+    /// # Errors
+    ///
+    /// A dungeon refusal with a sentence a player can read.
+    pub fn plan_reroll(
+        &self,
+        request: &RerollRequest<'_>,
+        resource_name: &str,
+        roll_a: f64,
+        roll_b: f64,
+    ) -> Result<Reroll, RealmError> {
+        let config = &self.config;
+        if !self.reroll_unlocked(request.progress) {
+            let percent = (config.reroll_unlock_fraction * 100.0).round();
+            return Err(RealmError::dungeon(format!(
+                "A reroll unlocks once {percent:.0}% of the dungeon is cleared."
+            )));
+        }
+        if request.rerolls_done >= config.max_rerolls_per_run {
+            return Err(RealmError::dungeon(
+                "This key has already been rerolled as often as a run allows.",
+            ));
+        }
+        let key_modifier = request
+            .mods
+            .get(request.index)
+            .ok_or_else(|| RealmError::dungeon("That modifier is not on this key."))?;
+        let definition = self
+            .modifier(&key_modifier.id)
+            .ok_or_else(|| RealmError::dungeon("That modifier is not on this key."))?;
+        if !definition.amplifiable && !definition.reducible {
+            return Err(RealmError::dungeon("That modifier cannot be rerolled."));
+        }
+        let available = request.balance.saturating_sub(request.spent);
+        if available < u64::from(config.reroll_cost) {
+            return Err(RealmError::dungeon(format!(
+                "A reroll costs {} {resource_name}, and you have {available} to spend.",
+                config.reroll_cost
+            )));
+        }
+        let delta = reroll_outcome(definition, roll_a, roll_b);
+        Ok(Reroll {
+            index: request.index,
+            id: key_modifier.id.clone(),
+            delta_pct: delta,
+            magnitude_pct: self.apply_reroll(key_modifier.magnitude_pct, delta),
+            cost: config.reroll_cost,
+        })
+    }
+
+    /// Whether a key carrying `mods` may be cleansed by a character holding `gold`.
+    ///
+    /// # Errors
+    ///
+    /// A dungeon refusal: nothing to remove (not charged), or too little gold.
+    pub fn check_cleanse(&self, mods: &[KeyModifier], gold: u64) -> Result<(), RealmError> {
+        if mods.is_empty() {
+            return Err(RealmError::dungeon("This key has no modifiers to cleanse."));
+        }
+        if gold < u64::from(self.config.cleanse_gold_cost) {
+            return Err(RealmError::dungeon(format!(
+                "Cleansing a key costs {} gold.",
+                self.config.cleanse_gold_cost
+            )));
+        }
+        Ok(())
     }
 
     /// The modifiers a key of `level` starts with, rolled from `seed`.
@@ -478,6 +753,8 @@ struct File {
     version: u32,
     #[serde(default)]
     magnitude_limits: LimitsRecord,
+    #[serde(default)]
+    config: ConfigRecord,
     modifiers: Vec<ModifierRecord>,
     progression: Vec<RowRecord>,
 }
@@ -494,6 +771,31 @@ impl Default for LimitsRecord {
         Self {
             min_pct: limits.min_pct,
             max_pct: limits.max_pct,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ConfigRecord {
+    reroll_unlock_fraction: f32,
+    reroll_resource: String,
+    reroll_cost: u32,
+    max_rerolls_per_run: u32,
+    reroll_reward_bonus_pct: u32,
+    cleanse_gold_cost: u32,
+}
+
+impl Default for ConfigRecord {
+    fn default() -> Self {
+        let config = ModifierConfig::default();
+        Self {
+            reroll_unlock_fraction: config.reroll_unlock_fraction,
+            reroll_resource: config.reroll_resource,
+            reroll_cost: config.reroll_cost,
+            max_rerolls_per_run: config.max_rerolls_per_run,
+            reroll_reward_bonus_pct: config.reroll_reward_bonus_pct,
+            cleanse_gold_cost: config.cleanse_gold_cost,
         }
     }
 }
@@ -892,5 +1194,319 @@ mod tests {
                 "{why}"
             );
         }
+    }
+
+    // --- reroll gating, cleanse, config ---------------------------------------------------
+
+    fn request(mods: &[KeyModifier]) -> RerollRequest<'_> {
+        RerollRequest {
+            mods,
+            index: 0,
+            progress: (5, 10),
+            rerolls_done: 0,
+            balance: 3,
+            spent: 0,
+        }
+    }
+
+    fn two_mods() -> Vec<KeyModifier> {
+        vec![
+            KeyModifier::base("rotating_beams"),
+            KeyModifier::base("plague_explosion"),
+        ]
+    }
+
+    #[test]
+    fn the_shipped_config_is_what_the_design_says() {
+        let catalog = catalog();
+        let config = catalog.config();
+        assert!((config.reroll_unlock_fraction - 0.5).abs() < 1e-6);
+        assert_eq!(config.reroll_resource, "aether_shard");
+        assert_eq!(config.reroll_cost, 1);
+        assert_eq!(config.max_rerolls_per_run, 1);
+        assert_eq!(config.reroll_reward_bonus_pct, 25);
+        assert_eq!(config.cleanse_gold_cost, 100);
+    }
+
+    #[test]
+    fn a_bad_config_is_refused() {
+        let json = include_str!("../../../assets/catalog/modifiers.json");
+        for (from, to) in [
+            (
+                "\"reroll_unlock_fraction\": 0.5",
+                "\"reroll_unlock_fraction\": 1.5",
+            ),
+            ("\"reroll_cost\": 1", "\"reroll_cost\": 0"),
+            (
+                "\"reroll_resource\": \"aether_shard\"",
+                "\"reroll_resource\": \"\"",
+            ),
+            ("\"cleanse_gold_cost\": 100", "\"cleanse_gold\": 100"),
+        ] {
+            assert!(json.contains(from), "{from}");
+            assert!(
+                ModifierCatalog::parse(&json.replace(from, to)).is_err(),
+                "{to}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reroll_is_refused_before_half_the_dungeon_is_dead() {
+        let catalog = catalog();
+        let mods = two_mods();
+        for progress in [(0, 10), (4, 10), (49, 100), (0, 0)] {
+            let error = catalog
+                .plan_reroll(
+                    &RerollRequest {
+                        progress,
+                        ..request(&mods)
+                    },
+                    "Aether Shards",
+                    0.1,
+                    0.5,
+                )
+                .expect_err("locked");
+            assert!(
+                error.message.contains("unlocks once 50%"),
+                "{progress:?}: {error}"
+            );
+        }
+        let ok = catalog
+            .plan_reroll(&request(&mods), "Aether Shards", 0.1, 0.5)
+            .expect("half is enough");
+        assert_eq!(ok.id, "rotating_beams");
+        assert!(ok.strengthened(), "0.1 is below the 60% strengthen chance");
+        assert!((10..=25).contains(&ok.magnitude_pct));
+    }
+
+    #[test]
+    fn a_reroll_needs_the_currency_the_caller_has_not_already_spent() {
+        let catalog = catalog();
+        let mods = two_mods();
+        let broke = RerollRequest {
+            balance: 0,
+            ..request(&mods)
+        };
+        let error = catalog
+            .plan_reroll(&broke, "Aether Shards", 0.1, 0.5)
+            .expect_err("broke");
+        assert!(error.message.contains("1 Aether Shards"), "{error}");
+        let spent = RerollRequest {
+            balance: 2,
+            spent: 2,
+            ..request(&mods)
+        };
+        assert!(
+            catalog
+                .plan_reroll(&spent, "Aether Shards", 0.1, 0.5)
+                .is_err()
+        );
+        let last = RerollRequest {
+            balance: 2,
+            spent: 1,
+            ..request(&mods)
+        };
+        assert!(
+            catalog
+                .plan_reroll(&last, "Aether Shards", 0.1, 0.5)
+                .is_ok()
+        );
+        // A balance smaller than what was spent (it changed elsewhere) is just "nothing".
+        let odd = RerollRequest {
+            balance: 1,
+            spent: 5,
+            ..request(&mods)
+        };
+        assert!(
+            catalog
+                .plan_reroll(&odd, "Aether Shards", 0.1, 0.5)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_run_allows_only_the_configured_number_of_rerolls() {
+        let catalog = catalog();
+        let mods = two_mods();
+        let used = RerollRequest {
+            rerolls_done: 1,
+            ..request(&mods)
+        };
+        let error = catalog
+            .plan_reroll(&used, "Aether Shards", 0.1, 0.5)
+            .expect_err("used up");
+        assert!(
+            error.message.contains("as often as a run allows"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_reroll_names_a_real_modifier() {
+        let catalog = catalog();
+        let mods = two_mods();
+        let missing = RerollRequest {
+            index: 2,
+            ..request(&mods)
+        };
+        assert!(catalog.plan_reroll(&missing, "x", 0.1, 0.5).is_err());
+        let none: Vec<KeyModifier> = Vec::new();
+        assert!(catalog.plan_reroll(&request(&none), "x", 0.1, 0.5).is_err());
+        let unknown = vec![KeyModifier::base("no_such_modifier")];
+        assert!(
+            catalog
+                .plan_reroll(&request(&unknown), "x", 0.1, 0.5)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_weakening_reroll_lowers_the_magnitude_and_apply_touches_only_that_modifier() {
+        let catalog = catalog();
+        let mods = two_mods();
+        let plan = catalog
+            .plan_reroll(
+                &RerollRequest {
+                    index: 1,
+                    ..request(&mods)
+                },
+                "x",
+                0.9,
+                0.0,
+            )
+            .expect("allowed");
+        assert_eq!(plan.id, "plague_explosion");
+        assert!(!plan.strengthened());
+        assert_eq!(plan.delta_pct, -10);
+        let after = plan.apply(&mods);
+        assert_eq!(after[0], mods[0]);
+        assert_eq!(after[1].magnitude_pct, -10);
+        assert_eq!(plan.cost, 1);
+    }
+
+    #[test]
+    fn rerolls_stay_within_the_magnitude_limits() {
+        let catalog = catalog();
+        let mods = vec![KeyModifier {
+            id: "rotating_beams".into(),
+            magnitude_pct: 95,
+        }];
+        let plan = catalog
+            .plan_reroll(&request(&mods), "x", 0.0, 0.99)
+            .expect("allowed");
+        assert_eq!(plan.magnitude_pct, 100);
+    }
+
+    #[test]
+    fn unlock_is_exactly_at_the_fraction() {
+        let catalog = catalog();
+        assert!(!catalog.reroll_unlocked((4, 9)));
+        assert!(catalog.reroll_unlocked((5, 10)));
+        assert!(catalog.reroll_unlocked((10, 10)));
+        assert!(!catalog.reroll_unlocked((0, 0)));
+        assert!((kill_fraction((1, 4)) - 0.25).abs() < 1e-6);
+        assert_eq!(kill_fraction((3, 0)), 0.0);
+    }
+
+    #[test]
+    fn a_cleanse_is_all_or_nothing_and_never_charges_for_a_clean_key() {
+        let catalog = catalog();
+        let mods = two_mods();
+        assert!(catalog.check_cleanse(&mods, 100).is_ok());
+        assert!(catalog.check_cleanse(&mods, 5_000).is_ok());
+        let poor = catalog
+            .check_cleanse(&mods, 99)
+            .expect_err("99 gold is too little");
+        assert!(poor.message.contains("100 gold"), "{poor}");
+        let clean = catalog
+            .check_cleanse(&[], 1_000)
+            .expect_err("nothing to remove");
+        assert!(clean.message.contains("no modifiers"), "{clean}");
+        assert!(cleanse(&mods).is_empty());
+    }
+
+    #[test]
+    fn a_downgrade_never_goes_below_the_minimum_and_drops_the_extra_modifiers() {
+        let catalog = catalog();
+        let mods = two_mods();
+        // Level 5 carries two slots; 4 carries one.
+        let (level, kept) = catalog.downgrade(1, 5, &mods);
+        assert_eq!(level, 4);
+        assert_eq!(kept, vec![mods[0].clone()]);
+        // Level 3 -> 2 has no slots left.
+        let (level, kept) = catalog.downgrade(1, 3, &mods[..1]);
+        assert_eq!((level, kept.len()), (2, 0));
+        // At the minimum it stays (the caller refuses the action; the key is never deleted).
+        let (level, _) = catalog.downgrade(1, 1, &[]);
+        assert_eq!(level, 1);
+        let (level, _) = catalog.downgrade(3, 3, &mods);
+        assert_eq!(level, 3);
+    }
+
+    #[test]
+    fn a_snapshot_is_made_safe_before_the_fight_trusts_it() {
+        let catalog = catalog();
+        let dirty = vec![
+            KeyModifier {
+                id: "plague_explosion".into(),
+                magnitude_pct: 900,
+            },
+            KeyModifier::base("nonsense"),
+            KeyModifier::base("plague_explosion"),
+            KeyModifier {
+                id: "rotating_beams".into(),
+                magnitude_pct: -900,
+            },
+        ];
+        let clean = catalog.sanitize(5, &dirty);
+        assert_eq!(
+            clean,
+            vec![
+                KeyModifier {
+                    id: "plague_explosion".into(),
+                    magnitude_pct: 100
+                },
+                KeyModifier {
+                    id: "rotating_beams".into(),
+                    magnitude_pct: -50
+                },
+            ]
+        );
+        // Level 3 has one slot; level 1 none.
+        assert_eq!(catalog.sanitize(3, &dirty).len(), 1);
+        assert!(catalog.sanitize(1, &dirty).is_empty());
+    }
+
+    #[test]
+    fn modifiers_survive_their_stored_json_and_bad_text_is_a_key_with_none() {
+        let mods = vec![KeyModifier {
+            id: "rotating_beams".into(),
+            magnitude_pct: -12,
+        }];
+        assert_eq!(decode_modifiers(&encode_modifiers(&mods)), mods);
+        assert!(decode_modifiers("").is_empty());
+        assert!(decode_modifiers("{not json").is_empty());
+        assert_eq!(
+            decode_modifiers(r#"[{"id":"rotating_beams"}]"#),
+            vec![KeyModifier::base("rotating_beams")]
+        );
+        assert_eq!(magnitude_text(17), "+17%");
+        assert_eq!(magnitude_text(-12), "-12%");
+        assert_eq!(magnitude_text(0), "+0%");
+    }
+
+    #[test]
+    fn the_reveal_record_round_trips() {
+        let event = RerollEvent {
+            seq: 1,
+            by: "Ash".into(),
+            modifier: "plague_explosion".into(),
+            delta_pct: 17,
+            magnitude_pct: 17,
+        };
+        assert!(event.strengthened());
+        assert_eq!(RerollEvent::from_json(&event.to_json()), Some(event));
+        assert_eq!(RerollEvent::from_json(""), None);
     }
 }

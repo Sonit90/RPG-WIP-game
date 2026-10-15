@@ -175,6 +175,19 @@ impl Simulation {
         self.loot_bonus_pct = reward_bonus_pct;
     }
 
+    /// Changes only the run's reward bonus, per cent (see [`Simulation::set_loot_rules`]). What
+    /// a mid-run key reroll does: later drops use the new number, drops already rolled keep
+    /// theirs. Works without loot rules (the number is kept for when they arrive).
+    pub fn set_reward_bonus_pct(&mut self, reward_bonus_pct: u32) {
+        self.loot_bonus_pct = reward_bonus_pct;
+    }
+
+    /// The run's reward bonus, per cent.
+    #[must_use]
+    pub fn reward_bonus_pct(&self) -> u32 {
+        self.loot_bonus_pct
+    }
+
     /// The loot rules, if a host set them.
     #[must_use]
     pub fn loot_rules(&self) -> Option<&LootRules> {

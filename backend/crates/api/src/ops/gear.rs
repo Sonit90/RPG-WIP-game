@@ -90,10 +90,7 @@ mod tests {
 
     #[test]
     fn an_unknown_item_stays_listed_by_key() {
-        let gear = resolve_gear(&[EquippedItem {
-            slot: "head".into(),
-            item: "no_such_item".into(),
-        }]);
+        let gear = resolve_gear(&[EquippedItem::new("head", "no_such_item")]);
         assert_eq!(gear[0].name, "no_such_item");
         assert!(gear[0].quality.is_none());
     }
@@ -101,10 +98,7 @@ mod tests {
     #[test]
     fn a_known_item_resolves_its_name() {
         let def = engine_game::character::ITEMS[0];
-        let gear = resolve_gear(&[EquippedItem {
-            slot: "chest".into(),
-            item: def.key.into(),
-        }]);
+        let gear = resolve_gear(&[EquippedItem::new("chest", def.key)]);
         assert_eq!(gear[0].name, def.name);
         assert_eq!(gear[0].item_level, Some(def.item_level));
     }

@@ -120,6 +120,50 @@ pub fn admin_finish_instance(
     Ok(())
 }
 
+/// Slays placed monsters in an instance's fight until `percent` of them are dead (the boss and
+/// summons are left). An operator tool, and the integration tests' way to reach the key
+/// reroll's unlock without clearing half a dungeon.
+#[spacetimedb::reducer]
+pub fn admin_clear_dungeon(ctx: &ReducerContext, instance_id: u64, percent: u8) -> Result<(), String> {
+    require_owner(ctx)?;
+    let instance = ctx
+        .db
+        .dungeon_instance()
+        .id()
+        .find(instance_id)
+        .ok_or_else(|| RealmError::dungeon("That dungeon no longer exists."))?;
+    let slain = crate::combat::with_fight(ctx, &instance, |fight| {
+        fight.slay_placed_until(f32::from(percent.min(100)) / 100.0)
+    })?;
+    log::info!("event=admin_clear_dungeon instance_id={instance_id} percent={percent} slain={slain}");
+    Ok(())
+}
+
+/// Sets how much of the reroll currency a player may spend in an instance. A test hook: the
+/// persistence API debits `min(spent, held)`, so granting more than the character holds costs
+/// nothing real.
+#[spacetimedb::reducer]
+pub fn admin_grant_spend(
+    ctx: &ReducerContext,
+    instance_id: u64,
+    account_id: String,
+    balance: u64,
+) -> Result<(), String> {
+    require_owner(ctx)?;
+    let id = crate::modifiers::spend_id(instance_id, &account_id);
+    let spend = ctx
+        .db
+        .instance_spend()
+        .spend_id()
+        .find(&id)
+        .ok_or_else(|| RealmError::dungeon("That player has no spend row there."))?;
+    ctx.db
+        .instance_spend()
+        .spend_id()
+        .update(InstanceSpend { balance, ..spend });
+    Ok(())
+}
+
 /// The server's clock, in microseconds since the Unix epoch.
 ///
 /// A client calls this a few times, keeps the round trip with the least delay, and from it
@@ -155,6 +199,24 @@ pub fn svc_admin_snapshot(ctx: &mut spacetimedb::ProcedureContext) -> String {
         serde_json::to_string(&engine_realm::ops::build_snapshot(&snapshot_input(tx)))
             .unwrap_or_default()
     })
+}
+
+/// A key's modifiers as the dashboard shows them: `Plague Explosion +17%`.
+fn modifier_names(json: &str) -> Vec<String> {
+    let catalog = crate::level::catalog().ok();
+    engine_realm::modifiers::decode_modifiers(json)
+        .into_iter()
+        .map(|modifier| {
+            let name = catalog
+                .as_ref()
+                .and_then(|catalog| catalog.modifiers().modifier(&modifier.id))
+                .map_or_else(|| modifier.id.clone(), |definition| definition.name.clone());
+            format!(
+                "{name} {}",
+                engine_realm::modifiers::magnitude_text(modifier.magnitude_pct)
+            )
+        })
+        .collect()
 }
 
 /// Copies the tables into the builder's plain rows.
@@ -273,8 +335,7 @@ fn snapshot_input(ctx: &ReducerContext) -> engine_realm::ops::SnapshotInput {
                     run_starts_at_us: instance.countdown_ends_at.map(micros),
                     finished_at_us: instance.finished_at.map(micros),
                 },
-                // Key modifiers are not modelled yet; the field exists for when they are.
-                modifiers: Vec::new(),
+                modifiers: modifier_names(&instance.modifiers),
                 live: instance.live,
                 players,
                 members,

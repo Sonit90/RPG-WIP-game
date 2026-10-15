@@ -7,8 +7,10 @@
 use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 
 pub mod account_type;
+pub mod admin_clear_dungeon_reducer;
 pub mod admin_configure_reducer;
 pub mod admin_finish_instance_reducer;
+pub mod admin_grant_spend_reducer;
 pub mod admin_set_matchmaking_reducer;
 pub mod admin_set_timeouts_reducer;
 pub mod chat_line_type;
@@ -25,9 +27,11 @@ pub mod engagement_type;
 pub mod instance_combat_type;
 pub mod instance_monster_type;
 pub mod instance_player_type;
+pub mod instance_spend_type;
 pub mod instance_state_tag_type;
 pub mod janitor_timer_type;
 pub mod matchmaking_timer_type;
+pub mod modifier_reroll_reducer;
 pub mod move_input_reducer;
 pub mod my_account_table;
 pub mod my_chat_table;
@@ -35,6 +39,7 @@ pub mod my_combat_batches_table;
 pub mod my_instance_meter_table;
 pub mod my_instance_monsters_table;
 pub mod my_instance_players_table;
+pub mod my_instance_spend_table;
 pub mod my_instance_table;
 pub mod my_notices_table;
 pub mod my_party_members_table;
@@ -90,8 +95,10 @@ pub mod ticket_status_type;
 pub mod v_3_type;
 
 pub use account_type::Account;
+pub use admin_clear_dungeon_reducer::admin_clear_dungeon;
 pub use admin_configure_reducer::admin_configure;
 pub use admin_finish_instance_reducer::admin_finish_instance;
+pub use admin_grant_spend_reducer::admin_grant_spend;
 pub use admin_set_matchmaking_reducer::admin_set_matchmaking;
 pub use admin_set_timeouts_reducer::admin_set_timeouts;
 pub use chat_line_type::ChatLine;
@@ -108,9 +115,11 @@ pub use engagement_type::Engagement;
 pub use instance_combat_type::InstanceCombat;
 pub use instance_monster_type::InstanceMonster;
 pub use instance_player_type::InstancePlayer;
+pub use instance_spend_type::InstanceSpend;
 pub use instance_state_tag_type::InstanceStateTag;
 pub use janitor_timer_type::JanitorTimer;
 pub use matchmaking_timer_type::MatchmakingTimer;
+pub use modifier_reroll_reducer::modifier_reroll;
 pub use move_input_reducer::move_input;
 pub use my_account_table::*;
 pub use my_chat_table::*;
@@ -118,6 +127,7 @@ pub use my_combat_batches_table::*;
 pub use my_instance_meter_table::*;
 pub use my_instance_monsters_table::*;
 pub use my_instance_players_table::*;
+pub use my_instance_spend_table::*;
 pub use my_instance_table::*;
 pub use my_notices_table::*;
 pub use my_party_members_table::*;
@@ -180,6 +190,10 @@ pub use v_3_type::V3;
 /// to indicate which reducer caused the event.
 
 pub enum Reducer {
+    AdminClearDungeon {
+        instance_id: u64,
+        percent: u8,
+    },
     AdminConfigure {
         issuer: String,
         audience: String,
@@ -188,6 +202,11 @@ pub enum Reducer {
     AdminFinishInstance {
         instance_id: u64,
         success: bool,
+    },
+    AdminGrantSpend {
+        instance_id: u64,
+        account_id: String,
+        balance: u64,
     },
     AdminSetMatchmaking {
         min_tolerance: f64,
@@ -211,6 +230,9 @@ pub enum Reducer {
     },
     DismissNotice {
         notice_id: u64,
+    },
+    ModifierReroll {
+        index: u8,
     },
     MoveInput {
         frames: Vec<NetInputFrame>,
@@ -249,6 +271,7 @@ pub enum Reducer {
         key_level: u32,
         talents: String,
         talent_points: u32,
+        key_modifiers: String,
     },
 }
 
@@ -259,13 +282,16 @@ impl __sdk::InModule for Reducer {
 impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
+            Reducer::AdminClearDungeon { .. } => "admin_clear_dungeon",
             Reducer::AdminConfigure { .. } => "admin_configure",
             Reducer::AdminFinishInstance { .. } => "admin_finish_instance",
+            Reducer::AdminGrantSpend { .. } => "admin_grant_spend",
             Reducer::AdminSetMatchmaking { .. } => "admin_set_matchmaking",
             Reducer::AdminSetTimeouts { .. } => "admin_set_timeouts",
             Reducer::ChatSend { .. } => "chat_send",
             Reducer::CombatAct { .. } => "combat_act",
             Reducer::DismissNotice { .. } => "dismiss_notice",
+            Reducer::ModifierReroll { .. } => "modifier_reroll",
             Reducer::MoveInput { .. } => "move_input",
             Reducer::PartyInsertKey => "party_insert_key",
             Reducer::PartyKick { .. } => "party_kick",
@@ -284,6 +310,13 @@ impl __sdk::Reducer for Reducer {
     #[allow(clippy::clone_on_copy)]
     fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
         match self {
+            Reducer::AdminClearDungeon {
+                instance_id,
+                percent,
+            } => __sats::bsatn::to_vec(&admin_clear_dungeon_reducer::AdminClearDungeonArgs {
+                instance_id: instance_id.clone(),
+                percent: percent.clone(),
+            }),
             Reducer::AdminConfigure {
                 issuer,
                 audience,
@@ -299,6 +332,15 @@ impl __sdk::Reducer for Reducer {
             } => __sats::bsatn::to_vec(&admin_finish_instance_reducer::AdminFinishInstanceArgs {
                 instance_id: instance_id.clone(),
                 success: success.clone(),
+            }),
+            Reducer::AdminGrantSpend {
+                instance_id,
+                account_id,
+                balance,
+            } => __sats::bsatn::to_vec(&admin_grant_spend_reducer::AdminGrantSpendArgs {
+                instance_id: instance_id.clone(),
+                account_id: account_id.clone(),
+                balance: balance.clone(),
             }),
             Reducer::AdminSetMatchmaking {
                 min_tolerance,
@@ -338,6 +380,11 @@ impl __sdk::Reducer for Reducer {
             Reducer::DismissNotice { notice_id } => {
                 __sats::bsatn::to_vec(&dismiss_notice_reducer::DismissNoticeArgs {
                     notice_id: notice_id.clone(),
+                })
+            }
+            Reducer::ModifierReroll { index } => {
+                __sats::bsatn::to_vec(&modifier_reroll_reducer::ModifierRerollArgs {
+                    index: index.clone(),
                 })
             }
             Reducer::MoveInput { frames } => {
@@ -393,6 +440,7 @@ impl __sdk::Reducer for Reducer {
                 key_level,
                 talents,
                 talent_points,
+                key_modifiers,
             } => __sats::bsatn::to_vec(&svc_enqueue_reducer::SvcEnqueueArgs {
                 account_id: account_id.clone(),
                 character_id: character_id.clone(),
@@ -407,6 +455,7 @@ impl __sdk::Reducer for Reducer {
                 key_level: key_level.clone(),
                 talents: talents.clone(),
                 talent_points: talent_points.clone(),
+                key_modifiers: key_modifiers.clone(),
             }),
             _ => unreachable!(),
         }
@@ -424,6 +473,7 @@ pub struct DbUpdate {
     my_instance_meter: __sdk::TableUpdate<PlayerMeter>,
     my_instance_monsters: __sdk::TableUpdate<InstanceMonster>,
     my_instance_players: __sdk::TableUpdate<InstancePlayer>,
+    my_instance_spend: __sdk::TableUpdate<InstanceSpend>,
     my_notices: __sdk::TableUpdate<PlayerNotice>,
     my_party: __sdk::TableUpdate<Party>,
     my_party_members: __sdk::TableUpdate<PartyMember>,
@@ -460,6 +510,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "my_instance_players" => db_update
                     .my_instance_players
                     .append(my_instance_players_table::parse_table_update(table_update)?),
+                "my_instance_spend" => db_update
+                    .my_instance_spend
+                    .append(my_instance_spend_table::parse_table_update(table_update)?),
                 "my_notices" => db_update
                     .my_notices
                     .append(my_notices_table::parse_table_update(table_update)?),
@@ -528,6 +581,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.my_instance_players = cache
             .apply_diff_to_table::<InstancePlayer>("my_instance_players", &self.my_instance_players)
             .with_updates_by_pk(|row| &row.identity);
+        diff.my_instance_spend = cache
+            .apply_diff_to_table::<InstanceSpend>("my_instance_spend", &self.my_instance_spend)
+            .with_updates_by_pk(|row| &row.spend_id);
         diff.my_notices = cache
             .apply_diff_to_table::<PlayerNotice>("my_notices", &self.my_notices)
             .with_updates_by_pk(|row| &row.id);
@@ -572,6 +628,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_instance_players" => db_update
                     .my_instance_players
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "my_instance_spend" => db_update
+                    .my_instance_spend
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_notices" => db_update
                     .my_notices
@@ -628,6 +687,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "my_instance_players" => db_update
                     .my_instance_players
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "my_instance_spend" => db_update
+                    .my_instance_spend
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "my_notices" => db_update
                     .my_notices
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -671,6 +733,7 @@ pub struct AppliedDiff<'r> {
     my_instance_meter: __sdk::TableAppliedDiff<'r, PlayerMeter>,
     my_instance_monsters: __sdk::TableAppliedDiff<'r, InstanceMonster>,
     my_instance_players: __sdk::TableAppliedDiff<'r, InstancePlayer>,
+    my_instance_spend: __sdk::TableAppliedDiff<'r, InstanceSpend>,
     my_notices: __sdk::TableAppliedDiff<'r, PlayerNotice>,
     my_party: __sdk::TableAppliedDiff<'r, Party>,
     my_party_members: __sdk::TableAppliedDiff<'r, PartyMember>,
@@ -716,6 +779,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<InstancePlayer>(
             "my_instance_players",
             &self.my_instance_players,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<InstanceSpend>(
+            "my_instance_spend",
+            &self.my_instance_spend,
             event,
         );
         callbacks.invoke_table_row_callbacks::<PlayerNotice>("my_notices", &self.my_notices, event);
@@ -1408,6 +1476,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         my_instance_meter_table::register_table(client_cache);
         my_instance_monsters_table::register_table(client_cache);
         my_instance_players_table::register_table(client_cache);
+        my_instance_spend_table::register_table(client_cache);
         my_notices_table::register_table(client_cache);
         my_party_table::register_table(client_cache);
         my_party_members_table::register_table(client_cache);
@@ -1424,6 +1493,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "my_instance_meter",
         "my_instance_monsters",
         "my_instance_players",
+        "my_instance_spend",
         "my_notices",
         "my_party",
         "my_party_members",

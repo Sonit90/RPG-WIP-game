@@ -153,6 +153,7 @@ pub fn matchmaking_tick(ctx: &ReducerContext, _timer: MatchmakingTimer) -> Resul
                 talent_points: ticket.talent_points,
                 key_dungeon_id: ticket.key_dungeon_id.clone(),
                 key_level: ticket.key_level,
+                key_modifiers: ticket.key_modifiers.clone(),
                 ready: ReadyTag::Pending,
                 presence: PresenceTag::Present,
                 disconnected_at: None,

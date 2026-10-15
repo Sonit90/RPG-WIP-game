@@ -30,6 +30,7 @@ mod instance;
 mod level;
 mod loot;
 mod matchmaking;
+mod modifiers;
 mod movement;
 mod party;
 mod results;

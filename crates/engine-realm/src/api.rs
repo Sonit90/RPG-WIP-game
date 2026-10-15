@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::loadout::{BagItem, EquippedItem, SlotRef};
+use crate::modifiers::KeyModifier;
 use crate::role::Role;
 
 /// `POST /api/v1/auth/login`.
@@ -112,6 +113,10 @@ pub struct KeySummary {
     pub dungeon_name: String,
     /// Key level.
     pub level: u32,
+    /// The modifiers the key carries, with their reroll magnitudes. Rolled by the API when the
+    /// key is created or its level changes.
+    #[serde(default)]
+    pub modifiers: Vec<KeyModifier>,
 }
 
 /// `GET /api/v1/characters/{id}`: everything about one character.
@@ -303,6 +308,65 @@ pub struct DungeonResult {
     /// Talent points granted. Applied once with the result, like everything else in it.
     #[serde(default)]
     pub talent_points: u32,
+    /// What the character spent during the run (key rerolls), `(resource id, amount)`. Debited
+    /// from the loadout in the transaction that records the result, success or failure, and
+    /// never below zero.
+    #[serde(default)]
+    pub currency_spent: Vec<(String, u32)>,
+    /// A member who did not open the run: whether their own key rises (the realm worked out
+    /// that it was lower than the used key and the run succeeded).
+    #[serde(default)]
+    pub participant_key_bump: bool,
+    /// The level of the member's own key when they queued: the compare-and-set guard of their
+    /// bump. Zero when there is none.
+    #[serde(default)]
+    pub own_key_level: u32,
+}
+
+/// A change to a character's key a result asks for, applied only if the key still has
+/// `expected_level` (so it can never rise twice for one run).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyUpdate {
+    /// The level the key must still have.
+    pub expected_level: u32,
+    /// The level it becomes.
+    pub new_level: u32,
+}
+
+impl DungeonResult {
+    /// The key change this result asks for, if any. Only a success moves a key: the owner's
+    /// key from the level used to `key_level_after`, a participant's from their own level
+    /// (`own_key_level`) when the realm flagged the bump.
+    #[must_use]
+    pub fn key_update(&self) -> Option<KeyUpdate> {
+        if !self.success || self.key_level_after == 0 {
+            return None;
+        }
+        let expected_level = if self.key_owner {
+            self.key_level
+        } else if self.participant_key_bump {
+            self.own_key_level
+        } else {
+            return None;
+        };
+        (expected_level >= 1 && self.key_level_after > expected_level).then_some(KeyUpdate {
+            expected_level,
+            new_level: self.key_level_after,
+        })
+    }
+
+    /// What to debit from the loadout, as `(resource id, amount)` with repeats merged.
+    #[must_use]
+    pub fn debits(&self) -> Vec<(String, u64)> {
+        let mut merged: Vec<(String, u64)> = Vec::new();
+        for (id, amount) in &self.currency_spent {
+            match merged.iter_mut().find(|(existing, _)| existing == id) {
+                Some((_, total)) => *total = total.saturating_add(u64::from(*amount)),
+                None => merged.push((id.clone(), u64::from(*amount))),
+            }
+        }
+        merged
+    }
 }
 
 /// Whether the realm has a character engaged: queued, in a party, or in an instance.
@@ -382,5 +446,126 @@ mod tests {
         assert_eq!(json["gear_score"], 40);
         let back: CharacterDetail = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, detail);
+    }
+
+    fn winning_result() -> DungeonResult {
+        DungeonResult {
+            result_id: "1:a".into(),
+            account_id: "a".into(),
+            character_id: "c".into(),
+            dungeon_id: "graveyard_crypt".into(),
+            success: true,
+            duration_us: 1,
+            experience: 0,
+            key_level: 5,
+            key_owner: false,
+            key_level_after: 0,
+            resources: vec![],
+            damage_report: None,
+            talent_points: 0,
+            currency_spent: vec![],
+            participant_key_bump: false,
+            own_key_level: 0,
+        }
+    }
+
+    #[test]
+    fn the_owners_key_is_guarded_by_the_level_used() {
+        let result = DungeonResult {
+            key_owner: true,
+            key_level_after: 6,
+            ..winning_result()
+        };
+        assert_eq!(
+            result.key_update(),
+            Some(KeyUpdate {
+                expected_level: 5,
+                new_level: 6
+            })
+        );
+        // A failure or a claim that does not rise moves nothing.
+        assert_eq!(
+            DungeonResult {
+                success: false,
+                ..result.clone()
+            }
+            .key_update(),
+            None
+        );
+        assert_eq!(
+            DungeonResult {
+                key_level_after: 5,
+                ..result.clone()
+            }
+            .key_update(),
+            None
+        );
+        assert_eq!(
+            DungeonResult {
+                key_level_after: 0,
+                ..result
+            }
+            .key_update(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_participants_key_is_guarded_by_their_own_level() {
+        let bump = DungeonResult {
+            participant_key_bump: true,
+            own_key_level: 2,
+            key_level_after: 3,
+            ..winning_result()
+        };
+        assert_eq!(
+            bump.key_update(),
+            Some(KeyUpdate {
+                expected_level: 2,
+                new_level: 3
+            })
+        );
+        assert_eq!(
+            DungeonResult {
+                participant_key_bump: false,
+                ..bump.clone()
+            }
+            .key_update(),
+            None
+        );
+        assert_eq!(
+            DungeonResult {
+                success: false,
+                ..bump.clone()
+            }
+            .key_update(),
+            None
+        );
+        assert_eq!(
+            DungeonResult {
+                own_key_level: 0,
+                ..bump.clone()
+            }
+            .key_update(),
+            None
+        );
+        assert_eq!(
+            DungeonResult {
+                own_key_level: 3,
+                ..bump
+            }
+            .key_update(),
+            None
+        );
+    }
+
+    #[test]
+    fn debits_merge_repeats() {
+        let result = DungeonResult {
+            currency_spent: vec![("aether_shard".into(), 1), ("aether_shard".into(), 2)],
+            ..winning_result()
+        };
+        assert_eq!(result.debits(), vec![("aether_shard".to_owned(), 3)]);
+        assert!(winning_result().debits().is_empty());
     }
 }

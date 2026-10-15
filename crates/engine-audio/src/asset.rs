@@ -315,6 +315,12 @@ pub enum SoundId {
     ModifierPlagueArm,
     /// A festering corpse bursting: a wet burst.
     ModifierPlagueExplode,
+    /// One tick of the key reroll's dice rolling: played over and over while the reveal runs.
+    ModifierReroll,
+    /// The reroll landing and the modifier getting stronger: a bright rising stinger.
+    ModifierResult,
+    /// The reroll landing and the modifier getting weaker: a falling stinger.
+    ModifierResultWeak,
     /// One step.
     Footstep,
     /// The arena's wind. Loops forever.
@@ -330,7 +336,7 @@ pub enum SoundId {
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 50;
+pub const SOUND_COUNT: usize = 53;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
@@ -379,6 +385,9 @@ impl SoundId {
         Self::ModifierBeamsStart,
         Self::ModifierPlagueArm,
         Self::ModifierPlagueExplode,
+        Self::ModifierReroll,
+        Self::ModifierResult,
+        Self::ModifierResultWeak,
         Self::Footstep,
         Self::AmbientWind,
         Self::AmbientEmber,
@@ -968,6 +977,49 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     .variations(3)
     .gain(0.65)
     .limit(4, 0.06),
+    // ---- The key reroll: a dry tick while the dice roll, then one of two stingers ---------
+    SoundDesc::sfx(
+        "modifier_reroll",
+        UI,
+        Recipe::new(0.07)
+            .tone(0.8, 760.0, 560.0)
+            .noise(0.3, 5_200.0, 2_400.0)
+            .envelope(0.001, 0.0, 3.2),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.32)
+    .variations(2)
+    .jitter(0.06, 0.0)
+    .limit(2, 0.04),
+    SoundDesc::sfx(
+        "modifier_result",
+        UI,
+        Recipe::new(0.7)
+            .tone(0.9, 523.0, 1_046.0)
+            .tone(0.4, 784.0, 1_568.0)
+            .noise(0.15, 7_000.0, 5_000.0)
+            .envelope(0.005, 0.25, 1.8),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "modifier_result_weak",
+        UI,
+        Recipe::new(0.7)
+            .tone(0.9, 523.0, 196.0)
+            .tone(0.4, 392.0, 147.0)
+            .noise(0.2, 1_800.0, 400.0)
+            .envelope(0.005, 0.25, 1.8),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
     // ---- The character ------------------------------------------------------------------
     SoundDesc::sfx(
         "footstep",

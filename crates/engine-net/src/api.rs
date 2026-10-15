@@ -272,6 +272,39 @@ impl ApiClient {
         )
     }
 
+    /// Lowers the character's key one level (free), dropping the modifiers the lower level has
+    /// no slot for.
+    ///
+    /// # Errors
+    ///
+    /// The key is already at its lowest level, the character is engaged (queued, in a party or
+    /// a dungeon), is not the caller's, or the server is unreachable.
+    pub fn downgrade_key(&self, token: &str, id: &str) -> Result<CharacterDetail, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/key/downgrade", path_segment(id)),
+            Some(token),
+            &serde_json::json!({}),
+            Category::Persistence,
+        )
+    }
+
+    /// Strips the character's key of its modifiers, for gold.
+    ///
+    /// # Errors
+    ///
+    /// The key has no modifiers, there is too little gold, the character is engaged, is not the
+    /// caller's, or the server is unreachable.
+    pub fn cleanse_key(&self, token: &str, id: &str) -> Result<CharacterDetail, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/key/cleanse", path_segment(id)),
+            Some(token),
+            &serde_json::json!({}),
+            Category::Persistence,
+        )
+    }
+
     /// The economy catalog: resources, salvage yield, exchanges.
     ///
     /// # Errors

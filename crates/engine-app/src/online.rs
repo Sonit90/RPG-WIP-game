@@ -66,6 +66,7 @@ use engine_presentation::ui::frontend::{
     FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard,
     QueueCard, ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
 };
+use engine_presentation::ui::modifiers::{ModifierLine, ModifierPanelView, Reveal};
 use engine_presentation::ui::recount::{RecountRow, RecountScope};
 use engine_realm::api::{CharacterSummary, EconomyInfo};
 use engine_realm::catalog::Catalog;
@@ -75,7 +76,7 @@ use engine_realm::matchmaking::MatchmakingConfig;
 use engine_realm::movement::{BarrierKind, MovementRules, barriers_of};
 use engine_realm::party::{PartyState, ReadyResponse};
 use engine_realm::{ErrorCategory, Role};
-use engine_render_data::ui::{UiDrawList, UiScale};
+use engine_render_data::ui::{UiDrawList, UiIcon, UiScale};
 
 /// The remembered session, sealed with DPAPI for the current Windows user.
 pub struct DpapiTokenStore {
@@ -382,6 +383,9 @@ pub struct OnlineSession {
     salvage_tray: Vec<u32>,
     /// Chest loot (or its mail) the bridge may not have persisted yet.
     loot_watch: Option<LootWatch>,
+    /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
+    /// reveal plays when the counter grows past it.
+    seen_reroll: Option<(u64, u32)>,
 }
 
 /// Re-fetching the character after chest loot, until the item shows up in the bag or mailbox.
@@ -477,6 +481,7 @@ impl OnlineSession {
             stored_loadout: None,
             salvage_tray: Vec::new(),
             loot_watch: None,
+            seen_reroll: None,
         })
     }
 
@@ -1417,6 +1422,20 @@ impl OnlineSession {
                     });
                 }
             }
+            FrontEndAction::DowngradeKey => {
+                if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
+                {
+                    self.set_busy(BusyKind::Workshop, "Lowering the key...");
+                    self.client.send(NetCommand::DowngradeKey { character_id });
+                }
+            }
+            FrontEndAction::CleanseKey => {
+                if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
+                {
+                    self.set_busy(BusyKind::Workshop, "Cleansing the key...");
+                    self.client.send(NetCommand::CleanseKey { character_id });
+                }
+            }
             FrontEndAction::Exchange(exchange_id) => {
                 if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
                 {
@@ -1585,7 +1604,110 @@ impl OnlineSession {
                 key.dungeon_name.clone()
             },
             level: key.level,
+            modifiers: self.modifier_lines(&key.modifiers),
+            can_downgrade: self
+                .catalog
+                .dungeon(&key.dungeon_id)
+                .is_some_and(|dungeon| key.level > dungeon.keys.min_level.max(1)),
+            cleanse_cost: self.catalog.modifiers().config().cleanse_gold_cost,
+            gold: character
+                .resources
+                .iter()
+                .find(|(id, _)| id == "gold")
+                .map_or(0, |(_, amount)| *amount),
         })
+    }
+
+    /// A key's modifiers as the interface lists them: name, icon, description, magnitude.
+    fn modifier_lines(&self, mods: &[engine_realm::modifiers::KeyModifier]) -> Vec<ModifierLine> {
+        mods.iter()
+            .filter_map(|modifier| {
+                let definition = self.catalog.modifiers().modifier(&modifier.id)?;
+                Some(ModifierLine {
+                    icon: modifier_icon(definition.kind),
+                    name: definition.name.clone(),
+                    description: definition.description.clone(),
+                    magnitude_pct: modifier.magnitude_pct,
+                })
+            })
+            .collect()
+    }
+
+    /// The Modifier panel's content while the player is in a run: the instance's modifiers
+    /// (rerolls included), how much of the dungeon is cleared, the reroll's price and what the
+    /// player can still spend. `None` outside an instance.
+    #[must_use]
+    pub fn modifier_panel(&self) -> Option<ModifierPanelView> {
+        let instance = self.mirror.instance.as_ref()?;
+        let config = self.catalog.modifiers().config();
+        let (mut killed, mut total) = (0, 0);
+        for monster in self.mirror.monsters.values() {
+            let boss = EnemyKind::from_id(&monster.archetype).is_some_and(EnemyKind::is_boss);
+            if monster.key >= engine_realm::combat::instance::SUMMONED_KEY_BASE || boss {
+                continue;
+            }
+            total += 1;
+            if !monster.alive {
+                killed += 1;
+            }
+        }
+        Some(ModifierPanelView {
+            key_level: instance.key_level,
+            lines: self.modifier_lines(&instance.modifiers),
+            killed,
+            total,
+            unlock_pct: (config.reroll_unlock_fraction * 100.0).round() as u32,
+            rerolls_left: config.max_rerolls_per_run.saturating_sub(instance.rerolls),
+            cost: config.reroll_cost,
+            resource: self.resource_name(&config.reroll_resource),
+            available: self
+                .mirror
+                .spend
+                .as_ref()
+                .map_or(0, |spend| spend.available()),
+            reward_bonus_pct: instance.reward_bonus_pct,
+        })
+    }
+
+    /// The reroll the server has made since this was last asked, for the panel to animate.
+    /// Each reroll is returned once; one already there when the client first saw the instance
+    /// (a reconnect mid-run) is not replayed.
+    pub fn take_reveal(&mut self) -> Option<Reveal> {
+        let instance = self.mirror.instance.as_ref()?;
+        let seq = instance.last_reroll.as_ref().map_or(0, |event| event.seq);
+        let seen = match self.seen_reroll {
+            Some((id, seen)) if id == instance.id => seen,
+            _ => {
+                self.seen_reroll = Some((instance.id, seq));
+                return None;
+            }
+        };
+        if seq <= seen {
+            return None;
+        }
+        let event = instance.last_reroll.clone()?;
+        self.seen_reroll = Some((instance.id, seq));
+        let definition = self.catalog.modifiers().modifier(&event.modifier);
+        Some(Reveal {
+            by: event.by,
+            modifier: definition.map_or_else(|| event.modifier.clone(), |d| d.name.clone()),
+            delta_pct: event.delta_pct,
+            strengthen_pct: definition
+                .map_or(60, |d| (d.reroll.strengthen_chance * 100.0).round() as u32),
+        })
+    }
+
+    /// Asks the realm to reroll the key's `index`th modifier. The realm decides.
+    pub fn request_reroll(&mut self, index: usize) {
+        if let Ok(index) = u8::try_from(index) {
+            self.client.send(NetCommand::RerollModifier(index));
+        }
+    }
+
+    /// Whether the local player is inside an instance (the Modifier panel's cue).
+    #[must_use]
+    pub fn in_instance(&self) -> bool {
+        self.mirror.instance.is_some()
     }
 
     /// The hub panel for the selected character.
@@ -1843,6 +1965,11 @@ impl OnlineSession {
                     gear_score: m.gear_score,
                     key_level: (m.key_dungeon_id == party.dungeon_id && m.key_level >= 1)
                         .then_some(m.key_level),
+                    key_modifiers: if m.key_dungeon_id == party.dungeon_id && m.key_level >= 1 {
+                        self.modifier_lines(&m.key_modifiers)
+                    } else {
+                        Vec::new()
+                    },
                     ready: match m.ready {
                         ReadyResponse::Pending => ReadyState::Waiting,
                         ReadyResponse::Accepted => ReadyState::Ready,
@@ -1866,6 +1993,12 @@ impl OnlineSession {
                     .map(|d| d.description.clone())
                     .unwrap_or_default(),
                 key_level: party.key_level,
+                key_modifiers: owner
+                    .and_then(|account| {
+                        self.mirror.members.iter().find(|m| m.account_id == account)
+                    })
+                    .map(|m| self.modifier_lines(&m.key_modifiers))
+                    .unwrap_or_default(),
                 key_owner: owner.and_then(|account| {
                     self.mirror
                         .members
@@ -1907,6 +2040,7 @@ impl OnlineSession {
                     key_level: summary.key_level,
                     key_owner: summary.key_owner,
                     key_level_after: summary.key_level_after,
+                    bonus_pct: instance.reward_bonus_pct,
                     duration_seconds: u64::try_from(summary.duration_us / engine_realm::SECOND)
                         .unwrap_or(0),
                     experience: summary.experience,
@@ -2894,6 +3028,15 @@ fn busy_settled(kind: BusyKind, mirror: &RealmMirror) -> bool {
     }
 }
 
+/// A modifier's picture.
+fn modifier_icon(kind: engine_game::modifier::ModifierKind) -> UiIcon {
+    use engine_game::modifier::ModifierKind;
+    match kind {
+        ModifierKind::RotatingBeams => UiIcon::ModifierRotatingBeams,
+        ModifierKind::PlagueExplosion => UiIcon::ModifierPlagueExplosion,
+    }
+}
+
 /// Whether a run's result changes the character (so there is something to wait for).
 fn expects_rewards(summary: &RunSummaryInfo) -> bool {
     summary.experience > 0
@@ -2973,6 +3116,11 @@ mod tests {
             state,
             countdown_ends_at: None,
             barrier_open: false,
+            key_level: 1,
+            modifiers: Vec::new(),
+            rerolls: 0,
+            reward_bonus_pct: 0,
+            last_reroll: None,
         }
     }
 

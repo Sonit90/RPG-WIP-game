@@ -100,6 +100,14 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
         &owner.key_dungeon_id,
         loaded.party.key_level,
     )?;
+    let catalog = crate::level::catalog()?;
+    let rules = catalog.modifiers();
+    // The inserted key's modifiers, as its owner's snapshot carried them: every member saw
+    // them before the start, and nothing here picks or changes them.
+    let key_mods = rules.sanitize(
+        loaded.party.key_level,
+        &engine_realm::modifiers::decode_modifiers(&owner.key_modifiers),
+    );
     let party = transition(ctx, &loaded.party, PartyState::Starting)?;
 
     let instance = ctx
@@ -116,6 +124,11 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
             barrier_open: false,
             created_at: ctx.timestamp,
             finished_at: None,
+            modifiers: engine_realm::modifiers::encode_modifiers(&key_mods),
+            rerolls: 0,
+            reward_bonus_pct: 0,
+            reroll_seq: 0,
+            last_reroll: String::new(),
         })
         .map_err(|_| RealmError::dungeon("This party already has a dungeon."))?;
     ctx.db.party().id().update(Party {
@@ -127,7 +140,6 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
     // The party, behind the barrier, at the dungeon's start points in party order.
     let max_health =
         engine_game::character::CharacterSheet::bare(engine_game::hero::Hero::Warrior).max_health();
-    let catalog = crate::level::catalog()?;
     for member in &loaded.members {
         let point = dungeon.definition.spawn_point(usize::from(member.slot));
         let health = catalog
@@ -135,6 +147,21 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
             .map_or(max_health, |definition| {
                 engine_game::character::CharacterSheet::starting(definition.hero).max_health()
             });
+        // What the member can spend on a reroll: the currency in the loadout they queued with.
+        let reroll_resource = rules.config().reroll_resource.clone();
+        let balance = serde_json::from_str::<engine_realm::loadout::Loadout>(&member.loadout)
+            .ok()
+            .and_then(|loadout| loadout.resources.get(&reroll_resource).copied())
+            .unwrap_or(0);
+        ctx.db.instance_spend().insert(InstanceSpend {
+            spend_id: crate::modifiers::spend_id(instance.id, &member.account_id),
+            identity: member.identity,
+            instance_id: instance.id,
+            account_id: member.account_id.clone(),
+            resource: reroll_resource,
+            balance,
+            spent: 0,
+        });
         ctx.db.instance_player().insert(InstancePlayer {
             identity: member.identity,
             instance_id: instance.id,
@@ -234,6 +261,8 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
     };
     // Chest items nobody took go to their owners' mail.
     crate::loot::mail_unclaimed(ctx, instance_id);
+    // Currency spent on a run that never produced a result is still spent.
+    settle_spend(ctx, &instance, None);
     if let Ok(cleaning) = advance(ctx, &instance, InstanceState::CleaningUp) {
         let _ = advance(ctx, &cleaning, InstanceState::Destroyed);
     }
@@ -255,6 +284,16 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
         .collect();
     for id in monsters {
         ctx.db.instance_monster().id().delete(id);
+    }
+    let spends: Vec<String> = ctx
+        .db
+        .instance_spend()
+        .instance_id()
+        .filter(instance_id)
+        .map(|spend| spend.spend_id)
+        .collect();
+    for id in spends {
+        ctx.db.instance_spend().spend_id().delete(&id);
     }
     let summaries: Vec<String> = ctx
         .db
@@ -397,10 +436,28 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         }
         let is_owner = key_owner == Some(player.identity);
         let key_level = instance.key_level.max(1);
+        // A key modifier reroll sets a reward bonus: more of everything a successful run pays.
         let rewards =
-            engine_realm::rewards::run_rewards(&dungeon.definition, key_level, success, is_owner);
+            engine_realm::rewards::run_rewards(&dungeon.definition, key_level, success, is_owner)
+                .with_bonus(if success { instance.reward_bonus_pct } else { 0 });
         let experience = rewards.experience;
-        let key_level_after = rewards.key_level_after.unwrap_or(0);
+        // A member whose own key was lower than the one used rises one level with the run.
+        let own_level = member
+            .as_ref()
+            .filter(|m| m.key_dungeon_id == instance.dungeon_id)
+            .map_or(0, |m| m.key_level);
+        let participant_bump = engine_realm::key::participant_progress(
+            &dungeon.definition.keys,
+            key_level,
+            own_level,
+            success,
+            is_owner,
+        );
+        let key_level_after = rewards
+            .key_level_after
+            .or(participant_bump)
+            .unwrap_or(0);
+        let currency_spent = take_spend(ctx, instance_id, &player.account_id);
         let resources =
             serde_json::to_string(&rewards.resources).unwrap_or_else(|_| "[]".to_owned());
         ctx.db.pending_result().insert(PendingResult {
@@ -423,6 +480,10 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 .map(|(_, report)| report.clone())
                 .unwrap_or_default(),
             talent_points: rewards.talent_points,
+            currency_spent: serde_json::to_string(&currency_spent)
+                .unwrap_or_else(|_| "[]".to_owned()),
+            participant_key_bump: participant_bump.is_some(),
+            own_key_level: if participant_bump.is_some() { own_level } else { 0 },
         });
         ctx.db.run_summary().insert(RunSummary {
             result_id: format!("{instance_id}:{}", player.account_id),
@@ -471,6 +532,84 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         instance.dungeon_id
     );
     Ok(())
+}
+
+/// Takes a player's spend row out of the instance and returns what it holds to be debited:
+/// `(resource, amount)`, empty when they spent nothing.
+fn take_spend(ctx: &ReducerContext, instance_id: u64, account_id: &str) -> Vec<(String, u32)> {
+    let id = crate::modifiers::spend_id(instance_id, account_id);
+    let Some(spend) = ctx.db.instance_spend().spend_id().find(&id) else {
+        return Vec::new();
+    };
+    ctx.db.instance_spend().spend_id().delete(&id);
+    if spend.spent == 0 {
+        return Vec::new();
+    }
+    vec![(
+        spend.resource,
+        u32::try_from(spend.spent).unwrap_or(u32::MAX),
+    )]
+}
+
+/// Records what a player spent in a run that ends for them without a result: they left, or the
+/// instance was torn down before it finished. A result with no rewards and no key change, so the
+/// persistence API still debits the currency exactly once (its `result_id` is the idempotency
+/// key). `only` limits it to one account; `None` settles everyone still holding a spend row.
+pub fn settle_spend(ctx: &ReducerContext, instance: &DungeonInstance, only: Option<&str>) {
+    let rows: Vec<InstanceSpend> = ctx
+        .db
+        .instance_spend()
+        .instance_id()
+        .filter(instance.id)
+        .filter(|spend| only.is_none_or(|account| spend.account_id == account))
+        .collect();
+    for spend in rows {
+        let spent = take_spend(ctx, instance.id, &spend.account_id);
+        let result_id = format!("{}:{}", instance.id, spend.account_id);
+        if spent.is_empty() || ctx.db.pending_result().result_id().find(&result_id).is_some() {
+            continue;
+        }
+        let character_id = ctx
+            .db
+            .party_member()
+            .identity()
+            .find(spend.identity)
+            .map(|member| member.character_id)
+            .or_else(|| {
+                ctx.db
+                    .party_member()
+                    .party_id()
+                    .filter(instance.party_id)
+                    .find(|member| member.account_id == spend.account_id)
+                    .map(|member| member.character_id)
+            })
+            .unwrap_or_default();
+        ctx.db.pending_result().insert(PendingResult {
+            result_id,
+            account_id: spend.account_id.clone(),
+            character_id,
+            dungeon_id: instance.dungeon_id.clone(),
+            instance_id: instance.id,
+            success: false,
+            duration_us: micros(ctx.timestamp) - micros(instance.created_at),
+            experience: 0,
+            created_at: ctx.timestamp,
+            key_level: instance.key_level.max(1),
+            key_owner: false,
+            key_level_after: 0,
+            resources: "[]".to_owned(),
+            damage_report: String::new(),
+            talent_points: 0,
+            currency_spent: serde_json::to_string(&spent).unwrap_or_else(|_| "[]".to_owned()),
+            participant_key_bump: false,
+            own_key_level: 0,
+        });
+        log::info!(
+            "event=spend_settled instance_id={} account_id={}",
+            instance.id,
+            spend.account_id
+        );
+    }
 }
 
 /// Expires what has waited too long: queue tickets of the departed, members past their

@@ -1,7 +1,15 @@
 {
   "version": 1,
-  "notes": "Dungeon key modifiers and the key-level progression table. Percentages are whole numbers (5.0 is five per cent) and, for damage, of the victim's maximum health. A modifier's strength is `1 + scaling_per_level * (key level - introduced_at_level)`, times `1 + magnitude_pct / 100` from rerolls.",
+  "notes": "Dungeon key modifiers, the key-level progression table and the reroll / cleanse tunables (`config`: a reroll unlocks once `reroll_unlock_fraction` of the placed monsters are dead, costs `reroll_cost` of `reroll_resource`, at most `max_rerolls_per_run` per run for the whole party, and a run that rerolled and succeeds pays `reroll_reward_bonus_pct` more; a cleanse costs `cleanse_gold_cost` gold). Percentages are whole numbers (5.0 is five per cent) and, for damage, of the victim's maximum health. A modifier's strength is `1 + scaling_per_level * (key level - introduced_at_level)`, times `1 + magnitude_pct / 100` from rerolls.",
   "magnitude_limits": { "min_pct": -50, "max_pct": 100 },
+  "config": {
+    "reroll_unlock_fraction": 0.5,
+    "reroll_resource": "aether_shard",
+    "reroll_cost": 1,
+    "max_rerolls_per_run": 1,
+    "reroll_reward_bonus_pct": 25,
+    "cleanse_gold_cost": 100
+  },
   "modifiers": [
     {
       "id": "rotating_beams",

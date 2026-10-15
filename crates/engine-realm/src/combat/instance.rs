@@ -461,6 +461,32 @@ impl CombatInstance {
         self.sim.set_modifiers(modifiers);
     }
 
+    /// Sets the run's reward bonus, per cent: the key reroll's incentive. Forwarded to the
+    /// simulation's loot rules (`Simulation::set_reward_bonus_pct`), so drops rolled from now on
+    /// use it; the realm scales the run's resource payout with the same number.
+    pub fn set_reward_bonus(&mut self, pct: u32) {
+        self.sim.set_reward_bonus_pct(pct);
+    }
+
+    /// The run's reward bonus, per cent.
+    #[must_use]
+    pub fn reward_bonus(&self) -> u32 {
+        self.sim.reward_bonus_pct()
+    }
+
+    /// How much of the dungeon's placed monsters are dead: `(killed, total)`, boss and its adds
+    /// excluded. What unlocks a key reroll (`Simulation::dungeon_kill_progress`).
+    #[must_use]
+    pub fn kill_progress(&self) -> (u32, u32) {
+        self.sim.dungeon_kill_progress()
+    }
+
+    /// Slays placed monsters until `fraction` of them are dead; returns how many. The realm's
+    /// operator tool for reaching the reroll's unlock (see `Simulation::slay_placed_until`).
+    pub fn slay_placed_until(&mut self, fraction: f32) -> u32 {
+        self.sim.slay_placed_until(fraction)
+    }
+
     /// The fight rebuilt from the tables after the server lost it (a restart, a fresh module
     /// instance). Placed monsters keep their keys; ones the tables say are dead are removed;
     /// summoned ones are gone; casts, threat and cooldowns start over.

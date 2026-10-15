@@ -77,6 +77,8 @@ pub mod mailbox;
 /// The dungeon map's design tokens: colour, type, spacing, radii, motion.
 pub mod map_style;
 pub mod menu;
+/// The Modifier panel: a running dungeon's key modifiers and the reroll.
+pub mod modifiers;
 /// The Monster Combat Playground's panels: the library, the test controls, the encounter.
 pub mod monster_playground;
 pub mod paint;

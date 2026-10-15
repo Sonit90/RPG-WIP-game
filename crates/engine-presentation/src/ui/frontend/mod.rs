@@ -34,6 +34,8 @@ use engine_render_data::ui::{TextAlign, TextStyle, UiColor, UiDrawList, UiRect, 
 
 pub use text_field::{FieldKeys, FieldOutcome, TextField};
 
+use crate::ui::modifiers::ModifierLine;
+
 /// Which screen is up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
@@ -116,6 +118,14 @@ pub struct KeyCard {
     pub dungeon: String,
     /// Its level.
     pub level: u32,
+    /// The modifiers it carries.
+    pub modifiers: Vec<ModifierLine>,
+    /// Whether a downgrade is possible (the key is above its dungeon's lowest level).
+    pub can_downgrade: bool,
+    /// What a cleanse costs, in gold.
+    pub cleanse_cost: u32,
+    /// How much gold the character holds.
+    pub gold: u64,
 }
 
 impl PartyCard {
@@ -242,8 +252,11 @@ pub struct CompletionCard {
     pub key_level: u32,
     /// Whether the local player's key was the one used.
     pub key_owner: bool,
-    /// The owner's key level after the run.
+    /// The local player's own key level after the run (the owner's raised key, or a participant's
+    /// lower key that rose); zero when it did not change.
     pub key_level_after: u32,
+    /// The reward bonus a reroll gave the run, per cent.
+    pub bonus_pct: u32,
     /// How long it took.
     pub duration_seconds: u64,
     /// Experience granted.
@@ -324,6 +337,8 @@ pub struct MemberRow {
     pub gear_score: u32,
     /// The level of the key they brought, when it opens this party's dungeon.
     pub key_level: Option<u32>,
+    /// The modifiers that key carries.
+    pub key_modifiers: Vec<ModifierLine>,
     /// Ready-check answer.
     pub ready: ReadyState,
     /// Connected.
@@ -345,6 +360,8 @@ pub struct PartyCard {
     pub description: String,
     /// The key level in the lock (0 while none is).
     pub key_level: u32,
+    /// The modifiers of the key in the lock.
+    pub key_modifiers: Vec<ModifierLine>,
     /// Whose key it is, by character name.
     pub key_owner: Option<String>,
     /// Whether the local player's key is the one in the lock.
@@ -490,6 +507,17 @@ pub enum FrontEndAction {
     SalvageTray,
     /// Make this exchange once.
     Exchange(String),
+    /// Lower the character's key one level (confirmed).
+    DowngradeKey,
+    /// Strip the character's key of its modifiers for gold (confirmed).
+    CleanseKey,
+}
+
+/// A key change waiting for the player's confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyChange {
+    Downgrade,
+    Cleanse,
 }
 
 /// The frame's input, as the front-end reads it.
@@ -547,6 +575,14 @@ enum Hit {
     TrayCell(usize),
     SalvageTray,
     Exchange(String),
+    /// The hub key panel's Downgrade button (asks to confirm).
+    KeyDowngrade,
+    /// The hub key panel's Cleanse button (asks to confirm).
+    KeyCleanse,
+    /// Confirms the pending key change.
+    KeyConfirm,
+    /// Withdraws the pending key change.
+    KeyCancel,
     /// A panel with nothing to press: it only keeps the pointer from the camera.
     Panel,
 }
@@ -562,6 +598,8 @@ pub struct FrontEndUi {
     remember: bool,
     pointer: (f32, f32),
     clock: f32,
+    /// The key change the hub key panel is asking to confirm.
+    confirm: Option<KeyChange>,
 }
 
 impl Default for FrontEndUi {
@@ -665,6 +703,7 @@ impl FrontEndUi {
             remember: true,
             pointer: (0.0, 0.0),
             clock: 0.0,
+            confirm: None,
         }
     }
 
@@ -787,6 +826,9 @@ impl FrontEndUi {
             }
         }
 
+        if view.screen != Screen::Hub || view.busy.is_some() {
+            self.confirm = None;
+        }
         if !input.pressed {
             return actions;
         }
@@ -838,6 +880,14 @@ impl FrontEndUi {
             }
             Hit::SalvageTray => actions.push(FrontEndAction::SalvageTray),
             Hit::Exchange(id) => actions.push(FrontEndAction::Exchange(id)),
+            Hit::KeyDowngrade => self.confirm = Some(KeyChange::Downgrade),
+            Hit::KeyCleanse => self.confirm = Some(KeyChange::Cleanse),
+            Hit::KeyCancel => self.confirm = None,
+            Hit::KeyConfirm => match self.confirm.take() {
+                Some(KeyChange::Downgrade) => actions.push(FrontEndAction::DowngradeKey),
+                Some(KeyChange::Cleanse) => actions.push(FrontEndAction::CleanseKey),
+                None => {}
+            },
             Hit::Panel => {}
             Hit::Dungeon(index) => actions.push(FrontEndAction::SelectDungeon(index)),
             Hit::Role(role) => actions.push(FrontEndAction::SelectRole(role)),
@@ -937,6 +987,26 @@ impl FrontEndUi {
                         layout.add(Hit::ChangeCharacter, rects.change);
                     }
                     layout.add(Hit::Logout, rects.logout);
+                    if let Some(key) = &hub.key {
+                        let keys = key_card_rects(rects.panel, key, scale);
+                        layout.add(Hit::Panel, keys.panel);
+                        let idle = view.busy.is_none() && hub.can_change_character;
+                        if idle {
+                            if self.confirm.is_some() {
+                                layout.add(Hit::KeyConfirm, keys.first);
+                                layout.add(Hit::KeyCancel, keys.second);
+                            } else {
+                                if key.can_downgrade {
+                                    layout.add(Hit::KeyDowngrade, keys.first);
+                                }
+                                if !key.modifiers.is_empty()
+                                    && key.gold >= u64::from(key.cleanse_cost)
+                                {
+                                    layout.add(Hit::KeyCleanse, keys.second);
+                                }
+                            }
+                        }
+                    }
                 }
                 if let Some(queue) = &view.queue {
                     let (panel, leave) = queue_panel(h, scale);
@@ -1032,12 +1102,17 @@ impl FrontEndUi {
             }
             Screen::KeySelect => {
                 let panel = key_panel(w, h, scale);
-                let (leave, insert) = key_buttons(panel, scale);
+                let (leave, _) = key_buttons(panel, scale);
                 if let Some(party) = &view.party
                     && view.busy.is_none()
                 {
-                    if party.my_key().is_some() {
-                        layout.add(Hit::InsertKey, insert);
+                    for (index, member) in party.members.iter().enumerate() {
+                        if member.me && member.key_level.is_some() {
+                            layout.add(
+                                Hit::InsertKey,
+                                key_insert_button(key_row(panel, index, scale), scale),
+                            );
+                        }
                     }
                     layout.add(Hit::LeaveParty, leave);
                 }
@@ -1122,7 +1197,7 @@ impl FrontEndUi {
             Screen::Title => draw_title(&mut ctx, view, w, h, self.clock),
             Screen::Login => self.draw_login(&mut ctx, view, w, h),
             Screen::Characters => draw_characters(&mut ctx, view, w, h),
-            Screen::Hub => draw_hub(&mut ctx, view, w, h, self.clock),
+            Screen::Hub => draw_hub(&mut ctx, view, self.confirm, w, h, self.clock),
             Screen::Dungeons => draw_dungeons(&mut ctx, view, w, h),
             Screen::Roles => draw_roles(&mut ctx, view, w, h),
             Screen::Workshop => draw_workshop(&mut ctx, view, w, h),
@@ -1586,6 +1661,45 @@ impl Painter<'_> {
         );
     }
 
+    /// A key's modifiers in a line: each an icon, its name and its magnitude. Returns the x
+    /// after the last. Stronger-than-designed reads red, weaker green.
+    fn modifier_chips(&mut self, x: f32, y: f32, lines: &[ModifierLine], limit: f32) -> f32 {
+        let scale = self.scale;
+        let px = move |v: f32| scale.px(v);
+        let mut x = x;
+        for line in lines {
+            let label = format!(
+                "{} {}",
+                line.name,
+                engine_realm::modifiers::magnitude_text(line.magnitude_pct)
+            );
+            let width = px(22.0) + UiFont::Medium.width(&label, px(13.0)) + px(14.0);
+            if x + width > limit {
+                break;
+            }
+            self.list.icon(
+                UiRect::new(x, y - px(2.0), px(20.0), px(20.0)),
+                line.icon,
+                [1.0, 1.0, 1.0, 1.0],
+            );
+            let color = match line.magnitude_pct.cmp(&0) {
+                std::cmp::Ordering::Greater => BAD,
+                std::cmp::Ordering::Less => GOOD,
+                std::cmp::Ordering::Equal => TEXT,
+            };
+            self.text(
+                (x + px(24.0), y + px(1.0)),
+                &label,
+                color,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            x += width;
+        }
+        x
+    }
+
     fn role_chip(&mut self, role: Role, x: f32, y: f32) -> f32 {
         let scale = self.scale;
         let px = move |v: f32| scale.px(v);
@@ -1702,8 +1816,6 @@ fn role_tiles(w: f32, h: f32, scale: UiScale) -> Vec<UiRect> {
 
 /// Where the first member's row starts inside the party panel (below the key information).
 const PARTY_ROWS_TOP: f32 = 196.0;
-/// Where the first member's row starts inside the key-selection panel.
-const KEY_ROWS_TOP: f32 = 150.0;
 
 fn member_row(panel: UiRect, index: usize, top: f32, scale: UiScale) -> UiRect {
     let px = |v: f32| scale.px(v);
@@ -1713,6 +1825,63 @@ fn member_row(panel: UiRect, index: usize, top: f32, scale: UiScale) -> UiRect {
         panel.width - px(60.0),
         px(64.0),
     )
+}
+
+/// Where a member's row starts on the key-selection panel: taller than a party row, to list
+/// the key's modifiers.
+fn key_row(panel: UiRect, index: usize, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.x + px(30.0),
+        panel.y + px(112.0) + index as f32 * px(104.0),
+        panel.width - px(60.0),
+        px(94.0),
+    )
+}
+
+/// The Insert button on the local player's key row.
+fn key_insert_button(row: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        row.right() - px(146.0),
+        row.y + px(46.0),
+        px(130.0),
+        px(36.0),
+    )
+}
+
+/// The hub's key panel, to the left of the hub panel: its rectangle and its two button slots.
+struct KeyCardRects {
+    panel: UiRect,
+    first: UiRect,
+    second: UiRect,
+}
+
+fn key_card_rects(hub: UiRect, key: &KeyCard, scale: UiScale) -> KeyCardRects {
+    let px = |v: f32| scale.px(v);
+    let width = px(300.0);
+    let mods = key.modifiers.len().max(1) as f32;
+    let to_buttons = px(78.0) + mods * px(34.0) + px(30.0);
+    let height = to_buttons + px(38.0) * 2.0 + px(8.0);
+    let panel = UiRect::new(
+        hub.x - width - px(12.0),
+        hub.bottom() - height,
+        width,
+        height,
+    );
+    let button = |i: f32| {
+        UiRect::new(
+            panel.x + px(16.0),
+            panel.y + to_buttons + i * px(38.0),
+            width - px(32.0),
+            px(32.0),
+        )
+    };
+    KeyCardRects {
+        panel,
+        first: button(0.0),
+        second: button(1.0),
+    }
 }
 
 fn kick_button(row: UiRect, scale: UiScale) -> UiRect {
@@ -2581,7 +2750,14 @@ fn draw_title(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock:
     );
 }
 
-fn draw_hub(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f32) {
+fn draw_hub(
+    ctx: &mut Painter<'_>,
+    view: &FrontEndView,
+    confirm: Option<KeyChange>,
+    w: f32,
+    h: f32,
+    clock: f32,
+) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
     if let Some(hub) = &view.hub {
@@ -2713,6 +2889,11 @@ fn draw_hub(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f
     if let Some(queue) = &view.queue {
         draw_queue_panel(ctx, queue, h, clock);
     }
+    if let Some(hub) = &view.hub
+        && let Some(key) = &hub.key
+    {
+        draw_key_card(ctx, view, hub, key, confirm, w, h);
+    }
     if let Some((level, text)) = &view.connection
         && *level != StatusLevel::Good
     {
@@ -2724,6 +2905,163 @@ fn draw_hub(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f
             14.0,
             TextAlign::Left,
         );
+    }
+}
+
+/// The hub's key panel: the key, its modifiers, and the two ways to change it.
+fn draw_key_card(
+    ctx: &mut Painter<'_>,
+    view: &FrontEndView,
+    hub: &HubCard,
+    key: &KeyCard,
+    confirm: Option<KeyChange>,
+    w: f32,
+    h: f32,
+) {
+    let _ = (w, h);
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let hub_panel = hub_rects(hub.resources.len(), view.busy.is_some(), w, h, scale).panel;
+    let rects = key_card_rects(hub_panel, key, scale);
+    let panel = rects.panel;
+    ctx.panel(panel);
+    let x = panel.x + px(16.0);
+    ctx.text_styled(
+        (x, panel.y + px(10.0)),
+        "Dungeon Key",
+        GOLD,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (x, panel.y + px(36.0)),
+        &key.text(),
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (x, panel.y + px(58.0)),
+        "Modifiers",
+        FAINT,
+        UiFont::Medium,
+        12.0,
+        TextAlign::Left,
+    );
+    if key.modifiers.is_empty() {
+        ctx.text(
+            (x, panel.y + px(80.0)),
+            "None",
+            DIM,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
+        );
+    }
+    for (index, line) in key.modifiers.iter().enumerate() {
+        let y = panel.y + px(78.0) + px(34.0) * index as f32;
+        ctx.list.icon(
+            UiRect::new(x, y, px(28.0), px(28.0)),
+            line.icon,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        ctx.text(
+            (x + px(36.0), y + px(6.0)),
+            &line.name,
+            TEXT,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (panel.right() - px(16.0), y + px(6.0)),
+            &engine_realm::modifiers::magnitude_text(line.magnitude_pct),
+            DIM,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Right,
+        );
+    }
+    let idle = view.busy.is_none() && hub.can_change_character;
+    let prompt_y = rects.first.y - px(22.0);
+    match confirm {
+        Some(KeyChange::Downgrade) => {
+            ctx.text(
+                (x, prompt_y),
+                &format!(
+                    "Lower the key to level {}? It is free.",
+                    key.level.saturating_sub(1)
+                ),
+                BUSY,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            ctx.button(
+                rects.first,
+                "Confirm Downgrade",
+                ButtonKind::Danger,
+                &Hit::KeyConfirm,
+                idle,
+            );
+            ctx.button(
+                rects.second,
+                "Cancel",
+                ButtonKind::Secondary,
+                &Hit::KeyCancel,
+                idle,
+            );
+        }
+        Some(KeyChange::Cleanse) => {
+            ctx.text(
+                (x, prompt_y),
+                &format!("Remove every modifier for {} gold?", key.cleanse_cost),
+                BUSY,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            ctx.button(
+                rects.first,
+                &format!("Confirm Cleanse ({} gold)", key.cleanse_cost),
+                ButtonKind::Danger,
+                &Hit::KeyConfirm,
+                idle,
+            );
+            ctx.button(
+                rects.second,
+                "Cancel",
+                ButtonKind::Secondary,
+                &Hit::KeyCancel,
+                idle,
+            );
+        }
+        None => {
+            ctx.text(
+                (x, prompt_y),
+                &format!("Gold: {}", key.gold),
+                DIM,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            ctx.button(
+                rects.first,
+                "Downgrade Key (free)",
+                ButtonKind::Secondary,
+                &Hit::KeyDowngrade,
+                idle && key.can_downgrade,
+            );
+            ctx.button(
+                rects.second,
+                &format!("Cleanse Key ({} gold)", key.cleanse_cost),
+                ButtonKind::Secondary,
+                &Hit::KeyCleanse,
+                idle && !key.modifiers.is_empty() && key.gold >= u64::from(key.cleanse_cost),
+            );
+        }
     }
 }
 
@@ -3235,7 +3573,7 @@ fn draw_key_select(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let Some(party) = &view.party else { return };
     ctx.text_styled(
         (panel.x + px(30.0), panel.y + px(24.0)),
-        "Choose a Key",
+        "Available Keys",
         GOLD,
         UiFont::Display,
         30.0,
@@ -3249,45 +3587,98 @@ fn draw_key_select(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         17.0,
         TextAlign::Right,
     );
-    for (i, line) in UiFont::Regular
-        .wrap(
-            "Choose whose key to use. The key's owner leads the party and sets the difficulty.",
-            px(15.0),
-            panel.width - px(60.0),
-        )
-        .iter()
-        .enumerate()
-    {
+    ctx.text(
+        (panel.x + px(30.0), panel.y + px(76.0)),
+        "Insert your own key. Its owner leads the party and sets the difficulty.",
+        TEXT,
+        UiFont::Regular,
+        15.0,
+        TextAlign::Left,
+    );
+    let busy = view.busy.is_some();
+    for (index, member) in party.members.iter().enumerate() {
+        let row = key_row(panel, index, scale);
+        let fill = if member.me {
+            [0.15, 0.14, 0.11, 1.0]
+        } else {
+            [0.09, 0.10, 0.13, 1.0]
+        };
+        ctx.list.panel(row, px(10.0), fill, fill);
+        ctx.list
+            .panel_stroke(row, px(10.0), px(1.0), [0.25, 0.26, 0.31, 1.0]);
+        ctx.role_chip(member.role, row.x + px(14.0), row.y + px(10.0));
+        let title = match member.key_level {
+            Some(level) => format!("{} - {} {}", member.player, party.dungeon, level),
+            None => format!("{} - no key for {}", member.player, party.dungeon),
+        };
         ctx.text(
-            (panel.x + px(30.0), panel.y + px(78.0) + px(22.0) * i as f32),
-            line,
-            TEXT,
-            UiFont::Regular,
-            15.0,
+            (row.x + px(110.0), row.y + px(9.0)),
+            &title,
+            if member.key_level.is_some() {
+                GOLD
+            } else {
+                FAINT
+            },
+            UiFont::SemiBold,
+            17.0,
             TextAlign::Left,
         );
-    }
-    for (index, member) in party.members.iter().enumerate() {
-        draw_member_row(
-            ctx,
-            member_row(panel, index, KEY_ROWS_TOP, scale),
-            member,
-            px(20.0),
+        ctx.text(
+            (row.x + px(14.0), row.y + px(40.0)),
+            &format!(
+                "{} \u{b7} {} \u{b7} Lv {} \u{b7} GS {}",
+                member.character, member.class, member.level, member.gear_score
+            ),
+            DIM,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
         );
+        if member.key_level.is_some() {
+            let limit = if member.me {
+                key_insert_button(row, scale).x - px(8.0)
+            } else {
+                row.right() - px(8.0)
+            };
+            if member.key_modifiers.is_empty() {
+                ctx.text(
+                    (row.x + px(14.0), row.y + px(66.0)),
+                    "No modifiers",
+                    FAINT,
+                    UiFont::Medium,
+                    13.0,
+                    TextAlign::Left,
+                );
+            } else {
+                ctx.modifier_chips(
+                    row.x + px(14.0),
+                    row.y + px(66.0),
+                    &member.key_modifiers,
+                    limit,
+                );
+            }
+        }
+        if !member.present {
+            ctx.text(
+                (row.right() - px(16.0), row.y + px(12.0)),
+                "Disconnected",
+                BAD,
+                UiFont::SemiBold,
+                14.0,
+                TextAlign::Right,
+            );
+        }
+        if member.me {
+            ctx.button(
+                key_insert_button(row, scale),
+                "Insert Key",
+                ButtonKind::Primary,
+                &Hit::InsertKey,
+                member.key_level.is_some() && !busy,
+            );
+        }
     }
-    let (leave, insert) = key_buttons(panel, scale);
-    let mine = party.my_key();
-    let busy = view.busy.is_some();
-    ctx.button(
-        insert,
-        &mine.map_or_else(
-            || "Insert My Key".to_owned(),
-            |level| format!("Insert My Key (level {level})"),
-        ),
-        ButtonKind::Primary,
-        &Hit::InsertKey,
-        mine.is_some() && !busy,
-    );
+    let (leave, _) = key_buttons(panel, scale);
     ctx.button(
         leave,
         "Leave Party",
@@ -3297,14 +3688,14 @@ fn draw_key_select(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     );
     let note = if let Some(busy) = &view.busy {
         Some((busy.clone(), BUSY))
-    } else if mine.is_none() {
+    } else if party.my_key().is_none() {
         Some((format!("You have no key for {}.", party.dungeon), BAD))
     } else {
         None
     };
     if let Some((text, color)) = note {
         ctx.text(
-            (panel.right() - px(40.0), panel.bottom() - px(100.0)),
+            (panel.right() - px(40.0), panel.bottom() - px(56.0)),
             &text,
             color,
             UiFont::Medium,
@@ -3378,6 +3769,23 @@ fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         14.0,
         TextAlign::Left,
     );
+    if party.key_modifiers.is_empty() {
+        ctx.text(
+            (panel.x + px(30.0), panel.y + px(172.0)),
+            "The key has no modifiers.",
+            FAINT,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
+        );
+    } else {
+        ctx.modifier_chips(
+            panel.x + px(30.0),
+            panel.y + px(172.0),
+            &party.key_modifiers,
+            panel.right() - px(30.0),
+        );
+    }
     for (index, member) in party.members.iter().enumerate() {
         let row = member_row(panel, index, PARTY_ROWS_TOP, scale);
         let kickable = party.i_lead && !member.me;
@@ -3529,6 +3937,20 @@ fn completion_rows(card: &CompletionCard) -> Vec<(String, String, UiColor)> {
         } else {
             ("Key".to_owned(), "Your key is unchanged".to_owned(), DIM)
         });
+    } else if card.success && card.key_level_after > 0 {
+        // A member whose own key was lower than the one used rises with the run.
+        rows.push((
+            "Your key".to_owned(),
+            format!("rose to level {}", card.key_level_after),
+            GOOD,
+        ));
+    }
+    if card.success && card.bonus_pct > 0 {
+        rows.push((
+            "Loot bonus".to_owned(),
+            format!("+{}% (key rerolled)", card.bonus_pct),
+            GOOD,
+        ));
     }
     rows.push(("Time".to_owned(), clock_text(card.duration_seconds), TEXT));
     if card.success {
@@ -3715,6 +4137,7 @@ mod tests {
             level: 1,
             gear_score: 40,
             key_level: key,
+            key_modifiers: Vec::new(),
             ready: ReadyState::Ready,
             present: true,
             leader,
@@ -3758,6 +4181,10 @@ mod tests {
                 key: Some(KeyCard {
                     dungeon: "Graveyard Crypt".into(),
                     level: 2,
+                    modifiers: vec![beams(0)],
+                    can_downgrade: true,
+                    cleanse_cost: 100,
+                    gold: 250,
                 }),
                 resources: vec![("Crypt Dust".into(), 12)],
                 can_find_dungeon: true,
@@ -3785,6 +4212,7 @@ mod tests {
             key_level: 3,
             key_owner: owner,
             key_level_after: if success { 4 } else { 3 },
+            bonus_pct: 0,
             duration_seconds: 754,
             experience: if success { 350 } else { 0 },
             resources: if success {
@@ -4307,6 +4735,10 @@ mod tests {
                     key: Some(KeyCard {
                         dungeon: "Graveyard Crypt".into(),
                         level: 2,
+                        modifiers: Vec::new(),
+                        can_downgrade: true,
+                        cleanse_cost: 100,
+                        gold: 0,
                     }),
                     resources: 12,
                 }],
@@ -4339,5 +4771,166 @@ mod tests {
                 assert!(!list.is_empty(), "{screen:?} drew nothing");
             }
         }
+    }
+
+    fn beams(magnitude_pct: i16) -> ModifierLine {
+        ModifierLine {
+            icon: engine_render_data::ui::UiIcon::ModifierRotatingBeams,
+            name: "Rotating Beams".into(),
+            description: "Beams.".into(),
+            magnitude_pct,
+        }
+    }
+
+    fn plague(magnitude_pct: i16) -> ModifierLine {
+        ModifierLine {
+            icon: engine_render_data::ui::UiIcon::ModifierPlagueExplosion,
+            name: "Plague Explosion".into(),
+            description: "Plague.".into(),
+            magnitude_pct,
+        }
+    }
+
+    fn words(list: &UiDrawList) -> Vec<String> {
+        list.commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Text { range, .. }
+                | engine_render_data::ui::UiCommand::Label { range, .. } => {
+                    Some(list.text_of(*range).to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn key_selection_lists_every_members_key_with_its_modifiers() {
+        let mut mine = member(true, false, false, Some(5));
+        mine.player = "Ash".into();
+        mine.key_modifiers = vec![beams(0), plague(0)];
+        let mut theirs = member(false, false, false, Some(3));
+        theirs.player = "Bo".into();
+        theirs.key_modifiers = vec![plague(17)];
+        let mut none = member(false, false, false, None);
+        none.player = "Cy".into();
+        let view = view_of(
+            Screen::KeySelect,
+            Some(party(vec![mine, theirs, none], false, false)),
+        );
+        let mut ui = FrontEndUi::new();
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        let words = words(&list);
+        assert!(words.contains(&"Ash - Crypt 5".to_owned()), "{words:?}");
+        assert!(words.contains(&"Bo - Crypt 3".to_owned()));
+        assert!(words.contains(&"Cy - no key for Crypt".to_owned()));
+        assert!(words.contains(&"Rotating Beams +0%".to_owned()));
+        assert!(words.contains(&"Plague Explosion +0%".to_owned()));
+        assert!(words.contains(&"Plague Explosion +17%".to_owned()));
+        // Only the local player's own key can be inserted, from their own row.
+        assert_eq!(
+            click(&mut ui, &view, &Hit::InsertKey),
+            vec![FrontEndAction::InsertKey]
+        );
+    }
+
+    #[test]
+    fn the_party_panel_shows_the_inserted_keys_modifiers() {
+        let mut card = party(
+            vec![
+                member(true, true, true, Some(3)),
+                member(false, false, false, Some(1)),
+            ],
+            true,
+            true,
+        );
+        card.key_modifiers = vec![beams(-12)];
+        let view = view_of(Screen::Party, Some(card));
+        let mut list = UiDrawList::new();
+        FrontEndUi::new().draw(&mut list, &view, VIEWPORT, scale());
+        assert!(words(&list).contains(&"Rotating Beams -12%".to_owned()));
+    }
+
+    #[test]
+    fn downgrade_and_cleanse_ask_before_they_act() {
+        let mut ui = FrontEndUi::new();
+        let view = hub_view();
+        // Nothing happens on the first press, only the question.
+        assert!(click(&mut ui, &view, &Hit::KeyDowngrade).is_empty());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(
+            words(&list)
+                .iter()
+                .any(|t| t.starts_with("Lower the key to level 1"))
+        );
+        assert!(
+            rect_of(&ui, &view, &Hit::KeyDowngrade).is_none(),
+            "buttons swap to confirm"
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::KeyConfirm),
+            vec![FrontEndAction::DowngradeKey]
+        );
+        // Cancel withdraws it.
+        click(&mut ui, &view, &Hit::KeyCleanse);
+        assert!(click(&mut ui, &view, &Hit::KeyCancel).is_empty());
+        assert!(rect_of(&ui, &view, &Hit::KeyConfirm).is_none());
+        // Cleanse names its price and then acts.
+        click(&mut ui, &view, &Hit::KeyCleanse);
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(words(&list).contains(&"Confirm Cleanse (100 gold)".to_owned()));
+        assert_eq!(
+            click(&mut ui, &view, &Hit::KeyConfirm),
+            vec![FrontEndAction::CleanseKey]
+        );
+    }
+
+    #[test]
+    fn a_cleanse_needs_gold_and_a_modifier_and_a_downgrade_needs_a_level_to_lose() {
+        let ui = FrontEndUi::new();
+        let mut poor = hub_view();
+        if let Some(key) = poor.hub.as_mut().and_then(|hub| hub.key.as_mut()) {
+            key.gold = 99;
+        }
+        assert!(rect_of(&ui, &poor, &Hit::KeyCleanse).is_none());
+        assert!(rect_of(&ui, &poor, &Hit::KeyDowngrade).is_some());
+        let mut clean = hub_view();
+        if let Some(key) = clean.hub.as_mut().and_then(|hub| hub.key.as_mut()) {
+            key.modifiers.clear();
+            key.can_downgrade = false;
+        }
+        assert!(rect_of(&ui, &clean, &Hit::KeyCleanse).is_none());
+        assert!(rect_of(&ui, &clean, &Hit::KeyDowngrade).is_none());
+        // Engaged (queued or in a party): both are locked.
+        let mut engaged = hub_view();
+        if let Some(hub) = engaged.hub.as_mut() {
+            hub.can_change_character = false;
+        }
+        assert!(rect_of(&ui, &engaged, &Hit::KeyDowngrade).is_none());
+        assert!(rect_of(&ui, &engaged, &Hit::KeyCleanse).is_none());
+    }
+
+    #[test]
+    fn completion_tells_a_participant_their_key_rose_and_the_loot_bonus() {
+        let rows = |card: &CompletionCard| -> Vec<String> {
+            completion_rows(card)
+                .into_iter()
+                .map(|(label, value, _)| format!("{label}: {value}"))
+                .collect()
+        };
+        let mut guest = completion(true, false, false);
+        guest.bonus_pct = 25;
+        let lines = rows(&guest);
+        assert!(
+            lines.contains(&"Your key: rose to level 4".to_owned()),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"Loot bonus: +25% (key rerolled)".to_owned()));
+        let mut unchanged = completion(true, false, false);
+        unchanged.key_level_after = 0;
+        assert!(!rows(&unchanged).iter().any(|r| r.starts_with("Your key")));
     }
 }

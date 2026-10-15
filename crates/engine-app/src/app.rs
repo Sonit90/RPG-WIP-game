@@ -71,6 +71,7 @@ use engine_presentation::ui::hud_edit::{EditOutcome, HudEditor, push_hud_editor}
 use engine_presentation::ui::hud_layout::{HudElementId, HudLayout};
 use engine_presentation::ui::loot_hud::LootHud;
 use engine_presentation::ui::mailbox::{MailboxMenu, MailboxOutcome, push_mailbox};
+use engine_presentation::ui::modifiers::{ModifierOutcome, ModifierWindow, push_modifiers};
 use engine_presentation::ui::monster_playground::{
     PlaygroundAction, PlaygroundKeys, PlaygroundPanels,
 };
@@ -439,6 +440,9 @@ pub struct App {
     mailbox_menu: MailboxMenu,
     /// Recount, opened from its corner button or the Recount key. Not modal.
     recount: RecountWindow,
+    /// The key's modifiers and the reroll, opened from its corner button or the Modifier key.
+    /// Online, inside an instance only. Not modal.
+    modifier_window: ModifierWindow,
     /// The realm's Recount version the window's rows were built from (online).
     recount_version: Option<u64>,
     /// Seconds until the offline rows are rebuilt from the local meter.
@@ -1374,6 +1378,7 @@ impl App {
             item_tooltip: ItemTooltip::new(),
             mailbox_menu: MailboxMenu::with_scale(ui_scale),
             recount: RecountWindow::with_scale(ui_scale),
+            modifier_window: ModifierWindow::with_scale(ui_scale),
             recount_version: None,
             recount_timer: 0.0,
             recount_for_completion: false,
@@ -2196,6 +2201,7 @@ impl App {
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
         self.refresh_recount(ctx.time().real_delta().as_secs_f32());
+        self.refresh_modifiers(ctx.time().real_delta().as_secs_f32());
 
         // Edit HUD, which replaces the interface's ordinary behaviour entirely. Nothing
         // below runs while it is on, which is what makes "a click that moves a bar cannot
@@ -2360,6 +2366,17 @@ impl App {
             self.recount.toggle();
         }
 
+        // The Modifier key: only inside an online instance, where there is a key to show.
+        if !chat_keys
+            && ctx.input().was_key_pressed(self.bindings.modifiers)
+            && self
+                .online
+                .as_ref()
+                .is_some_and(|online| online.in_instance())
+        {
+            self.modifier_window.toggle();
+        }
+
         // The mailbox key, on the same terms as the character key.
         if !chat_keys && ctx.input().was_key_pressed(self.bindings.mailbox) {
             if self.mailbox_menu.is_open() {
@@ -2449,6 +2466,36 @@ impl App {
             && recount_button.contains(ui_input.pointer.0, ui_input.pointer.1)
         {
             self.recount.toggle();
+            return;
+        }
+
+        // The Modifier panel: a click on it is its own; Reroll asks the realm, which decides.
+        match self.modifier_window.update(&ui_input, viewport) {
+            ModifierOutcome::Idle => {}
+            ModifierOutcome::Reroll(index) => {
+                if let Some(online) = self.online.as_mut() {
+                    online.request_reroll(index);
+                }
+                self.play_ui_sound(engine_audio::SoundId::UiClick);
+                return;
+            }
+            ModifierOutcome::Consumed | ModifierOutcome::Closed => {
+                self.hovered_ability = None;
+                self.hovered_slot = None;
+                if ui_input.pointer_pressed {
+                    return;
+                }
+            }
+        }
+        let modifier_button = self.game_ui.modifier_button_rect(viewport);
+        if ui_input.pointer_pressed
+            && self
+                .online
+                .as_ref()
+                .is_some_and(|online| online.in_instance())
+            && modifier_button.contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            self.modifier_window.toggle();
             return;
         }
 
@@ -2708,6 +2755,33 @@ impl App {
             },
         );
         self.recount.set_rows(vec![row]);
+    }
+
+    /// Keeps the Modifier panel in step with the realm: its content, and the reveal of a reroll
+    /// the server made (which opens it for the whole party, with the dice sounds).
+    fn refresh_modifiers(&mut self, delta: f32) {
+        let Some(online) = self.online.as_mut() else {
+            return;
+        };
+        match online.modifier_panel() {
+            Some(view) => self.modifier_window.set_view(view),
+            None => {
+                self.modifier_window.close();
+                return;
+            }
+        }
+        if let Some(reveal) = online.take_reveal() {
+            self.modifier_window.start_reveal(reveal);
+        }
+        let beats = self.modifier_window.advance(delta);
+        for _ in 0..beats.ticks.min(3) {
+            self.play_ui_sound(engine_audio::SoundId::ModifierReroll);
+        }
+        match beats.result {
+            Some(true) => self.play_ui_sound(engine_audio::SoundId::ModifierResult),
+            Some(false) => self.play_ui_sound(engine_audio::SoundId::ModifierResultWeak),
+            None => {}
+        }
     }
 
     /// Opens the mailbox, closing whatever other window was up.
@@ -3693,6 +3767,7 @@ impl App {
         self.character_menu.set_scale(scale);
         self.mailbox_menu.set_scale(scale);
         self.recount.set_scale(scale);
+        self.modifier_window.set_scale(scale);
         self.slot_menu.set_scale(scale);
         self.hud_editor.layout(scale, self.renderer.size());
         if persist && self.settings.save_if_dirty() {
@@ -4187,6 +4262,20 @@ impl App {
         }
         self.push_affected_highlights(viewport);
         self.push_loot_ui(viewport);
+        if self
+            .online
+            .as_ref()
+            .is_some_and(|online| online.in_instance())
+        {
+            let ready = self.modifier_window.view().can_reroll();
+            self.game_ui.push_modifier_button(viewport, ready);
+            push_modifiers(
+                self.game_ui.list_mut(),
+                &self.modifier_window,
+                self.ui_pointer,
+                viewport,
+            );
+        }
         push_recount(
             self.game_ui.list_mut(),
             &mut self.recount,
@@ -6432,6 +6521,13 @@ impl Application for App {
                 || self.hud_editor.is_active()
                 || self.slot_menu.is_open()
                 || self.dungeon_map.is_open()
+                || self.modifier_window.wants_pointer(
+                    {
+                        let pointer = ctx.input().mouse_position();
+                        (pointer.0 as f32, pointer.1 as f32)
+                    },
+                    self.renderer.size(),
+                )
                 || self.recount.wants_pointer(
                     {
                         let pointer = ctx.input().mouse_position();

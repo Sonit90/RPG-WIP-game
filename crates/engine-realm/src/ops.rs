@@ -126,7 +126,7 @@ pub struct CombatRow {
 pub struct InstanceInput {
     /// The instance.
     pub row: InstanceRow,
-    /// Key modifiers; none exist yet.
+    /// Key modifiers as display text, e.g. `Plague Explosion +17%`.
     pub modifiers: Vec<String>,
     /// Whether its fight is ticking.
     pub live: bool,
@@ -246,7 +246,7 @@ pub struct InstanceView {
     pub dungeon_id: String,
     /// Key level.
     pub key_level: u32,
-    /// Key modifiers; empty until modifiers exist.
+    /// Key modifiers as display text, e.g. `Plague Explosion +17%`.
     pub modifiers: Vec<String>,
     /// State key.
     pub state: String,
