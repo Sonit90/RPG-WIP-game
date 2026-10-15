@@ -45,7 +45,7 @@ mod layout {
     pub const LINE: f32 = 20.0;
     pub const REVEAL: f32 = 64.0;
     pub const MARGIN: f32 = 16.0;
-    pub const CLOSE: f32 = 22.0;
+    pub const CLOSE: f32 = super::kit::CLOSE_EDGE;
 }
 
 /// How long the dice "roll" before the result shows, seconds.
@@ -311,9 +311,12 @@ impl ModifierWindow {
         if self.reveal.is_some() {
             height += kit.px(layout::REVEAL) + kit.px(8.0);
         }
+        // Docked a fifth of the way down, but never so low that its bottom leaves the screen.
+        let top = (viewport.1 as f32 * 0.22).max(kit.px(150.0));
+        let lowest = (viewport.1 as f32 - height - kit.px(layout::MARGIN)).max(0.0);
         UiRect::new(
             kit.px(layout::MARGIN),
-            (viewport.1 as f32 * 0.22).max(kit.px(150.0)),
+            top.min(lowest),
             kit.px(layout::WIDTH),
             height,
         )
@@ -458,15 +461,15 @@ pub fn push_modifiers(
         color::TEXT_SECONDARY,
         TextAlign::Right,
     );
-    kit::button(
-        list,
-        &kit,
-        close,
-        "x",
-        None,
-        ButtonVariant::Ghost,
-        Interaction::at(close, &input),
-    );
+    kit::close_button(list, &kit, close, &input);
+    // What the pointer is resting on that is only an icon or a glyph: opened last, on top.
+    let mut hint: Option<(String, String)> = None;
+    if close.contains(pointer.0, pointer.1) {
+        hint = Some((
+            "Close".to_owned(),
+            "Esc also closes this window.".to_owned(),
+        ));
+    }
 
     // The modifiers.
     if view.lines.is_empty() {
@@ -495,6 +498,19 @@ pub fn push_modifiers(
             edge,
         );
         list.icon(icon_rect, line.icon, [1.0, 1.0, 1.0, 1.0]);
+        if icon_rect.contains(pointer.0, pointer.1) {
+            hint = Some((
+                format!(
+                    "{} {}",
+                    line.name,
+                    engine_realm::modifiers::magnitude_text(line.magnitude_pct)
+                ),
+                format!(
+                    "{} Red is stronger than designed, green is weaker.",
+                    line.description
+                ),
+            ));
+        }
         let text_x = icon_rect.right() + kit.px(10.0);
         kit.text(
             list,
@@ -697,6 +713,9 @@ pub fn push_modifiers(
                 TextAlign::Center,
             );
         }
+    }
+    if let Some((title, detail)) = hint {
+        kit::hint(list, &kit, pointer, viewport, &title, &detail);
     }
 }
 
@@ -1008,5 +1027,52 @@ mod tests {
         let mut broke = view(5, 10);
         broke.available = 0;
         assert!(!broke.can_reroll());
+    }
+
+    #[test]
+    fn the_window_stays_on_screen_at_every_size_and_icons_explain_themselves() {
+        use crate::ui::layout_audit;
+        for (viewport, scale) in layout_audit::sizes() {
+            let mut window = ModifierWindow::with_scale(scale);
+            window.open();
+            window.set_view(ModifierPanelView {
+                lines: lines(),
+                ..view(30, 100)
+            });
+            window.start_reveal(Reveal {
+                by: "Ash".into(),
+                modifier: "Rotating Beams".into(),
+                delta_pct: 12,
+                strengthen_pct: 60,
+            });
+            let mut list = UiDrawList::new();
+            push_modifiers(&mut list, &window, (0.0, 0.0), viewport);
+            layout_audit::assert_sound(&list, viewport, &format!("modifiers {viewport:?}"));
+        }
+        // The pointer on a modifier's icon opens what it does.
+        let mut window = ModifierWindow::new();
+        window.open();
+        window.set_view(ModifierPanelView {
+            lines: lines(),
+            ..view(30, 100)
+        });
+        let panel = window.panel_rect(VIEWPORT);
+        let row = window.row_rect(panel, 0);
+        let mut list = UiDrawList::new();
+        push_modifiers(&mut list, &window, (row.x + 20.0, row.y + 20.0), VIEWPORT);
+        let said: Vec<String> = list
+            .commands()
+            .iter()
+            .filter_map(|c| match c {
+                engine_render_data::ui::UiCommand::Label { range, .. } => {
+                    Some(list.text_of(*range).to_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            said.iter().any(|t| t.contains("Red is stronger")),
+            "{said:?}"
+        );
     }
 }

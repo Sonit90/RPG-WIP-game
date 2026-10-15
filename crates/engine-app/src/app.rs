@@ -3357,6 +3357,15 @@ impl App {
                 self.talent_menu.close();
                 return;
             }
+            // The floating windows close with the key that backs out of everything else.
+            if self.modifier_window.is_open() {
+                self.modifier_window.close();
+                return;
+            }
+            if self.recount.is_open() {
+                self.recount.close();
+                return;
+            }
             if self.targeting.is_active() {
                 self.targeting.cancel();
                 return;

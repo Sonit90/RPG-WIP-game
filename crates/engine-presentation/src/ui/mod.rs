@@ -70,6 +70,8 @@ pub mod hud_edit;
 pub mod hud_layout;
 pub mod input;
 pub mod kit;
+#[cfg(test)]
+pub(crate) mod layout_audit;
 /// The loot toast and the prompt over a waiting chest.
 pub mod loot_hud;
 /// The mailbox: letters with items the bag had no room for, and a way to take them.
