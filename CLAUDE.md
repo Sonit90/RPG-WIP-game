@@ -19,3 +19,8 @@ Worker subagents (`.claude/agents/`) do the legwork:
 - **Always review** worker output: read the actual `git diff`, check against the plan, correctness, and surrounding style. Fix small issues directly; send larger rework back to `implementer` with specific feedback.
 - Final verification (build + relevant tests) via `runner` before reporting done.
 - Trivial edits (a few lines) — do directly; spawning costs more than it saves.
+- **At most 3 agents running at once** (any mix of `scout`, `runner`, `implementer`). Before
+  launching another, wait for one to finish. Queue extra work instead of spawning it.
+- `isolation: "worktree"` bases worktrees on `master`, not the current branch. For parallel work
+  create worktrees yourself (`git worktree add -b <branch> ../myGame-wt-<name> <current-branch>`),
+  pass the absolute path in the brief, and remove the worktree after merging (each build dir is ~10 GB).
