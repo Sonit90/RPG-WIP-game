@@ -18,6 +18,7 @@
 //! scenario.rs one fight                  metrics.rs  what a fight is measured by
 //! matrix.rs   every combination          report.rs   markdown
 //! study.rs    the FireMage talent search (--search)
+//! validation.rs  is any talent mandatory or worthless (the report's last table)
 //! ```
 
 mod ai;
@@ -36,6 +37,7 @@ mod study;
     reason = "test code may assert on known-good values"
 )]
 mod tests;
+mod validation;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -63,6 +65,8 @@ pub struct Options {
     pub classes: Vec<Class>,
     /// Which gear tiers the matrix covers.
     pub tiers: Vec<GearTier>,
+    /// Whether the report ends with the talent validation (a second pass over the talents).
+    pub validate: bool,
 }
 
 impl Default for Options {
@@ -77,6 +81,7 @@ impl Default for Options {
             seed: 0xF12E_5EED,
             classes: Class::ALL.to_vec(),
             tiers: GearTier::ALL.to_vec(),
+            validate: true,
         }
     }
 }
@@ -114,7 +119,19 @@ fn main() {
             },
         );
         eprintln!();
-        balance::matrix_report(&matrix, &options)
+        let validation = options.validate.then(|| {
+            let validation = validation::run(&matrix, &options, &|done, total| {
+                if done == total || done % 10 == 0 {
+                    eprint!(
+                        "
+validation {done}/{total} cells"
+                    );
+                }
+            });
+            eprintln!();
+            validation
+        });
+        balance::matrix_report(&matrix, &options, validation.as_ref())
     };
 
     print!("{text}");
@@ -137,6 +154,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match argument.as_str() {
             "--search" => options.search = true,
+            "--no-validation" => options.validate = false,
             "--iterations" => {
                 options.iterations = parse_number("--iterations", &value("--iterations")?)?;
             }
@@ -173,7 +191,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
             "--help" | "-h" => {
                 println!(
                     "engine-sim [--class warrior|druid|mage|all] [--gear none|medium|top|all]\n\
-                     \x20          [--iterations N] [--seed N] [--out PATH]\n\
+                     \x20          [--iterations N] [--seed N] [--out PATH] [--no-validation]\n\
                      engine-sim --search [--budget N] [--sweep-iterations N] [--finalists N]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH]"
                 );

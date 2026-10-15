@@ -49,6 +49,7 @@ fn warrior_view(simulation: &Simulation) -> WarriorView {
     WarriorView {
         active: true,
         valor: warrior.valor.stacks(),
+        valor_max: warrior.valor.capacity(),
         fervor_stacks,
         fervor_remaining,
         shield_block: warrior.shield_block.remaining(),
@@ -196,8 +197,11 @@ impl StatusList {
 pub struct WarriorView {
     /// Whether the player is the Warrior at all.
     pub active: bool,
-    /// Valor banked, in `0..VALOR_MAX`.
+    /// Valor banked, in `0..valor_max`.
     pub valor: u8,
+    /// Valor that fills the bar: [`VALOR_MAX`] unless Unbroken Momentum shortens it. Zero (the
+    /// inert default) reads as [`VALOR_MAX`].
+    pub valor_max: u8,
     /// Stacks of Battle Fervor on the Warrior.
     pub fervor_stacks: u8,
     /// Seconds of Battle Fervor left.
@@ -232,7 +236,17 @@ impl WarriorView {
     /// Valor as a fraction, for a bar.
     #[must_use]
     pub fn valor_fraction(&self) -> f32 {
-        (f32::from(self.valor) / f32::from(VALOR_MAX)).clamp(0.0, 1.0)
+        (f32::from(self.valor) / f32::from(self.valor_capacity())).clamp(0.0, 1.0)
+    }
+
+    /// The stacks that fill the bar.
+    #[must_use]
+    pub fn valor_capacity(&self) -> u8 {
+        if self.valor_max == 0 {
+            VALOR_MAX
+        } else {
+            self.valor_max
+        }
     }
 }
 
@@ -1258,7 +1272,7 @@ fn ability_view(
     let effects = mage.effects();
     let stats = mage.stats();
     let charges = mage.abilities.charges(ability);
-    let max_charges = definition.charges_with(effects);
+    let max_charges = mage.abilities.max_charges(ability, effects);
 
     let target = simulation.player().target;
     let target_alive = target.is_some_and(|id| simulation.world().is_alive(id));
@@ -1303,7 +1317,8 @@ fn ability_view(
         SlotAvailability::Cooling
     } else if (target_friendly && !ability.usable_on_friendly_target())
         || (definition.target.needs_target()
-            && (!target_alive || in_range.is_some_and(|distance| distance > definition.range)))
+            && (!target_alive
+                || in_range.is_some_and(|distance| distance > simulation.ability_range(ability))))
     {
         // Three ways to have the wrong target and one way to say so: it is friendly and this
         // is not a spell that can ignore that, it is dead or gone, or it is out of reach.

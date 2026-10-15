@@ -42,6 +42,7 @@ use crate::event::{CombatEvent, ControlKind};
 use crate::firemage::{FireAbility, ZoneShape};
 use crate::hero::Hero;
 use crate::status::{Status, StatusKind};
+use crate::talent::warrior::WarriorTalentEffects;
 use crate::warrior::health_scaled;
 use crate::warrior::tuning::*;
 
@@ -57,6 +58,92 @@ impl Simulation {
     /// The Warrior's state, for a developer control or a test setting up a situation.
     pub fn warrior_mut(&mut self) -> &mut crate::warrior::Warrior {
         &mut self.warrior
+    }
+
+    /// What the active Warrior's talents mean, derived from the grid on every purchase.
+    #[must_use]
+    pub fn warrior_effects(&self) -> &WarriorTalentEffects {
+        &self.warrior_effects
+    }
+
+    /// Pushes the derived talent effects into the state they live in: the Valor bar's
+    /// length and the ability book's extra charges and cooldowns.
+    pub(super) fn refresh_warrior_talents(&mut self) {
+        let fx = self.warrior_effects;
+        let effects = *self.mage.effects();
+        self.warrior.valor.set_capacity(fx.valor_capacity);
+        let book = &mut self.mage.abilities;
+        book.adjust(
+            FireAbility::ShieldCharge,
+            fx.shield_charge_extra_charges,
+            0.0,
+            &effects,
+        );
+        book.adjust(
+            FireAbility::WarStomp,
+            0,
+            fx.war_stomp_cooldown_extra,
+            &effects,
+        );
+        book.adjust(
+            FireAbility::ColossusStrike,
+            0,
+            fx.colossus_cooldown_extra,
+            &effects,
+        );
+        book.adjust(
+            FireAbility::LastStand,
+            0,
+            fx.last_stand_cooldown_extra,
+            &effects,
+        );
+    }
+
+    /// How far `ability` reaches for the active hero: its row, and Shockwave's wider stomp.
+    #[must_use]
+    pub fn ability_range(&self, ability: FireAbility) -> f32 {
+        let range = ability.definition().range;
+        if ability == FireAbility::WarStomp && self.hero == Hero::Warrior {
+            range * self.warrior_effects.war_stomp_range_scale
+        } else {
+            range
+        }
+    }
+
+    /// The factors Fervent Guard puts on Battle Fervor's damage dealt and damage taken for
+    /// `entity`: `(1.0, 1.0)` for anybody but a Warrior, or without the talent.
+    pub(super) fn fervor_corrections(&self, entity: EntityId) -> (f32, f32) {
+        if self.hero != Hero::Warrior || entity != self.player.entity {
+            return (1.0, 1.0);
+        }
+        let stacks = self
+            .world
+            .statuses(entity)
+            .map_or(0, |statuses| statuses.stacks(StatusKind::BattleFervor));
+        if stacks == 0 {
+            return (1.0, 1.0);
+        }
+        (
+            self.warrior_effects.fervor_dealt_correction(stacks),
+            self.warrior_effects.fervor_taken_correction(stacks),
+        )
+    }
+
+    /// Executioner: what one Colossus Strike hit on `target` is multiplied by, by how hurt
+    /// the target is right now.
+    pub(super) fn executioner_multiplier(&self, target: EntityId) -> f32 {
+        let fx = &self.warrior_effects;
+        if fx.executioner_bonus <= 0.0 {
+            return 1.0;
+        }
+        let below = self.world.health(target).is_some_and(|health| {
+            health.max() > 0.0 && health.current() / health.max() < fx.executioner_threshold
+        });
+        if below {
+            1.0 + fx.executioner_bonus
+        } else {
+            1.0
+        }
     }
 
     /// **What an attack on the player meets right now.**
@@ -156,26 +243,42 @@ impl Simulation {
         if self.hero != Hero::Warrior || row.valor <= 0.0 {
             return;
         }
-        let filled = self.warrior.valor.gain();
-        let tick = self.tick;
-        self.events.push(CombatEvent::ValorGained {
-            entity: self.player.entity,
-            value: self.warrior.valor.stacks(),
-            filled,
-            ability: AbilityId::from_fire(ability),
-            tick,
-        });
-        if filled {
-            self.apply_battle_fervor(ability);
+        self.add_valor(ability, 1);
+    }
+
+    /// Adds `amount` Valor one stack at a time, so each stack is announced and the one that
+    /// fills the bar pays its Battle Fervor on the call that gains it.
+    fn add_valor(&mut self, ability: FireAbility, amount: u8) {
+        for _ in 0..amount {
+            let filled = self.warrior.valor.gain();
+            let tick = self.tick;
+            self.events.push(CombatEvent::ValorGained {
+                entity: self.player.entity,
+                value: self.warrior.valor.stacks(),
+                filled,
+                ability: AbilityId::from_fire(ability),
+                tick,
+            });
+            if filled {
+                self.apply_battle_fervor(ability, 1);
+            }
         }
     }
 
-    /// Adds one stack of Battle Fervor to the Warrior and refreshes the whole status.
+    /// Bloodied Valor: the final tick of a Colossus Strike bleed pays Valor.
+    pub(super) fn grant_bloodied_valor(&mut self) {
+        let amount = self.warrior_effects.bloodied_valor;
+        if self.hero == Hero::Warrior && amount > 0 {
+            self.add_valor(FireAbility::ColossusStrike, amount);
+        }
+    }
+
+    /// Adds `stacks` of Battle Fervor to the Warrior and refreshes the whole status.
     ///
     /// The stack count is capped by the status's own ceiling ([`FERVOR_MAX_STACKS`]), and the
     /// duration restarts at [`FERVOR_DURATION`] whether or not the stack count could rise: a
-    /// full Fervor is still worth refreshing.
-    fn apply_battle_fervor(&mut self, ability: FireAbility) {
+    /// full Fervor is still worth refreshing. Every stack granted also pays Bulwark Rhythm.
+    fn apply_battle_fervor(&mut self, ability: FireAbility, stacks: u8) {
         let source = self.player.entity;
         let status = Status::new(
             StatusKind::BattleFervor,
@@ -184,10 +287,12 @@ impl Simulation {
             FERVOR_DURATION,
             0.0,
         )
-        .with_stacks(1);
+        .with_stacks(stacks);
         self.apply_status(source, status, FERVOR_DURATION);
         // The maximum-health share, if it is tuned above zero, is there on this tick.
         self.refresh_warrior_health();
+        let cut = self.warrior_effects.bulwark_cooldown_cut * f32::from(stacks);
+        self.reduce_cooldown(FireAbility::ShieldBlock, cut, f32::MAX);
     }
 
     /// **Applies a Warrior ability whose targets have already been collected.**
@@ -256,10 +361,11 @@ impl Simulation {
         }
         let stats = self.mage.stats();
         let source = self.player.entity;
+        let damage = definition.base_damage(&stats) * self.warrior_effects.war_stomp_damage_scale;
         let mut affected = 0;
         for index in 0..self.hits.len() {
             let target = self.hits[index];
-            self.strike(target, definition.base_damage(&stats), ability, true, 0.0);
+            self.strike(target, damage, ability, true, 0.0);
             if !self.world.is_alive(target) {
                 continue;
             }
@@ -270,7 +376,7 @@ impl Simulation {
                 definition.duration,
                 0.0,
             )
-            .with_stacks(1);
+            .with_stacks(1 + self.warrior_effects.war_stomp_extra_stacks);
             self.apply_status(target, status, definition.duration);
             affected += 1;
         }
@@ -300,11 +406,18 @@ impl Simulation {
         let tick_flat = definition.base_tick_damage(&stats);
         let tick_health = definition.warrior().tick_health_coefficient;
         let source = self.player.entity;
+        let bleeding = self.bleed_targets();
         let mut affected = 0;
         for index in 0..self.hits.len() {
             let target = self.hits[index];
-            self.strike(target, impact, ability, true, 0.0);
+            // Executioner: a target already under the threshold takes the bonus on impact.
+            let multiplier = self.executioner_multiplier(target);
+            self.strike(target, impact * multiplier, ability, true, 0.0);
             if !self.world.is_alive(target) {
+                continue;
+            }
+            // The smash cleaves everything; the bleed only takes hold on a few.
+            if !bleeding.contains(&target) {
                 continue;
             }
             let status = Status::new(
@@ -321,6 +434,40 @@ impl Simulation {
         }
         self.gain_valor(ability);
         affected
+    }
+
+    /// **Who Colossus Strike's bleed lands on**: at most
+    /// [`COLOSSUS_BLEED_MAX_TARGETS`] of the hit list, the selected target first and then the
+    /// nearest to the Warrior.
+    ///
+    /// The direct hit still cleaves every enemy in the smash; capping only the damage over
+    /// time keeps a pack from paying the bleed's whole value once per enemy.
+    fn bleed_targets(&self) -> Vec<EntityId> {
+        let origin = self
+            .world
+            .position(self.player.entity)
+            .unwrap_or(Vec3::ZERO);
+        let primary = self.player.target.filter(|id| self.hits.contains(id));
+        let mut rest: Vec<(f32, usize, EntityId)> = self
+            .hits
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| Some(**id) != primary)
+            .map(|(order, id)| {
+                let distance = self
+                    .world
+                    .position(*id)
+                    .map_or(f32::MAX, |at| super::horizontal_distance(origin, at));
+                (distance, order, *id)
+            })
+            .collect();
+        // The hit list's order breaks a tie, so the choice never depends on the sort.
+        rest.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        primary
+            .into_iter()
+            .chain(rest.into_iter().map(|(_, _, id)| id))
+            .take(COLOSSUS_BLEED_MAX_TARGETS)
+            .collect()
     }
 
     /// Shield Charge: **starts running.**
@@ -502,6 +649,12 @@ impl Simulation {
         self.warrior.last_stand = crate::firemage::Timer::idle();
         self.warrior.last_stand.start(definition.duration);
         self.refresh_warrior_health();
+
+        // Unyielding: the stand is also a rallying cry.
+        let stacks = self.warrior_effects.last_stand_fervor_stacks;
+        if stacks > 0 {
+            self.apply_battle_fervor(ability, stacks);
+        }
 
         // The pre-effect maximum, deliberately: the heal is "the same share again", not "the
         // same share of the bigger number".
@@ -758,7 +911,7 @@ impl Simulation {
         let ability = FireAbility::ShieldCharge;
         let definition = *ability.definition();
         let stats = self.mage.stats();
-        let base = definition.base_damage(&stats);
+        let base = definition.base_damage(&stats) * self.warrior_effects.shield_charge_impact_scale;
 
         self.hits.clear();
         self.collect_in_shape(

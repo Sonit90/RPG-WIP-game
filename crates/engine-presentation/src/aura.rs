@@ -220,6 +220,9 @@ pub struct Aura {
     pub indefinite: bool,
     /// What is left of a pool the effect holds — an absorb's points. Zero for anything else.
     pub amount: f32,
+    /// Whether a talent changed the numbers the registry's description states (Fervent
+    /// Guard on Battle Fervor), so the tooltip prints the talent's instead.
+    pub talented: bool,
 }
 
 impl Aura {
@@ -233,7 +236,26 @@ impl Aura {
             duration: duration.max(0.0),
             indefinite: false,
             amount: 0.0,
+            talented: false,
         }
+    }
+
+    /// The sentence a tooltip prints for this effect.
+    #[must_use]
+    pub fn description(&self) -> String {
+        if self.talented && self.kind == AuraKind::Status(StatusKind::BattleFervor) {
+            let fx = engine_game::talent::warrior::WarriorTalentEffects::from_grid(
+                &engine_game::talent::TalentGrid::from_talents(&[
+                    engine_game::talent::warrior::WarriorTalent::FerventGuard,
+                ]),
+            );
+            return format!(
+                "{:.0}% more damage dealt and {:.0}% less damage taken per stack.",
+                fx.fervor_damage_per_stack * 100.0,
+                fx.fervor_taken_per_stack * 100.0
+            );
+        }
+        self.kind.description().to_owned()
     }
 
     /// How much of its duration is left, in `0..=1`, or `None` when that is not known.
@@ -371,7 +393,16 @@ pub fn fill_auras(simulation: &Simulation, entity: EntityId, list: &mut AuraList
 
     if let Some(statuses) = world.statuses(entity) {
         for status in statuses.iter() {
-            list.push(status_aura(status));
+            let mut aura = status_aura(status);
+            // The Warrior's own Battle Fervor, under Fervent Guard: say the talent's numbers.
+            if status.kind == StatusKind::BattleFervor
+                && entity == simulation.player().entity
+                && simulation.warrior_effects().fervor_damage_per_stack
+                    != engine_game::warrior::tuning::FERVOR_DAMAGE_PER_STACK
+            {
+                aura.talented = true;
+            }
+            list.push(aura);
         }
     }
 
@@ -405,6 +436,7 @@ pub fn status_aura(status: &engine_game::status::Status) -> Aura {
         duration: status.duration.max(0.0),
         indefinite: status.indefinite,
         amount: 0.0,
+        talented: false,
     }
 }
 
@@ -563,6 +595,24 @@ mod tests {
             AuraKind::Silenced,
         ]);
         kinds
+    }
+
+    #[test]
+    fn fervent_guard_changes_what_battle_fervor_says() {
+        let plain = Aura::timed(AuraKind::Status(StatusKind::BattleFervor), 10.0, 30.0);
+        assert!(
+            plain.description().contains("10%"),
+            "{}",
+            plain.description()
+        );
+        let guarded = Aura {
+            talented: true,
+            ..plain
+        };
+        assert_eq!(
+            guarded.description(),
+            "6% more damage dealt and 6% less damage taken per stack."
+        );
     }
 
     #[test]

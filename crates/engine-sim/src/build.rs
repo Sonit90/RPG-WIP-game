@@ -10,6 +10,7 @@ use engine_game::character::stat::{Stat, StatBlock, rating_for_fraction};
 use engine_game::firemage::{DEFAULT_TALENT_BUDGET, FireMastery, Gear, TALENT_COUNT, TalentId};
 use engine_game::sim::Simulation;
 use engine_game::talent::druid::DruidTalent;
+use engine_game::talent::warrior::WarriorTalent;
 use engine_game::talent::{TalentGrid, TalentKey};
 
 use crate::ai::{DruidRotation, Rotation, RotationAi, Style, WarriorRotation};
@@ -258,15 +259,54 @@ impl Build {
     }
 }
 
-/// A Warrior build: nothing to choose yet.
-///
-/// The Warrior has no talent system. The type exists so the build table has a row to put
-/// "Default" in now and "Build A" in later: adding a talent system to the class is adding
-/// fields here, and nothing else in the simulator changes.
+/// A Warrior build: a name and the talents bought.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WarriorBuild {
     /// What to call it in the report.
     pub name: String,
+    /// Which talents are bought.
+    pub talents: Vec<WarriorTalent>,
+}
+
+impl WarriorBuild {
+    /// A build of `talents`.
+    #[must_use]
+    pub fn new(name: &str, talents: &[WarriorTalent]) -> Self {
+        Self {
+            name: name.to_owned(),
+            talents: talents.to_vec(),
+        }
+    }
+}
+
+/// The Warrior's single-target build: a harder stomp, the finisher, and Battle Fervor kept up.
+#[must_use]
+pub fn warrior_burst_build() -> WarriorBuild {
+    WarriorBuild::new(
+        "Build A",
+        &[
+            WarriorTalent::UnbrokenMomentum,
+            WarriorTalent::Shockwave,
+            WarriorTalent::Executioner,
+            WarriorTalent::BloodiedValor,
+            WarriorTalent::Unyielding,
+        ],
+    )
+}
+
+/// The Warrior's area and tank build: a wide stomp, charges, and the defensive cooldown loop.
+#[must_use]
+pub fn warrior_area_build() -> WarriorBuild {
+    WarriorBuild::new(
+        "Build B",
+        &[
+            WarriorTalent::UnbrokenMomentum,
+            WarriorTalent::Shockwave,
+            WarriorTalent::RelentlessCharge,
+            WarriorTalent::BulwarkRhythm,
+            WarriorTalent::Unyielding,
+        ],
+    )
 }
 
 /// A Druid build: a name and the talents bought.
@@ -373,7 +413,40 @@ impl ClassBuild {
             Self::Druid(build) => {
                 simulation.set_talents(TalentGrid::from_talents(&build.talents));
             }
-            Self::Warrior(_) => {}
+            Self::Warrior(build) => {
+                simulation.set_talents(TalentGrid::from_talents(&build.talents));
+            }
+        }
+    }
+
+    /// The table rows of the talents it bought, in the class's own talent order.
+    #[must_use]
+    pub fn talent_indices(&self) -> Vec<usize> {
+        match self {
+            Self::Mage(build) => build.talents.iter().map(|t| t.index()).collect(),
+            Self::Warrior(build) => build.talents.iter().map(|t| t.index()).collect(),
+            Self::Druid(build) => build.talents.iter().map(|t| t.index()).collect(),
+        }
+    }
+
+    /// The same build (specialisation, rotation, class) holding exactly the talents in table
+    /// rows `indices`, under another name.
+    #[must_use]
+    pub fn with_talent_indices(&self, name: &str, indices: &[usize]) -> Self {
+        match self {
+            Self::Mage(build) => Self::Mage(Build {
+                name: name.to_owned(),
+                talents: indices.iter().map(|i| TalentId::ALL[*i]).collect(),
+                ..build.clone()
+            }),
+            Self::Warrior(_) => Self::Warrior(WarriorBuild {
+                name: name.to_owned(),
+                talents: indices.iter().map(|i| WarriorTalent::ALL[*i]).collect(),
+            }),
+            Self::Druid(_) => Self::Druid(DruidBuild {
+                name: name.to_owned(),
+                talents: indices.iter().map(|i| DruidTalent::ALL[*i]).collect(),
+            }),
         }
     }
 
@@ -382,7 +455,13 @@ impl ClassBuild {
     pub fn talent_names(&self) -> String {
         match self {
             Self::Mage(build) => build.talent_names(),
-            Self::Warrior(_) => "NONE (class has no talents yet)".to_owned(),
+            Self::Warrior(build) if build.talents.is_empty() => "NONE".to_owned(),
+            Self::Warrior(build) => build
+                .talents
+                .iter()
+                .map(|talent| talent.spec().name.as_str())
+                .collect::<Vec<_>>()
+                .join(" + "),
             Self::Druid(build) if build.talents.is_empty() => "NONE".to_owned(),
             Self::Druid(build) => build
                 .talents
@@ -396,14 +475,15 @@ impl ClassBuild {
 
 /// **The build table: every build of a class the matrix runs.**
 ///
-/// Warrior and Druid have no talents, so each has its `Default` and nothing else. A class
-/// that grows talents adds `Build A` and `Build B` rows here.
+/// Every class has `Default` (no talents), `Build A` (single target) and `Build B`.
 #[must_use]
 pub fn builds_for(class: Class) -> Vec<ClassBuild> {
     match class {
-        Class::Warrior => vec![ClassBuild::Warrior(WarriorBuild {
-            name: "Default".to_owned(),
-        })],
+        Class::Warrior => vec![
+            ClassBuild::Warrior(WarriorBuild::new("Default", &[])),
+            ClassBuild::Warrior(warrior_burst_build()),
+            ClassBuild::Warrior(warrior_area_build()),
+        ],
         Class::Druid => vec![
             ClassBuild::Druid(DruidBuild::new("Default", &[])),
             ClassBuild::Druid(druid_damage_build()),
@@ -453,6 +533,27 @@ mod tests {
             assert!(cost <= default_budget(), "{}", build.name);
             let grid = TalentGrid::from_talents(&build.talents);
             assert_eq!(grid.purchased_count() as usize, build.talents.len());
+        }
+    }
+
+    #[test]
+    fn the_warrior_builds_fit_the_default_budget_and_buy_what_they_name() {
+        for build in [warrior_burst_build(), warrior_area_build()] {
+            let cost: u32 = build.talents.iter().map(|talent| talent.spec().cost).sum();
+            assert!(cost <= default_budget(), "{}", build.name);
+            let grid = TalentGrid::from_talents(&build.talents);
+            assert_eq!(grid.purchased_count() as usize, build.talents.len());
+        }
+    }
+
+    #[test]
+    fn talent_indices_round_trip_through_a_build() {
+        for class in Class::ALL {
+            for build in builds_for(class) {
+                let indices = build.talent_indices();
+                let again = build.with_talent_indices(build.name(), &indices);
+                assert_eq!(again, build, "{class:?} {}", build.name());
+            }
         }
     }
 

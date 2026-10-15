@@ -18,7 +18,6 @@
 //! its empty state rather than disappearing: a target frame that vanished between targets
 //! would be a hole in the layout the player cannot aim at.
 
-use engine_game::warrior::tuning::VALOR_MAX;
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 use engine_settings::hud::HudPlacement;
 
@@ -594,13 +593,13 @@ pub fn push_resource_bar(
         let warrior = &player.warrior;
         write_integer(&mut scratch.detail, i64::from(warrior.valor));
         scratch.detail.push('/');
-        write_integer(&mut scratch.detail, i64::from(VALOR_MAX));
+        write_integer(&mut scratch.detail, i64::from(warrior.valor_capacity()));
         push_pip_bar(
             list,
             theme,
             rect,
             usize::from(warrior.valor),
-            usize::from(VALOR_MAX),
+            usize::from(warrior.valor_capacity()),
             shaded(theme.valor),
             "Valor",
             &scratch.detail,

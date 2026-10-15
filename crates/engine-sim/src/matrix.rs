@@ -150,40 +150,30 @@ impl Matrix {
     }
 }
 
-/// One unit of work.
-struct Job {
-    build: ClassBuild,
-    profile: GearProfile,
-    scenario: usize,
+/// One unit of work: a build in some gear against a configured fight.
+#[derive(Debug, Clone)]
+pub struct Job {
+    /// The build.
+    pub build: ClassBuild,
+    /// The gear.
+    pub profile: GearProfile,
+    /// The fight.
+    pub config: ScenarioConfig,
 }
 
-/// Runs the matrix for `classes` and `profiles`.
+/// Runs `jobs` across the machine's threads and returns each result in job order.
 ///
-/// `progress` is called with (done, total) as cells finish, from whichever thread finished
-/// them; it is for a status line and must not be needed for correctness.
+/// Every job is independent and seeded from `seed` alone, so the answer does not depend on
+/// how the work was scheduled. `progress` is called with (done, total) as jobs finish, from
+/// whichever thread finished them; it is for a status line and must not be needed for
+/// correctness.
 #[must_use]
-pub fn run(
-    classes: &[Class],
-    profiles: &[GearProfile],
+pub fn execute(
+    jobs: &[Job],
     iterations: u32,
     seed: u64,
     progress: &(dyn Fn(usize, usize) + Sync),
-) -> Matrix {
-    let mut jobs = Vec::new();
-    for class in classes {
-        for build in builds_for(*class) {
-            for profile in profiles {
-                for scenario in 0..SCENARIOS.len() {
-                    jobs.push(Job {
-                        build: build.clone(),
-                        profile: *profile,
-                        scenario,
-                    });
-                }
-            }
-        }
-    }
-
+) -> Vec<RunResult> {
     let total = jobs.len();
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
@@ -196,10 +186,8 @@ pub fn run(
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(job) = jobs.get(index) else { break };
-                    let class = job.build.class();
-                    let config = SCENARIOS[job.scenario].config(class);
-                    let gear = job.profile.stat_block(class.hero());
-                    let result = run_scenario(&config, &job.build, &gear, iterations, seed);
+                    let gear = job.profile.stat_block(job.build.class().hero());
+                    let result = run_scenario(&job.config, &job.build, &gear, iterations, seed);
                     if let Ok(mut slots) = results.lock() {
                         slots[index] = Some(result);
                     }
@@ -209,17 +197,51 @@ pub fn run(
         }
     });
 
-    let results = results.into_inner().unwrap_or_default();
-    let cells = jobs
+    results
+        .into_inner()
+        .unwrap_or_default()
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect()
+}
+
+/// Runs the matrix for `classes` and `profiles`.
+///
+/// `progress` is called with (done, total) as cells finish; see [`execute`].
+#[must_use]
+pub fn run(
+    classes: &[Class],
+    profiles: &[GearProfile],
+    iterations: u32,
+    seed: u64,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Matrix {
+    let mut jobs = Vec::new();
+    let mut cells = Vec::new();
+    for class in classes {
+        for build in builds_for(*class) {
+            for profile in profiles {
+                for (scenario, spec) in SCENARIOS.iter().enumerate() {
+                    jobs.push(Job {
+                        build: build.clone(),
+                        profile: *profile,
+                        config: spec.config(*class),
+                    });
+                    cells.push((build.clone(), *profile, scenario));
+                }
+            }
+        }
+    }
+
+    let results = execute(&jobs, iterations, seed, progress);
+    let cells = cells
         .into_iter()
         .zip(results)
-        .filter_map(|(job, result)| {
-            result.map(|result| Cell {
-                build: job.build,
-                profile: job.profile,
-                scenario: job.scenario,
-                result,
-            })
+        .map(|((build, profile, scenario), result)| Cell {
+            build,
+            profile,
+            scenario,
+            result,
         })
         .collect();
     Matrix { cells }

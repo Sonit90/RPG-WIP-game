@@ -57,7 +57,7 @@ use crate::hero::Hero;
 use crate::los::LineOfSightCheck;
 use crate::movement::{self, Body, MoveIntent, MovementConfig};
 use crate::party::Party;
-use crate::status::StatusOutcome;
+use crate::status::{StatusEnd, StatusKind, StatusOutcome};
 use crate::targeting::TargetQuery;
 use crate::telemetry::CombatMeter;
 use crate::warrior::Warrior;
@@ -1981,6 +1981,7 @@ impl Simulation {
 
     /// Ticks every entity's statuses and applies the damage they deal.
     fn tick_statuses(&mut self, step: f32) {
+        let mut bloodied = false;
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
@@ -2028,9 +2029,16 @@ impl Simulation {
                         } else {
                             0.0
                         };
-                        let amount = damage + scaled;
+                        let mut amount = damage + scaled;
                         if amount <= 0.0 {
                             continue;
+                        }
+                        // Executioner: the bleed hits harder while the target is nearly dead.
+                        if kind == StatusKind::Bleeding
+                            && source == self.player.entity
+                            && ability == AbilityId::from_fire(FireAbility::ColossusStrike)
+                        {
+                            amount *= self.executioner_multiplier(id);
                         }
                         if heals {
                             let amount = amount * (1.0 + self.versatility_of(source));
@@ -2058,10 +2066,18 @@ impl Simulation {
                     StatusOutcome::Ended {
                         kind,
                         reason,
+                        source,
                         ability,
                         expiry_heal,
-                        ..
                     } => {
+                        // Bloodied Valor: a Colossus Strike bleed that ran its whole course.
+                        if kind == StatusKind::Bleeding
+                            && reason == StatusEnd::Expired
+                            && source == self.player.entity
+                            && ability == AbilityId::from_fire(FireAbility::ColossusStrike)
+                        {
+                            bloodied = true;
+                        }
                         let tick = self.tick;
                         self.events.push(CombatEvent::StatusRemoved {
                             target: id,
@@ -2077,6 +2093,10 @@ impl Simulation {
                     }
                 }
             }
+        }
+        // Once per tick however many bleeds ran out together.
+        if bloodied {
+            self.grant_bloodied_valor();
         }
     }
 
@@ -2731,8 +2751,10 @@ impl Simulation {
 
             // Reported rather than silently dropped, so a status bar that is watching sees
             // it end.
-            self.outcomes.clear();
-            let mut ended = std::mem::take(&mut self.outcomes);
+            //
+            // Its own list, not `self.outcomes`: a damage-over-time tick that kills is being
+            // applied from that list, and clearing it here would end the loop under it.
+            let mut ended = Vec::new();
             if let Some(statuses) = self.world.statuses_mut(target) {
                 statuses.clear_into(&mut ended);
             }
@@ -2746,8 +2768,6 @@ impl Simulation {
                     });
                 }
             }
-            ended.clear();
-            self.outcomes = ended;
 
             // A dead enemy stops thinking, stops casting and stops being angry. Its cast
             // bar comes down through the event, exactly as a living caster's would.

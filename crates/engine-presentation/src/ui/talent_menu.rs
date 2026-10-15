@@ -11,8 +11,8 @@
 //! any other, so the same click is reproducible in a replay.
 //!
 //! It is generic over the hero: the snapshot lists whichever hero's table is in force, in table
-//! order, and the menu lays out whatever it finds. A hero with no talents yet shows a
-//! placeholder, and a Warrior tree needs no change here once it has rows.
+//! order, and the menu lays out whatever it finds. A hero whose table is empty shows a
+//! placeholder (every hero has a tree today).
 //!
 //! While the character is **locked** (queued, in a party, in a dungeon) the menu still opens and
 //! shows the build, with a banner saying why nothing can be changed, and emits nothing.
@@ -878,8 +878,12 @@ mod tests {
         simulation.step_once();
         let warrior = UiSnapshot::build(&simulation);
         let drawn = texts(&render(&menu, &warrior));
+        assert!(drawn.contains(&"WARRIOR TALENTS".to_owned()), "{drawn:?}");
+        for talent in &hero_talents(Hero::Warrior).talents {
+            assert!(drawn.contains(&talent.name), "{}", talent.name);
+        }
         assert!(
-            drawn.iter().any(|text| text.starts_with("NO TALENTS YET")),
+            !drawn.iter().any(|text| text.starts_with("NO TALENTS YET")),
             "{drawn:?}"
         );
     }

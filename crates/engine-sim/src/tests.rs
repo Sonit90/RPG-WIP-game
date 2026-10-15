@@ -56,8 +56,8 @@ fn the_matrix_and_its_report_do_not_depend_on_thread_scheduling() {
     };
     let profiles = GearProfile::select(&[GearTier::None, GearTier::Top]);
     let run = || matrix::run(&Class::ALL, &profiles, 1, SEED, &|_, _| {});
-    let first = matrix_report(&run(), &options);
-    let second = matrix_report(&run(), &options);
+    let first = matrix_report(&run(), &options, None);
+    let second = matrix_report(&run(), &options, None);
     assert_eq!(first, second, "two runs of the same seed disagree");
 }
 
@@ -175,17 +175,19 @@ fn a_rotation_never_casts_more_than_its_cooldowns_allow() {
 }
 
 #[test]
-fn the_build_table_has_default_for_every_class_and_two_more_for_the_mage() {
+fn the_build_table_has_default_and_two_builds_for_every_class() {
     for class in Class::ALL {
         let builds = builds_for(class);
         assert_eq!(builds[0].name(), "Default", "{class:?}");
         assert!(builds.iter().all(|build| build.class() == class));
     }
-    let mage: Vec<String> = builds_for(Class::Mage)
-        .iter()
-        .map(|build| build.name().to_owned())
-        .collect();
-    assert_eq!(mage, ["Default", "Build A", "Build B"]);
+    for class in Class::ALL {
+        let names: Vec<String> = builds_for(class)
+            .iter()
+            .map(|build| build.name().to_owned())
+            .collect();
+        assert_eq!(names, ["Default", "Build A", "Build B"], "{class:?}");
+    }
 }
 
 #[test]
@@ -197,7 +199,7 @@ fn the_report_has_every_section_and_every_class() {
     };
     let profiles = GearProfile::select(&[GearTier::Top]);
     let matrix = matrix::run(&Class::ALL, &profiles, 1, SEED, &|_, _| {});
-    let text = matrix_report(&matrix, &options);
+    let text = matrix_report(&matrix, &options, None);
     for needle in [
         "## 1. Summary matrix",
         "## 2. Balance check",
@@ -319,4 +321,86 @@ fn the_mage_uses_the_beam_and_it_shows_in_the_damage_table() {
             .slot();
     let dealt = result.by_ability[beam];
     assert!(dealt > 0.0, "the opener never fired the beam");
+}
+
+#[test]
+fn the_warrior_builds_put_their_talents_in_the_game() {
+    use engine_game::talent::warrior::WarriorTalentEffects;
+    let profile = GearProfile::headline(GearTier::Top);
+    let gear = profile.stat_block(Class::Warrior.hero());
+    let none = WarriorTalentEffects::default();
+    for build in builds_for(Class::Warrior) {
+        let config = SCENARIOS[ST60].config(Class::Warrior);
+        let encounter = crate::scenario::Encounter::new(&config, &build, &gear, SEED);
+        let effects = *encounter.simulation().warrior_effects();
+        if build.name() == "Default" {
+            assert_eq!(effects, none);
+        } else {
+            assert_ne!(effects, none, "{} bought nothing", build.name());
+        }
+    }
+}
+
+#[test]
+fn the_warrior_reports_valor_and_fervor() {
+    let build = default_build(Class::Warrior);
+    let result = fight(
+        Class::Warrior,
+        &build,
+        &GearProfile::headline(GearTier::Top),
+        SEED,
+    );
+    let resources = &result.metrics.resources;
+    assert!(resources.valor_generated > 10.0, "{resources:?}");
+    assert!(resources.valor_fills >= 3.0, "{resources:?}");
+    assert!(resources.fervor_stacks_gained >= 3.0, "{resources:?}");
+    let fervor = engine_game::status::StatusKind::BattleFervor.index();
+    assert!(result.metrics.buff_uptime(fervor) > 0.5);
+    assert!(result.metrics.average_mitigation() > 0.0);
+}
+
+#[test]
+fn the_warriors_area_damage_stays_level_with_the_mages() {
+    // The balance target: Mage Default / (Warrior + Druid) near one in an eight-target fight.
+    // The bleed cap on Colossus Strike is what holds the Warrior there; a small band, because
+    // three iterations are noisy.
+    let profile = GearProfile::headline(GearTier::Top);
+    let dps = |class: Class| {
+        let build = default_build(class);
+        let config = SCENARIOS[matrix::AOE8].config(class);
+        let gear = profile.stat_block(class.hero());
+        run_scenario(&config, &build, &gear, ITERATIONS, SEED).dps
+    };
+    let ratio = dps(Class::Mage) / (dps(Class::Warrior) + dps(Class::Druid));
+    assert!((0.9..=1.1).contains(&ratio), "Mage / (W + D) is {ratio:.2}");
+}
+
+#[test]
+fn the_validation_names_every_talent_and_flags_what_it_finds() {
+    let options = Options {
+        iterations: 1,
+        seed: SEED,
+        classes: vec![Class::Warrior],
+        tiers: vec![GearTier::Top],
+        ..Options::default()
+    };
+    let profiles = GearProfile::select(&options.tiers);
+    let matrix = matrix::run(&options.classes, &profiles, 1, SEED, &|_, _| {});
+    let validation = crate::validation::run(&matrix, &options, &|_, _| {});
+    assert_eq!(validation.classes.len(), 1);
+    let warrior = &validation.classes[0];
+    assert_eq!(warrior.talents.len(), 8);
+    assert_eq!(warrior.builds.len(), 3);
+    assert_eq!(warrior.best.len(), 1);
+    // Something is in the best build, so something has a removal figure.
+    assert!(warrior.talents.iter().any(|t| t.removal[0].is_some()));
+
+    let text = matrix_report(&matrix, &options, Some(&validation));
+    assert!(text.contains("## 6. Talent validation"));
+    for talent in engine_game::talent::hero_talents(Class::Warrior.hero())
+        .talents
+        .iter()
+    {
+        assert!(text.contains(&talent.name), "{} is missing", talent.name);
+    }
 }

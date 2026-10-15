@@ -7,7 +7,7 @@ A tank whose heavy abilities build a resource, **Valor**, that turns into a last
 War Stomp / Colossus Strike / Shield Charge       (one Valor per successful cast)
         │
         ▼
-   Valor  ○ ○ ○ ○ ○
+   Valor  ○ ○ ○ ○ ○            (four pips with Unbroken Momentum)
         │  fifth pip
         ▼
    Valor back to 0, and +1 stack of Battle Fervor
@@ -191,6 +191,24 @@ that follow are smaller again.
 The bleed is tuned to about **75 %** of the ability's total damage: four ticks over eight
 seconds at `0.75 ×` the impact each.
 
+### The bleed lands on three enemies at most
+
+The smash itself still cleaves everything within 8 m. The **bleed** only takes hold on
+`COLOSSUS_BLEED_MAX_TARGETS` (3) of them: the selected target first, then the nearest to
+the Warrior (ties broken by the order of the hit list, so the choice never depends on a
+sort). Without the cap the bleed, three quarters of the ability's damage, was paid once per
+enemy in reach: Colossus Strike was 72 % of the Warrior's damage in an eight-target fight
+and the class dealt 1744 DPS at top gear against the Mage's 1823, with the Druid's 620 on
+top. Against a single target or three the cap changes nothing.
+
+| Eight targets, `engine-sim --iterations 20` | none | medium | top |
+|---|---:|---:|---:|
+| Warrior DPS before / after | 1097 / 761 | 1402 / 976 | 1744 / 1232 |
+| Mage Default / (Warrior + Druid) before / after | 0.81 / 1.05 | 0.80 / 1.04 | 0.77 / 0.98 |
+
+Single-target numbers are unchanged (208 / 264 / 329). The cap is the only lever pulled; it
+is one constant in `warrior::tuning`.
+
 ### Battle Trance's rate limit
 
 Three healing activations per second, counted in whole seconds measured from the moment the
@@ -246,6 +264,44 @@ out and pushes them into the enemy's mind as an attack-speed scale, and sets the
 armour bonus from whether **anything** currently carries a full eight. Recomputed rather than
 counted as it is applied, so an expired stack and a dead enemy both take the armour with them
 on the tick it becomes true.
+
+---
+
+## Talents
+
+Eight talents, bought with talent points (tiers 1-4 cost 3 / 4 / 4 / 5, as the Druid's).
+The rows and every number live in `assets/catalog/talents.json`;
+`engine-game/src/talent/warrior.rs` is the behaviour: `WarriorTalentEffects`, one field per
+number the executor reads, neutral when nothing is bought and swapped per player like the
+Druid's. No call site asks whether a talent is owned; the descriptions on the talent menu
+are templates filled from the same numbers.
+
+| Talent (tier, cost) | Effect |
+|---|---|
+| Unbroken Momentum (1, 3) | Battle Fervor needs 4 Valor, not 5 (the Valor bar is four pips long). |
+| Shockwave (1, 3) | War Stomp's reach +40 % (both how far a target may be and the cone), damage +30 % and one extra Sundered stack; its cooldown +1 s. |
+| Executioner (2, 4) | Colossus Strike deals +50 % to a target under 35 % health, on the impact and on every bleed tick (read when the tick lands); its cooldown +1 s. |
+| Bloodied Valor (2, 4) | The last tick of a Colossus Strike bleed that ran its whole course pays +1 Valor. Once per tick however many bleeds end together; a bleed cut short (target dead, dispelled) pays nothing. |
+| Fervent Guard (3, 4) | Battle Fervor per stack is +6 % damage dealt and -6 % damage taken, instead of +10 % / -3 %. |
+| Relentless Charge (3, 4) | Shield Charge holds two charges; its impact damage -10 %. |
+| Bulwark Rhythm (4, 5) | Every Battle Fervor stack gained (each fill of the bar, including a refresh at three stacks, and Unyielding's) takes 5 s off Shield Block's remaining cooldown. |
+| Unyielding (4, 5) | Last Stand immediately grants 2 stacks of Battle Fervor; its cooldown +30 s. |
+
+Where the numbers land:
+
+* **Valor and cooldowns.** The Valor bar's length lives on `Valor` itself. Extra charges and
+  extra cooldown seconds (Relentless Charge, Executioner, Unyielding) are an adjustment held
+  by the `AbilityBook` beside the FireMage's talent effects, so every cooldown reader
+  (the bar, the simulator) sees them; the Warrior's executor sets them whenever the grid
+  changes.
+* **Fervent Guard** (its aura tooltip prints the talent's numbers) does not touch the status registry's Battle Fervor row (which states the
+  untalented 10 % / 3 %). `WarriorTalentEffects` gives the ratio of the two sets of numbers
+  for the stacks held, and the two places damage multipliers are read (the damage pipeline
+  and the effect readout) apply it for the Warrior only.
+* **Shockwave's reach** is `Simulation::ability_range`, read by the cast check, the cone and
+  the interface's in-range test.
+
+`crates/engine-game/tests/warrior_talents.rs` plays each scene with and without the talent.
 
 ---
 
@@ -329,7 +385,7 @@ Fervor, plays the cooldown-activation cue and a gold burst; the four before it a
 
 ## Known limitations and deliberate omissions
 
-* **No talents, loot, gear or progression.** Out of scope by instruction. Nothing grants
+* **Gear and progression.** Talents exist (above), but nothing grants
   Armour, Block, Parry or Dodge yet except the Warrior's own base block, so a "geared" Warrior
   is currently only reachable through a scripted stat grant.
 * **Adrenaline's cooldown is an assumption.** The design did not state one; 30 s is in the

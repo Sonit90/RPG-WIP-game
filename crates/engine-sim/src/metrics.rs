@@ -82,6 +82,16 @@ pub struct ResourceUse {
     pub empowerments: f64,
     /// Heat the casts generated at their rows' nominal values (FireMage).
     pub heat_generated: f64,
+    /// Valor stacks gained, bar fills included (Warrior).
+    pub valor_generated: f64,
+    /// Times the Valor bar filled and paid a Battle Fervor stack (Warrior).
+    pub valor_fills: f64,
+    /// Battle Fervor stacks gained, however they were paid (Warrior).
+    pub fervor_stacks_gained: f64,
+    /// The share of a physical hit the player is not taking, integrated over the fight in
+    /// seconds: avoidance, block, armour, damage taken and flat reductions. Divide by the
+    /// seconds for the average. A survival proxy; the dummies never attack.
+    pub mitigation_seconds: f64,
 }
 
 /// Everything measured about one fight, or the sum or average of several.
@@ -146,6 +156,10 @@ impl Metrics {
         mine.astral_spent = f(mine.astral_spent, theirs.astral_spent);
         mine.empowerments = f(mine.empowerments, theirs.empowerments);
         mine.heat_generated = f(mine.heat_generated, theirs.heat_generated);
+        mine.valor_generated = f(mine.valor_generated, theirs.valor_generated);
+        mine.valor_fills = f(mine.valor_fills, theirs.valor_fills);
+        mine.fervor_stacks_gained = f(mine.fervor_stacks_gained, theirs.fervor_stacks_gained);
+        mine.mitigation_seconds = f(mine.mitigation_seconds, theirs.mitigation_seconds);
     }
 
     /// Adds another run in.
@@ -174,6 +188,12 @@ impl Metrics {
         ratio(self.debuffs[aura].active, self.target_seconds)
     }
 
+    /// The average share of a physical hit the player is not taking, `0.0..=1.0`.
+    #[must_use]
+    pub fn average_mitigation(&self) -> f64 {
+        ratio(self.resources.mitigation_seconds, self.seconds)
+    }
+
     /// Casts per ability slot as a fraction of what its cooldown allowed.
     #[must_use]
     pub fn cooldown_efficiency(&self, ability: FireAbility) -> f64 {
@@ -191,11 +211,43 @@ fn ratio(part: f64, whole: f64) -> f64 {
     }
 }
 
+/// How many ticks apart the survival proxy is sampled.
+const MITIGATION_EVERY: u64 = 6;
+
+/// The share of a physical hit the player is not taking right now, `0.0..=1.0`.
+///
+/// Expected value over the one defence roll (dodge, parry, block), then armour, the flat
+/// reduction and the damage-taken effects (Battle Fervor, Fervent Guard). The same terms the
+/// game's incoming pipeline applies, read from the game's own profile.
+fn mitigation(simulation: &Simulation) -> f64 {
+    let profile = simulation.defense_profile();
+    let (dodge, parry, block) = profile.avoidance();
+    let hit = 1.0 - dodge - parry - block;
+    let landing = hit + block * (1.0 - profile.block_reduction);
+    let armour = 1.0 - engine_game::character::stat::armor_reduction(profile.armor);
+    let reduction = 1.0 - profile.damage_reduction;
+    let taken = simulation
+        .effect_stats(simulation.player().entity)
+        .and_then(|stats| {
+            stats
+                .damage_taken
+                .iter()
+                .find(|(kind, _)| *kind == engine_game::combat::DamageType::Physical)
+                .map(|(_, multiplier)| *multiplier)
+        })
+        .unwrap_or(1.0);
+    1.0 - f64::from(landing * armour * reduction * taken)
+}
+
 /// Watches a simulation and fills in a [`Metrics`].
 pub struct Recorder {
     metrics: Metrics,
     cooldown_abilities: Vec<FireAbility>,
     started: bool,
+    /// Battle Fervor stacks on the player at the last look, to see the stacks that rose.
+    last_fervor: u8,
+    /// Ticks looked at so far, to sample the survival proxy at a tenth of the tick rate.
+    looked: u64,
 }
 
 impl Recorder {
@@ -212,6 +264,8 @@ impl Recorder {
             metrics: Metrics::default(),
             cooldown_abilities,
             started: false,
+            last_fervor: 0,
+            looked: 0,
         }
     }
 
@@ -231,9 +285,9 @@ impl Recorder {
             let slot = AbilityId::from_fire(*ability).slot();
             let definition = ability.definition();
             if !self.started {
-                metrics.max_casts[slot] = f64::from(definition.charges_with(effects));
+                metrics.max_casts[slot] = f64::from(mage.abilities.max_charges(*ability, effects));
             }
-            let cooldown = f64::from(definition.cooldown_with(effects));
+            let cooldown = f64::from(mage.abilities.cooldown(*ability, effects));
             let speed = if definition.cooldown_hasted {
                 1.0 + haste
             } else {
@@ -248,7 +302,23 @@ impl Recorder {
         }
         self.started = true;
 
+        // How much of a physical hit the player is not taking, six ticks at a time: it moves
+        // on the scale of buffs, not of ticks, and reading the sheet is not free.
+        if self.looked % MITIGATION_EVERY == 0 {
+            metrics.resources.mitigation_seconds +=
+                step * MITIGATION_EVERY as f64 * mitigation(simulation);
+        }
+        self.looked += 1;
+
         // Buffs on the player.
+        let fervor = simulation
+            .world()
+            .statuses(player)
+            .map_or(0, |statuses| statuses.stacks(StatusKind::BattleFervor));
+        if fervor > self.last_fervor {
+            metrics.resources.fervor_stacks_gained += f64::from(fervor - self.last_fervor);
+        }
+        self.last_fervor = fervor;
         if let Some(statuses) = simulation.world().statuses(player) {
             for status in statuses.iter() {
                 let track = &mut metrics.buffs[status.kind.index()];
@@ -311,6 +381,12 @@ impl Recorder {
                 }
                 CombatEvent::AstralPowerGained { entity, amount, .. } if entity == player => {
                     metrics.resources.astral_generated += f64::from(amount);
+                }
+                CombatEvent::ValorGained { entity, filled, .. } if entity == player => {
+                    metrics.resources.valor_generated += 1.0;
+                    if filled {
+                        metrics.resources.valor_fills += 1.0;
+                    }
                 }
                 CombatEvent::AstralPowerSpent { entity, amount, .. } if entity == player => {
                     metrics.resources.astral_spent += f64::from(amount);

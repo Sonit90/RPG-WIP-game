@@ -130,6 +130,10 @@ impl AbilityState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbilityBook {
     states: [AbilityState; ABILITY_COUNT],
+    /// Charges a hero talent adds to an ability, beyond the FireMage's [`TalentEffects`].
+    extra_charges: [u8; ABILITY_COUNT],
+    /// Seconds a hero talent adds to an ability's cooldown.
+    extra_cooldown: [f32; ABILITY_COUNT],
 }
 
 impl Default for AbilityBook {
@@ -147,7 +151,54 @@ impl AbilityBook {
             states[ability.index()] =
                 AbilityState::full(ability.definition().charges_with(effects));
         }
-        Self { states }
+        Self {
+            states,
+            extra_charges: [0; ABILITY_COUNT],
+            extra_cooldown: [0.0; ABILITY_COUNT],
+        }
+    }
+
+    /// Charges `ability` holds: its row, the FireMage's talents and any other hero's
+    /// adjustment (see [`Self::adjust`]).
+    #[must_use]
+    pub fn max_charges(&self, ability: FireAbility, effects: &TalentEffects) -> u8 {
+        ability
+            .definition()
+            .charges_with(effects)
+            .saturating_add(self.extra_charges[ability.index()])
+    }
+
+    /// `ability`'s cooldown in seconds, with every adjustment.
+    #[must_use]
+    pub fn cooldown(&self, ability: FireAbility, effects: &TalentEffects) -> f32 {
+        let base = ability.definition().cooldown_with(effects);
+        if base <= 0.0 {
+            return base;
+        }
+        base + self.extra_cooldown[ability.index()]
+    }
+
+    /// Sets what a hero talent adds to `ability`: extra charges and extra cooldown seconds.
+    ///
+    /// A bucket that was full when it gains a charge gains it ready, so buying the talent is
+    /// not a wait for the first use.
+    pub fn adjust(
+        &mut self,
+        ability: FireAbility,
+        extra_charges: u8,
+        extra_cooldown: f32,
+        effects: &TalentEffects,
+    ) {
+        let was = self.max_charges(ability, effects);
+        self.extra_charges[ability.index()] = extra_charges;
+        self.extra_cooldown[ability.index()] = extra_cooldown.max(0.0);
+        let now = self.max_charges(ability, effects);
+        let state = &mut self.states[ability.index()];
+        if now > was && state.charges == was {
+            state.charges = now;
+            state.recharge = 0.0;
+        }
+        state.charges = state.charges.min(now);
     }
 
     /// Everything about `ability`'s cooldown: charges ready and time to the next one.
@@ -188,7 +239,7 @@ impl AbilityBook {
         if state.recharge <= 0.0 {
             return 1.0;
         }
-        let cooldown = ability.definition().cooldown_with(effects);
+        let cooldown = self.cooldown(ability, effects);
         if cooldown <= 0.0 {
             return 1.0;
         }
@@ -203,7 +254,7 @@ impl AbilityBook {
 
     /// Spends a charge and starts the recharge if it was not already running.
     pub fn spend(&mut self, ability: FireAbility, effects: &TalentEffects) -> bool {
-        let cooldown = ability.definition().cooldown_with(effects);
+        let cooldown = self.cooldown(ability, effects);
         if cooldown <= 0.0 {
             return true;
         }
@@ -232,8 +283,8 @@ impl AbilityBook {
         if seconds <= 0.0 {
             return 0.0;
         }
-        let maximum = ability.definition().charges_with(effects);
-        let cooldown = ability.definition().cooldown_with(effects);
+        let maximum = self.max_charges(ability, effects);
+        let cooldown = self.cooldown(ability, effects);
         let state = &mut self.states[ability.index()];
         if state.recharge <= 0.0 {
             return seconds;
@@ -254,7 +305,7 @@ impl AbilityBook {
 
     /// Hands `ability` one charge, up to its maximum.
     pub fn grant_charge(&mut self, ability: FireAbility, effects: &TalentEffects) {
-        let maximum = ability.definition().charges_with(effects);
+        let maximum = self.max_charges(ability, effects);
         let state = &mut self.states[ability.index()];
         if state.charges < maximum {
             state.charges += 1;
@@ -273,8 +324,8 @@ impl AbilityBook {
             } else {
                 seconds
             };
-            let maximum = definition.charges_with(effects);
-            let cooldown = definition.cooldown_with(effects);
+            let maximum = self.max_charges(ability, effects);
+            let cooldown = self.cooldown(ability, effects);
             let state = &mut self.states[ability.index()];
             state.charges = state.charges.min(maximum);
             if state.recharge <= 0.0 {
@@ -297,6 +348,12 @@ impl AbilityBook {
 
     /// Refills everything. For a reset.
     pub fn refill(&mut self, effects: &TalentEffects) {
+        let (charges, cooldown) = (self.extra_charges, self.extra_cooldown);
         *self = Self::new(effects);
+        self.extra_charges = charges;
+        self.extra_cooldown = cooldown;
+        for ability in FireAbility::ALL {
+            self.states[ability.index()] = AbilityState::full(self.max_charges(ability, effects));
+        }
     }
 }

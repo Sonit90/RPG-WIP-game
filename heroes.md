@@ -117,7 +117,8 @@ cheaper than one.
 * **They borrow the mage's sounds and effects rather than having their own.** The stand-ins are chosen by
   shape — a swing is an impact, a placed circle is a placed area — because silence would read
   worse than a sound of the right length.
-* **No talents outside the FireMage.** The talent grid is the FireMage's.
+* **Talents are per hero.** The grid is generic; each hero's tree is its own table in
+  `assets/catalog/talents.json` (the Warrior's and the Druid's: eight talents each).
 * **No animal forms.** In human form the Druid is the same rig as the Warrior, which is the
   property `humanoid.rs` exists to demonstrate; a bear would be a different skeleton, a
   different set of cycles and a second character in everything but the name.
