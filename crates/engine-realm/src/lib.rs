@@ -30,6 +30,7 @@
 //! | [`enhance`] | enhancing equipment: cost, success and breakage |
 //! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
 //! | [`key`] | dungeon keys: validity, progression, scaling |
+//! | [`modifiers`] | dungeon key modifiers: rolling, scaling, reroll, downgrade |
 //! | [`rewards`] | what a finished run pays |
 //! | [`matchmaking`] | which queued tickets become a party |
 //! | [`party`] | the party state machine, the ready check, who may do what |
@@ -53,6 +54,7 @@ pub mod key;
 pub mod loadout;
 pub mod loot;
 pub mod matchmaking;
+pub mod modifiers;
 pub mod movement;
 pub mod ops;
 pub mod party;

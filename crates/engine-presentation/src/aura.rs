@@ -102,6 +102,7 @@ impl AuraKind {
                 StatusKind::WitheringPlague => UiIcon::AuraWitheringPlague,
                 StatusKind::MagicVulnerability => UiIcon::AuraMagicVulnerability,
                 StatusKind::BattleFervor => UiIcon::BattleFervor,
+                StatusKind::Plagued => UiIcon::AuraPlagued,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,

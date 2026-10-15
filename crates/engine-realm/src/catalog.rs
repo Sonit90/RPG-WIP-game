@@ -4,7 +4,8 @@
 //! assets/catalog/characters.json ─┐
 //! assets/catalog/dungeons.json  ──┤
 //! assets/catalog/economy.json   ──┼─► Catalog ─► module (validation), client (screens),
-//! assets/catalog/loot.json      ──┘              persistence API (starter characters)
+//! assets/catalog/loot.json      ──┤              persistence API (starter characters)
+//! assets/catalog/modifiers.json ─┘
 //! ```
 //!
 //! All four files are compiled into every program that reads them ([`Catalog::builtin`]), so the
@@ -20,6 +21,7 @@ use engine_game::hero::Hero;
 use serde::Deserialize;
 
 use crate::loot::{LOOT_JSON, LootCatalog};
+use crate::modifiers::ModifierCatalog;
 use crate::role::Role;
 
 /// The character catalog as written.
@@ -28,6 +30,8 @@ const CHARACTERS_JSON: &str = include_str!("../../../assets/catalog/characters.j
 const DUNGEONS_JSON: &str = include_str!("../../../assets/catalog/dungeons.json");
 /// The economy catalog as written.
 const ECONOMY_JSON: &str = include_str!("../../../assets/catalog/economy.json");
+/// The dungeon modifier catalog as written.
+const MODIFIERS_JSON: &str = include_str!("../../../assets/catalog/modifiers.json");
 
 /// The catalog format this build reads.
 pub const CATALOG_VERSION: u32 = 1;
@@ -446,6 +450,7 @@ pub struct Catalog {
     dungeons: Vec<DungeonDefinition>,
     economy: Economy,
     loot: LootCatalog,
+    modifiers: ModifierCatalog,
 }
 
 /// Why a catalog could not be read.
@@ -517,34 +522,42 @@ impl Catalog {
     ///
     /// Only if the shipped JSON is broken, which `cargo test` catches before anything ships.
     pub fn builtin() -> Result<Self, CatalogError> {
-        let catalog = Self::parse_all(CHARACTERS_JSON, DUNGEONS_JSON, ECONOMY_JSON, LOOT_JSON)?;
+        let catalog = Self::parse_all(
+            CHARACTERS_JSON,
+            DUNGEONS_JSON,
+            ECONOMY_JSON,
+            LOOT_JSON,
+            MODIFIERS_JSON,
+        )?;
         catalog.loot.register_items();
         Ok(catalog)
     }
 
-    /// A catalog from the first three documents' text and the shipped loot document. Does not
-    /// register any items.
+    /// A catalog from the first three documents' text and the shipped loot and modifier
+    /// documents. Does not register any items.
     ///
     /// # Errors
     ///
     /// See [`Catalog::parse_all`].
     pub fn parse(characters: &str, dungeons: &str, economy: &str) -> Result<Self, CatalogError> {
-        Self::parse_all(characters, dungeons, economy, LOOT_JSON)
+        Self::parse_all(characters, dungeons, economy, LOOT_JSON, MODIFIERS_JSON)
     }
 
-    /// A catalog from the four documents' text. Does not register any items.
+    /// A catalog from the five documents' text. Does not register any items.
     ///
     /// # Errors
     ///
     /// Malformed JSON, an unknown version, a duplicate id, an unknown hero, a character with
     /// no role, a dungeon with no spawn point or an impossible level range or key rules, a
-    /// reward naming a resource that does not exist, an economy that contradicts itself, or a
-    /// loot document that does (an unknown item, an empty table, quality bands with a gap).
+    /// reward naming a resource that does not exist, an economy that contradicts itself, a
+    /// loot document that does (an unknown item, an empty table, quality bands with a gap), or a
+    /// modifier catalog that is malformed or contradicts itself (see [`ModifierCatalog::parse`]).
     pub fn parse_all(
         characters: &str,
         dungeons: &str,
         economy: &str,
         loot: &str,
+        modifiers: &str,
     ) -> Result<Self, CatalogError> {
         let characters: CharacterFile = serde_json::from_str(characters)
             .map_err(|error| CatalogError(format!("characters.json: {error}")))?;
@@ -564,12 +577,14 @@ impl Catalog {
         economy.validate()?;
         let loot = LootCatalog::parse(loot)?;
         loot.validate_resources(&economy)?;
+        let modifiers = ModifierCatalog::parse(modifiers)?;
 
         let mut out = Self {
             characters: Vec::with_capacity(characters.characters.len()),
             dungeons: Vec::with_capacity(dungeons.dungeons.len()),
             economy,
             loot,
+            modifiers,
         };
         for record in characters.characters {
             if out.character(&record.id).is_some() {
@@ -686,6 +701,12 @@ impl Catalog {
     #[must_use]
     pub fn loot(&self) -> &LootCatalog {
         &self.loot
+    }
+
+    /// Dungeon key modifiers and the key-level progression table.
+    #[must_use]
+    pub fn modifiers(&self) -> &ModifierCatalog {
+        &self.modifiers
     }
 
     /// The character definition with this id.

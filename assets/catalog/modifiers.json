@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "notes": "Dungeon key modifiers and the key-level progression table. Percentages are whole numbers (5.0 is five per cent) and, for damage, of the victim's maximum health. A modifier's strength is `1 + scaling_per_level * (key level - introduced_at_level)`, times `1 + magnitude_pct / 100` from rerolls.",
+  "magnitude_limits": { "min_pct": -50, "max_pct": 100 },
+  "modifiers": [
+    {
+      "id": "rotating_beams",
+      "name": "Rotating Beams",
+      "description": "Beams sweep out from the centre of every pack that engages you, turning slowly until the fight is over. Stay out of the lines.",
+      "icon": "rotating_beams",
+      "kind": "rotating_beams",
+      "introduced_at_level": 3,
+      "params": {
+        "beams": 3,
+        "radius": 9.0,
+        "width": 0.9,
+        "angular_speed_deg": 35.0,
+        "warmup": 2.0,
+        "damage_pct_max_hp": 5.0,
+        "max_hit_pct": 9.5
+      },
+      "scaling_per_level": 0.05,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "plague_explosion",
+      "name": "Plague Explosion",
+      "description": "Slain monsters fester, then burst after five seconds and leave a cloud that burns and spoils healing. Move off the corpses.",
+      "icon": "plague_explosion",
+      "kind": "plague_explosion",
+      "introduced_at_level": 3,
+      "params": {
+        "fuse": 5.0,
+        "explosion_radius": 4.0,
+        "explosion_pct_max_hp": 12.0,
+        "cloud_radius": 4.0,
+        "cloud_duration": 6.0,
+        "cloud_pct_max_hp_per_sec": 3.0,
+        "heal_reduction": 0.20,
+        "debuff_linger": 3.0,
+        "max_hit_pct": 30.0
+      },
+      "scaling_per_level": 0.05,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    }
+  ],
+  "progression": [
+    { "level": 1, "modifier_slots": 0, "health_mult": 1.00, "damage_mult": 1.00, "notes": "Baseline." },
+    { "level": 2, "modifier_slots": 0, "health_mult": 1.12, "damage_mult": 1.06, "notes": "Stronger monsters." },
+    { "level": 3, "modifier_slots": 1, "health_mult": 1.12, "damage_mult": 1.06, "notes": "First modifier." },
+    { "level": 4, "modifier_slots": 1, "health_mult": 1.26, "damage_mult": 1.13, "notes": "Stronger monsters." },
+    { "level": 5, "modifier_slots": 2, "health_mult": 1.26, "damage_mult": 1.13, "notes": "Second modifier." },
+    { "level": 6, "modifier_slots": 2, "health_mult": 1.42, "damage_mult": 1.21, "notes": "Stronger monsters." },
+    { "level": 7, "modifier_slots": 2, "health_mult": 1.42, "damage_mult": 1.21, "notes": "From here a key carries two or three modifiers." },
+    { "level": 8, "modifier_slots": 2, "health_mult": 1.60, "damage_mult": 1.30, "notes": "Stronger monsters." },
+    { "level": 9, "modifier_slots": 3, "health_mult": 1.60, "damage_mult": 1.30, "notes": "Third modifier." },
+    { "level": 10, "modifier_slots": 3, "health_mult": 1.80, "damage_mult": 1.40, "notes": "Stronger monsters." },
+    { "level": 11, "modifier_slots": 3, "health_mult": 1.80, "damage_mult": 1.40, "notes": "" },
+    { "level": 12, "modifier_slots": 3, "health_mult": 2.02, "damage_mult": 1.51, "notes": "Stronger monsters." },
+    { "level": 13, "modifier_slots": 3, "health_mult": 2.02, "damage_mult": 1.51, "notes": "" },
+    { "level": 14, "modifier_slots": 3, "health_mult": 2.26, "damage_mult": 1.63, "notes": "Stronger monsters." },
+    { "level": 15, "modifier_slots": 3, "health_mult": 2.26, "damage_mult": 1.63, "notes": "" },
+    { "level": 16, "modifier_slots": 3, "health_mult": 2.52, "damage_mult": 1.76, "notes": "Stronger monsters." },
+    { "level": 17, "modifier_slots": 3, "health_mult": 2.52, "damage_mult": 1.76, "notes": "" },
+    { "level": 18, "modifier_slots": 3, "health_mult": 2.80, "damage_mult": 1.90, "notes": "Stronger monsters." },
+    { "level": 19, "modifier_slots": 3, "health_mult": 2.80, "damage_mult": 1.90, "notes": "" },
+    { "level": 20, "modifier_slots": 3, "health_mult": 3.10, "damage_mult": 2.05, "notes": "Highest key." }
+  ]
+}

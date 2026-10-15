@@ -101,6 +101,8 @@ pub mod loot;
 /// Line of sight for targeted abilities, and nothing else.
 pub mod los;
 pub mod los_course;
+/// Dungeon modifiers: rules a key adds to a run (rotating beams, plague explosion).
+pub mod modifier;
 pub mod movement;
 pub mod nav;
 /// Who the player is grouped with: the roster the party frames read.

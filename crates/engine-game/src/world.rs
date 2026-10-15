@@ -406,11 +406,15 @@ impl GameWorld {
     }
 
     /// Restores health and reports what landed.
+    ///
+    /// **The one heal path**: what the target's effects take off the healing it receives
+    /// (the Plague Explosion modifier's Plagued) is applied here, so no heal can skip it.
     pub fn heal(&mut self, id: EntityId, amount: f32) -> DamageResult {
         if !self.contains(id) {
             return DamageResult::NONE;
         }
-        self.healths[id.index()].heal(amount)
+        let multiplier = self.statuses[id.index()].healing_received_multiplier();
+        self.healths[id.index()].heal(amount * multiplier)
     }
 
     /// Changes an entity's maximum health, keeping the fraction it is at.

@@ -145,6 +145,10 @@ pub(super) fn modifier_lines(kind: StatusKind) -> Vec<String> {
             EffectModifier::MaxHealth { per_stack } => {
                 format!("{} maximum health{per}", percent(per_stack))
             }
+            EffectModifier::HealingReduced => format!(
+                "{:.0}% less healing received",
+                definition.generic.magnitude * 100.0
+            ),
         })
         .collect()
 }

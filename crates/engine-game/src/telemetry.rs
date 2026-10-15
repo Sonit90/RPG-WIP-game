@@ -231,6 +231,13 @@ impl CombatMeter {
                 | CombatEvent::MobCurrency { .. }
                 | CombatEvent::MailTaken { .. }
                 | CombatEvent::MailBagFull { .. }
+                // A dungeon modifier's beams and plague are announcements; the damage they do
+                // arrives as `Damage` like everything else.
+                | CombatEvent::ModifierBeamsStarted { .. }
+                | CombatEvent::ModifierBeamsEnded { .. }
+                | CombatEvent::PlagueArmed { .. }
+                | CombatEvent::PlagueExploded { .. }
+                | CombatEvent::PlagueCloudEnded { .. }
                 // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
                 // Valor and a shield taking a hit all *prevent* damage rather than
                 // move any, and the healing they cause arrives as `Healing` like every

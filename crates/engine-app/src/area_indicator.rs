@@ -53,8 +53,9 @@ const TELEGRAPH_PROGRESS_LIFT: f32 = 0.035;
 /// The most telegraphs drawn at once. Past it the extras are skipped.
 ///
 /// Each slot owns two dynamic meshes, so the cap is also a memory budget. Two dozen
-/// simultaneous ground areas is already more than a player can read.
-pub(crate) const MAX_DRAWN_TELEGRAPHS: usize = 24;
+/// simultaneous ground areas is already more than a player can read; the rest of the cap is
+/// a dungeon modifier's beams and plague, which are bounded separately.
+pub(crate) const MAX_DRAWN_TELEGRAPHS: usize = 40;
 
 /// Slack around a fill's bounds for the terrain's relief, in metres.
 ///
@@ -235,6 +236,10 @@ pub(crate) struct TelegraphVisuals {
     /// The same three for a mark riding a player: violet, so it is never mistaken for
     /// either a monster's area or the player's own orange targeting.
     mark: KindMaterials,
+    /// A modifier's beam that only warns: a pale outline, a faint fill.
+    warning: KindMaterials,
+    /// Plague: sickly green.
+    plague: KindMaterials,
 }
 
 /// The three materials one kind of telegraph is drawn with.
@@ -292,11 +297,23 @@ impl TelegraphVisuals {
             Vec3::new(0.72, 0.35, 1.0),
             Vec3::new(0.62, 0.30, 0.88),
         )?;
+        let warning = kind(
+            [0.02, 0.012, 0.008],
+            Vec3::new(1.0, 0.62, 0.45),
+            Vec3::new(0.9, 0.45, 0.30),
+        )?;
+        let plague = kind(
+            [0.006, 0.02, 0.004],
+            Vec3::new(0.55, 1.0, 0.25),
+            Vec3::new(0.40, 0.85, 0.15),
+        )?;
         Ok(Self {
             quad_mesh,
             quad_bounds,
             enemy,
             mark,
+            warning,
+            plague,
         })
     }
 
@@ -305,6 +322,9 @@ impl TelegraphVisuals {
         match kind {
             IndicatorKind::Enemy => self.enemy,
             IndicatorKind::Mark => self.mark,
+            IndicatorKind::BeamWarning => self.warning,
+            IndicatorKind::Beam => self.enemy,
+            IndicatorKind::Plague | IndicatorKind::PlagueCloud => self.plague,
         }
     }
 }
@@ -450,7 +470,7 @@ impl TelegraphView {
         let materials = self.visuals.of(indicator.kind);
         // A mark rides its victim, so everything is rebuilt around its new anchor each frame.
         // Anything else is fixed where gameplay put it.
-        let rebuild = self.slots[index].dirty || indicator.follow.is_some();
+        let rebuild = self.slots[index].dirty || indicator.follow.is_some() || indicator.moving;
         let progress = indicator.progress();
 
         if rebuild {

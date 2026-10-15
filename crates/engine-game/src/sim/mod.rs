@@ -75,6 +75,8 @@ pub mod enemy_exec;
 mod firemage_exec;
 /// The boss's chest: dropped on dungeon completion, one rolled item per player.
 pub mod loot;
+/// Dungeon modifiers, run: engaged packs light beams, dead monsters fester.
+mod modifier_exec;
 /// More than one player in one simulation: per-player state swapped in and out.
 pub mod players;
 /// The test bed's controls: reset the player, dismiss chosen enemies, find standing ground.
@@ -582,9 +584,11 @@ pub struct Simulation {
     externally_moved: Vec<EntityId>,
     /// A server runs the fight; see [`remote`].
     remote_authority: bool,
-    /// Set for the length of a [`Simulation::slay`]: the hit skips every multiplier, so
-    /// "kill" is not turned into "nearly kill" by the target's Versatility or a damage
-    /// reduction.
+    /// The dungeon modifiers in force and the ground they have put down. See [`crate::modifier`].
+    modifiers: crate::modifier::ModifierRuntime,
+    /// Set for the length of a [`Simulation::slay`] or a dungeon modifier's hit: the hit skips
+    /// every multiplier, so "kill" is not turned into "nearly kill" by the target's Versatility
+    /// or a damage reduction, and "5 % of your health" is 5 %.
     slaying: bool,
     /// Absorbs the authority reported, per entity, while it is the authority.
     ///
@@ -713,6 +717,7 @@ impl Simulation {
             others: Vec::new(),
             externally_moved: Vec::new(),
             remote_authority: false,
+            modifiers: crate::modifier::ModifierRuntime::new(),
             slaying: false,
             presented_absorbs: Vec::new(),
             remote_requests: Vec::new(),
@@ -737,6 +742,7 @@ impl Simulation {
     /// stream, so presentation (effects, sound, numbers, the meter) observes it like a local
     /// one.
     pub fn inject_event(&mut self, event: CombatEvent) {
+        self.observe_modifier_event(&event);
         self.events.push(event);
     }
 
@@ -1354,6 +1360,9 @@ impl Simulation {
         // After every encounter has been brought up to date: a boss pulled this tick calls
         // its adds this tick, and a kill this tick is credited this tick.
         self.tick_dungeon();
+        // After the dungeon, so a boss pulled this tick is already an engaged fight: the
+        // modifiers read who is fighting and who just died, and decide nothing of either.
+        self.tick_modifiers(step);
         stats.ai += ai_started.elapsed();
 
         let movement_started = Stopwatch::start();
@@ -2726,6 +2735,8 @@ impl Simulation {
             // Queued whoever died: during the AI's own step the enemy table is out, so
             // whether this was an enemy is answered when the queue is paid, not here.
             self.queue_credit(target);
+            // And a dungeon modifier's say in what a death leaves behind.
+            self.modifier_on_death(target, position);
 
             // The pack it belonged to hears it die. A member killed outright never leaves
             // Idle and its threat table is cleared by the death, so this is the only moment

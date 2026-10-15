@@ -462,6 +462,23 @@ impl AudioDirector {
                 self.request(SoundCue::at(SoundId::BlinkDepart, from + lift), audio);
                 self.request(SoundCue::at(SoundId::BlinkArrive, to + lift), audio);
             }
+            // The plague debuff is not a burn: no fire bed for a status the cloud keeps
+            // refreshing. The burst and the arming have sounds of their own.
+            CombatEvent::StatusApplied {
+                status: engine_game::status::StatusKind::Plagued,
+                ..
+            } => {}
+            // A dungeon modifier. All three are existing-recipe style cues chosen by what they
+            // are: a hum where the beams meet, a bubbling tick on a corpse, a wet burst.
+            CombatEvent::ModifierBeamsStarted { center, .. } => {
+                self.request(SoundCue::at(SoundId::ModifierBeamsStart, center), audio);
+            }
+            CombatEvent::PlagueArmed { position, .. } => {
+                self.request(SoundCue::at(SoundId::ModifierPlagueArm, position), audio);
+            }
+            CombatEvent::PlagueExploded { position, .. } => {
+                self.request(SoundCue::at(SoundId::ModifierPlagueExplode, position), audio);
+            }
             // Burning: one bed per target, refreshed rather than stacked, and capped by the
             // catalogue so a pack on fire is a fire rather than a wall.
             CombatEvent::StatusApplied { target, .. } => self.ignite(target, simulation, audio),
@@ -569,6 +586,8 @@ impl AudioDirector {
             CombatEvent::MailBagFull { .. }
             | CombatEvent::MobLoot { .. }
             | CombatEvent::MobCurrency { .. } => {}
+            // The ends of a modifier's ground are silent: the floor indicator goes with them.
+            CombatEvent::ModifierBeamsEnded { .. } | CombatEvent::PlagueCloudEnded { .. } => {}
             // Nothing to hear, or a state the frame synchronises instead. A phase change is
             // seen rather than heard: this phase authors no new cues. A point of Valor
             // short of a full bar is deliberately silent: the cast that paid it has already

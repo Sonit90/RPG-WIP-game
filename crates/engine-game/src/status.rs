@@ -132,6 +132,13 @@ pub enum StatusKind {
     /// Applied by the Warrior's own executor when Valor fills, to the Warrior and to nobody
     /// else. Every number it carries is read from [`crate::warrior::tuning`].
     BattleFervor,
+    /// The Plague Explosion modifier's debuff: less healing received.
+    ///
+    /// Applied by the dungeon modifier's cloud and refreshed while the bearer stands in it, so
+    /// it lingers a few seconds after they leave. How much healing it takes is the status's own
+    /// [`Status::magnitude`] (the modifier's data), read in the one place health is restored.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Plagued,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -257,6 +264,9 @@ pub enum EffectModifier {
         /// Fraction per stack.
         per_stack: f32,
     },
+    /// Less healing received, by the status's own [`Status::magnitude`] as a fraction: `0.2`
+    /// is twenty per cent less. Applied where health is restored, whoever healed.
+    HealingReduced,
 }
 
 /// Whether an effect is something the bearer wants.
@@ -329,7 +339,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 28;
+pub const STATUS_KIND_COUNT: usize = 29;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -362,6 +372,7 @@ impl StatusKind {
         Self::WitheringPlague,
         Self::MagicVulnerability,
         Self::BattleFervor,
+        Self::Plagued,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -858,6 +869,17 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         generic: GenericApplication::new(FERVOR_DURATION, 0.0, 0.0),
         ..BUFF
     },
+    StatusDef {
+        kind: StatusKind::Plagued,
+        id: "plagued",
+        overlay_name: "PLAGUED",
+        name: "Plagued",
+        description: "Healing received is reduced while the plague clings to you.",
+        dispel: Some(DispelSchool::Disease),
+        modifiers: &[EffectModifier::HealingReduced],
+        generic: GenericApplication::new(3.0, 0.0, 0.2),
+        ..DEBUFF
+    },
 ];
 
 /// Why a status ended.
@@ -1301,6 +1323,21 @@ impl StatusSet {
             }
         }
         1.0 - kept
+    }
+
+    /// What healing the bearer receives is multiplied by. One when nothing reduces it.
+    ///
+    /// Read by [`crate::world::GameWorld::heal`], the one place health is restored, so a
+    /// reduction cannot be bypassed by a heal that forgot to ask.
+    #[must_use]
+    pub fn healing_received_multiplier(&self) -> f32 {
+        let mut multiplier = 1.0;
+        for (status, modifier) in self.modifiers() {
+            if matches!(modifier, EffectModifier::HealingReduced) {
+                multiplier *= 1.0 - status.magnitude.clamp(0.0, 1.0);
+            }
+        }
+        multiplier
     }
 
     /// What the bearer's damage is multiplied by.

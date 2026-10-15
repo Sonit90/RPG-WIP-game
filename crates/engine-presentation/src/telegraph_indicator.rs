@@ -38,6 +38,27 @@ pub const MAX_INDICATORS: usize = 64;
 /// the indicator would stay on the floor for good.
 const OVERDUE_GRACE: f32 = 2.0;
 
+/// Where the ids of a dungeon modifier's indicators start. Gameplay's telegraph ids count up
+/// from zero, so the two cannot meet.
+const MODIFIER_KEY_BASE: u32 = 0xA000_0000;
+/// Ids of festering corpses.
+const FUSE_KEY_BASE: u32 = 0xA000_0000;
+/// Ids of plague clouds.
+const CLOUD_KEY_BASE: u32 = 0xB000_0000;
+/// Ids of beams: the emitter's id and the beam's index.
+const BEAM_KEY_BASE: u32 = 0xC000_0000;
+/// The part of a modifier id that distinguishes one fuse or cloud from another.
+const KEY_MASK: u32 = 0x0FFF_FFFF;
+/// The part of an emitter id that fits above a beam's index.
+const BEAM_KEY_MASK: u32 = 0x00FF_FFFF;
+
+/// The most beam emitters drawn at once: three beams each.
+pub const MAX_BEAM_EMITTERS_DRAWN: usize = 3;
+/// The most festering corpses drawn at once. A stampede of kills is more than can be read.
+pub const MAX_FUSES_DRAWN: usize = 12;
+/// The most plague clouds drawn at once.
+pub const MAX_CLOUDS_DRAWN: usize = 6;
+
 /// What kind of telegraph this is, which decides how it is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndicatorKind {
@@ -45,6 +66,14 @@ pub enum IndicatorKind {
     Enemy,
     /// A mark riding a player: stepping out of it is not the answer.
     Mark,
+    /// A dungeon modifier's beam that is only a warning yet: an outline, no damage.
+    BeamWarning,
+    /// A dungeon modifier's beam that burns: filled in the danger colour.
+    Beam,
+    /// A festering corpse about to burst, filling towards the burst.
+    Plague,
+    /// Plague on the ground after a burst: a filled, green-tinted disc.
+    PlagueCloud,
 }
 
 /// One monster telegraph being shown.
@@ -66,6 +95,12 @@ pub struct TelegraphIndicator {
     pub delay: f32,
     /// Seconds since the telegraph started.
     pub elapsed: f32,
+    /// A fill that is not counted by the clock: `0` for an outline only, `1` for filled. A
+    /// dungeon modifier's beams use it, since their state is a fact and not a countdown.
+    pub held: Option<f32>,
+    /// Whether the shape changes every frame (a turning beam), so it is rebuilt each time
+    /// rather than once.
+    pub moving: bool,
 }
 
 impl TelegraphIndicator {
@@ -74,6 +109,9 @@ impl TelegraphIndicator {
     /// A telegraph with no delay is already at the strike.
     #[must_use]
     pub fn progress(&self) -> f32 {
+        if let Some(held) = self.held {
+            return held.clamp(0.0, 1.0);
+        }
         if self.delay <= 0.0 {
             return 1.0;
         }
@@ -158,6 +196,8 @@ impl TelegraphIndicators {
                     follow,
                     delay,
                     elapsed: 0.0,
+                    held: None,
+                    moving: false,
                 });
             }
             CombatEvent::TelegraphEnded { id, .. } => {
@@ -212,6 +252,102 @@ impl TelegraphIndicators {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.active.is_empty()
+    }
+
+    /// Replaces the dungeon modifiers' indicators with what the simulation holds right now.
+    ///
+    /// Not event-driven: a modifier's ground is a pure function of the state it keeps and the
+    /// clock (see `engine_game::modifier`), so the indicators are derived each frame from
+    /// that state, which is the same on a client that only mirrors the server's events and on
+    /// an offline simulation that runs the modifiers itself. The turning beams are therefore
+    /// exact without any per-frame message, and a lost end event cannot leave one on the floor.
+    ///
+    /// Bounded: the newest [`MAX_BEAM_EMITTERS_DRAWN`] emitters, [`MAX_FUSES_DRAWN`] corpses and
+    /// [`MAX_CLOUDS_DRAWN`] clouds. Nothing is allocated once the list has grown to its
+    /// largest.
+    pub fn sync_modifiers(&mut self, simulation: &Simulation) {
+        self.active
+            .retain(|indicator| indicator.id < MODIFIER_KEY_BASE);
+        let runtime = simulation.modifiers();
+        if runtime.beams().is_empty() && runtime.fuses().is_empty() && runtime.clouds().is_empty() {
+            return;
+        }
+        // Where the simulation's bodies are drawn: between the last tick and the one before.
+        let step = f64::from(simulation.timestep().step_seconds());
+        let now = simulation.time() - (1.0 - f64::from(simulation.timestep().alpha())) * step;
+
+        let skip = runtime
+            .beams()
+            .len()
+            .saturating_sub(MAX_BEAM_EMITTERS_DRAWN);
+        for emitter in runtime.beams().iter().skip(skip) {
+            let warming = emitter.is_warming(now);
+            for index in 0..emitter.beams {
+                self.push_modifier(TelegraphIndicator {
+                    id: BEAM_KEY_BASE
+                        | ((emitter.id & BEAM_KEY_MASK) << 4)
+                        | u32::from(index & 0x0f),
+                    kind: if warming {
+                        IndicatorKind::BeamWarning
+                    } else {
+                        IndicatorKind::Beam
+                    },
+                    shape: TargetShape::Line {
+                        width: emitter.width,
+                        length: emitter.radius,
+                    },
+                    anchor: emitter.center,
+                    facing: emitter.yaw(index, now),
+                    follow: None,
+                    delay: 0.0,
+                    elapsed: 0.0,
+                    held: Some(if warming { 0.0 } else { 1.0 }),
+                    moving: true,
+                });
+            }
+        }
+
+        let skip = runtime.fuses().len().saturating_sub(MAX_FUSES_DRAWN);
+        for fuse in runtime.fuses().iter().skip(skip) {
+            self.push_modifier(TelegraphIndicator {
+                id: FUSE_KEY_BASE | (fuse.id & KEY_MASK),
+                kind: IndicatorKind::Plague,
+                shape: TargetShape::Circle {
+                    radius: fuse.radius,
+                },
+                anchor: fuse.position,
+                facing: 0.0,
+                follow: None,
+                delay: 1.0,
+                elapsed: fuse.progress(now),
+                held: None,
+                moving: false,
+            });
+        }
+
+        let skip = runtime.clouds().len().saturating_sub(MAX_CLOUDS_DRAWN);
+        for cloud in runtime.clouds().iter().skip(skip) {
+            self.push_modifier(TelegraphIndicator {
+                id: CLOUD_KEY_BASE | (cloud.id & KEY_MASK),
+                kind: IndicatorKind::PlagueCloud,
+                shape: TargetShape::Circle {
+                    radius: cloud.radius,
+                },
+                anchor: cloud.position,
+                facing: 0.0,
+                follow: None,
+                delay: 0.0,
+                elapsed: 0.0,
+                held: Some(1.0),
+                moving: false,
+            });
+        }
+    }
+
+    fn push_modifier(&mut self, indicator: TelegraphIndicator) {
+        if self.active.len() < MAX_INDICATORS {
+            self.active.push(indicator);
+        }
     }
 
     /// Removes everything, for a scene change or a combat reset.
@@ -339,6 +475,134 @@ mod tests {
         indicators.handle(&started(2, CIRCLE, 2.0, None));
         let kinds: Vec<IndicatorKind> = indicators.iter().map(|indicator| indicator.kind).collect();
         assert_eq!(kinds, [IndicatorKind::Mark, IndicatorKind::Enemy]);
+    }
+
+    /// A client simulation that only mirrors the server's modifier events.
+    fn mirror() -> Simulation {
+        let mut simulation = Simulation::new(engine_game::sim::SimConfig::default());
+        simulation.set_remote_authority(true);
+        simulation
+    }
+
+    fn beams_started(id: u32) -> CombatEvent {
+        CombatEvent::ModifierBeamsStarted {
+            id,
+            center: Vec3::new(3.0, 0.0, 4.0),
+            start_angle: 0.0,
+            angular_speed: 1.0,
+            radius: 9.0,
+            width: 0.9,
+            beams: 3,
+            warmup_end_time: 2.0,
+            start_time: 0.0,
+            tick: 0,
+        }
+    }
+
+    #[test]
+    fn beams_are_three_outlines_that_fill_and_turn_when_the_warm_up_ends() {
+        let mut simulation = mirror();
+        let mut indicators = TelegraphIndicators::new();
+        simulation.inject_event(beams_started(1));
+
+        simulation.step_many(30);
+        indicators.sync_modifiers(&simulation);
+        let warming: Vec<TelegraphIndicator> = indicators.iter().copied().collect();
+        assert_eq!(warming.len(), 3);
+        assert!(warming.iter().all(|i| i.kind == IndicatorKind::BeamWarning));
+        assert!(warming.iter().all(|i| i.progress() == 0.0 && i.moving));
+        let gap = warming[1].facing - warming[0].facing;
+        assert!(
+            (gap - std::f32::consts::TAU / 3.0).abs() < 1e-4,
+            "120 degrees apart"
+        );
+
+        simulation.step_many(120);
+        indicators.sync_modifiers(&simulation);
+        let active: Vec<TelegraphIndicator> = indicators.iter().copied().collect();
+        assert_eq!(active.len(), 3, "replaced, not accumulated");
+        assert!(
+            active
+                .iter()
+                .all(|i| i.kind == IndicatorKind::Beam && i.progress() == 1.0)
+        );
+        assert!(active[0].facing > warming[0].facing, "the beams turned");
+        assert_eq!(
+            active[0].shape,
+            TargetShape::Line {
+                width: 0.9,
+                length: 9.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_fuse_fills_towards_its_burst_and_a_cloud_is_a_filled_disc() {
+        let mut simulation = mirror();
+        let mut indicators = TelegraphIndicators::new();
+        simulation.inject_event(CombatEvent::PlagueArmed {
+            id: 9,
+            position: Vec3::new(1.0, 0.0, 1.0),
+            radius: 4.0,
+            armed_time: 0.0,
+            explode_time: 5.0,
+            tick: 0,
+        });
+        simulation.step_many(150);
+        indicators.sync_modifiers(&simulation);
+        let fuse = *indicators.iter().next().expect("a fuse");
+        assert_eq!(fuse.kind, IndicatorKind::Plague);
+        assert!((fuse.progress() - 0.5).abs() < 0.05, "{}", fuse.progress());
+
+        simulation.inject_event(CombatEvent::PlagueExploded {
+            id: 9,
+            position: Vec3::new(1.0, 0.0, 1.0),
+            radius: 4.0,
+            tick: 1,
+        });
+        indicators.sync_modifiers(&simulation);
+        let cloud = *indicators.iter().next().expect("a cloud");
+        assert_eq!(indicators.len(), 1, "the fuse is gone");
+        assert_eq!(cloud.kind, IndicatorKind::PlagueCloud);
+        assert_eq!(cloud.progress(), 1.0);
+
+        simulation.inject_event(CombatEvent::PlagueCloudEnded { id: 9, tick: 2 });
+        indicators.sync_modifiers(&simulation);
+        assert!(indicators.is_empty());
+    }
+
+    #[test]
+    fn modifier_indicators_never_disturb_gameplays_telegraphs_and_are_bounded() {
+        let mut simulation = mirror();
+        let mut indicators = TelegraphIndicators::new();
+        indicators.handle(&started(1, CIRCLE, 2.0, None));
+        for id in 0..40 {
+            simulation.inject_event(CombatEvent::PlagueArmed {
+                id: 100 + id,
+                position: Vec3::ZERO,
+                radius: 4.0,
+                armed_time: 0.0,
+                explode_time: 5.0,
+                tick: 0,
+            });
+        }
+        for id in 0..6 {
+            simulation.inject_event(beams_started(id));
+        }
+        for _ in 0..3 {
+            indicators.sync_modifiers(&simulation);
+        }
+        let drawn = indicators.len();
+        assert_eq!(
+            drawn,
+            1 + MAX_FUSES_DRAWN + 3 * MAX_BEAM_EMITTERS_DRAWN,
+            "the newest few of each, and gameplay's own telegraph kept"
+        );
+        assert!(indicators.iter().any(|i| i.id == 1));
+        let mut ids: Vec<u32> = indicators.iter().map(|i| i.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), drawn, "every indicator has its own id");
     }
 
     #[test]

@@ -309,6 +309,12 @@ pub enum SoundId {
     EnemyTelegraph,
     /// A telegraphed area going off.
     EnemyTelegraphBurst,
+    /// A dungeon modifier's beams lighting: a low hum that swells as they turn.
+    ModifierBeamsStart,
+    /// A slain monster beginning to fester: a short bubbling tick.
+    ModifierPlagueArm,
+    /// A festering corpse bursting: a wet burst.
+    ModifierPlagueExplode,
     /// One step.
     Footstep,
     /// The arena's wind. Loops forever.
@@ -324,7 +330,7 @@ pub enum SoundId {
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 47;
+pub const SOUND_COUNT: usize = 50;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
@@ -370,6 +376,9 @@ impl SoundId {
         Self::EnemyCastHeavy,
         Self::EnemyTelegraph,
         Self::EnemyTelegraphBurst,
+        Self::ModifierBeamsStart,
+        Self::ModifierPlagueArm,
+        Self::ModifierPlagueExplode,
         Self::Footstep,
         Self::AmbientWind,
         Self::AmbientEmber,
@@ -919,6 +928,46 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     .variations(2)
     .gain(0.75)
     .limit(4, 0.05),
+    // ---- Dungeon modifiers: low, unwholesome, and a long way from fire ---------------------
+    SoundDesc::sfx(
+        "modifier_beams_start",
+        ABILITIES,
+        Recipe::new(1.6)
+            .noise(0.25, 260.0, 520.0)
+            .tone(0.7, 62.0, 96.0)
+            .tremolo(5.0, 0.4)
+            .envelope(0.35, 0.3, 1.6),
+        PRIORITY_CAST,
+    )
+    .gain(0.55)
+    .limit(3, 0.2)
+    .carries(6.0, 70.0),
+    SoundDesc::sfx(
+        "modifier_plague_arm",
+        ABILITIES,
+        Recipe::new(0.35)
+            .noise(0.5, 900.0, 300.0)
+            .tone(0.35, 340.0, 520.0)
+            .crackle(0.7, 60.0)
+            .envelope(0.004, 0.0, 2.2),
+        PRIORITY_CAST,
+    )
+    .variations(3)
+    .gain(0.3)
+    .limit(4, 0.08),
+    SoundDesc::sfx(
+        "modifier_plague_explode",
+        IMPACTS,
+        Recipe::new(0.8)
+            .noise(1.0, 1_300.0, 140.0)
+            .tone(0.5, 140.0, 55.0)
+            .crackle(0.5, 140.0)
+            .envelope(0.003, 0.04, 2.0),
+        PRIORITY_IMPACT,
+    )
+    .variations(3)
+    .gain(0.65)
+    .limit(4, 0.06),
     // ---- The character ------------------------------------------------------------------
     SoundDesc::sfx(
         "footstep",

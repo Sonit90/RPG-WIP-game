@@ -104,6 +104,7 @@ impl Simulation {
         if let Some(cast) = self.player.cast.as_mut() {
             cast.elapsed = (cast.elapsed + step).min(cast.duration);
         }
+        self.prune_modifier_mirror();
         self.flush_observations();
     }
 

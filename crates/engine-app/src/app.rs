@@ -968,6 +968,9 @@ impl App {
         if args.scene.is_monsters() {
             playground.install(&mut simulation);
         }
+        if !args.modifiers.is_empty() {
+            simulation.set_modifiers(args.modifiers.clone());
+        }
         crate::startup::stage("simulation build");
         // The environment library, uploaded once: sixteen `create_model` calls, whatever the
         // scene's object count is. Every placement of an asset then shares the mesh and
@@ -6516,6 +6519,8 @@ impl Application for App {
                 self.telegraphs.observe(&self.simulation);
                 self.telegraphs
                     .advance(ctx.time().real_delta().as_secs_f32(), &self.simulation);
+                // A dungeon modifier's beams and plague, derived from the simulation's state.
+                self.telegraphs.sync_modifiers(&self.simulation);
             } else {
                 self.telegraphs.clear();
             }
