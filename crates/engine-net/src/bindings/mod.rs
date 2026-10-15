@@ -7,6 +7,7 @@
 use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 
 pub mod account_type;
+pub mod admin_clear_instance_reducer;
 pub mod admin_configure_reducer;
 pub mod admin_finish_instance_reducer;
 pub mod admin_set_matchmaking_reducer;
@@ -77,6 +78,7 @@ pub mod ready_check_timer_type;
 pub mod ready_tag_type;
 pub mod realm_config_type;
 pub mod role_tag_type;
+pub mod run_loot_type;
 pub mod run_summary_type;
 pub mod server_time_procedure;
 pub mod svc_ack_loot_reducer;
@@ -90,6 +92,7 @@ pub mod ticket_status_type;
 pub mod v_3_type;
 
 pub use account_type::Account;
+pub use admin_clear_instance_reducer::admin_clear_instance;
 pub use admin_configure_reducer::admin_configure;
 pub use admin_finish_instance_reducer::admin_finish_instance;
 pub use admin_set_matchmaking_reducer::admin_set_matchmaking;
@@ -160,6 +163,7 @@ pub use ready_check_timer_type::ReadyCheckTimer;
 pub use ready_tag_type::ReadyTag;
 pub use realm_config_type::RealmConfig;
 pub use role_tag_type::RoleTag;
+pub use run_loot_type::RunLoot;
 pub use run_summary_type::RunSummary;
 pub use server_time_procedure::server_time;
 pub use svc_ack_loot_reducer::svc_ack_loot;
@@ -180,6 +184,9 @@ pub use v_3_type::V3;
 /// to indicate which reducer caused the event.
 
 pub enum Reducer {
+    AdminClearInstance {
+        instance_id: u64,
+    },
     AdminConfigure {
         issuer: String,
         audience: String,
@@ -259,6 +266,7 @@ impl __sdk::InModule for Reducer {
 impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
+            Reducer::AdminClearInstance { .. } => "admin_clear_instance",
             Reducer::AdminConfigure { .. } => "admin_configure",
             Reducer::AdminFinishInstance { .. } => "admin_finish_instance",
             Reducer::AdminSetMatchmaking { .. } => "admin_set_matchmaking",
@@ -284,6 +292,11 @@ impl __sdk::Reducer for Reducer {
     #[allow(clippy::clone_on_copy)]
     fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
         match self {
+            Reducer::AdminClearInstance { instance_id } => {
+                __sats::bsatn::to_vec(&admin_clear_instance_reducer::AdminClearInstanceArgs {
+                    instance_id: instance_id.clone(),
+                })
+            }
             Reducer::AdminConfigure {
                 issuer,
                 audience,
@@ -996,19 +1009,19 @@ impl __sdk::SubscriptionHandle for SubscriptionHandle {
 /// either a [`DbConnection`] or an [`EventContext`] and operate on either.
 pub trait RemoteDbContext:
     __sdk::DbContext<
-    DbView = RemoteTables,
-    Reducers = RemoteReducers,
-    SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
->
+        DbView = RemoteTables,
+        Reducers = RemoteReducers,
+        SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
+    >
 {
 }
 impl<
-        Ctx: __sdk::DbContext<
+    Ctx: __sdk::DbContext<
             DbView = RemoteTables,
             Reducers = RemoteReducers,
             SubscriptionBuilder = __sdk::SubscriptionBuilder<RemoteModule>,
         >,
-    > RemoteDbContext for Ctx
+> RemoteDbContext for Ctx
 {
 }
 

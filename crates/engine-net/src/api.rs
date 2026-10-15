@@ -7,10 +7,11 @@
 use std::time::Duration;
 
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, LoginRequest,
-    MoveItemRequest, QueueRequest, RefreshRequest, RegisterRequest, SalvageRequest,
-    SettingsDocument, TokenPair, UserProfile,
+    CharacterDetail, CharacterSummary, EconomyInfo, EnhanceRequest, EnhanceResponse, ErrorBody,
+    ExchangeRequest, LoginRequest, MoveItemRequest, QueueRequest, RefreshRequest, RegisterRequest,
+    SalvageRequest, SettingsDocument, TokenPair, UserProfile,
 };
+use engine_realm::loadout::SlotRef;
 use engine_realm::{ErrorCategory, RealmError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -268,6 +269,29 @@ impl ApiClient {
                 exchange_id: exchange_id.to_owned(),
                 times,
             },
+            Category::Persistence,
+        )
+    }
+
+    /// Tries to take the item in `slot` one enhancement level higher. The server rolls; the
+    /// answer says how it went and carries the character as it is afterwards.
+    ///
+    /// # Errors
+    ///
+    /// The item is broken, fully enhanced or not equipment, the price cannot be paid, the
+    /// character is engaged in a dungeon or queue, it is not the caller's, or the server is
+    /// unreachable.
+    pub fn enhance(
+        &self,
+        token: &str,
+        id: &str,
+        slot: &SlotRef,
+    ) -> Result<EnhanceResponse, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/enhance", path_segment(id)),
+            Some(token),
+            &EnhanceRequest { slot: slot.clone() },
             Category::Persistence,
         )
     }

@@ -11,6 +11,7 @@ publish.workspace = true
 engine-core = { workspace = true }
 engine-net = { workspace = true }
 engine-realm = { workspace = true }
+engine-game = { workspace = true }
 log = { workspace = true }
 serde_json = { workspace = true }
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }

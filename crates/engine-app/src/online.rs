@@ -62,15 +62,17 @@ use engine_net::{
 use engine_presentation::RemoteFrame;
 use engine_presentation::ui::chat::{ChatEvent, ChatInput, ChatLineView, ChatPanel, ChatView};
 use engine_presentation::ui::frontend::{
-    BagRow, CharacterCard, CompletionCard, DungeonCard, ExchangeRow, FieldKeys, FrontEndAction,
-    FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard,
-    QueueCard, ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
+    BagRow, CharacterCard, CompletionCard, CompletionItem, DungeonCard, EnhanceCard, EnhanceCost,
+    EnhanceDetail, EnhanceTarget, EnhanceWorn, ExchangeRow, FieldKeys, FrontEndAction, FrontEndUi,
+    FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard, QueueCard,
+    ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
 };
 use engine_presentation::ui::recount::{RecountRow, RecountScope};
-use engine_realm::api::{CharacterSummary, EconomyInfo};
+use engine_realm::api::{CharacterSummary, EconomyInfo, EnhanceOutcomeName};
 use engine_realm::catalog::Catalog;
 use engine_realm::combat::{AbilityRef, ActionKind, CombatAction, EntityRef, StatusState};
 use engine_realm::instance::{Countdown, CountdownDisplay, InstanceState};
+use engine_realm::loadout::SlotRef;
 use engine_realm::matchmaking::MatchmakingConfig;
 use engine_realm::movement::{BarrierKind, MovementRules, barriers_of};
 use engine_realm::party::{PartyState, ReadyResponse};
@@ -382,6 +384,10 @@ pub struct OnlineSession {
     salvage_tray: Vec<u32>,
     /// Chest loot (or its mail) the bridge may not have persisted yet.
     loot_watch: Option<LootWatch>,
+    /// Whether the Workshop shows the enhance panel instead of the tray and exchanges.
+    enhance_mode: bool,
+    /// The item selected in the enhance panel.
+    enhance_target: Option<EnhanceTarget>,
 }
 
 /// Re-fetching the character after chest loot, until the item shows up in the bag or mailbox.
@@ -477,6 +483,8 @@ impl OnlineSession {
             stored_loadout: None,
             salvage_tray: Vec::new(),
             loot_watch: None,
+            enhance_mode: false,
+            enhance_target: None,
         })
     }
 
@@ -1107,6 +1115,17 @@ impl OnlineSession {
                 self.check_saving();
             }
             NetEvent::Economy(economy) => self.economy = Some(*economy),
+            NetEvent::Enhanced(response) => {
+                let response = *response;
+                match response.outcome {
+                    EnhanceOutcomeName::Success => self.toast(
+                        StatusLevel::Good,
+                        format!("Success: +{}", response.new_level),
+                    ),
+                    EnhanceOutcomeName::Broken => self.toast(StatusLevel::Bad, "BROKEN"),
+                }
+                self.on_event(NetEvent::Character(Box::new(response.character)));
+            }
             NetEvent::Settings(document) => {
                 self.settings_version = Some(document.version);
                 if document.version > 0 && document.settings.is_object() {
@@ -1315,6 +1334,8 @@ impl OnlineSession {
                 self.stage = Screen::Workshop;
                 self.error = None;
                 self.salvage_tray.clear();
+                self.enhance_mode = false;
+                self.enhance_target = None;
                 // The bag as the server has it, and the catalog if it never arrived.
                 if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
                     self.client.send(NetCommand::FetchCharacter(id));
@@ -1416,6 +1437,26 @@ impl OnlineSession {
                         indices: self.salvage_tray.clone(),
                     });
                 }
+            }
+            FrontEndAction::WorkshopMode(on) => {
+                self.enhance_mode = on;
+                self.enhance_target = None;
+            }
+            FrontEndAction::SelectEnhance(target) => self.enhance_target = Some(target),
+            FrontEndAction::Enhance => {
+                let (Some(target), Some(character_id)) = (
+                    self.enhance_target.clone(),
+                    self.selected_character_summary().map(|c| c.id.clone()),
+                ) else {
+                    return;
+                };
+                let slot = match target {
+                    EnhanceTarget::Worn(slot) => SlotRef::Equipment { slot },
+                    EnhanceTarget::Bag(index) => SlotRef::Inventory { index },
+                };
+                self.set_busy(BusyKind::Workshop, "Enhancing...");
+                // The server rolls: nothing about the outcome is decided here.
+                self.client.send(NetCommand::Enhance { character_id, slot });
             }
             FrontEndAction::Exchange(exchange_id) => {
                 if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
@@ -1577,6 +1618,35 @@ impl OnlineSession {
             .collect()
     }
 
+    /// The hub's resource bar: what the character holds, with gold and aether shards always
+    /// listed (even at zero) because they are what the dungeon pays out.
+    fn hub_resources(&self, held: &[(String, u64)]) -> Vec<(String, u64)> {
+        let mut shown = self.named_resources(held);
+        if let Some(rules) = engine_realm::loot::builtin_rules() {
+            for id in [rules.gold.resource, rules.currency.resource] {
+                let name = self.resource_name(id);
+                if !shown.iter().any(|(shown_name, _)| *shown_name == name) {
+                    shown.push((name, 0));
+                }
+            }
+        }
+        shown
+    }
+
+    /// The drop odds a dungeon card states for a key of `level`: the epic chance and the chance
+    /// of an item at 100 per cent quality or better, from the loot rules the server rolls with.
+    fn drop_odds(level: u32) -> Vec<String> {
+        let Some(rules) = engine_realm::loot::builtin_rules() else {
+            return Vec::new();
+        };
+        let epic = engine_game::loot::epic_chance_at(rules, level) * 100.0;
+        let high = engine_game::loot::quality_odds(rules, level).at_least_100 * 100.0;
+        vec![
+            format!("Epic drop chance at key level {level}: {epic:.1}%"),
+            format!("Chance of 100%+ quality: {high:.1}%"),
+        ]
+    }
+
     fn key_card(&self, character: &CharacterSummary) -> Option<KeyCard> {
         character.key.as_ref().map(|key| KeyCard {
             dungeon: if key.dungeon_name.is_empty() {
@@ -1598,7 +1668,7 @@ impl OnlineSession {
             experience: character.experience,
             next_level: engine_realm::progression::experience_to_next(character.level),
             key: self.key_card(character),
-            resources: self.named_resources(&character.resources),
+            resources: self.hub_resources(&character.resources),
             can_find_dungeon: self.can_find_dungeon(),
             can_change_character: self.can_change_character(),
         })
@@ -1713,7 +1783,112 @@ impl OnlineSession {
             tray_yield,
             resources: self.named_resources(&character.resources),
             exchanges,
+            enhance: self.enhance_mode.then(|| self.enhance_card(character)),
         }
+    }
+
+    /// The enhance panel: the worn items, and the selected item's price and risk from the
+    /// rules the server applies (the server alone rolls).
+    fn enhance_card(&self, character: &CharacterSummary) -> EnhanceCard {
+        let Some((_, loadout)) = self.stored_loadout.as_ref() else {
+            return EnhanceCard::default();
+        };
+        let worn = loadout
+            .equipment
+            .iter()
+            .filter_map(|entry| {
+                let def = engine_game::character::item_by_key(&entry.item)?;
+                Some(EnhanceWorn {
+                    slot: entry.slot.clone(),
+                    icon: def.icon,
+                    quality: def.quality,
+                    level: if entry.broken { 0 } else { entry.enhancement },
+                    broken: entry.broken,
+                })
+            })
+            .collect();
+        let detail = self
+            .enhance_target
+            .as_ref()
+            .and_then(|target| self.enhance_detail(character, loadout, target));
+        EnhanceCard {
+            worn,
+            selected: self.enhance_target.clone(),
+            detail,
+        }
+    }
+
+    fn enhance_detail(
+        &self,
+        character: &CharacterSummary,
+        loadout: &engine_realm::loadout::Loadout,
+        target: &EnhanceTarget,
+    ) -> Option<EnhanceDetail> {
+        let (slot, key, props) = match target {
+            EnhanceTarget::Worn(slot) => {
+                let entry = loadout.equipment.iter().find(|e| e.slot == *slot)?;
+                (
+                    SlotRef::Equipment { slot: slot.clone() },
+                    &entry.item,
+                    entry.props(),
+                )
+            }
+            EnhanceTarget::Bag(index) => {
+                let entry = loadout.inventory.iter().find(|e| e.index == *index)?;
+                (
+                    SlotRef::Inventory { index: *index },
+                    &entry.item,
+                    entry.props(),
+                )
+            }
+        };
+        let def = engine_game::character::item_by_key(key)?;
+        let economy = self.catalog.economy();
+        let mut detail = EnhanceDetail {
+            name: def.name.to_owned(),
+            quality: def.quality,
+            current: format!(
+                "Enhancement +{}%   Total {}%",
+                props.enhancement_pct().round(),
+                props.total_pct().round()
+            ),
+            blocked: None,
+            next: String::new(),
+            cost: Vec::new(),
+            break_chance: None,
+        };
+        match engine_realm::enhance::preview(loadout, &slot, economy) {
+            Ok(preview) => {
+                detail.next = format!(
+                    "Next: +{} (+{}% of base stats)",
+                    preview.target,
+                    engine_game::character::ENHANCE_STEP_PCT
+                );
+                detail.cost = preview
+                    .price
+                    .iter()
+                    .map(|(id, needed)| EnhanceCost {
+                        name: self.resource_name(id),
+                        needed: *needed,
+                        owned: character
+                            .resources
+                            .iter()
+                            .find(|(resource, _)| resource == id)
+                            .map_or(0, |(_, amount)| *amount),
+                    })
+                    .collect();
+                if preview.break_chance > 0.0 {
+                    let percent = preview.break_chance * 100.0;
+                    detail.break_chance = Some(if (percent - percent.round()).abs() < 0.05 {
+                        format!("{percent:.0}%")
+                    } else {
+                        format!("{percent:.1}%")
+                    });
+                }
+            }
+            Err(error) => detail.blocked = Some(error.to_string()),
+        }
+        Some(detail)
     }
 
     /// The loot line of the completion panel.
@@ -1721,11 +1896,9 @@ impl OnlineSession {
         if !summary.success {
             return None;
         }
-        if !summary.loot_item.is_empty() {
-            return Some(
-                engine_game::character::item_by_key(&summary.loot_item)
-                    .map_or_else(|| summary.loot_item.clone(), |def| def.name.to_owned()),
-            );
+        // The rolled items are listed row by row; this line is only the prompt before them.
+        if !summary.loot.is_empty() {
+            return None;
         }
         // The chest can be opened while the instance lingers.
         (state == InstanceState::Completed).then(|| "Open the chest to claim your loot".to_owned())
@@ -1798,7 +1971,16 @@ impl OnlineSession {
                     levels: (d.min_level, d.max_level),
                     recommended_gear_score: d.recommended_gear_score,
                     min_gear_score: d.min_gear_score,
-                    rewards: d.rewards.clone(),
+                    rewards: {
+                        let mut rewards = d.rewards.clone();
+                        let level = self
+                            .selected_character_summary()
+                            .and_then(|c| c.key.as_ref())
+                            .filter(|key| key.dungeon_id == d.id)
+                            .map_or(d.keys.min_level.max(1), |key| key.level);
+                        rewards.extend(Self::drop_odds(level));
+                        rewards
+                    },
                     population: [population.tanks, population.healers, population.dps],
                 }
             })
@@ -1915,7 +2097,27 @@ impl OnlineSession {
                         .iter()
                         .map(|(id, amount)| (self.resource_name(id), *amount))
                         .collect(),
+                    items: summary
+                        .loot
+                        .iter()
+                        .filter_map(|line| {
+                            let def = engine_game::character::item_by_key(&line.item)?;
+                            Some(CompletionItem {
+                                name: def.name.to_owned(),
+                                quality: def.quality,
+                                percent: u8::try_from(line.props().total_pct().round() as i64)
+                                    .unwrap_or(u8::MAX),
+                            })
+                        })
+                        .collect(),
                     loot: self.loot_line(summary, instance.state),
+                    mob_drops: summary.mob_drops,
+                    looted: summary
+                        .looted
+                        .iter()
+                        .map(|(id, amount)| (self.resource_name(id), *amount))
+                        .collect(),
+                    bonus_pct: summary.bonus_pct,
                     returning: self.returning == Some(instance.id),
                 })
             });
@@ -3161,7 +3363,10 @@ mod tests {
             duration_us: 0,
             experience,
             resources,
-            loot_item: String::new(),
+            loot: Vec::new(),
+            mob_drops: 0,
+            looted: Vec::new(),
+            bonus_pct: 0,
         };
         assert!(expects_rewards(&summary(300, vec![], 3)));
         assert!(expects_rewards(&summary(

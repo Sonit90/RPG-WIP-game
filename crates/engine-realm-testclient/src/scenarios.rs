@@ -1380,3 +1380,180 @@ pub fn chat(endpoints: &RealmEndpoints) -> Outcome {
     drive(&mut bots, Duration::from_secs(2), |_| false);
     Ok(())
 }
+
+/// Asks the API for every bot's character in full (bag and mail included).
+fn fetch_details(bots: &mut [Bot], wait: Duration) {
+    for bot in bots.iter() {
+        if let Some(character) = bot.character() {
+            bot.send(NetCommand::FetchCharacter(character.id.clone()));
+        }
+    }
+    drive(bots, wait, |_| false);
+}
+
+/// Items of `bot`'s stored character that are chest or monster loot, as `(item, quality)`:
+/// everything in the bag and mailbox whose key is a dungeon catalog item.
+fn loot_held(bot: &Bot) -> Vec<(String, u8)> {
+    engine_realm::loot::ensure_items_registered();
+    let Some(detail) = bot.detail.as_ref() else {
+        return Vec::new();
+    };
+    let catalog_item = |key: &str| {
+        engine_game::character::item_by_key(key)
+            .is_some_and(|def| def.id.0 >= engine_game::character::CATALOG_ID_BASE)
+    };
+    let mut held: Vec<(String, u8)> = detail
+        .inventory
+        .iter()
+        .filter(|entry| catalog_item(&entry.item))
+        .map(|entry| (entry.item.clone(), entry.quality))
+        .collect();
+    held.extend(
+        detail
+            .mail
+            .iter()
+            .filter(|mail| catalog_item(&mail.item))
+            .map(|mail| (mail.item.clone(), mail.quality)),
+    );
+    held.sort();
+    held
+}
+
+/// Calls the owner-only `admin_clear_instance` once.
+fn clear_instance(endpoints: &RealmEndpoints, instance: u64) -> Outcome {
+    let cli = std::env::var("SPACETIME_CLI").unwrap_or_else(|_| "spacetime".into());
+    let output = std::process::Command::new(&cli)
+        .args([
+            "call",
+            "--server",
+            &endpoints.spacetimedb_url,
+            &endpoints.spacetimedb_database,
+            "admin_clear_instance",
+            &instance.to_string(),
+        ])
+        .output()
+        .map_err(|e| format!("could not run {cli}: {e}"))?;
+    check(output.status.success(), "the owner cleared the instance")
+}
+
+/// Loot end to end: the party kills everything (so the run completes with its real chest),
+/// every player's summary lists two chest items with qualities, and the character - after the
+/// bridge has delivered - holds exactly those items with those qualities, the gold the
+/// summary reports, and nothing twice.
+pub fn loot(endpoints: &RealmEndpoints) -> Outcome {
+    log::info!("scenario: loot");
+    let tag = run_tag();
+    let mut bots = trio(&tag, "loot", endpoints, false, true)?;
+    let active = drive(&mut bots, Duration::from_secs(45), all_active);
+    check(active, "the run became active")?;
+    let instance = bots[0]
+        .mirror
+        .instance
+        .as_ref()
+        .map(|i| i.id)
+        .ok_or("no instance")?;
+    fetch_details(&mut bots, Duration::from_millis(1500));
+    let gold_before: Vec<u64> = bots.iter().map(|b| resource_of(b, "gold")).collect();
+    let held_before: Vec<usize> = bots.iter().map(|b| loot_held(b).len()).collect();
+
+    // The ordinary ticks complete the run once the monsters are dead.
+    let deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        clear_instance(endpoints, instance)?;
+        let done = drive(&mut bots, Duration::from_secs(1), |bots| {
+            bots.iter().all(|b| {
+                b.mirror
+                    .instance
+                    .as_ref()
+                    .is_some_and(|i| i.state == InstanceState::Completed)
+                    && b.mirror.run_summary.is_some()
+            })
+        });
+        if done {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("FAILED: the run did not complete after the monsters were killed".into());
+        }
+    }
+    // Chest items are written at the end of the run; the summary lists them.
+    let mut expected: Vec<Vec<(String, u8)>> = Vec::new();
+    let mut gold_looted: Vec<u64> = Vec::new();
+    for bot in &bots {
+        let summary = bot.mirror.run_summary.as_ref().ok_or("no summary")?;
+        check(
+            summary.loot.len() == 2,
+            "the summary lists two chest items per player",
+        )?;
+        check(
+            summary
+                .loot
+                .iter()
+                .all(|line| (50..=110).contains(&line.quality)),
+            "every chest item has a rolled quality between 50 and 110",
+        )?;
+        let mut items: Vec<(String, u8)> = summary
+            .loot
+            .iter()
+            .map(|line| (line.item.clone(), line.quality))
+            .collect();
+        items.sort();
+        expected.push(items);
+        let gold = summary
+            .looted
+            .iter()
+            .find(|(id, _)| id == "gold")
+            .map_or(0, |(_, amount)| u64::from(*amount));
+        check(gold > 0, "the boss and the kills paid gold")?;
+        gold_looted.push(gold);
+    }
+
+    // Nobody opens the chest: leaving mails it, with the monsters' drops, and the bridge
+    // delivers everything.
+    for bot in &bots {
+        bot.send(NetCommand::LeaveParty);
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        fetch_details(&mut bots, Duration::from_millis(1500));
+        let landed = bots.iter().enumerate().all(|(i, b)| {
+            resource_of(b, "gold") >= gold_before[i] + gold_looted[i]
+                && loot_held(b).len() >= held_before[i] + 2
+        });
+        if landed {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("FAILED: the loot and gold were not delivered".into());
+        }
+    }
+    for (index, bot) in bots.iter().enumerate() {
+        check(
+            resource_of(bot, "gold") == gold_before[index] + gold_looted[index],
+            &format!("bot {index} was credited exactly the summary's gold"),
+        )?;
+        let held = loot_held(bot);
+        for item in &expected[index] {
+            check(
+                held.contains(item),
+                &format!("bot {index} holds {item:?} with its rolled quality"),
+            )?;
+        }
+    }
+    // Exactly once: more bridge passes change nothing.
+    let snapshot: Vec<(u64, usize)> = bots
+        .iter()
+        .map(|b| (resource_of(b, "gold"), loot_held(b).len()))
+        .collect();
+    drive(&mut bots, Duration::from_secs(8), |_| false);
+    fetch_details(&mut bots, Duration::from_millis(1500));
+    let after: Vec<(u64, usize)> = bots
+        .iter()
+        .map(|b| (resource_of(b, "gold"), loot_held(b).len()))
+        .collect();
+    check(
+        after == snapshot,
+        "loot and gold are delivered exactly once",
+    )?;
+    Ok(())
+}

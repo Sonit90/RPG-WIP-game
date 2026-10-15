@@ -4,9 +4,10 @@
 
 use engine_realm::api::{DungeonCompletion, DungeonResult, LootDelivery};
 use engine_realm::economy::add_resources;
+use engine_realm::enhance::{enhance, EnhanceError, EnhanceOutcome};
 use engine_realm::loadout::{
-    add_to_bag, add_to_mail, migrate_removed_slots, starting_loadout, BagError, Loadout,
-    MAIL_BAG_FULL, MAIL_UNCLAIMED,
+    add_stack_to_bag, add_stack_to_mail, migrate_removed_slots, starting_loadout, BagError,
+    Loadout, SlotRef, MAIL_BAG_FULL, MAIL_DUNGEON_DROP, MAIL_UNCLAIMED,
 };
 use generic_auth_core::AppError;
 use sqlx::types::Json;
@@ -211,6 +212,66 @@ where
     Ok(Some(changed))
 }
 
+/// A refused enhancement as the HTTP error: the request named nothing enhanceable (400), or
+/// the item or purse is not in a state that allows it (409). The message is the sentence the
+/// player reads.
+#[must_use]
+pub fn enhance_error(error: EnhanceError) -> AppError {
+    let message = error.to_string();
+    match error {
+        EnhanceError::EmptySlot | EnhanceError::NotEquipment => AppError::BadRequest(message),
+        EnhanceError::CannotEnhanceBroken
+        | EnhanceError::MaxLevel
+        | EnhanceError::Insufficient(_)
+        | EnhanceError::Overflow => AppError::Conflict(message),
+        // The server drew a roll outside `[0, 1)`: its own bug, not the player's request.
+        EnhanceError::InvalidRoll => AppError::internal("The enhancement could not be rolled."),
+    }
+}
+
+/// One enhancement attempt on `loadout`, with the server's `roll` in `[0, 1)`.
+///
+/// # Errors
+///
+/// The refusals of [`engine_realm::enhance::enhance`] as [`enhance_error`] maps them; the
+/// loadout is unchanged then.
+pub fn enhance_loadout(
+    loadout: &Loadout,
+    slot: &SlotRef,
+    roll: f64,
+) -> Result<(Loadout, EnhanceOutcome), AppError> {
+    let mut changed = loadout.clone();
+    let outcome = enhance(&mut changed, slot, roll, crate::catalog().economy())
+        .map_err(enhance_error)?;
+    Ok((changed, outcome))
+}
+
+/// Enhances the item in `slot` of one of the account's characters: the price, the roll's
+/// consequence and the new item state are written in one locked read-modify-write of the
+/// character row, so two requests can neither both pay from the same purse nor both enhance
+/// the same item. `roll` comes from the server's own random source, never from the request.
+/// `Ok(None)` if the character is not the account's.
+pub async fn enhance_character(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    slot: &SlotRef,
+    roll: f64,
+) -> Result<Option<EnhanceOutcome>, AppError> {
+    // A mutex rather than a cell: the future holding the closure must be `Send`.
+    let outcome = std::sync::Mutex::new(None);
+    let saved = update_loadout(pool, account_id, id, |stored| {
+        let (changed, done) = enhance_loadout(stored, slot, roll)?;
+        if let Ok(mut place) = outcome.lock() {
+            *place = Some(done);
+        }
+        Ok(changed)
+    })
+    .await?;
+    let done = outcome.lock().ok().and_then(|place| *place);
+    Ok(saved.and(done))
+}
+
 /// Replaces a character's talents. `false` if it is not the account's.
 ///
 /// The caller has validated the set against the character's points (see
@@ -371,6 +432,23 @@ pub fn granted_talent_points(result: &DungeonResult) -> u32 {
     }
 }
 
+/// The most of one looted resource a single result may carry. The realm rolled the numbers;
+/// this only bounds a row nobody expected.
+const MAX_LOOTED: u32 = 1_000_000;
+
+/// What a result pays from monster drops: the realm's tally, restricted to resources the
+/// economy defines and capped, whatever the outcome of the run.
+#[must_use]
+pub fn granted_looted(result: &DungeonResult) -> Vec<(String, u64)> {
+    let economy = crate::catalog().economy();
+    result
+        .looted
+        .iter()
+        .filter(|(id, amount)| *amount > 0 && economy.resource(id).is_some())
+        .map(|(id, amount)| (id.clone(), u64::from((*amount).min(MAX_LOOTED))))
+        .collect()
+}
+
 /// Applies one realm result exactly once. Returns whether it was new.
 ///
 /// Inside one transaction: record the result under its idempotency key; if that key was
@@ -429,6 +507,8 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
             if result.success {
                 add_resources(&mut loadout, &gains);
             }
+            // What was picked up from monsters was looted whether or not the boss fell.
+            add_resources(&mut loadout, &granted_looted(result));
             let (level, experience) = engine_realm::progression::gain(
                 u32::try_from(level).unwrap_or(1),
                 u64::try_from(experience).unwrap_or(0),
@@ -515,6 +595,7 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
         dungeon_id = %result.dungeon_id,
         success = result.success,
         experience = result.experience,
+        looted = ?result.looted,
         "dungeon result applied"
     );
     Ok(true)
@@ -569,22 +650,26 @@ pub async fn apply_loot(pool: &PgPool, delivery: &LootDelivery) -> Result<bool, 
         (Some(id), Some(Json(mut loadout))) => {
             let now = unix_now();
             migrate_removed_slots(&mut loadout, now);
+            // The item arrives with the quality it was rolled with (clamped, so a forged row
+            // cannot be stronger than the rules allow).
+            let props = delivery.props();
             let outcome = if kind == "bag" {
-                match add_to_bag(&mut loadout, &delivery.item) {
+                match add_stack_to_bag(&mut loadout, &delivery.item, props) {
                     Ok(_) => Ok("bag"),
                     Err(BagError::Full) => {
-                        add_to_mail(&mut loadout, &delivery.item, MAIL_BAG_FULL, now)
+                        add_stack_to_mail(&mut loadout, &delivery.item, props, MAIL_BAG_FULL, now)
                             .map(|_| "mail_bag_full")
                     }
                     Err(error) => Err(error),
                 }
             } else {
-                let reason = if delivery.reason == MAIL_BAG_FULL {
-                    MAIL_BAG_FULL
-                } else {
-                    MAIL_UNCLAIMED
+                let reason = match delivery.reason.as_str() {
+                    MAIL_BAG_FULL => MAIL_BAG_FULL,
+                    MAIL_DUNGEON_DROP => MAIL_DUNGEON_DROP,
+                    _ => MAIL_UNCLAIMED,
                 };
-                add_to_mail(&mut loadout, &delivery.item, reason, now).map(|_| "mail")
+                add_stack_to_mail(&mut loadout, &delivery.item, props, reason, now)
+                    .map(|_| "mail")
             };
             match outcome {
                 Ok(outcome) => {
@@ -638,6 +723,7 @@ mod tests {
             resources: Vec::new(),
             damage_report: report,
             talent_points: 0,
+            looted: Vec::new(),
         }
     }
 
@@ -710,5 +796,108 @@ mod tests {
         assert_eq!(granted_talent_points(&result_with_points(true, 2)), 2);
         assert_eq!(granted_talent_points(&result_with_points(false, 2)), 0);
         assert_eq!(granted_talent_points(&result_with_points(true, u32::MAX)), 10);
+    }
+
+    #[test]
+    fn monster_loot_is_paid_on_a_failed_run_too_but_only_known_resources_and_bounded() {
+        let mut failed = result(false, None);
+        failed.looted = vec![
+            ("gold".into(), 40),
+            ("aether_shard".into(), 2),
+            ("moon_cheese".into(), 9),
+            ("gold".into(), 0),
+            ("crypt_dust".into(), u32::MAX),
+        ];
+        let paid = granted_looted(&failed);
+        assert_eq!(
+            paid,
+            vec![
+                ("gold".to_owned(), 40),
+                ("aether_shard".to_owned(), 2),
+                ("crypt_dust".to_owned(), u64::from(MAX_LOOTED)),
+            ]
+        );
+        let mut loadout = Loadout::default();
+        add_resources(&mut loadout, &paid);
+        assert_eq!(loadout.resources.get("gold"), Some(&40));
+    }
+
+    mod enhancing {
+        use super::*;
+        use engine_game::character::ItemProps;
+
+        const RING: &str = "ashgraves_seal";
+
+        fn slot() -> SlotRef {
+            SlotRef::Equipment {
+                slot: "ring1".into(),
+            }
+        }
+
+        fn loadout(props: ItemProps, dust: u64, ember: u64) -> Loadout {
+            engine_realm::loot::ensure_items_registered();
+            let mut loadout = Loadout::default();
+            let mut entry = engine_realm::loadout::EquippedItem::new("ring1", RING);
+            (entry.quality, entry.enhancement, entry.broken) =
+                (props.quality, props.enhancement, props.broken);
+            loadout.equipment.push(entry);
+            add_resources(
+                &mut loadout,
+                &[("crypt_dust".into(), dust), ("steward_ember".into(), ember)],
+            );
+            loadout
+        }
+
+        fn props_of(loadout: &Loadout) -> ItemProps {
+            loadout.equipment[0].props()
+        }
+
+        #[test]
+        fn a_safe_level_succeeds_and_pays_the_price_whatever_the_roll() {
+            let (after, outcome) =
+                enhance_loadout(&loadout(ItemProps::rolled(100), 50, 0), &slot(), 0.0)
+                    .expect("allowed");
+            assert_eq!(outcome, EnhanceOutcome::Success { new_level: 1 });
+            assert_eq!(props_of(&after).enhancement, 1);
+            assert_eq!(after.resources.get("crypt_dust"), Some(&40), "10 dust paid");
+        }
+
+        #[test]
+        fn a_risky_level_breaks_on_a_low_roll_and_holds_on_a_high_one() {
+            let at_four = ItemProps::new(100, 4, false);
+            let rich = loadout(at_four, 1_000, 5);
+            let (broken, outcome) = enhance_loadout(&rich, &slot(), 0.1).expect("allowed");
+            assert_eq!(outcome, EnhanceOutcome::Broken);
+            assert!(props_of(&broken).broken);
+            assert_eq!(props_of(&broken).enhancement, 0);
+            let (held, outcome) = enhance_loadout(&rich, &slot(), 0.99).expect("allowed");
+            assert_eq!(outcome, EnhanceOutcome::Success { new_level: 5 });
+            assert_eq!(props_of(&held).enhancement, 5);
+        }
+
+        #[test]
+        fn refusals_are_conflicts_or_bad_requests_and_change_nothing() {
+            let conflict = |error: AppError| matches!(error, AppError::Conflict(_));
+            // Broken.
+            let broken = loadout(ItemProps::new(100, 0, true), 1_000, 5);
+            assert!(conflict(enhance_loadout(&broken, &slot(), 0.5).expect_err("broken")));
+            // At the maximum (10).
+            let maxed = loadout(ItemProps::new(100, 10, false), 10_000, 50);
+            assert!(conflict(enhance_loadout(&maxed, &slot(), 0.5).expect_err("max")));
+            // Too poor.
+            let poor = loadout(ItemProps::rolled(100), 5, 0);
+            assert!(conflict(enhance_loadout(&poor, &slot(), 0.5).expect_err("poor")));
+            // Nothing there.
+            let empty = SlotRef::Equipment {
+                slot: "head".into(),
+            };
+            let rich = loadout(ItemProps::rolled(100), 1_000, 5);
+            assert!(matches!(
+                enhance_loadout(&rich, &empty, 0.5),
+                Err(AppError::BadRequest(_))
+            ));
+            // A roll outside [0, 1) is the server's bug, not a conflict.
+            assert!(!conflict(enhance_loadout(&rich, &slot(), 1.0).expect_err("roll")));
+        }
     }
 }

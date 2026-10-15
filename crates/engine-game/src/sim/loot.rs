@@ -181,6 +181,24 @@ impl Simulation {
         self.loot_rules.as_ref()
     }
 
+    /// Changes the run's reward bonus (per cent) without touching the rules or the key level.
+    /// Takes effect for the next roll; what was already rolled is not redone.
+    pub fn set_reward_bonus(&mut self, reward_bonus_pct: u32) {
+        self.loot_bonus_pct = reward_bonus_pct;
+    }
+
+    /// The run's reward bonus, per cent. Zero unless a host set one.
+    #[must_use]
+    pub fn reward_bonus(&self) -> u32 {
+        self.loot_bonus_pct
+    }
+
+    /// The key level the loot is rolled at.
+    #[must_use]
+    pub fn loot_key_level(&self) -> u32 {
+        self.loot_key_level
+    }
+
     /// Reseeds the loot generator, for a test that wants a different chest.
     pub fn reseed_loot(&mut self, seed: u64) {
         self.loot_rng = crate::firemage::Rng::new(seed);

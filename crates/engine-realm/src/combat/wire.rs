@@ -331,7 +331,8 @@ pub enum WireEvent {
         broken: bool,
         #[serde(default)]
         index: u8,
-        /// `0` the bag was full, `1` never opened.
+        /// `0` the bag was full, `1` never opened, `2` its slot was removed, `3` a monster
+        /// dropped it.
         reason: u8,
     },
     MobLoot {
@@ -732,6 +733,7 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
                 MailReason::BagFull => 0,
                 MailReason::Unclaimed => 1,
                 MailReason::SlotRemoved => 2,
+                MailReason::DungeonDrop => 3,
             },
         },
         CombatEvent::ModifierBeamsStarted {
@@ -1185,6 +1187,7 @@ pub fn decode(
             reason: match *reason {
                 0 => MailReason::BagFull,
                 2 => MailReason::SlotRemoved,
+                3 => MailReason::DungeonDrop,
                 _ => MailReason::Unclaimed,
             },
             tick,

@@ -107,6 +107,13 @@ pub enum NetCommand {
         /// How many times.
         times: u32,
     },
+    /// Try to enhance the item in a slot; the server rolls.
+    Enhance {
+        /// Which character.
+        character_id: String,
+        /// The worn slot or bag cell.
+        slot: SlotRef,
+    },
     /// Load the economy catalog.
     FetchEconomy,
     /// Load the account's synced settings.
@@ -174,6 +181,8 @@ pub enum Action {
     Salvage,
     /// Exchanging resources.
     Exchange,
+    /// Enhancing an item.
+    Enhance,
     /// Loading the economy catalog.
     Economy,
     /// Loading or saving settings.
@@ -249,6 +258,8 @@ pub enum NetEvent {
     Characters(Vec<CharacterSummary>),
     /// One character in full.
     Character(Box<CharacterDetail>),
+    /// An enhancement attempt was made; the character is the server's copy afterwards.
+    Enhanced(Box<engine_realm::api::EnhanceResponse>),
     /// The economy catalog.
     Economy(Box<EconomyInfo>),
     /// The account's synced settings.
@@ -603,6 +614,13 @@ impl Worker {
                 {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::Exchange, error),
+                }
+            }
+            NetCommand::Enhance { character_id, slot } => {
+                let Some(token) = self.access() else { return };
+                match self.api.enhance(&token, &character_id, &slot) {
+                    Ok(response) => self.emit(NetEvent::Enhanced(Box::new(response))),
+                    Err(error) => self.fail(Action::Enhance, error),
                 }
             }
             NetCommand::FetchEconomy => {

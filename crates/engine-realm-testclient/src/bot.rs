@@ -14,7 +14,7 @@ use engine_net::{
     Action, ConnectionStatus, GameSession, MemoryTokenStore, NetCommand, NetEvent, NetworkClient,
     RealmClient, RealmEndpoints, RealmMirror,
 };
-use engine_realm::api::CharacterSummary;
+use engine_realm::api::{CharacterDetail, CharacterSummary};
 use engine_realm::combat::{ActionKind, CombatAction, EntityRef};
 use engine_realm::instance::InstanceState;
 use engine_realm::movement::InputFrame;
@@ -62,6 +62,8 @@ pub struct Bot {
     pub session: Option<GameSession>,
     /// The account's characters.
     pub characters: Vec<CharacterSummary>,
+    /// The last character in full the API sent (bag and mail included).
+    pub detail: Option<CharacterDetail>,
     /// The realm connection's state.
     pub status: ConnectionStatus,
     /// Every failure the server reported.
@@ -102,6 +104,7 @@ impl Bot {
             mirror: RealmMirror::default(),
             session: None,
             characters: Vec::new(),
+            detail: None,
             status: ConnectionStatus::Offline,
             failures: Vec::new(),
             tried_login: false,
@@ -159,6 +162,7 @@ impl Bot {
                 self.client.send(NetCommand::FetchCharacters);
             }
             NetEvent::Characters(characters) => self.characters = characters,
+            NetEvent::Character(detail) => self.detail = Some(*detail),
             NetEvent::Realm(update) => self.mirror.apply(update),
             NetEvent::Failed { action, error } => {
                 if action == Action::SignIn && !self.tried_login && self.session.is_none() {

@@ -38,6 +38,8 @@ pub enum MailSender {
     DungeonChest,
     /// The game itself, for an item that lost its place (a slot that no longer exists).
     System,
+    /// The dungeon itself, for an item a monster dropped.
+    Dungeon,
 }
 
 impl MailSender {
@@ -47,6 +49,7 @@ impl MailSender {
         match self {
             Self::DungeonChest => "Dungeon Chest",
             Self::System => "System",
+            Self::Dungeon => "Dungeon",
         }
     }
 }
@@ -60,6 +63,8 @@ pub enum MailReason {
     Unclaimed,
     /// It was worn in an equipment slot that has since been removed, and the bag was full.
     SlotRemoved,
+    /// A monster dropped it in the dungeon; the server posts every such drop.
+    DungeonDrop,
 }
 
 impl MailReason {
@@ -70,6 +75,7 @@ impl MailReason {
             Self::BagFull => "Your bag was full.",
             Self::Unclaimed => "You did not take this from the chest.",
             Self::SlotRemoved => "Its equipment slot no longer exists.",
+            Self::DungeonDrop => "A monster dropped this in the dungeon.",
         }
     }
 }

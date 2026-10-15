@@ -781,6 +781,7 @@ name = "engine-realm-testclient"
 version = "0.1.0"
 dependencies = [
  "engine-core",
+ "engine-game",
  "engine-net",
  "engine-realm",
  "log",

@@ -583,9 +583,21 @@ impl AudioDirector {
                     self.request(SoundCue::ui(SoundId::UiSelect), audio);
                 }
             }
-            CombatEvent::MailBagFull { .. }
-            | CombatEvent::MobLoot { .. }
-            | CombatEvent::MobCurrency { .. } => {}
+            // A monster's drop chimes for the player it dropped for; an epic rings lower.
+            CombatEvent::MobLoot { player, item, .. } => {
+                if player == simulation.player().entity {
+                    let epic = engine_game::character::item(item).is_some_and(|def| {
+                        def.quality >= engine_game::character::ItemQuality::Epic
+                    });
+                    let sound = if epic {
+                        SoundId::LootEpic
+                    } else {
+                        SoundId::LootDrop
+                    };
+                    self.request(SoundCue::ui(sound), audio);
+                }
+            }
+            CombatEvent::MailBagFull { .. } | CombatEvent::MobCurrency { .. } => {}
             // The ends of a modifier's ground are silent: the floor indicator goes with them.
             CombatEvent::ModifierBeamsEnded { .. } | CombatEvent::PlagueCloudEnded { .. } => {}
             // Nothing to hear, or a state the frame synchronises instead. A phase change is

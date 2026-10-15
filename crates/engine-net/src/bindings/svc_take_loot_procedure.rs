@@ -26,9 +26,11 @@ pub trait svc_take_loot {
     fn svc_take_loot_then(
         &self,
 
-        __callback: impl FnOnce(&super::ProcedureEventContext, Result<Vec<PendingLoot>, __sdk::InternalError>)
-            + Send
-            + 'static,
+        __callback: impl FnOnce(
+            &super::ProcedureEventContext,
+            Result<Vec<PendingLoot>, __sdk::InternalError>,
+        ) + Send
+        + 'static,
     );
 }
 
@@ -36,9 +38,11 @@ impl svc_take_loot for super::RemoteProcedures {
     fn svc_take_loot_then(
         &self,
 
-        __callback: impl FnOnce(&super::ProcedureEventContext, Result<Vec<PendingLoot>, __sdk::InternalError>)
-            + Send
-            + 'static,
+        __callback: impl FnOnce(
+            &super::ProcedureEventContext,
+            Result<Vec<PendingLoot>, __sdk::InternalError>,
+        ) + Send
+        + 'static,
     ) {
         self.imp
             .invoke_procedure_with_callback::<_, Vec<PendingLoot>>(

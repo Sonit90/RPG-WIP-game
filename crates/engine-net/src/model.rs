@@ -138,8 +138,14 @@ pub struct RunSummaryInfo {
     pub experience: u32,
     /// Resources granted, `(resource id, amount)`.
     pub resources: Vec<(String, u32)>,
-    /// The chest's item key, once the roll settled (empty before).
-    pub loot_item: String,
+    /// The items the chest rolled for this player, in roll order (empty before the roll).
+    pub loot: Vec<engine_realm::haul::SummaryItem>,
+    /// How many items monsters dropped for this player during the run.
+    pub mob_drops: u32,
+    /// Gold and aether shards this player picked up from monsters, `(resource id, amount)`.
+    pub looted: Vec<(String, u32)>,
+    /// The run's reward bonus, per cent.
+    pub bonus_pct: u32,
 }
 
 /// One player in the instance, as the server last described them.
@@ -601,7 +607,10 @@ mod tests {
             duration_us: 1_000,
             experience,
             resources: vec![("crypt_dust".into(), 7)],
-            loot_item: String::new(),
+            loot: Vec::new(),
+            mob_drops: 0,
+            looted: Vec::new(),
+            bonus_pct: 0,
         }
     }
 
@@ -642,11 +651,17 @@ mod tests {
         mirror.apply(RealmUpdate::RunSummary(Some(summary(1, 100))));
         assert_eq!(mirror.run_summary.as_ref().map(|s| s.experience), Some(100));
         let mut settled = summary(1, 100);
-        settled.loot_item = "sword".into();
+        settled.loot = vec![engine_realm::haul::SummaryItem::new(
+            "sword",
+            engine_game::character::ItemProps::rolled(90),
+        )];
         mirror.apply(RealmUpdate::RunSummary(Some(settled)));
         assert_eq!(
-            mirror.run_summary.as_ref().map(|s| s.loot_item.as_str()),
-            Some("sword")
+            mirror
+                .run_summary
+                .as_ref()
+                .map(|s| s.loot.first().map(|item| item.item.as_str())),
+            Some(Some("sword"))
         );
         mirror.apply(RealmUpdate::RunSummary(None));
         assert!(mirror.run_summary.is_none());

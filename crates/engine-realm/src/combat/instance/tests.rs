@@ -346,3 +346,136 @@ fn talents_that_do_not_fit_are_dropped_whole() {
         Some(5)
     );
 }
+
+/// Kills every living monster the way a damage ability would and returns the events the kills
+/// announced (a kill made between steps announces itself into the current stream, which the next
+/// step clears, so it is read here).
+fn slay_all(fight: &mut CombatInstance, killer: EntityId) -> Vec<WireEvent> {
+    let living: Vec<EntityId> = fight
+        .sim
+        .enemies()
+        .map(|(entity, _)| entity)
+        .filter(|entity| fight.sim.world().is_alive(*entity))
+        .collect();
+    for entity in living {
+        fight.sim.apply_damage(
+            killer,
+            entity,
+            1.0e7,
+            AbilityId::from_fire(FireAbility::Firebolt),
+            DamageType::Fire,
+        );
+    }
+    let announced: Vec<engine_game::event::CombatEvent> = fight.sim.events().to_vec();
+    let name = |entity: EntityId| fight.name(entity);
+    announced
+        .iter()
+        .filter_map(|event| encode(event, &name))
+        .collect()
+}
+
+/// Clears the crypt at `bonus` per cent reward bonus and returns every event of the run.
+fn cleared_with_loot(bonus: u32) -> (CombatInstance, Vec<WireEvent>) {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let rules = crate::loot::builtin_rules().expect("the shipped rules build");
+    fight.set_loot(rules.clone(), 5, bonus);
+    assert_eq!(fight.reward_bonus(), bonus);
+    fight.open_start_barrier();
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let mut events = Vec::new();
+    for _ in 0..400 {
+        events.extend(slay_all(&mut fight, mage));
+        events.extend(fight.advance(30));
+        if fight.completed().is_some() {
+            break;
+        }
+    }
+    assert!(fight.completed().is_some(), "the run completed");
+    (fight, events)
+}
+
+fn gold_of(events: &[WireEvent], account: &str) -> u32 {
+    let gold = crate::loot::builtin_rules()
+        .expect("rules")
+        .gold
+        .resource
+        .to_owned();
+    crate::haul::drops_in(events)
+        .into_iter()
+        .filter_map(|drop| match drop {
+            crate::haul::Drop::Currency {
+                account: who,
+                resource,
+                amount,
+            } if who == account && resource == gold => Some(amount),
+            _ => None,
+        })
+        .sum()
+}
+
+#[test]
+fn a_cleared_run_with_loot_rules_rolls_two_items_per_player_and_pays_gold() {
+    let (fight, events) = cleared_with_loot(0);
+    for account in ["tank", "healer", "dps"] {
+        let items = fight.loot_items_of(account);
+        assert_eq!(items.len(), 2, "{account} gets two chest items");
+        for item in &items {
+            assert!(
+                (engine_game::character::QUALITY_MIN..=engine_game::character::QUALITY_MAX)
+                    .contains(&item.props.quality),
+                "{account}: quality {}",
+                item.props.quality
+            );
+            assert!(!item.props.broken && item.props.enhancement == 0);
+        }
+        assert!(
+            gold_of(&events, account) >= 1,
+            "{account} was paid gold from kills and the boss"
+        );
+    }
+    // Every drop names a player of the fight and a known item or resource.
+    let drops = crate::haul::drops_in(&events);
+    assert!(!drops.is_empty());
+    for drop in drops {
+        let account = match &drop {
+            crate::haul::Drop::Item { account, .. }
+            | crate::haul::Drop::Currency { account, .. } => account,
+        };
+        assert!(["tank", "healer", "dps"].contains(&account.as_str()));
+    }
+}
+
+#[test]
+fn the_reward_bonus_scales_what_the_fight_rolls() {
+    let (_, plain) = cleared_with_loot(0);
+    let (_, rich) = cleared_with_loot(100);
+    let (plain_gold, rich_gold) = (gold_of(&plain, "tank"), gold_of(&rich, "tank"));
+    assert!(
+        rich_gold > plain_gold,
+        "+100% gold: {rich_gold} against {plain_gold}"
+    );
+}
+
+#[test]
+fn without_loot_rules_the_chest_is_the_legacy_single_item_and_monsters_drop_nothing() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    assert_eq!(fight.reward_bonus(), 0);
+    fight.open_start_barrier();
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let mut events = Vec::new();
+    for _ in 0..400 {
+        events.extend(slay_all(&mut fight, mage));
+        events.extend(fight.advance(30));
+        if fight.completed().is_some() {
+            break;
+        }
+    }
+    assert!(crate::haul::drops_in(&events).is_empty());
+    assert_eq!(fight.loot_items_of("tank").len(), 1);
+}

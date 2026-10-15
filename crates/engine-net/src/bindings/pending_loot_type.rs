@@ -15,6 +15,9 @@ pub struct PendingLoot {
     pub state: String,
     pub reason: String,
     pub created_at: __sdk::Timestamp,
+    pub quality: u8,
+    pub enhancement: u8,
+    pub broken: bool,
 }
 
 impl __sdk::InModule for PendingLoot {
@@ -33,6 +36,9 @@ pub struct PendingLootCols {
     pub state: __sdk::__query_builder::Col<PendingLoot, String>,
     pub reason: __sdk::__query_builder::Col<PendingLoot, String>,
     pub created_at: __sdk::__query_builder::Col<PendingLoot, __sdk::Timestamp>,
+    pub quality: __sdk::__query_builder::Col<PendingLoot, u8>,
+    pub enhancement: __sdk::__query_builder::Col<PendingLoot, u8>,
+    pub broken: __sdk::__query_builder::Col<PendingLoot, bool>,
 }
 
 impl __sdk::__query_builder::HasCols for PendingLoot {
@@ -47,6 +53,9 @@ impl __sdk::__query_builder::HasCols for PendingLoot {
             state: __sdk::__query_builder::Col::new(table_name, "state"),
             reason: __sdk::__query_builder::Col::new(table_name, "reason"),
             created_at: __sdk::__query_builder::Col::new(table_name, "created_at"),
+            quality: __sdk::__query_builder::Col::new(table_name, "quality"),
+            enhancement: __sdk::__query_builder::Col::new(table_name, "enhancement"),
+            broken: __sdk::__query_builder::Col::new(table_name, "broken"),
         }
     }
 }

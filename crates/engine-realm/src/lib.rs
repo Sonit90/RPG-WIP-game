@@ -29,6 +29,7 @@
 //! | [`economy`] | resources, salvage and exchanges |
 //! | [`enhance`] | enhancing equipment: cost, success and breakage |
 //! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
+//! | [`haul`] | monster drops and the loot lines of a run summary |
 //! | [`key`] | dungeon keys: validity, progression, scaling |
 //! | [`modifiers`] | dungeon key modifiers: rolling, scaling, reroll, downgrade |
 //! | [`rewards`] | what a finished run pays |
@@ -50,6 +51,7 @@ pub mod combat;
 pub mod economy;
 pub mod enhance;
 pub mod error;
+pub mod haul;
 pub mod instance;
 pub mod key;
 pub mod loadout;

@@ -88,6 +88,8 @@ struct PendingRow {
     /// JSON text of an `engine_realm::meter::DamageReport`; empty when there is none.
     damage_report: String,
     talent_points: u32,
+    /// JSON text: what the player picked up from monsters, `[["gold", 40], ...]`.
+    looted: String,
 }
 
 /// What a realm answer means for a change to a character's talents or equipment.
@@ -158,6 +160,9 @@ struct LootRow {
     reason: String,
     #[allow(dead_code)]
     created_at: Value,
+    quality: u8,
+    enhancement: u8,
+    broken: bool,
 }
 
 impl RealmBridge {
@@ -256,6 +261,7 @@ impl RealmBridge {
             .map(|row| DungeonResult {
                 resources: parse_resources(&row.resources, &row.result_id),
                 damage_report: parse_report(&row.damage_report, &row.result_id),
+                looted: parse_resources(&row.looted, &row.result_id),
                 result_id: row.result_id,
                 account_id: row.account_id,
                 character_id: row.character_id,
@@ -285,6 +291,9 @@ impl RealmBridge {
                 item: row.item,
                 kind: row.state,
                 reason: row.reason,
+                quality: row.quality,
+                enhancement: row.enhancement,
+                broken: row.broken,
             })
             .collect())
     }
@@ -337,7 +346,7 @@ mod tests {
 
     #[test]
     fn pending_rows_read_positionally() {
-        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]","",2]]"#;
+        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]","",2,"[[\"gold\",12],[\"aether_shard\",1]]"]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert_eq!(rows[0].result_id, "12:acct");
         assert!(rows[0].success);
@@ -346,6 +355,10 @@ mod tests {
         assert!(rows[0].key_owner);
         assert_eq!(rows[0].key_level_after, 4);
         assert_eq!(rows[0].talent_points, 2);
+        assert_eq!(
+            parse_resources(&rows[0].looted, "12:acct"),
+            vec![("gold".to_string(), 12), ("aether_shard".to_string(), 1)]
+        );
         assert_eq!(
             parse_resources(&rows[0].resources, "12:acct"),
             vec![("crypt_dust".to_string(), 9)]
@@ -357,7 +370,7 @@ mod tests {
         let report = r#"{"party":[{"account_id":"acct","character_name":"Ash","class":"Fire Mage","role":"dps"}],"total_damage":1200,"dps":40.0,"duration_seconds":30.0,"boss_kill_seconds":12.5,"abilities":[{"ability":"Firebolt","damage":1200,"casts":10}]}"#;
         let body = serde_json::json!([[
             "12:acct", "acct", "char", "graveyard_crypt", 12, true, 5_000_000, 250, [1], 3, true,
-            4, "[]", report
+            4, "[]", report, 0, "[]"
         ]])
         .to_string();
         let rows: Vec<PendingRow> = serde_json::from_str(&body).unwrap();
@@ -372,7 +385,7 @@ mod tests {
     #[test]
     fn a_non_owner_row_without_resources_reads() {
         let body =
-            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]","",0]]"#;
+            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]","",0,"[]"]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert!(!rows[0].key_owner);
         assert!(parse_resources(&rows[0].resources, "12:b").is_empty());
@@ -391,11 +404,12 @@ mod tests {
 
     #[test]
     fn loot_rows_read_positionally() {
-        let body = r#"[["12:acct:loot","acct","char",12,"head_haste_critical_strike","mail","unclaimed",[1791124476846797]]]"#;
+        let body = r#"[["12:acct:loot:1","acct","char",12,"head_haste_critical_strike","mail","unclaimed",[1791124476846797],106,3,false]]"#;
         let rows: Vec<LootRow> = serde_json::from_str(body).unwrap();
-        assert_eq!(rows[0].loot_id, "12:acct:loot");
+        assert_eq!(rows[0].loot_id, "12:acct:loot:1");
         assert_eq!(rows[0].state, "mail");
         assert_eq!(rows[0].reason, "unclaimed");
+        assert_eq!((rows[0].quality, rows[0].enhancement, rows[0].broken), (106, 3, false));
     }
 
     fn engaged(state: &str) -> Result<Engagement, BridgeError> {

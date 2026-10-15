@@ -22,6 +22,7 @@ pub struct PendingResult {
     pub resources: String,
     pub damage_report: String,
     pub talent_points: u32,
+    pub looted: String,
 }
 
 impl __sdk::InModule for PendingResult {
@@ -47,6 +48,7 @@ pub struct PendingResultCols {
     pub resources: __sdk::__query_builder::Col<PendingResult, String>,
     pub damage_report: __sdk::__query_builder::Col<PendingResult, String>,
     pub talent_points: __sdk::__query_builder::Col<PendingResult, u32>,
+    pub looted: __sdk::__query_builder::Col<PendingResult, String>,
 }
 
 impl __sdk::__query_builder::HasCols for PendingResult {
@@ -68,6 +70,7 @@ impl __sdk::__query_builder::HasCols for PendingResult {
             resources: __sdk::__query_builder::Col::new(table_name, "resources"),
             damage_report: __sdk::__query_builder::Col::new(table_name, "damage_report"),
             talent_points: __sdk::__query_builder::Col::new(table_name, "talent_points"),
+            looted: __sdk::__query_builder::Col::new(table_name, "looted"),
         }
     }
 }

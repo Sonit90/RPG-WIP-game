@@ -28,6 +28,7 @@ use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
 use engine_game::firemage::{ABILITY_SLOTS, FireAbility};
 use engine_game::hero::Hero;
+use engine_game::loot::LootRules;
 use engine_game::movement::{Body, MoveIntent};
 use engine_game::sim::Simulation;
 use engine_game::talent::TalentGrid;
@@ -453,6 +454,61 @@ impl CombatInstance {
         }
         instance.sim.collision_world_mut().rebuild_broad_phase();
         instance
+    }
+
+    /// Hands the fight the loot rules it rolls with, the key level they are rolled at and the
+    /// run's reward bonus (per cent). Called once, before the first tick, by whoever builds the
+    /// fight (and again on a rebuild, which loses it with everything else the tables do not
+    /// hold). Without it the boss's chest is the legacy one-item chest and monsters drop nothing.
+    pub fn set_loot(&mut self, rules: LootRules, key_level: u32, reward_bonus_pct: u32) {
+        self.sim.set_loot_rules(rules, key_level, reward_bonus_pct);
+    }
+
+    /// Changes the run's reward bonus, per cent: what a key modifier grants. It scales what is
+    /// rolled from now on (currency chances and gold, the chest's chance of an extra item); the
+    /// realm scales the run's resource payout with the same number
+    /// ([`crate::rewards::RunRewards::with_bonus`]).
+    pub fn set_reward_bonus(&mut self, reward_bonus_pct: u32) {
+        self.sim.set_reward_bonus(reward_bonus_pct);
+    }
+
+    /// Operator and test tool: kills every living monster at once, the first player credited,
+    /// and returns the events the kills announced (their drops among them). The run then
+    /// completes through the ordinary ticks, chest and all - unlike an admin finish, which ends
+    /// a run without one.
+    pub fn admin_kill_all(&mut self) -> Vec<WireEvent> {
+        let Some(killer) = self.members.first().map(|member| member.entity) else {
+            return Vec::new();
+        };
+        let living: Vec<EntityId> = self
+            .sim
+            .enemies()
+            .map(|(entity, _)| entity)
+            .filter(|entity| self.sim.world().is_alive(*entity))
+            .collect();
+        for entity in living {
+            self.sim.apply_damage(
+                killer,
+                entity,
+                1.0e7,
+                engine_game::ability::AbilityId::from_fire(FireAbility::Firebolt),
+                engine_game::combat::DamageType::Fire,
+            );
+        }
+        // A kill made between steps announces itself into the current stream, which the next
+        // step clears: it is read here.
+        let announced: Vec<CombatEvent> = self.sim.events().to_vec();
+        let name = |entity: EntityId| self.name(entity);
+        announced
+            .iter()
+            .filter_map(|event| encode(event, &name))
+            .collect()
+    }
+
+    /// The run's reward bonus, per cent. Zero by default.
+    #[must_use]
+    pub fn reward_bonus(&self) -> u32 {
+        self.sim.reward_bonus()
     }
 
     /// Puts the run's dungeon modifiers in force (see `ModifierCatalog::resolve`). Called once,
