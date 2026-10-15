@@ -4954,7 +4954,7 @@ mod tests {
         assert!(text.contains(&"Monster drops: 2 (sent to your mail)".to_owned()));
         assert!(text.contains(&"Gold: +135".to_owned()));
         assert!(text.contains(&"Aether Shard: +1".to_owned()));
-        assert!(text.contains(&"Reward bonus: +25%".to_owned()));
+        assert!(text.contains(&"Loot bonus: +25% (key rerolled)".to_owned()));
         let epic = rows
             .iter()
             .find(|(_, v, _)| v.starts_with("Ashgrave"))

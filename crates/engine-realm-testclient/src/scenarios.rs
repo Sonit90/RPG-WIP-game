@@ -122,7 +122,14 @@ fn key_level_of(bot: &Bot) -> u32 {
 }
 
 fn resource_of(bot: &Bot, id: &str) -> u64 {
-    bot.character()
+    // The freshly fetched character first: the list is only as new as the last sign-in.
+    let fetched = bot
+        .detail
+        .as_ref()
+        .filter(|detail| Some(&detail.summary.id) == bot.character().map(|c| &c.id))
+        .map(|detail| &detail.summary);
+    fetched
+        .or_else(|| bot.character())
         .and_then(|c| c.resources.iter().find(|(r, _)| r == id))
         .map_or(0, |(_, amount)| *amount)
 }
@@ -1686,8 +1693,12 @@ pub fn modifiers(endpoints: &RealmEndpoints) -> Outcome {
     )?;
     let unlocked = drive(&mut bots, Duration::from_secs(10), |bots| {
         let (mut killed, mut total) = (0u32, 0u32);
+        // Counted as the realm counts it (and the Modifier panel shows it): placed monsters,
+        // the boss left out.
         for m in bots[1].mirror.monsters.values() {
-            if m.key >= engine_realm::combat::instance::SUMMONED_KEY_BASE {
+            let boss = engine_game::enemy::EnemyKind::from_id(&m.archetype)
+                .is_some_and(engine_game::enemy::EnemyKind::is_boss);
+            if m.key >= engine_realm::combat::instance::SUMMONED_KEY_BASE || boss {
                 continue;
             }
             total += 1;
@@ -1740,8 +1751,12 @@ pub fn modifiers(endpoints: &RealmEndpoints) -> Outcome {
         }),
         "the instance's modifier carries the rolled magnitude the clients animate",
     )?;
+    // The spend row arrives through its own view, possibly a beat after the instance's.
+    let spent = drive(&mut bots, Duration::from_secs(5), |bots| {
+        bots[1].mirror.spend.as_ref().is_some_and(|s| s.spent == 1)
+    });
     check(
-        bots[1].mirror.spend.as_ref().is_some_and(|s| s.spent == 1),
+        spent,
         "the roller's spend row says one currency was spent",
     )?;
     check(

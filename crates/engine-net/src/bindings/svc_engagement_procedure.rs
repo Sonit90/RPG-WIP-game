@@ -30,8 +30,8 @@ pub trait svc_engagement {
         account_id: String,
 
         __callback: impl FnOnce(&super::ProcedureEventContext, Result<Engagement, __sdk::InternalError>)
-        + Send
-        + 'static,
+            + Send
+            + 'static,
     );
 }
 
@@ -41,8 +41,8 @@ impl svc_engagement for super::RemoteProcedures {
         account_id: String,
 
         __callback: impl FnOnce(&super::ProcedureEventContext, Result<Engagement, __sdk::InternalError>)
-        + Send
-        + 'static,
+            + Send
+            + 'static,
     ) {
         self.imp.invoke_procedure_with_callback::<_, Engagement>(
             "svc_engagement",

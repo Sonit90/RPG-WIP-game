@@ -25,8 +25,8 @@ pub trait svc_admin_snapshot {
         &self,
 
         __callback: impl FnOnce(&super::ProcedureEventContext, Result<String, __sdk::InternalError>)
-        + Send
-        + 'static,
+            + Send
+            + 'static,
     );
 }
 
@@ -35,8 +35,8 @@ impl svc_admin_snapshot for super::RemoteProcedures {
         &self,
 
         __callback: impl FnOnce(&super::ProcedureEventContext, Result<String, __sdk::InternalError>)
-        + Send
-        + 'static,
+            + Send
+            + 'static,
     ) {
         self.imp.invoke_procedure_with_callback::<_, String>(
             "svc_admin_snapshot",

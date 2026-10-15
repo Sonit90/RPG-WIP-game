@@ -433,6 +433,16 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
     whole_view!(my_instance_spend, |db: &b::RemoteTables| {
         RealmUpdate::Spend(db.my_instance_spend().iter().next().map(spend))
     });
+    // The view has a primary key, so a reroll's debit arrives as an update, not as a delete
+    // and an insert.
+    {
+        let tx = events.clone();
+        db.my_instance_spend().on_update(move |ctx, _, _| {
+            let _ = tx.send(NetEvent::Realm(RealmUpdate::Spend(
+                ctx.db.my_instance_spend().iter().next().map(spend),
+            )));
+        });
+    }
     whole_view!(my_party_members, |db: &b::RemoteTables| {
         RealmUpdate::Members(db.my_party_members().iter().map(member).collect())
     });

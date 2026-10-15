@@ -46,7 +46,17 @@ fn my_instance(ctx: &ViewContext) -> Option<DungeonInstance> {
 /// What the caller may spend this run (the key reroll's currency) and has spent.
 #[view(accessor = my_instance_spend, public, primary_key = spend_id)]
 fn my_instance_spend(ctx: &ViewContext) -> Vec<InstanceSpend> {
-    ctx.db.instance_spend().identity().filter(ctx.sender()).collect()
+    // Only the run the caller is in: a finished run's row lingers until its instance is torn
+    // down, and a player who went straight into the next run must not see the old balance.
+    let Some(me) = ctx.db.instance_player().identity().find(ctx.sender()) else {
+        return Vec::new();
+    };
+    ctx.db
+        .instance_spend()
+        .identity()
+        .filter(ctx.sender())
+        .filter(|row| row.instance_id == me.instance_id)
+        .collect()
 }
 
 #[view(accessor = my_instance_players, public, primary_key = identity)]

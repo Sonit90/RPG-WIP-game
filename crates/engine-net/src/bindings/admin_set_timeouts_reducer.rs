@@ -63,11 +63,9 @@ pub trait admin_set_timeouts {
         reconnect_grace_seconds: u32,
         queue_disconnect_grace_seconds: u32,
 
-        callback: impl FnOnce(
-            &super::ReducerEventContext,
-            Result<Result<(), String>, __sdk::InternalError>,
-        ) + Send
-        + 'static,
+        callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
+            + Send
+            + 'static,
     ) -> __sdk::Result<()>;
 }
 
@@ -78,11 +76,9 @@ impl admin_set_timeouts for super::RemoteReducers {
         reconnect_grace_seconds: u32,
         queue_disconnect_grace_seconds: u32,
 
-        callback: impl FnOnce(
-            &super::ReducerEventContext,
-            Result<Result<(), String>, __sdk::InternalError>,
-        ) + Send
-        + 'static,
+        callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
+            + Send
+            + 'static,
     ) -> __sdk::Result<()> {
         self.imp.invoke_reducer_with_callback(
             AdminSetTimeoutsArgs {
