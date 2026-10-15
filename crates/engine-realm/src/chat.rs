@@ -305,9 +305,18 @@ mod tests {
 
     #[test]
     fn the_speaker_is_the_party_character_then_the_queued_one_then_the_account() {
-        assert_eq!(speaker_name(Some("Aldric"), Some("Other"), Some("acct")), Some("Aldric"));
-        assert_eq!(speaker_name(None, Some("Brienne"), Some("acct")), Some("Brienne"));
-        assert_eq!(speaker_name(None, None, Some("Hubwalker")), Some("Hubwalker"));
+        assert_eq!(
+            speaker_name(Some("Aldric"), Some("Other"), Some("acct")),
+            Some("Aldric")
+        );
+        assert_eq!(
+            speaker_name(None, Some("Brienne"), Some("acct")),
+            Some("Brienne")
+        );
+        assert_eq!(
+            speaker_name(None, None, Some("Hubwalker")),
+            Some("Hubwalker")
+        );
         assert_eq!(speaker_name(None, None, None), None);
         assert_eq!(speaker_name(Some("  "), None, Some(" ")), None);
     }

@@ -612,6 +612,37 @@ fn describe(event: &CombatEvent) -> String {
         CombatEvent::MailBagFull { player, tick } => {
             format!("mail bag full for {} on {tick}", player.index())
         }
+        CombatEvent::BeamChannelStarted {
+            entity,
+            yaw,
+            start_time,
+            duration,
+            tick,
+        } => format!(
+            "beam {} started {} {} {} on {tick}",
+            entity.index(),
+            fixed(yaw),
+            fixed(start_time as f32),
+            fixed(duration)
+        ),
+        CombatEvent::BeamYaw {
+            entity,
+            yaw,
+            turn_target_yaw,
+            time,
+            tick,
+        } => format!(
+            "beam {} yaw {} -> {} at {} on {tick}",
+            entity.index(),
+            fixed(yaw),
+            fixed(turn_target_yaw),
+            fixed(time as f32)
+        ),
+        CombatEvent::BeamChannelEnded {
+            entity,
+            reason,
+            tick,
+        } => format!("beam {} ended {reason:?} on {tick}", entity.index()),
         CombatEvent::Aggro {
             enemy,
             entity,

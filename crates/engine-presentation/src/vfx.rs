@@ -70,7 +70,7 @@ use engine_core::transform::Transform;
 use engine_game::enemy::TelegraphShape;
 use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
-use engine_game::firemage::{FireAbility, ZoneShape};
+use engine_game::firemage::{BEAM_LENGTH, BEAM_WIDTH, FireAbility, ZoneShape};
 use engine_game::sim::Simulation;
 use engine_render_data::{
     InstanceStyle, MaterialHandle, MeshHandle, ParticleDrawList, RenderEntity, RenderEntityDesc,
@@ -78,6 +78,7 @@ use engine_render_data::{
 };
 use engine_vfx::{MeshDraw, VfxHandle, VfxId, VfxShape, VfxSpawn, VfxStats, VfxSystem};
 
+use crate::beam::BeamTracker;
 use crate::ui::ground_decal::{self, DecalBand, DecalScratch, GroundSurface};
 use crate::ui::targeting::TargetShape;
 
@@ -169,6 +170,15 @@ const GATE_TINT: [f32; 4] = [0.55, 0.30, 0.95, 0.85];
 
 /// An add arriving, and the gate breaking.
 const CRYPT_TINT: [f32; 4] = [0.65, 0.35, 0.95, 1.0];
+
+/// How far in front of the channeller's feet the beam's particles start, in metres: the hands.
+const BEAM_HAND_REACH: f32 = 0.6;
+
+/// How high the beam's particles start, as a fraction of the channeller's height.
+const BEAM_HAND_HEIGHT: f32 = 0.7;
+
+/// The warm white-orange the beam's start and end flashes are tinted.
+const BEAM_FLASH_TINT: [f32; 4] = [1.0, 0.75, 0.35, 1.0];
 
 /// The most telegraph shapes remembered at once.
 ///
@@ -326,6 +336,12 @@ pub struct VfxDirector {
     mastery: Option<VfxHandle>,
     /// The gathering effect, while a cast is running.
     cast: Option<VfxHandle>,
+    /// Every Moving Fire Beam being channelled, turned each frame at the beam's own rate.
+    beams: BeamTracker,
+    /// The beam effect playing for each channeller, by entity.
+    beam_fx: Vec<(EntityId, VfxHandle)>,
+    /// Where each beam is this frame, gathered before the effects are moved. Reused.
+    beam_scratch: Vec<(EntityId, f32, Vec3, f32)>,
     /// Chest flourishes waiting for their moment: the dust of a landing, the burst of a lid.
     chest_fx: Vec<ChestFx>,
     /// Seconds until the waiting chest next sheds a sparkle.
@@ -379,6 +395,9 @@ impl VfxDirector {
             gate: None,
             mastery: None,
             cast: None,
+            beams: BeamTracker::new(),
+            beam_fx: Vec::with_capacity(4),
+            beam_scratch: Vec::with_capacity(4),
             chest_fx: Vec::with_capacity(4),
             chest_sparkle: 0.0,
             chest_sparkles: 0,
@@ -403,6 +422,8 @@ impl VfxDirector {
             self.shield = None;
             self.mastery = None;
             self.cast = None;
+            self.beams.clear();
+            self.beam_fx.clear();
             self.particles.clear();
         }
     }
@@ -446,6 +467,8 @@ impl VfxDirector {
         self.shield = None;
         self.mastery = None;
         self.cast = None;
+        self.beams.clear();
+        self.beam_fx.clear();
         self.chest_fx.clear();
         self.particles.clear();
         for pool in &mut self.pools {
@@ -464,6 +487,7 @@ impl VfxDirector {
         if !self.enabled {
             return;
         }
+        self.beams.observe(simulation);
         for index in 0..simulation.events().len() {
             let event = simulation.events()[index];
             self.observe_one(&event, simulation);
@@ -490,19 +514,13 @@ impl VfxDirector {
             // The rock is committed to. The ring closes over exactly the delay gameplay is
             // counting down, so the anticipation is the timer.
             CombatEvent::ImpactScheduled {
-                ability,
                 position,
                 radius,
                 delay,
                 ..
             } => {
-                let effect = if ability.fire() == Some(FireAbility::Cataclysm) {
-                    VfxId::Cataclysm
-                } else {
-                    VfxId::Telegraph
-                };
                 self.spawn(
-                    VfxSpawn::at(effect, position)
+                    VfxSpawn::at(VfxId::Telegraph, position)
                         .with_radius(radius.max(1.0))
                         .lasting(delay.max(0.05)),
                 );
@@ -561,6 +579,27 @@ impl VfxDirector {
                 self.spawn(VfxSpawn::at(VfxId::BlinkDeparture, from).with_radius(0.8));
                 self.spawn(VfxSpawn::at(VfxId::BlinkArrival, to).with_radius(1.1));
             }
+            // The beam itself is a state, drawn from the tracker each frame; these are the two
+            // moments around it. A surge at the hands as it opens, and a gutter as it ends.
+            CombatEvent::BeamChannelStarted { entity, .. } => {
+                if let Some(at) = beam_hand(simulation, entity) {
+                    self.spawn(
+                        VfxSpawn::at(VfxId::Explosion, at)
+                            .with_radius(1.5)
+                            .tinted(BEAM_FLASH_TINT),
+                    );
+                }
+            }
+            CombatEvent::BeamChannelEnded { entity, .. } => {
+                if let Some(at) = beam_hand(simulation, entity) {
+                    self.spawn(
+                        VfxSpawn::at(VfxId::Impact, at)
+                            .with_radius(1.0)
+                            .tinted(BEAM_FLASH_TINT),
+                    );
+                }
+            }
+            CombatEvent::BeamYaw { .. } => {}
             // Burning: one aura per target, refreshed rather than stacked.
             CombatEvent::StatusApplied {
                 target, duration, ..
@@ -970,7 +1009,9 @@ impl VfxDirector {
         }
         self.advance_bolts(delta);
         self.prune();
+        self.beams.advance(delta, simulation);
         self.sync_states(simulation);
+        self.sync_beams(simulation);
         self.advance_chest(simulation, delta);
 
         // Where an attached effect's owner is now. An entity that has gone answers `None`,
@@ -1100,6 +1141,66 @@ impl VfxDirector {
                 .lasting(f32::MAX)
                 .attached_to(slot),
         );
+    }
+
+    /// The beams being channelled, for the ground indicator and anything else that follows
+    /// them.
+    #[must_use]
+    pub fn beams(&self) -> &BeamTracker {
+        &self.beams
+    }
+
+    /// Keeps one beam effect playing for each channeller, pointed where its beam points.
+    ///
+    /// State rather than event, like the shield: a beam that was already burning when the
+    /// director was created or cleared still has to be drawn. Moved every frame, because the
+    /// beam turns every frame - the effect's particles are born along its current line and
+    /// ride it as it sweeps.
+    fn sync_beams(&mut self, simulation: &Simulation) {
+        // Effects whose beam has ended, or that the system dropped.
+        let mut index = 0;
+        while index < self.beam_fx.len() {
+            let (entity, handle) = self.beam_fx[index];
+            if self.beams.of(entity).is_some() && self.system.contains(handle) {
+                index += 1;
+            } else {
+                // Stopped rather than cleared: the sparks already in the air burn out on their
+                // own, which is the gutter.
+                self.system.stop(handle);
+                self.beam_fx.swap_remove(index);
+            }
+        }
+
+        let mut scratch = std::mem::take(&mut self.beam_scratch);
+        scratch.clear();
+        for beam in self.beams.iter() {
+            if let Some(origin) = self.beams.origin_of(beam, simulation) {
+                scratch.push((beam.entity, beam.yaw, origin, beam.duration));
+            }
+        }
+        for &(entity, yaw, origin, duration) in &scratch {
+            let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+            let position = origin + forward * BEAM_HAND_REACH;
+            if let Some((_, handle)) = self.beam_fx.iter().find(|(owner, _)| *owner == entity) {
+                self.system.set_position(*handle, position);
+                self.system.set_yaw(*handle, yaw);
+                continue;
+            }
+            let height = simulation.world().height(entity).max(1.0) * BEAM_HAND_HEIGHT;
+            let spawned = self.spawn(
+                VfxSpawn::at(VfxId::FireBeam, position)
+                    .facing(yaw)
+                    .with_radius(BEAM_WIDTH)
+                    .with_length(BEAM_LENGTH)
+                    .raised(height)
+                    // Outlives the channel: the authority's ending is what stops it.
+                    .lasting(duration.max(0.1) + 1.0),
+            );
+            if let Some(handle) = spawned {
+                self.beam_fx.push((entity, handle));
+            }
+        }
+        self.beam_scratch = scratch;
     }
 
     /// Keeps the wall across the boss's doorway up for exactly as long as the gate is shut.
@@ -1434,6 +1535,13 @@ fn place_pooled(
         shadow: engine_render_data::ShadowCasting::NONE,
     });
     pool.push(entity);
+}
+
+/// Where a channeller's hands are: at chest height above their feet.
+fn beam_hand(simulation: &Simulation, entity: EntityId) -> Option<Vec3> {
+    let world = simulation.world();
+    let position = world.position(entity)?;
+    Some(position + Vec3::new(0.0, world.height(entity).max(1.0) * BEAM_HAND_HEIGHT, 0.0))
 }
 
 /// The boundary a flat effect shape covers, in the vocabulary the band builder speaks.
@@ -2091,6 +2199,42 @@ mod tests {
             director.stats().system.spawned >= before + 2,
             "a teleport showed fewer than two effects"
         );
+    }
+
+    #[test]
+    fn a_channelled_beam_burns_for_exactly_as_long_as_the_channel_and_follows_its_yaw() {
+        let mut director = VfxDirector::new(visuals());
+        let mut world = RenderWorld::new();
+        let mut simulation = arena(1);
+        simulation.mage_mut().gain_energy(100.0);
+        simulation
+            .cast_at(FireAbility::FireBeam, Vec3::new(0.0, 0.0, -10.0))
+            .expect("a full bar casts it");
+        // The start is announced by the cast itself, before the next tick clears the batch.
+        director.observe(&simulation);
+        run(&mut director, &mut simulation, &mut world, 30);
+        assert_eq!(director.beams().len(), 1, "the channel is tracked");
+        assert_eq!(director.beam_fx.len(), 1, "and drawn");
+        let handle = director.beam_fx[0].1;
+        let first = director.system.position_of(handle).expect("a position");
+
+        // The cursor swings right: the effect turns with the beam rather than staying put.
+        simulation.push_command(engine_game::PlayerCommand::ChannelAim {
+            position: Vec3::new(20.0, 0.0, 0.0),
+        });
+        run(&mut director, &mut simulation, &mut world, 60);
+        let turned = director.beams().iter().next().expect("still burning").yaw;
+        assert!(
+            turned.abs() > 0.5,
+            "the tracked yaw did not follow: {turned}"
+        );
+        assert!(director.system.contains(handle));
+        let _ = first;
+
+        // And it is gone with the channel.
+        run(&mut director, &mut simulation, &mut world, 400);
+        assert!(director.beams().is_empty());
+        assert!(director.beam_fx.is_empty(), "the effect outlived the beam");
     }
 
     #[test]

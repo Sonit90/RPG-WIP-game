@@ -2479,6 +2479,9 @@ impl OnlineSession {
                 }
                 engine_game::PlayerCommand::UseExtra(index) => ActionKind::Extra(slot(index)),
                 engine_game::PlayerCommand::OpenChest => ActionKind::OpenChest,
+                engine_game::PlayerCommand::ChannelAim { position } => {
+                    ActionKind::ChannelAim(at(position))
+                }
                 _ => continue,
             };
             // After the run only the chest can be opened.

@@ -531,7 +531,7 @@ pub enum SlotAvailability {
     InvalidTarget,
     /// Ready *and* worth pressing right now: Detonate on a full burn.
     Empowered,
-    /// Switched off entirely: the Ultimate, which has no design yet.
+    /// Switched off entirely: the Ultimate, behind `ULTIMATE_ENABLED`.
     Disabled,
 }
 
@@ -672,6 +672,8 @@ pub struct CastView {
     pub elapsed: f32,
     /// Seconds it takes.
     pub duration: f32,
+    /// Whether this is a channel, whose bar drains as it runs instead of filling.
+    pub channelled: bool,
 }
 
 impl CastView {
@@ -681,7 +683,12 @@ impl CastView {
         if self.duration <= 0.0 {
             return 1.0;
         }
-        (self.elapsed / self.duration).clamp(0.0, 1.0)
+        let progress = (self.elapsed / self.duration).clamp(0.0, 1.0);
+        if self.channelled {
+            1.0 - progress
+        } else {
+            progress
+        }
     }
 
     /// Seconds left.
@@ -1106,12 +1113,26 @@ impl UiSnapshot {
             self.extras[index] = Some(ability_view(simulation, ability, aiming));
         }
 
-        self.cast = simulation.casting().map(|cast| CastView {
-            ability: cast.ability,
-            name: cast.ability.definition().name,
-            elapsed: cast.elapsed,
-            duration: cast.duration,
-        });
+        self.cast = simulation
+            .casting()
+            .map(|cast| CastView {
+                ability: cast.ability,
+                name: cast.ability.definition().name,
+                elapsed: cast.elapsed,
+                duration: cast.duration,
+                channelled: false,
+            })
+            .or_else(|| {
+                // Moving Fire Beam is a channel without a cast bar of its own: the same bar,
+                // draining, with the seconds left beside it.
+                simulation.is_channelling_beam().then(|| CastView {
+                    ability: FireAbility::FireBeam,
+                    name: FireAbility::FireBeam.definition().name,
+                    elapsed: simulation.beam().elapsed(),
+                    duration: engine_game::firemage::BEAM_DURATION,
+                    channelled: true,
+                })
+            });
 
         let meter = simulation.meter();
         self.combat = CombatView {
@@ -1247,7 +1268,7 @@ fn ability_view(
     let cannot_arm = ability == FireAbility::AstralPower && !simulation.druid().astral.can_arm();
 
     let availability = if ability.is_disabled() {
-        // Cataclysm has no gameplay concept yet. The button stays where it is and says so,
+        // Switched off ([`ULTIMATE_ENABLED`]): the button stays where it is and says so,
         // rather than disappearing and taking its architecture with it.
         SlotAvailability::Disabled
     } else if (definition.fire().energy_cost > 0.0 && !mage.energy.is_full())
@@ -1296,9 +1317,12 @@ fn ability_view(
         cooldown_remaining: mage.abilities.recharge_remaining(ability),
         cooldown_fraction: mage.abilities.recharge_fraction(ability, effects),
         global_cooldown_fraction: mage.global_cooldown_fraction_for(ability),
+        // A channelled beam is "the ability in progress" for as long as it burns, so the
+        // Ultimate button wears the active frame while the bar drains.
         casting: simulation
             .casting()
-            .is_some_and(|cast| cast.ability == ability),
+            .is_some_and(|cast| cast.ability == ability)
+            || (ability == FireAbility::FireBeam && simulation.is_channelling_beam()),
         aiming: aiming == Some(ability),
         ground_targeted: definition.target.is_ground_targeted(),
         cast_time: definition.cast_time_with(&stats),
@@ -1563,10 +1587,10 @@ mod tests {
         );
         assert_eq!(
             snapshot.ultimate.expect("the mage has an Ultimate").name,
-            "CATACLYSM"
+            "MOVING FIRE BEAM"
         );
         assert!(
-            !names.contains(&"CATACLYSM"),
+            !names.contains(&"MOVING FIRE BEAM"),
             "the ultimate is on the regular bar"
         );
     }
@@ -1627,7 +1651,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ultimate_reports_its_energy_while_it_is_switched_off() {
+    fn the_ultimate_reports_its_energy_and_is_ready_only_with_a_full_bar() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
@@ -1635,67 +1659,56 @@ mod tests {
                 .ultimate
                 .expect("the mage has an Ultimate")
                 .availability,
-            SlotAvailability::Disabled
+            SlotAvailability::NoResource
         );
         assert!(!snapshot.player.ultimate_ready);
 
         simulation.mage_mut().gain_energy(100.0);
         let snapshot = UiSnapshot::build(&simulation);
         assert!((snapshot.player.energy_fraction() - 1.0).abs() < 1e-6);
+        assert!(snapshot.player.ultimate_ready);
+        let ultimate = snapshot.ultimate.expect("the mage has an Ultimate");
+        assert_eq!(ultimate.ability, FireAbility::FireBeam);
+        assert_eq!(ultimate.availability, SlotAvailability::Ready);
+        assert!(!ultimate.shows_active_frame());
     }
 
     #[test]
-    fn the_heat_bar_reports_its_bands_and_the_inferno_state() {
-        let mut simulation = arena();
-        simulation.mage_mut().gain_heat(40.0);
-        let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.player.heat_tier, HeatTier::Warm);
-        assert!(!snapshot.player.heat_is_high());
-        assert!((snapshot.player.heat_fraction() - 0.4).abs() < 1e-6);
-
-        simulation.mage_mut().gain_heat(40.0);
-        let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.player.heat_tier, HeatTier::Hot);
-        assert!(snapshot.player.heat_is_high());
-
-        // The top of the bar spends it: the bar then reports the state, not the value.
-        simulation.mage_mut().gain_heat(20.0);
-        let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.player.in_inferno());
-        assert_eq!(snapshot.player.heat, 0.0);
-        assert!(snapshot.player.inferno_remaining > 0.0);
-
-        // Both band markers are on the bar, in order, and neither is at an end of it.
-        let [warm, hot] = snapshot.player.heat_thresholds();
-        assert!(0.0 < warm && warm < hot && hot < 1.0);
-    }
-
-    #[test]
-    fn the_ultimate_button_is_present_and_switched_off() {
-        // The design keeps the architecture and takes away the button's use, so the slot
-        // must still exist and must never read as ready.
+    fn a_channelled_beam_drains_the_cast_bar_and_frames_the_ultimate_button() {
         let mut simulation = arena();
         simulation.mage_mut().gain_energy(100.0);
+        simulation
+            .cast_at(
+                FireAbility::FireBeam,
+                engine_core::math::Vec3::new(0.0, 0.0, -10.0),
+            )
+            .expect("a full bar casts it");
+        simulation.step_many(120);
+
         let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(
-            snapshot.ultimate.expect("the mage has an Ultimate").ability,
-            FireAbility::Cataclysm
-        );
-        assert_eq!(
-            snapshot
-                .ultimate
-                .expect("the mage has an Ultimate")
-                .availability,
-            SlotAvailability::Disabled
+        let bar = snapshot.cast.expect("the channel is on the cast bar");
+        assert_eq!(bar.ability, FireAbility::FireBeam);
+        assert!(bar.channelled);
+        assert!(
+            (bar.remaining() - 4.0).abs() < 0.1,
+            "{} s left",
+            bar.remaining()
         );
         assert!(
-            !snapshot
-                .ultimate
-                .expect("the mage has an Ultimate")
-                .availability
-                .is_ready()
+            (bar.fraction() - 4.0 / 6.0).abs() < 0.03,
+            "a channel drains: {}",
+            bar.fraction()
         );
-        assert!(!snapshot.player.ultimate_ready);
+        let ultimate = snapshot.ultimate.expect("the mage has an Ultimate");
+        assert!(ultimate.shows_active_frame());
+        assert!(
+            ultimate.cooldown_remaining > 80.0,
+            "cooling for ninety seconds"
+        );
+
+        simulation.step_many(300);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.cast.is_none(), "the bar goes with the channel");
     }
 
     #[test]

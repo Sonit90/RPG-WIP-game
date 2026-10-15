@@ -251,6 +251,10 @@ const ICONS: &[IconEntry] = &[
         constant: "BLINK",
     },
     IconEntry {
+        file: "firemage/fire_beam.svg",
+        constant: "FIRE_BEAM",
+    },
+    IconEntry {
         file: "warrior/recuperate.svg",
         constant: "RECUPERATE",
     },

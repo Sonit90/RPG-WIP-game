@@ -64,6 +64,8 @@ use crate::warrior::Warrior;
 use crate::world::{EntityKind, GameWorld};
 
 /// How the simulation is configured.
+/// Casting the Moving Fire Beam: the channel, its steering, its damage and its endings.
+mod beam_exec;
 /// Casting the Druid: Mana, Astral Power, the empowerment and the channel.
 pub mod druid_exec;
 /// A dungeon run's simulation half: sealing, crediting, the gate and the boss's adds.
@@ -723,6 +725,9 @@ impl Simulation {
     /// stream, so presentation (effects, sound, numbers, the meter) observes it like a local
     /// one.
     pub fn inject_event(&mut self, event: CombatEvent) {
+        // The local player's own beam is state as well as picture on a client: the movement
+        // slow, the channel bar and the steering all read it.
+        self.present_beam_event(&event);
         self.events.push(event);
     }
 
@@ -743,6 +748,7 @@ impl Simulation {
         self.player.queued = None;
         self.player.last_ability = None;
         self.player.last_error = None;
+        self.end_beam(crate::firemage::BeamEnd::Reset);
         self.mage.reset();
         self.warrior.reset();
         self.druid.reset();
@@ -1162,6 +1168,12 @@ impl Simulation {
     /// Queues a command for the next tick.
     pub fn push_command(&mut self, command: PlayerCommand) {
         if self.is_remote_request(&command) {
+            // Steering is the one request the client also acts on at once: the server decides
+            // what the beam does, but the client draws it, and a beam that waited a round
+            // trip to start turning would feel like a cursor on a rope.
+            if let PlayerCommand::ChannelAim { position } = command {
+                self.steer_beam(position);
+            }
             self.remote_requests.push(command);
             return;
         }
@@ -1632,6 +1644,7 @@ impl Simulation {
                         let _ = self.cast(ability);
                     }
                 }
+                PlayerCommand::ChannelAim { position } => self.steer_beam(position),
                 PlayerCommand::PurchaseTalent(talent) => {
                     let _ = self.mage.purchase_talent(talent);
                 }
@@ -1810,18 +1823,25 @@ impl Simulation {
         // A dead player is a body, not a character: it keeps falling and sliding to a stop
         // under the same controller, and it stops steering. Refusing abilities is
         // `try_cast`'s job and was already true before anything could kill anybody.
-        let intent = if self.world.is_alive(player) {
+        let mut intent = if self.world.is_alive(player) {
             intent
         } else {
             MoveIntent::NONE
         };
+        // Channelling the Moving Fire Beam: the mage may walk, slowly, and may not jump out
+        // of it.
+        if self.mage.beam.is_active() {
+            intent.jump = false;
+        }
 
         // Whatever the player's own class is currently multiplying their speed by: Wild
         // Rush, and nothing else today. Applied to the configuration the collided step
         // reads, so a faster character is faster through the same controller rather than
         // through a second movement path.
         let config = MovementConfig {
-            max_speed: config.max_speed * self.move_speed_multiplier(),
+            max_speed: config.max_speed
+                * self.move_speed_multiplier()
+                * self.channel_move_multiplier(),
             ..config
         };
 
@@ -2205,6 +2225,10 @@ impl Simulation {
         }
         ignite_ticks.clear();
         self.ignite_ticks = ignite_ticks;
+
+        // The Ultimate's channel, after the burns of this step have ticked: a stack it adds
+        // is counted from the next step.
+        self.tick_beam(step);
     }
 
     /// Moves the player by `offset`, sliding along whatever is in the way.
@@ -2876,6 +2900,7 @@ impl Simulation {
     /// resource are refilled — the point of the control is to try a rotation again from a
     /// known state, and waiting eight seconds for Detonate is not part of that state.
     pub fn reset_dummies(&mut self) {
+        self.end_beam(crate::firemage::BeamEnd::Reset);
         self.mage.reset();
         self.warrior.reset();
         self.druid.reset();

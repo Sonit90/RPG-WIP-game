@@ -473,6 +473,7 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::FireMastery => raster::FIRE_MASTERY,
         UiIcon::FlameShield => raster::FLAME_SHIELD,
         UiIcon::Blink => raster::BLINK,
+        UiIcon::FireBeam => raster::FIRE_BEAM,
         UiIcon::Recuperate => raster::RECUPERATE,
         UiIcon::WarStomp => raster::WAR_STOMP,
         UiIcon::ColossusStrike => raster::COLOSSUS_STRIKE,

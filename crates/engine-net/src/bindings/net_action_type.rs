@@ -21,6 +21,8 @@ pub enum NetAction {
     Extra(u8),
 
     OpenChest,
+
+    ChannelAim(V3),
 }
 
 impl __sdk::InModule for NetAction {

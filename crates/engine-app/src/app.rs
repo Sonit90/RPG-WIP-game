@@ -205,6 +205,12 @@ const WATER_MATERIAL: &str = "water";
 /// ability's edge, so the line the player aims with is the boundary the executor tests.
 const DECAL_BORDER_WIDTH: f32 = 0.28;
 
+/// The fewest seconds between two steering reports for a channelled beam: ten a second.
+const BEAM_AIM_SEND_INTERVAL: f32 = 0.1;
+
+/// How far the cursor's ground point must move before it is worth reporting, in metres.
+const BEAM_AIM_MOVE_THRESHOLD: f32 = 0.5;
+
 /// How far above the ground the border sits, in metres.
 ///
 /// Coplanar with the terrain would be a depth-buffer tie and would flicker; a few centimetres
@@ -396,7 +402,7 @@ pub struct App {
     frame_scratch: FrameScratch,
     /// Scratch the HUD's own labels are written into. Reused; never freed.
     hud_scratch: String,
-    /// The one ground-targeting circle, shared by Meteor, Firestorm and Cataclysm.
+    /// The one ground-targeting circle, shared by Meteor, Firestorm and Moving Fire Beam.
     targeting: GroundTargeting,
     /// The talent menu, opened from the button in the top-right corner.
     talent_menu: TalentMenu,
@@ -492,6 +498,10 @@ pub struct App {
     telegraphs: engine_presentation::telegraph_indicator::TelegraphIndicators,
     /// Draws `telegraphs` as a static border with a fill that grows to the strike.
     telegraph_view: TelegraphView,
+    /// Seconds since the beam's steering was last sent, so it goes at most ten times a second.
+    beam_aim_clock: f32,
+    /// The ground point the beam's steering was last sent for.
+    beam_aim_sent: Option<Vec3>,
     /// Enemies inside the circle this frame. Reused; never freed.
     affected: Vec<engine_game::EntityId>,
     /// Whether the right button is held and the mouse is turning the camera.
@@ -1380,6 +1390,8 @@ impl App {
             decal_visuals,
             telegraphs: engine_presentation::telegraph_indicator::TelegraphIndicators::new(),
             telegraph_view,
+            beam_aim_clock: 0.0,
+            beam_aim_sent: None,
             affected: Vec::with_capacity(32),
             mouse_look: MouseLook::new(),
             motion: RelativeMotion::new(),
@@ -2565,7 +2577,7 @@ impl App {
         }
         // Whichever ability *this* hero keeps on the Ultimate key, rather than the mage's:
         // the Warrior's Last Stand and the Druid's Tranquility live in the same slot, and a
-        // key that always meant Cataclysm was a key two of the three heroes could not press.
+        // key that always meant Moving Fire Beam was a key two of the three heroes could not press.
         if !chat_keys
             && ctx.input().was_key_pressed(self.bindings.ultimate)
             && let Some(ultimate) = self.simulation.hero().ultimate()
@@ -2884,6 +2896,15 @@ impl App {
     /// selectable at all: opening a targeting circle for something that would be refused on
     /// the click wastes the player's attention and hides the reason.
     fn cast_or_target(&mut self, ability: FireAbility) {
+        // The Ultimate pressed again while it is being channelled ends the channel: there is
+        // nothing to aim, so it goes straight through without opening the placement line.
+        if ability == FireAbility::FireBeam && self.simulation.is_channelling_beam() {
+            let caster = self.simulation.player_position();
+            if let Some(command) = self.simulation.hero().command_for(ability, None, caster) {
+                self.simulation.push_command(command);
+            }
+            return;
+        }
         let mage = self.simulation.mage();
         if !mage.abilities.is_ready(ability) || mage.global_cooldown_holds(ability) {
             return;
@@ -2903,6 +2924,47 @@ impl App {
         let caster = self.simulation.player_position();
         if let Some(command) = self.simulation.hero().command_for(ability, None, caster) {
             self.simulation.push_command(command);
+        }
+    }
+
+    /// While the Moving Fire Beam is channelled, tells the simulation where the cursor points
+    /// on the ground, so the beam can turn towards it.
+    ///
+    /// At most ten times a second and only when the point has moved more than half a metre:
+    /// online each one is a press the server's rate limit counts, and the beam turns slower
+    /// than a hand moves a mouse. The simulation does the turning and caps its speed; this
+    /// only says where the player is pointing.
+    fn steer_channelled_beam(&mut self, pointer: (i32, i32), delta: f32) {
+        if !self.simulation.is_channelling_beam() {
+            self.beam_aim_sent = None;
+            self.beam_aim_clock = 0.0;
+            return;
+        }
+        self.beam_aim_clock += delta;
+        let terrain = self
+            .environment
+            .as_ref()
+            .and_then(|scene| scene.terrain.as_ref());
+        let ground = match terrain {
+            Some(terrain) => GroundSurface::Terrain(terrain),
+            None => GroundSurface::Plane(engine_presentation::ui::targeting::GROUND_HEIGHT),
+        };
+        let Some(point) = engine_presentation::ui::targeting::ground_under_cursor(
+            (pointer.0 as f32, pointer.1 as f32),
+            &self.camera.view_projection(),
+            self.renderer.size(),
+            &ground,
+        ) else {
+            return;
+        };
+        let moved = self
+            .beam_aim_sent
+            .is_none_or(|sent| (sent - point).length() > BEAM_AIM_MOVE_THRESHOLD);
+        if moved && self.beam_aim_clock >= BEAM_AIM_SEND_INTERVAL {
+            self.beam_aim_clock = 0.0;
+            self.beam_aim_sent = Some(point);
+            self.simulation
+                .push_command(engine_game::PlayerCommand::ChannelAim { position: point });
         }
     }
 
@@ -6382,6 +6444,10 @@ impl Application for App {
                 });
             }
             self.simulation.push_commands(self.commands.iter().copied());
+            self.steer_channelled_beam(
+                ctx.input().mouse_position(),
+                ctx.time().real_delta().as_secs_f32(),
+            );
         }
         self.autocast(ctx.time().real_delta().as_secs_f32());
 
@@ -6516,6 +6582,9 @@ impl Application for App {
                 self.telegraphs.observe(&self.simulation);
                 self.telegraphs
                     .advance(ctx.time().real_delta().as_secs_f32(), &self.simulation);
+                // The floor under every Moving Fire Beam, turned as the beam is.
+                self.telegraphs
+                    .sync_beams(self.vfx.beams(), &self.simulation);
             } else {
                 self.telegraphs.clear();
             }

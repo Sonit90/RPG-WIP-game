@@ -281,3 +281,108 @@ fn a_rebuilt_fight_keeps_keys_the_dead_and_the_bodies() {
     assert!((tank.health - 100.0).abs() < 1e-3);
     assert!((rebuilt.credited() - 5.0).abs() < 1e-3);
 }
+
+#[test]
+fn a_channel_aim_steers_the_servers_beam_and_the_beam_crosses_the_wire() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    fight.open_start_barrier();
+    let monster = fight
+        .monster_states()
+        .into_iter()
+        .next()
+        .expect("a monster");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let near = monster.position + Vec3::new(0.0, 0.0, 12.0);
+    if let Some(body) = fight.sim.world_mut().body_mut(mage) {
+        *body = Body::at(near);
+    }
+    fight.sim.with_player(mage, |sim| {
+        sim.mage_mut().gain_energy(100.0);
+    });
+    let press = |kind| CombatAction {
+        target: EntityRef::None,
+        kind,
+    };
+
+    // The press that casts it: aimed at the monster.
+    let aim = [monster.position.x, monster.position.y, monster.position.z];
+    fight
+        .act("dps", &press(ActionKind::Ultimate(aim)))
+        .expect("a well-formed press");
+    let events = fight.advance(90);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            WireEvent::BeamChannelStarted { entity, duration, .. }
+                if *entity == EntityRef::Player("dps".into()) && (*duration - 6.0).abs() < 1e-6
+        )),
+        "the channel was announced by account"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            WireEvent::Damage { ability, source, .. }
+                if *source == EntityRef::Player("dps".into())
+                    && *ability == AbilityRef::Player(FireAbility::FireBeam.index() as u16)
+        )),
+        "the beam hurt something and the wire named the ability"
+    );
+    let channelling = fight
+        .sim
+        .with_player(mage, |sim| sim.is_channelling_beam())
+        .expect("dps is here");
+    assert!(channelling);
+
+    // Steering is not a targeting press and moves the server's beam, not the client's.
+    let before = fight
+        .sim
+        .with_player(mage, |sim| sim.beam().yaw())
+        .expect("dps is here");
+    let away = [
+        monster.position.x + 30.0,
+        monster.position.y,
+        monster.position.z,
+    ];
+    fight
+        .act("dps", &press(ActionKind::ChannelAim(away)))
+        .expect("a well-formed aim");
+    let events = fight.advance(60);
+    let after = fight
+        .sim
+        .with_player(mage, |sim| sim.beam().yaw())
+        .expect("dps is here");
+    assert!(
+        (after - before).abs() > 0.5,
+        "the beam turned from {before} to {after}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, WireEvent::BeamYaw { .. })),
+        "the new aim was reported to everyone else"
+    );
+
+    // Pressing the ultimate again cancels, and the ending crosses the wire.
+    fight
+        .act("dps", &press(ActionKind::Ultimate(aim)))
+        .expect("a well-formed press");
+    let events = fight.advance(2);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        WireEvent::BeamChannelEnded { reason, .. }
+            if *reason == engine_game::firemage::BeamEnd::Cancelled.index()
+    )));
+
+    // A malformed aim is refused before it reaches the simulation.
+    assert_eq!(
+        fight.act("dps", &press(ActionKind::ChannelAim([f32::NAN, 0.0, 0.0]))),
+        Err(ActionError::Malformed)
+    );
+    assert_eq!(
+        fight.act("intruder", &press(ActionKind::ChannelAim([0.0; 3]))),
+        Err(ActionError::NotInFight)
+    );
+}

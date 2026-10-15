@@ -56,9 +56,21 @@ pub enum PlayerCommand {
         /// Where the player put the circle.
         position: Vec3,
     },
-    /// Cast Cataclysm at a chosen point. Edge-triggered.
+    /// Use the hero's Ultimate, aimed at a chosen point. Edge-triggered.
+    ///
+    /// For the FireMage's Moving Fire Beam the point is the direction the channel starts in;
+    /// pressed again while the channel runs it ends it.
     UseUltimate {
-        /// Where the player put the circle.
+        /// Where the player put the aim.
+        position: Vec3,
+    },
+    /// Steer the Moving Fire Beam being channelled towards a ground point.
+    ///
+    /// An *intent*, like every command: the simulation turns the beam towards the point at
+    /// its own turn rate and a command with no channel running does nothing. The application
+    /// sends it at most about ten times a second, and only when the point moved.
+    ChannelAim {
+        /// The ground point under the cursor.
         position: Vec3,
     },
     /// Use one of the hero's buttons beside the bar. Edge-triggered.

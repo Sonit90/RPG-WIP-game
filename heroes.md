@@ -14,7 +14,7 @@ Hero ─┬─ abilities()  the rows of ABILITIES whose `hero` column names it, 
       ├─ model_name() a name the visual layer looks up. `engine-game` never sees a triangle
       ├─ extras()     the ability buttons beside it, on `F` and `G`, for a hero with
       │                more abilities than the keyboard has digits
-      └─ ultimate()   the ability on `R`: Cataclysm (disabled), Last Stand, Tranquility
+      └─ ultimate()   the ability on `R`: Moving Fire Beam, Last Stand, Tranquility
 ```
 
 `engine-game/src/hero.rs`. Every row of `ABILITIES` carries `hero` and `damage_type`; no two

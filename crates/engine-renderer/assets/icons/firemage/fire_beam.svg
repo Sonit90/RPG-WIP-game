@@ -1,0 +1,79 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="fire_beam_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="fire_beam_forge" gradientUnits="userSpaceOnUse" cx="150" cy="790" r="420">
+		<stop offset="0" stop-opacity="0.65" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.5" stop-opacity="0.24" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<linearGradient id="fire_beam_halo" gradientUnits="userSpaceOnUse" x1="130" y1="800" x2="580" y2="320">
+		<stop offset="0" stop-opacity="0.85" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.6" stop-opacity="0.45" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="1" stop-opacity="0.1" stop-color="rgb(249,134,8)"></stop>
+	</linearGradient>
+	<linearGradient id="fire_beam_body" gradientUnits="userSpaceOnUse" x1="130" y1="800" x2="580" y2="320">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(225,57,2)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+	</linearGradient>
+	<linearGradient id="fire_beam_core" gradientUnits="userSpaceOnUse" x1="130" y1="800" x2="580" y2="320">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(255,246,208)"></stop>
+	</linearGradient>
+	<radialGradient id="fire_beam_source" gradientUnits="userSpaceOnUse" cx="130" cy="800" r="64">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,246,208)"></stop>
+		<stop offset="0.4" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+		<stop offset="0.75" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(171,20,2)"></stop>
+	</radialGradient>
+	<linearGradient id="fire_beam_sweep" gradientUnits="userSpaceOnUse" x1="330" y1="255" x2="650" y2="400">
+		<stop offset="0" stop-opacity="0" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="0.5" stop-opacity="0.8" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(241,87,3)"></stop>
+	</linearGradient>
+	<radialGradient id="fire_beam_glow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(340,-320,260,280,360,560)">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="0.55" stop-opacity="0.18" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(94,13,6)"></stop>
+	</radialGradient>
+	<clipPath id="fire_beam_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#fire_beam_tile)">
+	<path fill="url(#fire_beam_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#fire_beam_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="url(#fire_beam_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The ability is a channel the mage steers, so it is drawn mid-sweep: where the beam was a
+	     moment ago is still on the ground behind it, and it is turning towards the upper right. -->
+	<path fill="rgb(133,15,4)" fill-opacity="0.45" d="M 122 792 C 190 640 252 520 316 238 L 352 262 C 292 520 226 660 142 812 z"></path>
+	<path fill="rgb(133,15,4)" fill-opacity="0.4" d="M 140 800 C 330 704 520 640 640 610 L 664 652 C 520 690 330 790 128 812 z"></path>
+
+	<!-- The arc the tip has swept. -->
+	<path fill="url(#fire_beam_sweep)" d="M 330 255 C 480 205 604 270 656 404 C 612 292 500 236 336 286 z"></path>
+
+	<!-- The beam: wide where it is far, narrow where it leaves the hand. -->
+	<path fill="url(#fire_beam_halo)" d="M 105 776 L 492 238 L 667 402 L 155 824 z"></path>
+	<path fill="url(#fire_beam_body)" d="M 117 788 L 529 272 Q 590 290 631 368 L 143 812 z"></path>
+	<path fill="url(#fire_beam_core)" d="M 125 795 L 561 302 Q 584 316 599 338 L 135 805 z"></path>
+	<path fill="rgb(255,246,208)" fill-opacity="0.9" d="M 128 798 L 548 316 L 566 334 L 138 808 z"></path>
+
+	<!-- Where it leaves the hand. -->
+	<path fill="url(#fire_beam_source)" d="M 130 736 C 166 736 194 764 194 800 C 194 836 166 864 130 864 C 94 864 66 836 66 800 C 66 764 94 736 130 736 z"></path>
+
+	<!-- The ground it was cast from, charred. -->
+	<path fill="rgb(60,8,3)" fill-opacity="0.9" d="M 40 872 C 120 850 200 846 270 850 C 200 880 120 890 40 884 z"></path>
+
+	<!-- Embers thrown off the beam. -->
+	<path fill="rgb(252,191,12)" d="M 330 560 C 338 566 342 576 340 586 C 330 580 324 570 324 560 z"></path>
+	<path fill="rgb(254,224,61)" d="M 470 380 C 478 386 482 396 480 406 C 470 400 464 390 464 380 z"></path>
+	<path fill="rgb(253,120,2)" d="M 250 640 C 256 644 260 652 258 660 C 250 656 246 648 246 640 z"></path>
+	<path fill="rgb(252,191,12)" d="M 568 456 C 576 462 580 470 578 480 C 568 474 562 466 562 456 z"></path>
+	<path fill="rgb(254,224,61)" d="M 400 300 C 406 304 410 312 408 320 C 400 316 396 308 396 300 z"></path>
+	<path fill="rgb(253,120,2)" d="M 596 566 C 602 570 606 578 604 586 C 596 582 592 574 592 566 z"></path>
+</g>
+</svg>

@@ -27,6 +27,8 @@
 /// Combat heard: the layer that decides what an ability sounds like.
 pub mod audio;
 pub mod aura;
+/// Every Moving Fire Beam being channelled, tracked for drawing.
+pub mod beam;
 pub mod camera;
 /// The character visual controller: gameplay state in, a posed and placed character out.
 pub mod character;
@@ -58,6 +60,7 @@ pub mod ui;
 pub mod vfx;
 
 pub use audio::{AudioDirector, AudioDirectorStats, HEAVY_DAMAGE, STRIDE};
+pub use beam::{BeamTracker, BeamView, MAX_BEAMS};
 pub use camera::ThirdPersonCamera;
 pub use character_save::{apply_config, config_of};
 pub use chest::{ChestDirector, ChestVisuals};

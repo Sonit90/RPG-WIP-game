@@ -5,7 +5,7 @@
 //!                                                            -> right click / escape cancels
 //! ```
 //!
-//! Meteor, Firestorm and Cataclysm all use this. They differ only in radius, range and
+//! Meteor, Firestorm and Moving Fire Beam all use this. They differ only in radius, range and
 //! colour, which are read from the ability's own definition - so a fourth placed ability is a
 //! row in the ability table and no new code here.
 //!
@@ -537,7 +537,7 @@ mod tests {
             FireAbility::Meteor,
             FireAbility::Firestorm,
             FireAbility::FlameCone,
-            FireAbility::Cataclysm,
+            FireAbility::FireBeam,
         ] {
             let mut targeting = GroundTargeting::new();
             targeting.begin(ability);
@@ -819,17 +819,25 @@ mod tests {
     fn a_shape_comes_from_the_ability_rather_than_from_the_targeting_code() {
         // Placed circles ask for a circle, the line asks for a line, and the cone asks for
         // a wedge - all read from the same table the executor hits with.
-        for ability in [FireAbility::Meteor, FireAbility::Cataclysm] {
-            let shape = TargetShape::of(ability);
-            assert_eq!(
-                shape,
-                TargetShape::Circle {
-                    radius: ability.definition().radius
-                },
-                "{ability:?}"
-            );
-            assert_eq!(shape.extent(), ability.definition().radius);
-        }
+        let meteor = FireAbility::Meteor;
+        let shape = TargetShape::of(meteor);
+        assert_eq!(
+            shape,
+            TargetShape::Circle {
+                radius: meteor.definition().radius
+            },
+        );
+        assert_eq!(shape.extent(), meteor.definition().radius);
+
+        // The Ultimate is a line too: 22 m long and 2.6 m wide, from the beam's own row.
+        let beam = FireAbility::FireBeam.definition();
+        assert_eq!(
+            TargetShape::of(FireAbility::FireBeam),
+            TargetShape::Line {
+                width: beam.width,
+                length: beam.range
+            }
+        );
 
         let firestorm = FireAbility::Firestorm.definition();
         assert_eq!(

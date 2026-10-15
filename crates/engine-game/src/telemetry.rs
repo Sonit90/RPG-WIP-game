@@ -229,6 +229,10 @@ impl CombatMeter {
                 | CombatEvent::LootMailed { .. }
                 | CombatEvent::MailTaken { .. }
                 | CombatEvent::MailBagFull { .. }
+                // The beam's channel is a state; the damage it deals arrives as `Damage`.
+                | CombatEvent::BeamChannelStarted { .. }
+                | CombatEvent::BeamYaw { .. }
+                | CombatEvent::BeamChannelEnded { .. }
                 // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
                 // Valor and a shield taking a hit all *prevent* damage rather than
                 // move any, and the healing they cause arrives as `Healing` like every

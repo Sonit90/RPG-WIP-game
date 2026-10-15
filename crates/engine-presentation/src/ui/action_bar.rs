@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn a_spell_that_cannot_be_cast_cannot_be_put_in_a_slot() {
         let mut set = ActionBarSet::default();
-        for refused in [FireAbility::Ignite, FireAbility::Cataclysm] {
+        for refused in [FireAbility::Ignite, FireAbility::FireBeam] {
             assert!(
                 !set.assign_spell(address(0, 0), Some(refused)),
                 "{refused:?} was accepted"

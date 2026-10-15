@@ -29,6 +29,7 @@
 //! applied at 10 % haste ticks at 30 % haste the instant the mage has it.
 
 pub mod abilities;
+pub mod beam;
 pub mod ignite;
 pub mod resource;
 pub mod rng;
@@ -48,6 +49,13 @@ pub use crate::ability::{
     ABILITIES, ABILITY_COUNT, AbilityBook, AbilityDef, AbilityError, AbilityState, ClassRow,
     DruidRow, FireAbility, FireMageRow, Motion, TARGET_CLEAVE_HALF_ANGLE, TargetMode, ThreatScale,
     ULTIMATE_ENABLED, WarriorRow,
+};
+pub use beam::{
+    BEAM_COOLDOWN, BEAM_CORRECTION_SNAP, BEAM_DURATION, BEAM_ENERGY_COST, BEAM_IGNITE_EVERY_TICKS,
+    BEAM_IGNITE_INTERVAL, BEAM_IGNITE_STACKS, BEAM_LENGTH, BEAM_MIN_AIM_DISTANCE,
+    BEAM_MOVE_SPEED_MULTIPLIER, BEAM_REPORT_EPSILON, BEAM_REPORT_INTERVAL, BEAM_TICK_COEFFICIENT,
+    BEAM_TICK_INTERVAL, BEAM_TICKS, BEAM_TURN_RATE, BEAM_TURN_RATE_DEGREES, BEAM_WIDTH,
+    BeamAdvance, BeamChannel, BeamEnd, turn_towards, wrap_angle, yaw_to,
 };
 pub use ignite::{
     IGNITE_BASE_DURATION, IGNITE_BASE_MAX_STACKS, IGNITE_BASE_TICK_INTERVAL,
@@ -227,12 +235,14 @@ pub struct FireMage {
     pub abilities: AbilityBook,
     /// Heat, its bands and the Inferno State.
     pub heat: Heat,
-    /// Ultimate Energy. Kept while the Ultimate is disabled.
+    /// Ultimate Energy: fills passively and from casting, and Moving Fire Beam spends all of it.
     pub energy: UltimateEnergy,
     /// Ignite on every target.
     pub ignite: IgniteTracker,
     /// Fire on the ground and rocks on their way to it.
     pub zones: ZoneField,
+    /// The Ultimate's channel, while one is running.
+    pub beam: BeamChannel,
     /// Who is taking extra fire damage from burning ground.
     pub vulnerability: VulnerabilityTracker,
     /// Which talents are bought.
@@ -274,6 +284,7 @@ impl FireMage {
             energy: UltimateEnergy::new(),
             ignite: IgniteTracker::new(),
             zones: ZoneField::new(),
+            beam: BeamChannel::idle(),
             vulnerability: VulnerabilityTracker::new(),
             talents,
             effects,
@@ -530,6 +541,7 @@ impl FireMage {
         self.energy.clear();
         self.ignite.clear_all();
         self.zones.clear();
+        self.beam.stop();
         self.vulnerability.clear_all();
         self.global_cooldown.clear();
         self.mastery_buff.clear();

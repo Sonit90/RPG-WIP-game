@@ -235,6 +235,9 @@ pub(crate) struct TelegraphVisuals {
     /// The same three for a mark riding a player: violet, so it is never mistaken for
     /// either a monster's area or the player's own orange targeting.
     mark: KindMaterials,
+    /// The same three for the player's own Moving Fire Beam: the orange of the targeting
+    /// decal's family, so the floor under a beam reads as the player's and never as a threat.
+    beam: KindMaterials,
 }
 
 /// The three materials one kind of telegraph is drawn with.
@@ -292,11 +295,17 @@ impl TelegraphVisuals {
             Vec3::new(0.72, 0.35, 1.0),
             Vec3::new(0.62, 0.30, 0.88),
         )?;
+        let beam = kind(
+            [0.02, 0.01, 0.003],
+            Vec3::new(1.2, 0.55, 0.12),
+            Vec3::new(1.0, 0.42, 0.08),
+        )?;
         Ok(Self {
             quad_mesh,
             quad_bounds,
             enemy,
             mark,
+            beam,
         })
     }
 
@@ -305,6 +314,7 @@ impl TelegraphVisuals {
         match kind {
             IndicatorKind::Enemy => self.enemy,
             IndicatorKind::Mark => self.mark,
+            IndicatorKind::Beam => self.beam,
         }
     }
 }

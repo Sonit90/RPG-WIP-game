@@ -100,10 +100,9 @@ enum Rotation {
     AreaHeavy,
     /// The area rotation with the Ultimate's effect played on top of it.
     ///
-    /// The Ultimate's *gameplay* is disabled this iteration (`ULTIMATE_ENABLED = false`), so
-    /// the cast would be refused. The effect exists and is the largest in the catalogue, so
-    /// it is played directly through the director — which is exactly what the VFX test bed
-    /// does, and what the ability will do when it is turned on.
+    /// The benchmark drives the effect directly through the director rather than casting
+    /// Moving Fire Beam: the cast needs a full Ultimate Energy bar and a ninety-second
+    /// cooldown, and what is being measured is what the picture costs, not the gameplay.
     Ultimate,
 }
 
@@ -575,13 +574,14 @@ fn drive(
                 }
                 _ => simulation.push_command(PlayerCommand::UseAbility(6)),
             }
-            // The Ultimate's gameplay is off this iteration, so its effect is played
-            // directly — the same thing the VFX test bed does with the C key.
+            // The Ultimate's effect is played directly, at the size the beam really is.
             if matches!(rotation, Rotation::Ultimate) && (frame / 8) % 16 == 0 {
                 director.system_mut().spawn(
-                    VfxSpawn::at(VfxId::Cataclysm, position)
-                        .with_radius(8.0)
-                        .with_length(8.0),
+                    VfxSpawn::at(VfxId::FireBeam, position)
+                        .with_radius(engine_game::firemage::BEAM_WIDTH)
+                        .with_length(engine_game::firemage::BEAM_LENGTH)
+                        .raised(1.3)
+                        .lasting(1.0),
                 );
             }
         }

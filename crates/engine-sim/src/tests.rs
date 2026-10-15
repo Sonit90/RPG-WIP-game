@@ -241,3 +241,82 @@ fn the_command_line_selects_classes_and_gear() {
     assert!(crate::parse_options(["--class".to_owned(), "bard".to_owned()].into_iter()).is_err());
     assert!(crate::parse_options(["--iterations".to_owned()].into_iter()).is_err());
 }
+
+/// Wraps a rotation and notes when the Ultimate bar becomes full.
+struct EnergyProbe {
+    inner: Box<dyn crate::ai::Rotation>,
+    was_full: bool,
+    full_at: Vec<f64>,
+}
+
+impl crate::ai::Rotation for EnergyProbe {
+    fn act(
+        &mut self,
+        simulation: &mut engine_game::sim::Simulation,
+        pack: &[engine_game::entity::EntityId],
+    ) {
+        let full = simulation.mage().energy.is_full();
+        if full && !self.was_full {
+            self.full_at.push(simulation.time());
+        }
+        self.was_full = full;
+        self.inner.act(simulation, pack);
+    }
+
+    fn tracked_cooldowns(&self) -> &'static [engine_game::firemage::FireAbility] {
+        self.inner.tracked_cooldowns()
+    }
+
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn priority(&self) -> &'static [&'static str] {
+        self.inner.priority()
+    }
+}
+
+#[test]
+fn the_bar_refills_in_about_a_minute_and_a_half() {
+    // The Ultimate is balanced on a sixty-to-ninety-second cadence: the bar must refill in
+    // roughly that, whichever way the rotation plays, so the ninety-second cooldown is the
+    // slower of the two gates and the energy is a real second one.
+    let profile = GearProfile::headline(GearTier::Top);
+    for scenario in [ST60, matrix::AOE8] {
+        let config = SCENARIOS[scenario].config(Class::Mage).with_duration(400.0);
+        let build = default_build(Class::Mage);
+        let gear = profile.stat_block(Class::Mage.hero());
+        let mut encounter = crate::scenario::Encounter::new(&config, &build, &gear, SEED);
+        let mut probe = EnergyProbe {
+            inner: build.rotation(),
+            was_full: false,
+            full_at: Vec::new(),
+        };
+        let _ = encounter.run(&mut probe);
+        // `full_at[0]` is the opener; every later entry is a refill after a cast.
+        assert!(
+            probe.full_at.len() >= 3,
+            "scenario {scenario}: the bar filled {} times in 400 s",
+            probe.full_at.len()
+        );
+        for pair in probe.full_at.windows(2).skip(1) {
+            let gap = pair[1] - pair[0];
+            assert!(
+                (60.0..=100.0).contains(&gap),
+                "scenario {scenario}: the bar took {gap:.0} s between full"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_mage_uses_the_beam_and_it_shows_in_the_damage_table() {
+    let build = default_build(Class::Mage);
+    let profile = GearProfile::headline(GearTier::Top);
+    let result = fight(Class::Mage, &build, &profile, SEED);
+    let beam =
+        engine_game::ability::AbilityId::from_fire(engine_game::firemage::FireAbility::FireBeam)
+            .slot();
+    let dealt = result.by_ability[beam];
+    assert!(dealt > 0.0, "the opener never fired the beam");
+}

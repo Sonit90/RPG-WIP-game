@@ -1009,7 +1009,7 @@ mod tests {
             assert!(listed.contains(ability), "{ability:?} is not offered");
         }
         assert!(!listed.contains(&FireAbility::Ignite));
-        assert!(!listed.contains(&FireAbility::Cataclysm));
+        assert!(!listed.contains(&FireAbility::FireBeam));
         assert_eq!(listed.len(), assignable_count(Hero::default()));
         // Every entry the picker draws corresponds to one of them.
         let menu = menu();

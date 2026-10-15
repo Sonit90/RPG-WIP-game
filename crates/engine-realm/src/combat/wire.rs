@@ -21,7 +21,7 @@ use engine_game::combat::DamageType;
 use engine_game::enemy::{EnemyAbility, TelegraphShape};
 use engine_game::entity::EntityId;
 use engine_game::event::{AggroChange, CombatEvent, ControlKind, DamageEvent};
-use engine_game::firemage::{FireAbility, ZoneShape};
+use engine_game::firemage::{BeamEnd, FireAbility, ZoneShape};
 use engine_game::sim::CastEnd;
 use engine_game::status::{StatusEnd, StatusKind};
 use serde::{Deserialize, Serialize};
@@ -293,6 +293,23 @@ pub enum WireEvent {
         /// The item's stable key.
         item: String,
         /// `0` the bag was full, `1` never opened.
+        reason: u8,
+    },
+    BeamChannelStarted {
+        entity: EntityRef,
+        yaw: f32,
+        start_time: f64,
+        duration: f32,
+    },
+    BeamYaw {
+        entity: EntityRef,
+        yaw: f32,
+        turn_target_yaw: f32,
+        time: f64,
+    },
+    BeamChannelEnded {
+        entity: EntityRef,
+        /// `BeamEnd` by position.
         reason: u8,
     },
 }
@@ -607,6 +624,34 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
                 MailReason::Unclaimed => 1,
                 MailReason::SlotRemoved => 2,
             },
+        },
+        CombatEvent::BeamChannelStarted {
+            entity,
+            yaw,
+            start_time,
+            duration,
+            ..
+        } => WireEvent::BeamChannelStarted {
+            entity: name(entity),
+            yaw,
+            start_time,
+            duration,
+        },
+        CombatEvent::BeamYaw {
+            entity,
+            yaw,
+            turn_target_yaw,
+            time,
+            ..
+        } => WireEvent::BeamYaw {
+            entity: name(entity),
+            yaw,
+            turn_target_yaw,
+            time,
+        },
+        CombatEvent::BeamChannelEnded { entity, reason, .. } => WireEvent::BeamChannelEnded {
+            entity: name(entity),
+            reason: reason.index(),
         },
         _ => return None,
     })
@@ -977,6 +1022,35 @@ pub fn decode(
             },
             tick,
         },
+        WireEvent::BeamChannelStarted {
+            entity,
+            yaw,
+            start_time,
+            duration,
+        } => CombatEvent::BeamChannelStarted {
+            entity: need(entity)?,
+            yaw: *yaw,
+            start_time: *start_time,
+            duration: *duration,
+            tick,
+        },
+        WireEvent::BeamYaw {
+            entity,
+            yaw,
+            turn_target_yaw,
+            time,
+        } => CombatEvent::BeamYaw {
+            entity: need(entity)?,
+            yaw: *yaw,
+            turn_target_yaw: *turn_target_yaw,
+            time: *time,
+            tick,
+        },
+        WireEvent::BeamChannelEnded { entity, reason } => CombatEvent::BeamChannelEnded {
+            entity: need(entity)?,
+            reason: BeamEnd::from_index(*reason),
+            tick,
+        },
     })
 }
 
@@ -1129,6 +1203,83 @@ mod tests {
             item: "no_such_item".into(),
         };
         assert!(decode(&unknown, &resolve, 0).is_none());
+    }
+
+    #[test]
+    fn the_beam_events_round_trip_through_json() {
+        let server = EntityId::new(3, 1);
+        let client = EntityId::new(8, 2);
+        let name = |_: EntityId| EntityRef::Player("acct".into());
+        let resolve = |r: &EntityRef| matches!(r, EntityRef::Player(_)).then_some(client);
+        let started = CombatEvent::BeamChannelStarted {
+            entity: server,
+            yaw: 1.25,
+            start_time: 12.5,
+            duration: 6.0,
+            tick: 1,
+        };
+        let steered = CombatEvent::BeamYaw {
+            entity: server,
+            yaw: -0.5,
+            turn_target_yaw: 2.75,
+            time: 13.25,
+            tick: 2,
+        };
+        for reason in BeamEnd::ALL {
+            let ended = CombatEvent::BeamChannelEnded {
+                entity: server,
+                reason,
+                tick: 3,
+            };
+            let wire = encode(&ended, &name).expect("carried");
+            let json = serde_json::to_string(&wire).expect("serializes");
+            let back: WireEvent = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, wire);
+            assert_eq!(
+                decode(&back, &resolve, 7),
+                Some(CombatEvent::BeamChannelEnded {
+                    entity: client,
+                    reason,
+                    tick: 7,
+                })
+            );
+        }
+        for (event, expected) in [
+            (
+                started,
+                CombatEvent::BeamChannelStarted {
+                    entity: client,
+                    yaw: 1.25,
+                    start_time: 12.5,
+                    duration: 6.0,
+                    tick: 7,
+                },
+            ),
+            (
+                steered,
+                CombatEvent::BeamYaw {
+                    entity: client,
+                    yaw: -0.5,
+                    turn_target_yaw: 2.75,
+                    time: 13.25,
+                    tick: 7,
+                },
+            ),
+        ] {
+            let wire = encode(&event, &name).expect("carried");
+            let json = serde_json::to_string(&wire).expect("serializes");
+            let back: WireEvent = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, wire);
+            assert_eq!(decode(&back, &resolve, 7), Some(expected));
+        }
+        // A channeller the client has not met cannot be drawn.
+        let stranger = WireEvent::BeamYaw {
+            entity: EntityRef::Monster(9),
+            yaw: 0.0,
+            turn_target_yaw: 0.0,
+            time: 0.0,
+        };
+        assert!(decode(&stranger, &resolve, 0).is_none());
     }
 
     #[test]

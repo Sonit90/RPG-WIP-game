@@ -315,15 +315,15 @@ impl Hero {
 
     /// This hero's Ultimate: the ability on `R`, beside the bar.
     ///
-    /// The FireMage's is Cataclysm, which has no design yet and is switched off — see
-    /// [`crate::firemage::ULTIMATE_ENABLED`]. The Warrior's is Last Stand and the Druid's is
-    /// Tranquility, and both are real buttons: a class with more abilities than the bar has
+    /// The FireMage's is Moving Fire Beam (switched by
+    /// [`crate::firemage::ULTIMATE_ENABLED`]). The Warrior's is Last Stand and the Druid's is
+    /// Tranquility, and all three are real buttons: a class with more abilities than the bar has
     /// keys puts its largest one in the slot beside the bar, which already exists rather
     /// than being invented for it.
     #[must_use]
     pub fn ultimate(self) -> Option<FireAbility> {
         match self {
-            Self::FireMage => Some(FireAbility::Cataclysm),
+            Self::FireMage => Some(FireAbility::FireBeam),
             Self::Warrior => Some(FireAbility::LastStand),
             Self::Druid => Some(FireAbility::Tranquility),
         }

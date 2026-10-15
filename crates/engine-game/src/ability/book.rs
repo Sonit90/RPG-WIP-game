@@ -36,8 +36,12 @@ pub enum AbilityError {
     NeedsGroundTarget,
     /// The chosen ground is out of range.
     GroundOutOfRange,
-    /// The Ultimate has no design yet and is switched off.
+    /// The Ultimate is switched off ([`super::ULTIMATE_ENABLED`]).
     UltimateDisabled,
+    /// A movement was pressed while the Moving Fire Beam is being channelled.
+    ///
+    /// The mage may walk, slowly, but may not jump or Blink out of the beam.
+    Channelling,
     /// Not enough Mana.
     NotEnoughMana,
     /// The Astral Power button was pressed without a full bar, or while already armed.
@@ -67,6 +71,7 @@ impl AbilityError {
             Self::NeedsGroundTarget => "Choose a location.",
             Self::GroundOutOfRange => "That location is too far away.",
             Self::UltimateDisabled => "Not available yet.",
+            Self::Channelling => "You cannot do that while channelling.",
             Self::NotEnoughMana => "Not enough Mana.",
             Self::NotEnoughAstralPower => "Not enough Astral Power.",
             Self::NoHealOverTime => "No heal over time on the target.",
@@ -92,6 +97,7 @@ impl AbilityError {
             Self::NeedsGroundTarget => "CHOOSE A LOCATION",
             Self::GroundOutOfRange => "TOO FAR AWAY",
             Self::UltimateDisabled => "NOT AVAILABLE YET",
+            Self::Channelling => "CHANNELLING",
             Self::NotEnoughMana => "NOT ENOUGH MANA",
             Self::NotEnoughAstralPower => "NOT ENOUGH ASTRAL POWER",
             Self::NoHealOverTime => "NO HEAL OVER TIME ON THE TARGET",
