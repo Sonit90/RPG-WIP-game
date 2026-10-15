@@ -22,6 +22,8 @@ use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 use engine_game::talent::TALENT_TIERS;
 
 use super::input::UiInput;
+use super::kit::{self, ButtonVariant, Interaction, Kit, tokens, tone};
+use super::map_style::{color, radius, type_scale};
 use crate::snapshot::{TalentView, UiSnapshot};
 
 /// Layout of the menu, in pixels.
@@ -29,18 +31,18 @@ mod layout {
     /// Width of the whole panel.
     pub const PANEL_WIDTH: f32 = 1000.0;
     /// Height of the whole panel.
-    pub const PANEL_HEIGHT: f32 = 830.0;
+    pub const PANEL_HEIGHT: f32 = 720.0;
     /// Padding inside the panel.
     pub const PADDING: f32 = 24.0;
     /// Height of the heading.
-    pub const HEADER: f32 = 56.0;
+    pub const HEADER: f32 = 76.0;
     /// Width of one talent node.
     pub const NODE_WIDTH: f32 = 210.0;
     /// Nodes across one row. A tier with more than this wraps onto another row, which is
     /// what keeps a tier that grows from running off the panel.
     pub const COLUMNS: usize = 4;
     /// Height of one talent node.
-    pub const NODE_HEIGHT: f32 = 76.0;
+    pub const NODE_HEIGHT: f32 = 84.0;
     /// Gap between nodes.
     pub const NODE_GAP: f32 = 10.0;
     /// Width of the tier label column.
@@ -196,15 +198,32 @@ impl TalentMenu {
         self.locked
     }
 
+    /// The measurements for a window of `viewport` pixels: the configured scale, reduced until
+    /// the whole panel fits, so a small window never cuts the tree off.
+    #[must_use]
+    pub fn metrics_for(&self, viewport: (u32, u32)) -> TalentMetrics {
+        let scale = kit::fit_scale(
+            self.metrics.scale,
+            (layout::PANEL_WIDTH, layout::PANEL_HEIGHT),
+            viewport,
+        );
+        if scale == self.metrics.scale {
+            self.metrics
+        } else {
+            TalentMetrics::new(scale)
+        }
+    }
+
     /// Where the reset button sits: the header's right-hand side, under the point total.
     #[must_use]
     pub fn reset_rect(&self, viewport: (u32, u32)) -> UiRect {
         let panel = self.panel_rect(viewport);
+        let m = self.metrics_for(viewport);
         UiRect::new(
-            panel.right() - self.metrics.padding - self.metrics.reset_width,
-            panel.y + self.metrics.padding + self.metrics.header * 0.55,
-            self.metrics.reset_width,
-            self.metrics.reset_height,
+            panel.right() - m.padding - m.reset_width,
+            panel.y + m.padding + m.header * 0.55,
+            m.reset_width,
+            m.reset_height,
         )
     }
 
@@ -284,11 +303,12 @@ impl TalentMenu {
     #[must_use]
     pub fn panel_rect(&self, viewport: (u32, u32)) -> UiRect {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        let m = self.metrics_for(viewport);
         UiRect::new(
-            ((width - self.metrics.panel_width) * 0.5).max(0.0),
-            ((height - self.metrics.panel_height) * 0.5).max(0.0),
-            self.metrics.panel_width,
-            self.metrics.panel_height,
+            ((width - m.panel_width) * 0.5).max(0.0),
+            ((height - m.panel_height) * 0.5).max(0.0),
+            m.panel_width,
+            m.panel_height,
         )
     }
 
@@ -315,15 +335,10 @@ impl TalentMenu {
         let column = within_tier % layout::COLUMNS;
         let row = rows_above + within_tier / layout::COLUMNS;
 
-        let x = panel.x
-            + self.metrics.padding
-            + self.metrics.tier_label
-            + column as f32 * (self.metrics.node_width + self.metrics.node_gap);
-        let y = panel.y
-            + self.metrics.padding
-            + self.metrics.header
-            + row as f32 * (self.metrics.node_height + self.metrics.node_gap);
-        UiRect::new(x, y, self.metrics.node_width, self.metrics.node_height)
+        let m = self.metrics_for(viewport);
+        let x = panel.x + m.padding + m.tier_label + column as f32 * (m.node_width + m.node_gap);
+        let y = panel.y + m.padding + m.header + row as f32 * (m.node_height + m.node_gap);
+        UiRect::new(x, y, m.node_width, m.node_height)
     }
 }
 
@@ -383,6 +398,11 @@ impl Default for TalentTheme {
 ///
 /// `scratch` is the caller's, reused: the menu prints a cost and a point total every frame it
 /// is up, and formatting them would otherwise allocate.
+///
+/// Drawn from the interface kit like the character sheet: the points available are the
+/// heading's loudest number, the tiers are separated by rules, and a node is one of three
+/// things at a glance - learned (green), learnable (bronze edge, gold cost) or out of reach
+/// (dim, red cost). While the build is locked a banner says why, at the top where it is read.
 pub fn push_talent_menu(
     list: &mut UiDrawList,
     menu: &TalentMenu,
@@ -394,213 +414,263 @@ pub fn push_talent_menu(
     if !menu.is_open() {
         return;
     }
-    let metrics = menu.metrics();
-    let scale = metrics.scale;
+    let metrics = menu.metrics_for(viewport);
+    let kit = Kit::new(metrics.scale);
     let panel = menu.panel_rect(viewport);
     list.rect(
         UiRect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32),
         theme.scrim,
     );
-    list.rect(panel, theme.panel);
-    list.outline(panel, scale.px(2.0), theme.border);
+    kit::panel(list, &kit, panel, color::BORDER_STRONG);
 
     scratch.clear();
     scratch.push_str(snapshot.talent_hero.name());
     scratch.push_str(" TALENTS");
-    list.text_at(
-        (panel.x + metrics.padding, panel.y + scale.px(16.0)),
+    kit.text(
+        list,
+        panel.x + metrics.padding,
+        panel.y + metrics.padding + kit.px(14.0),
         scratch,
-        theme.title,
-        scale.text(3.0),
+        type_scale::TITLE,
+        color::TEXT_TITLE,
+        TextAlign::Left,
     );
 
+    // The points: gold while there are some to spend, muted when there are none.
     scratch.clear();
     scratch.push_str("POINTS ");
     push_integer(scratch, snapshot.talent_points);
     scratch.push_str(" / ");
     push_integer(scratch, snapshot.talent_points_total);
-    list.text_aligned(
-        (panel.right() - metrics.padding, panel.y + scale.px(22.0)),
+    kit.text(
+        list,
+        panel.right() - metrics.padding,
+        panel.y + metrics.padding + kit.px(14.0),
         scratch,
-        theme.title,
-        scale.text(2.0),
+        type_scale::TITLE,
+        if snapshot.talent_points > 0 {
+            tone::CURRENCY
+        } else {
+            color::TEXT_MUTED
+        },
         TextAlign::Right,
     );
 
     // The reset button, dimmed when there is nothing to refund or the build is locked.
     let reset = menu.reset_rect(viewport);
     let can_reset = !menu.is_locked() && snapshot.talent_points < snapshot.talent_points_total;
-    list.rect(
+    kit::button(
+        list,
+        &kit,
         reset,
-        if can_reset {
-            theme.affordable
-        } else {
-            theme.locked
-        },
-    );
-    if can_reset && menu.reset_hovered {
-        list.outline(reset, scale.px(2.0), theme.hover);
-    } else {
-        list.outline(reset, scale.px(1.0), theme.border);
-    }
-    list.text_aligned(
-        (reset.x + reset.width * 0.5, reset.y + scale.px(9.0)),
-        "RESET",
-        if can_reset {
-            theme.text
-        } else {
-            theme.text_dim
-        },
-        scale.text(1.5),
-        TextAlign::Center,
+        "Reset",
+        None,
+        ButtonVariant::Secondary,
+        Interaction {
+            hovered: menu.reset_hovered,
+            ..Interaction::default()
+        }
+        .disabled(!can_reset),
     );
 
     if menu.is_locked() {
-        list.text_at(
-            (panel.x + metrics.padding, panel.y + scale.px(44.0)),
-            "LOCKED FOR THIS RUN: TALENTS CANNOT CHANGE WHILE YOU ARE QUEUED, IN A PARTY OR IN A DUNGEON",
-            theme.hover,
-            scale.text(1.5),
+        let banner = UiRect::new(
+            panel.x + metrics.padding,
+            reset.y,
+            (reset.x - panel.x - metrics.padding * 2.0).max(0.0),
+            reset.height,
+        );
+        kit::banner(
+            list,
+            &kit,
+            banner,
+            "LOCKED FOR THIS RUN: talents cannot change while you are queued, in a party or in a dungeon.",
+            tone::WARN,
         );
     }
 
     if snapshot.talents.is_empty() {
-        list.text_aligned(
-            (panel.x + panel.width * 0.5, panel.y + panel.height * 0.45),
+        kit.text(
+            list,
+            panel.x + panel.width * 0.5,
+            panel.y + panel.height * 0.45,
             "NO TALENTS YET. THIS HERO'S TREE IS COMING.",
-            theme.text_dim,
-            scale.text(2.0),
+            type_scale::HEADING,
+            color::TEXT_MUTED,
             TextAlign::Center,
         );
         return;
     }
 
-    // Tier labels down the left-hand side.
+    // Tier labels down the left-hand side, and a rule above every tier but the first.
     for tier in 1..=TALENT_TIERS {
         let rows_above: usize = (1..tier).map(|above| tier_rows(snapshot, above)).sum();
-        let y = panel.y
+        let top = panel.y
             + metrics.padding
             + metrics.header
-            + rows_above as f32 * (metrics.node_height + metrics.node_gap)
-            + metrics.node_height * 0.5
-            - scale.px(7.0);
+            + rows_above as f32 * (metrics.node_height + metrics.node_gap);
         scratch.clear();
         scratch.push_str("TIER ");
         push_integer(scratch, u32::from(tier));
-        list.text_at(
-            (panel.x + metrics.padding, y),
+        kit.text(
+            list,
+            panel.x + metrics.padding,
+            top + metrics.node_height * 0.5,
             scratch,
-            theme.text_dim,
-            scale.text(1.0),
+            type_scale::LABEL,
+            color::TEXT_SECONDARY,
+            TextAlign::Left,
         );
+        if tier > 1 {
+            list.rect(
+                UiRect::new(
+                    panel.x + metrics.padding,
+                    (top - metrics.node_gap * 0.5).round(),
+                    panel.width - metrics.padding * 2.0,
+                    1.0,
+                ),
+                color::BORDER,
+            );
+        }
     }
 
     for (index, talent) in snapshot.talents.iter().enumerate() {
         let rect = menu.node_rect(index, snapshot, viewport);
         push_node(
             list,
+            &kit,
             rect,
             talent,
             menu.hovered() == Some(talent.index),
-            theme,
+            menu.is_locked(),
             scratch,
-            scale,
         );
     }
 
-    list.text_at(
-        (panel.x + metrics.padding, panel.bottom() - scale.px(26.0)),
+    kit.text(
+        list,
+        panel.x + metrics.padding,
+        panel.bottom() - metrics.padding - kit.px(4.0),
         if menu.is_locked() {
-            "ESCAPE CLOSES."
+            "Esc closes."
         } else {
-            "CLICK A TALENT TO LEARN IT. RESET REFUNDS EVERYTHING. ESCAPE CLOSES."
+            "Click a talent to learn it. Reset refunds everything. Esc closes."
         },
-        theme.text_dim,
-        scale.text(1.0),
+        type_scale::META,
+        color::TEXT_MUTED,
+        TextAlign::Left,
     );
 }
 
-/// One talent node: name, cost, description, and what state it is in.
+/// One talent node: name, cost or LEARNED, description, and what state it is in.
 fn push_node(
     list: &mut UiDrawList,
+    kit: &Kit,
     rect: UiRect,
     talent: &TalentView,
     hovered: bool,
-    theme: &TalentTheme,
+    locked: bool,
     scratch: &mut String,
-    scale: UiScale,
 ) {
-    let fill = if talent.purchased {
-        theme.purchased
-    } else if talent.affordable {
-        theme.affordable
+    let corner = kit.px(radius::CARD);
+    let learnable = talent.affordable && !locked;
+    let (top, bottom, edge) = if talent.purchased {
+        (
+            color::alpha(tone::GOOD, 0.26),
+            color::alpha(tone::GOOD, 0.12),
+            color::alpha(tone::GOOD, 0.80),
+        )
+    } else if learnable {
+        (
+            if hovered {
+                color::SURFACE_3
+            } else {
+                color::SURFACE_2
+            },
+            color::SURFACE_1,
+            tokens::ACCENT,
+        )
     } else {
-        theme.locked
+        (color::SURFACE_1, color::SURFACE_1, color::BORDER)
     };
-    list.rect(rect, fill);
-    if hovered {
-        list.outline(rect, scale.px(2.0), theme.hover);
+    list.panel(rect, corner, top, bottom);
+    let stroke = if hovered && !talent.purchased {
+        color::TEXT_PRIMARY
     } else {
-        list.outline(rect, scale.px(1.0), theme.border);
-    }
+        edge
+    };
+    list.panel_stroke(
+        rect,
+        corner,
+        kit.px(if learnable || hovered { 2.0 } else { 1.0 }),
+        stroke,
+    );
 
-    let text = if talent.purchased || talent.affordable {
-        theme.text
-    } else {
-        theme.text_dim
-    };
-    list.text_at(
-        (rect.x + scale.px(6.0), rect.y + scale.px(6.0)),
+    let reachable = talent.purchased || learnable;
+    let pad = kit.px(8.0);
+    kit.text(
+        list,
+        rect.x + pad,
+        rect.y + kit.px(15.0),
         talent.name,
-        text,
-        scale.text(1.5),
+        type_scale::HEADING,
+        if reachable {
+            color::TEXT_PRIMARY
+        } else {
+            color::TEXT_MUTED
+        },
+        TextAlign::Left,
     );
 
     scratch.clear();
-    if talent.purchased {
+    let (state_color, state_font) = if talent.purchased {
         scratch.push_str("LEARNED");
+        (tone::GOOD, type_scale::LABEL)
     } else {
         scratch.push_str("COST ");
         push_integer(scratch, talent.cost);
-    }
-    list.text_aligned(
-        (rect.right() - scale.px(6.0), rect.y + scale.px(6.0)),
+        (
+            if learnable {
+                tone::CURRENCY
+            } else {
+                color::alpha(tone::DANGER, 0.85)
+            },
+            type_scale::LABEL,
+        )
+    };
+    kit.text(
+        list,
+        rect.right() - pad,
+        rect.y + kit.px(15.0),
         scratch,
-        if talent.purchased { theme.hover } else { text },
-        scale.text(1.0),
+        state_font,
+        state_color,
         TextAlign::Right,
     );
 
-    // The description, wrapped at word boundaries to what fits the node.
-    let mut line = 0;
-    let mut words = talent.description.split_whitespace().peekable();
-    while words.peek().is_some() && line < DESCRIPTION_LINES {
-        scratch.clear();
-        while let Some(word) = words.peek() {
-            let needed = scratch.chars().count() + usize::from(!scratch.is_empty()) + word.len();
-            if !scratch.is_empty() && needed > DESCRIPTION_COLUMNS {
-                break;
-            }
-            if !scratch.is_empty() {
-                scratch.push(' ');
-            }
-            scratch.push_str(word);
-            words.next();
-        }
-        list.text_at(
-            (
-                rect.x + scale.px(6.0),
-                rect.y + scale.px(26.0) + line as f32 * scale.px(11.0),
-            ),
-            scratch,
-            theme.text_dim,
-            1.0,
+    // The description, wrapped to the node's width.
+    let lines = kit
+        .style
+        .wrap(type_scale::META, talent.description, rect.width - pad * 2.0);
+    for (line, text) in lines.iter().take(DESCRIPTION_LINES).enumerate() {
+        kit.text(
+            list,
+            rect.x + pad,
+            rect.y + kit.px(34.0) + kit.px(13.5) * line as f32,
+            text,
+            type_scale::META,
+            if reachable {
+                color::TEXT_SECONDARY
+            } else {
+                color::TEXT_MUTED
+            },
+            TextAlign::Left,
         );
-        line += 1;
     }
 }
 
 /// Characters of a description that fit one line of a node.
+#[cfg(test)]
 const DESCRIPTION_COLUMNS: usize = 34;
 
 /// Lines of a description a node has room for.
@@ -650,7 +720,9 @@ mod tests {
         list.commands()
             .iter()
             .filter_map(|command| match command {
-                UiCommand::Text { range, .. } => Some(list.text_of(*range).to_owned()),
+                UiCommand::Text { range, .. } | UiCommand::Label { range, .. } => {
+                    Some(list.text_of(*range).to_owned())
+                }
                 _ => None,
             })
             .collect()
@@ -897,6 +969,37 @@ mod tests {
                     "{} is too long for a node: {}",
                     talent.name,
                     talent.description.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_menu_fits_every_window_and_says_which_nodes_are_out_of_reach() {
+        use crate::ui::layout_audit;
+        let snapshot = snapshot();
+        for (viewport, scale) in layout_audit::sizes() {
+            let mut menu = TalentMenu::with_scale(scale);
+            menu.open();
+            menu.set_locked(true);
+            let mut list = UiDrawList::new();
+            let mut scratch = String::new();
+            push_talent_menu(
+                &mut list,
+                &menu,
+                &snapshot,
+                &TalentTheme::default(),
+                &mut scratch,
+                viewport,
+            );
+            layout_audit::assert_sound(&list, viewport, &format!("talents {viewport:?}"));
+            let panel = menu.panel_rect(viewport);
+            for index in 0..snapshot.talents.len() {
+                let node = menu.node_rect(index, &snapshot, viewport);
+                assert!(
+                    node.right() <= panel.right() + 0.5 && node.bottom() <= panel.bottom() + 0.5,
+                    "node {index} leaves the panel at {viewport:?} x{}",
+                    scale.factor()
                 );
             }
         }

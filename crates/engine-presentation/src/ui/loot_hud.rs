@@ -25,7 +25,7 @@ use engine_game::event::CombatEvent;
 use engine_render_data::ui::{TextAlign, UiDrawList, UiRect};
 
 use super::character_menu::{icon_for_item, quality_color};
-use super::kit::{self, Kit, tokens};
+use super::kit::{self, Kit, tokens, tone};
 use super::map_style::{blend, color, push_title_case, radius, type_scale};
 use super::tooltip::{ItemContext, ItemPlace, ItemTooltip};
 use crate::game_ui::write_integer;
@@ -249,7 +249,7 @@ impl LootHud {
                 rest.y - kit.px(18.0),
                 &line,
                 type_scale::HEADING,
-                color::BRONZE_BRIGHT,
+                tone::CURRENCY,
                 TextAlign::Center,
             );
         }

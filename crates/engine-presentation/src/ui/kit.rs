@@ -646,6 +646,166 @@ pub fn chip(
 /// The face every kit label is set in, for a caller measuring one.
 pub const LABEL_FONT: UiFont = UiFont::Medium;
 
+/// What a colour means, on every screen: gold is currency and loot, green is good or
+/// strengthened, red is danger, weakened or broken, amber is a warning, purple is epic.
+///
+/// A screen that needs "the colour of a bad thing" asks for [`tone::DANGER`] instead of picking
+/// a red, so the connection light, a failed run, a declined ready check and a broken item can
+/// never disagree about what red is.
+pub mod tone {
+    use engine_render_data::ui::UiColor;
+
+    /// Currency, loot, rewards.
+    pub const CURRENCY: UiColor = [0.96, 0.82, 0.48, 1.0];
+    /// Good: success, ready, strengthened, an upgrade.
+    pub const GOOD: UiColor = [0.42, 0.86, 0.46, 1.0];
+    /// Danger: failure, declined, broken, weakened, disconnected.
+    pub const DANGER: UiColor = [0.95, 0.38, 0.34, 1.0];
+    /// A warning, or work in progress.
+    pub const WARN: UiColor = [0.96, 0.74, 0.30, 1.0];
+    /// Epic quality, and nothing else.
+    pub const EPIC: UiColor = [0.64, 0.21, 0.93, 1.0];
+}
+
+/// The edge of a window's close button, logical pixels.
+pub const CLOSE_EDGE: f32 = 22.0;
+/// The gap between a floating window and the screen edge it docks to, logical pixels.
+pub const WINDOW_MARGIN: f32 = super::map_style::space::LG;
+
+/// `scale`, reduced until a design `(width, height)` in logical pixels fits `viewport`.
+///
+/// A screen that is a fixed arrangement cannot reflow, so a scale that would push it past the
+/// edge of a small window shrinks it instead: a button off screen is worse than a smaller one.
+#[must_use]
+pub fn fit_scale(scale: UiScale, design: (f32, f32), viewport: (u32, u32)) -> UiScale {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "viewport sizes are small integers"
+    )]
+    let fit = (viewport.0 as f32 / design.0).min(viewport.1 as f32 / design.1);
+    if fit >= scale.factor() || fit <= 0.0 {
+        scale
+    } else {
+        UiScale::new(fit.max(UiScale::MIN))
+    }
+}
+
+/// A window's close button: an "x" in a ghost button. Returns what the pointer is doing to it.
+pub fn close_button(
+    list: &mut UiDrawList,
+    kit: &Kit,
+    rect: UiRect,
+    input: &UiInput,
+) -> Interaction {
+    let state = Interaction::at(rect, input);
+    button(list, kit, rect, "x", None, ButtonVariant::Ghost, state);
+    state
+}
+
+/// A banner across `rect` in `tint`: a tinted well with a bar down its left edge and `text`
+/// in it. How a window says "you cannot do this now, and why".
+pub fn banner(list: &mut UiDrawList, kit: &Kit, rect: UiRect, text: &str, tint: UiColor) {
+    let corner = kit.px(radius::CONTROL);
+    list.panel(
+        rect,
+        corner,
+        color::alpha(tint, 0.20),
+        color::alpha(tint, 0.10),
+    );
+    list.panel_stroke(rect, corner, 1.0, color::alpha(tint, 0.55));
+    list.rect(
+        UiRect::new(
+            rect.x,
+            rect.y + kit.px(4.0),
+            kit.px(3.0),
+            rect.height - kit.px(8.0),
+        ),
+        tint,
+    );
+    kit.text(
+        list,
+        rect.x + kit.px(14.0),
+        rect.y + rect.height * 0.5,
+        text,
+        type_scale::UI,
+        color::TEXT_PRIMARY,
+        TextAlign::Left,
+    );
+}
+
+/// A small tooltip near `pointer`: a bold `title` over an optional wrapped `detail`. For a
+/// control that is only an icon (or only a glyph) and so cannot say what it does itself.
+/// Kept on screen: it opens away from the nearer edges. Returns its rectangle.
+pub fn hint(
+    list: &mut UiDrawList,
+    kit: &Kit,
+    pointer: (f32, f32),
+    viewport: (u32, u32),
+    title: &str,
+    detail: &str,
+) -> UiRect {
+    let pad = kit.px(10.0);
+    let wrap_width = kit.px(240.0);
+    let lines: Vec<String> = if detail.is_empty() {
+        Vec::new()
+    } else {
+        kit.style
+            .wrap(type_scale::META, detail, wrap_width)
+            .iter()
+            .take(4)
+            .cloned()
+            .collect()
+    };
+    let text_width = lines
+        .iter()
+        .map(|line| kit.width(type_scale::META, line))
+        .fold(kit.width(type_scale::HEADING, title), f32::max);
+    let width = (text_width + pad * 2.0).round();
+    let title_height = kit.px(20.0);
+    let line_height = kit.px(16.0);
+    let height = (pad * 2.0 + title_height + line_height * lines.len() as f32).round();
+    let gap = kit.px(14.0);
+    let (vw, vh) = (viewport.0 as f32, viewport.1 as f32);
+    let x = if pointer.0 + gap + width > vw {
+        pointer.0 - gap - width
+    } else {
+        pointer.0 + gap
+    };
+    let y = if pointer.1 + gap + height > vh {
+        pointer.1 - gap - height
+    } else {
+        pointer.1 + gap
+    };
+    let rect = UiRect::new(
+        x.clamp(0.0, (vw - width).max(0.0)).round(),
+        y.clamp(0.0, (vh - height).max(0.0)).round(),
+        width,
+        height,
+    );
+    panel(list, kit, rect, color::BORDER_STRONG);
+    kit.text(
+        list,
+        rect.x + pad,
+        rect.y + pad + title_height * 0.5,
+        title,
+        type_scale::HEADING,
+        color::TEXT_TITLE,
+        TextAlign::Left,
+    );
+    for (index, line) in lines.iter().enumerate() {
+        kit.text(
+            list,
+            rect.x + pad,
+            rect.y + pad + title_height + line_height * (index as f32 + 0.5),
+            line,
+            type_scale::META,
+            color::TEXT_SECONDARY,
+            TextAlign::Left,
+        );
+    }
+    rect
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,5 +892,32 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, UiCommand::Label { .. }))
         );
+    }
+
+    #[test]
+    fn a_scale_too_big_for_the_window_is_reduced_and_a_fitting_one_is_kept() {
+        let big = UiScale::new(2.0);
+        let fitted = fit_scale(big, (1000.0, 720.0), (1280, 720));
+        assert!((fitted.factor() - 1.0).abs() < 0.01);
+        assert_eq!(fit_scale(big, (1000.0, 720.0), (2560, 1440)), big);
+    }
+
+    #[test]
+    fn a_hint_stays_inside_the_window_wherever_the_pointer_is() {
+        let kit = Kit::new(UiScale::default());
+        for pointer in [(0.0, 0.0), (1279.0, 719.0), (640.0, 360.0), (1279.0, 0.0)] {
+            let mut list = UiDrawList::new();
+            let rect = hint(
+                &mut list,
+                &kit,
+                pointer,
+                (1280, 720),
+                "Title",
+                "A longer detail that wraps onto a few lines of text.",
+            );
+            assert!(
+                rect.x >= 0.0 && rect.y >= 0.0 && rect.right() <= 1280.0 && rect.bottom() <= 720.0
+            );
+        }
     }
 }

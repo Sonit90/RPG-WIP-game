@@ -28,7 +28,7 @@ use engine_realm::meter::{AbilityStat, Summary, ability_name};
 use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect, UiScale};
 
 use super::input::UiInput;
-use super::kit::{self, ButtonVariant, Interaction, Kit, Segment, tokens};
+use super::kit::{self, Interaction, Kit, Segment, tokens};
 use super::map_style::{color, radius, type_scale};
 use crate::game_ui::write_integer;
 
@@ -49,7 +49,7 @@ mod layout {
     pub const TARGETS: usize = 4;
     /// Abilities listed in the breakdown.
     pub const ABILITIES: usize = 8;
-    pub const CLOSE: f32 = 22.0;
+    pub const CLOSE: f32 = super::kit::CLOSE_EDGE;
 }
 
 /// Which scope the window shows.
@@ -403,9 +403,12 @@ impl RecountWindow {
             + kit.px(layout::CONTROLS)
             + kit.px(layout::PADDING) * 2.0
             + self.body_height(&kit);
+        // Below the minimap, but never so low that its bottom leaves the screen.
+        let top = (viewport.1 as f32 * 0.33).max(kit.px(260.0));
+        let lowest = (viewport.1 as f32 - height - kit.px(layout::MARGIN)).max(0.0);
         UiRect::new(
             (viewport.0 as f32 - width - kit.px(layout::MARGIN)).max(0.0),
-            (viewport.1 as f32 * 0.33).max(kit.px(260.0)),
+            top.min(lowest),
             width,
             height,
         )
@@ -615,15 +618,7 @@ pub fn push_recount(
         color::TEXT_SECONDARY,
         TextAlign::Right,
     );
-    kit::button(
-        list,
-        &kit,
-        close,
-        "x",
-        None,
-        ButtonVariant::Ghost,
-        Interaction::at(close, &input),
-    );
+    kit::close_button(list, &kit, close, &input);
 
     // Tabs and modes.
     let scope_rect = window.scope_rect(panel);
@@ -670,6 +665,16 @@ pub fn push_recount(
         None => push_players(list, window, &kit, panel, &input, &mut text),
         Some(index) => push_breakdown(list, window, &kit, panel, &input, index, &mut text),
     }
+    if close.contains(pointer.0, pointer.1) {
+        kit::hint(
+            list,
+            &kit,
+            pointer,
+            viewport,
+            "Close",
+            "Esc also closes this window.",
+        );
+    }
     window.scratch = text;
 }
 
@@ -699,6 +704,11 @@ fn push_players(
         );
         return;
     }
+    let total: u64 = window
+        .rows
+        .iter()
+        .map(|row| window.scope(row).value(mode))
+        .sum();
     for (slot, index) in window.order.iter().enumerate() {
         let row = &window.rows[*index];
         let scope = window.scope(row);
@@ -727,17 +737,44 @@ fn push_players(
             TextAlign::Left,
         );
         text.clear();
-        write_compact(text, value);
-        text.push_str("  ");
+        // Three columns, right to left: the share, the rate (what players compare), the total.
+        let centre = rect.y + rect.height * 0.5;
+        text.clear();
+        write_integer(
+            text,
+            (value as f64 * 100.0 / total.max(1) as f64).round() as i64,
+        );
+        text.push('%');
+        kit.text(
+            list,
+            rect.right() - kit.px(6.0),
+            centre,
+            text,
+            type_scale::META,
+            color::TEXT_SECONDARY,
+            TextAlign::Right,
+        );
+        text.clear();
         write_compact(text, scope.rate(mode).round() as u64);
         text.push_str("/s");
         kit.text(
             list,
-            rect.right() - kit.px(6.0),
-            rect.y + rect.height * 0.5,
+            rect.right() - kit.px(48.0),
+            centre,
             text,
             type_scale::META,
             color::TEXT_PRIMARY,
+            TextAlign::Right,
+        );
+        text.clear();
+        write_compact(text, value);
+        kit.text(
+            list,
+            rect.right() - kit.px(108.0),
+            centre,
+            text,
+            type_scale::META,
+            color::TEXT_SECONDARY,
             TextAlign::Right,
         );
     }
@@ -1026,7 +1063,9 @@ mod tests {
         assert!(words.contains(&"Recount".to_owned()));
         assert!(words.contains(&"1. ASH".to_owned()), "{words:?}");
         // 4000 damage over 20 s: 200 a second.
-        assert!(words.iter().any(|t| t == "4000  200/s"), "{words:?}");
+        for expected in ["4000", "200/s", "82%"] {
+            assert!(words.iter().any(|t| t == expected), "{expected}: {words:?}");
+        }
     }
 
     #[test]
@@ -1048,7 +1087,9 @@ mod tests {
         assert_eq!(window.tab(), RecountTab::Overall);
         let words = texts(&draw(&mut window));
         // Overall is the whole run: 1800 healing over 100 s.
-        assert!(words.iter().any(|t| t == "1800  18/s"), "{words:?}");
+        assert!(words.iter().any(|t| t == "1800"), "{words:?}");
+        assert!(words.iter().any(|t| t == "18/s"), "{words:?}");
+        assert!(words.iter().any(|t| t == "100%"), "{words:?}");
     }
 
     #[test]
@@ -1212,5 +1253,30 @@ mod tests {
         let scope = RecountScope::from_summary(&summary, |key| format!("Monster {key}"));
         assert_eq!(scope.targets, vec![("Monster 7".to_owned(), 10)]);
         assert!((scope.rate(RecountMode::Damage) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_window_stays_on_screen_and_clear_of_the_others_at_every_size() {
+        use crate::ui::layout_audit;
+        for (viewport, scale) in layout_audit::sizes() {
+            let mut window = RecountWindow::with_scale(scale);
+            window.open();
+            window.set_rows(
+                (0..5)
+                    .map(|i| row(&format!("p{i}"), Hero::Warrior, 1000 * (i + 1), 10))
+                    .collect(),
+            );
+            let mut list = UiDrawList::new();
+            push_recount(&mut list, &mut window, (0.0, 0.0), viewport);
+            layout_audit::assert_sound(&list, viewport, &format!("recount {viewport:?}"));
+        }
+    }
+
+    #[test]
+    fn every_bar_reads_its_total_its_rate_and_its_share() {
+        let mut window = window();
+        let words = texts(&draw(&mut window));
+        // 4000 of 4900 damage is 82 per cent; the bars are class coloured by `class_color`.
+        assert!(words.iter().any(|t| t == "82%"), "{words:?}");
     }
 }

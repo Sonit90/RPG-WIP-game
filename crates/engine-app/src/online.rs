@@ -794,6 +794,18 @@ impl OnlineSession {
                 self.view.screen,
                 Screen::Title | Screen::Login | Screen::Characters
             )
+            && !self.awaiting_ready_answer()
+    }
+
+    /// Whether the ready check is waiting on the local player. That page answers Enter with
+    /// Accept, so the chat line (which Enter opens) is put away until it is answered.
+    fn awaiting_ready_answer(&self) -> bool {
+        self.view.screen == Screen::ReadyCheck
+            && self
+                .view
+                .party
+                .as_ref()
+                .is_some_and(|party| !party.i_answered)
     }
 
     /// How far the panel rides up the corner: clear of the hub's queue panel.
