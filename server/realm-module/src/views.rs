@@ -43,6 +43,12 @@ fn my_instance(ctx: &ViewContext) -> Option<DungeonInstance> {
     ctx.db.dungeon_instance().id().find(me.instance_id)
 }
 
+/// What the caller may spend this run (the key reroll's currency) and has spent.
+#[view(accessor = my_instance_spend, public, primary_key = spend_id)]
+fn my_instance_spend(ctx: &ViewContext) -> Vec<InstanceSpend> {
+    ctx.db.instance_spend().identity().filter(ctx.sender()).collect()
+}
+
 #[view(accessor = my_instance_players, public, primary_key = identity)]
 fn my_instance_players(ctx: &ViewContext) -> Vec<InstancePlayer> {
     let Some(me) = ctx.db.instance_player().identity().find(ctx.sender()) else {

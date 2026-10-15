@@ -91,6 +91,52 @@ pub fn add_resources(loadout: &mut Loadout, gains: &[(String, u64)]) {
     }
 }
 
+/// Takes `costs` from the loadout's resources, never below zero: what the character spent
+/// during a run (the realm already checked they could), applied when the result is saved. A
+/// resource that reaches zero leaves the map. Returns what was actually taken, which is less
+/// than asked only if the character spent the rest elsewhere meanwhile.
+pub fn debit_resources(loadout: &mut Loadout, costs: &[(String, u64)]) -> Vec<(String, u64)> {
+    let mut taken = Vec::with_capacity(costs.len());
+    for (id, amount) in costs {
+        let held = loadout.resources.get(id).copied().unwrap_or(0);
+        let take = held.min(*amount);
+        if take == 0 {
+            continue;
+        }
+        if held == take {
+            loadout.resources.remove(id);
+        } else {
+            loadout.resources.insert(id.clone(), held - take);
+        }
+        taken.push((id.clone(), take));
+    }
+    taken
+}
+
+/// Pays `amount` of resource `id`, or changes nothing.
+///
+/// # Errors
+///
+/// [`EconomyError::Insufficient`] (carrying `name`, the resource's display name) when the
+/// character holds less than `amount`.
+pub fn spend_resource(
+    loadout: &mut Loadout,
+    id: &str,
+    amount: u64,
+    name: &str,
+) -> Result<(), EconomyError> {
+    let held = loadout.resources.get(id).copied().unwrap_or(0);
+    let remaining = held
+        .checked_sub(amount)
+        .ok_or_else(|| EconomyError::Insufficient(name.to_owned()))?;
+    if remaining == 0 {
+        loadout.resources.remove(id);
+    } else {
+        loadout.resources.insert(id.to_owned(), remaining);
+    }
+    Ok(())
+}
+
 /// Breaks the whole bag stacks in the cells `indices` down into the salvage resource.
 ///
 /// Only the bag: worn gear is never salvaged. Every cell empties and pays
@@ -337,5 +383,39 @@ mod tests {
         assert_eq!(error.category, crate::ErrorCategory::Persistence);
         let error: RealmError = EconomyError::InvalidTimes.into();
         assert_eq!(error.category, crate::ErrorCategory::Protocol);
+    }
+
+    #[test]
+    fn debits_never_go_below_zero_and_empty_resources_leave_the_map() {
+        let mut loadout = Loadout::default();
+        add_resources(
+            &mut loadout,
+            &[("aether_shard".into(), 3), ("gold".into(), 50)],
+        );
+        let taken = debit_resources(
+            &mut loadout,
+            &[
+                ("aether_shard".into(), 1),
+                ("gold".into(), 80),
+                ("dust".into(), 4),
+            ],
+        );
+        assert_eq!(loadout.resources.get("aether_shard"), Some(&2));
+        assert!(!loadout.resources.contains_key("gold"), "emptied");
+        assert_eq!(
+            taken,
+            vec![("aether_shard".to_owned(), 1), ("gold".to_owned(), 50)]
+        );
+    }
+
+    #[test]
+    fn spending_is_all_or_nothing() {
+        let mut loadout = Loadout::default();
+        add_resources(&mut loadout, &[("gold".into(), 99)]);
+        let error = spend_resource(&mut loadout, "gold", 100, "Gold").expect_err("too poor");
+        assert_eq!(error, EconomyError::Insufficient("Gold".into()));
+        assert_eq!(loadout.resources.get("gold"), Some(&99));
+        spend_resource(&mut loadout, "gold", 99, "Gold").expect("exact");
+        assert!(loadout.resources.is_empty());
     }
 }

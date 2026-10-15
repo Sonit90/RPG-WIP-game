@@ -22,6 +22,7 @@ use engine_realm::combat::{
 };
 use engine_realm::instance::InstanceState;
 use engine_realm::meter::MeterBlob;
+use engine_realm::modifiers::{KeyModifier, RerollEvent};
 use engine_realm::party::{PartyState, ReadyResponse};
 
 /// This account, as the realm knows it.
@@ -92,6 +93,8 @@ pub struct MemberInfo {
     pub key_dungeon_id: String,
     /// Their key's level as snapshotted at queue time (0 when they have none).
     pub key_level: u32,
+    /// Their key's modifiers as snapshotted at queue time.
+    pub key_modifiers: Vec<KeyModifier>,
     /// Their ready-check answer.
     pub ready: ReadyResponse,
     /// Whether they are connected.
@@ -113,6 +116,35 @@ pub struct InstanceInfo {
     pub countdown_ends_at: Option<Micros>,
     /// Whether the starting barrier is open.
     pub barrier_open: bool,
+    /// The level of the key the run was started with.
+    pub key_level: u32,
+    /// The key's modifiers as they stand now, rerolls included.
+    pub modifiers: Vec<KeyModifier>,
+    /// Rerolls the run has used.
+    pub rerolls: u32,
+    /// The run's reward bonus, per cent (a reroll sets it).
+    pub reward_bonus_pct: u32,
+    /// The latest reroll, if there was one; its `seq` grows with every reroll.
+    pub last_reroll: Option<RerollEvent>,
+}
+
+/// What the local player may spend on a key reroll this run, and has spent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendInfo {
+    /// The currency's resource id.
+    pub resource: String,
+    /// How much the snapshot held when the run began.
+    pub balance: u64,
+    /// How much has been spent this run.
+    pub spent: u64,
+}
+
+impl SpendInfo {
+    /// What can still be spent.
+    #[must_use]
+    pub fn available(&self) -> u64 {
+        self.balance.saturating_sub(self.spent)
+    }
 }
 
 /// How the player's last run ended, for the completion screen.
@@ -324,6 +356,8 @@ pub enum RealmUpdate {
     Members(Vec<MemberInfo>),
     /// The instance row.
     Instance(Option<InstanceInfo>),
+    /// The local player's reroll currency row.
+    Spend(Option<SpendInfo>),
     /// One player inserted or changed.
     PlayerUpsert(RemotePlayerState),
     /// One player gone.
@@ -367,6 +401,8 @@ pub struct RealmMirror {
     pub members: Vec<MemberInfo>,
     /// The instance.
     pub instance: Option<InstanceInfo>,
+    /// What the local player may spend on a key reroll, while in an instance.
+    pub spend: Option<SpendInfo>,
     /// The instance's players, by account id.
     pub players: BTreeMap<String, RemotePlayerState>,
     /// The instance's monsters, by key.
@@ -421,6 +457,7 @@ impl RealmMirror {
             }
             RealmUpdate::Instance(instance) => {
                 if instance.is_none() {
+                    self.spend = None;
                     self.players.clear();
                     self.monsters.clear();
                     self.combat.clear();
@@ -430,6 +467,7 @@ impl RealmMirror {
                 }
                 self.instance = instance;
             }
+            RealmUpdate::Spend(spend) => self.spend = spend,
             RealmUpdate::PlayerUpsert(player) => {
                 self.players.insert(player.account_id.clone(), player);
             }
@@ -774,5 +812,24 @@ mod tests {
             mirror.notices.iter().map(|n| n.id).collect::<Vec<_>>(),
             vec![1, 3]
         );
+    }
+
+    #[test]
+    fn the_spend_row_follows_updates_and_leaves_with_the_instance() {
+        let mut mirror = RealmMirror::default();
+        mirror.apply(RealmUpdate::Spend(Some(SpendInfo {
+            resource: "aether_shard".into(),
+            balance: 3,
+            spent: 1,
+        })));
+        assert_eq!(mirror.spend.as_ref().map(SpendInfo::available), Some(2));
+        mirror.apply(RealmUpdate::Instance(None));
+        assert!(mirror.spend.is_none());
+        let spent_more = SpendInfo {
+            resource: "aether_shard".into(),
+            balance: 1,
+            spent: 5,
+        };
+        assert_eq!(spent_more.available(), 0, "never negative");
     }
 }

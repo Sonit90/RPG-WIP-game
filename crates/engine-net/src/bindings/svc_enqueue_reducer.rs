@@ -22,6 +22,7 @@ pub(super) struct SvcEnqueueArgs {
     pub key_level: u32,
     pub talents: String,
     pub talent_points: u32,
+    pub key_modifiers: String,
 }
 
 impl From<SvcEnqueueArgs> for super::Reducer {
@@ -40,6 +41,7 @@ impl From<SvcEnqueueArgs> for super::Reducer {
             key_level: args.key_level,
             talents: args.talents,
             talent_points: args.talent_points,
+            key_modifiers: args.key_modifiers,
         }
     }
 }
@@ -74,6 +76,7 @@ pub trait svc_enqueue {
         key_level: u32,
         talents: String,
         talent_points: u32,
+        key_modifiers: String,
     ) -> __sdk::Result<()> {
         self.svc_enqueue_then(
             account_id,
@@ -89,6 +92,7 @@ pub trait svc_enqueue {
             key_level,
             talents,
             talent_points,
+            key_modifiers,
             |_, _| {},
         )
     }
@@ -114,6 +118,7 @@ pub trait svc_enqueue {
         key_level: u32,
         talents: String,
         talent_points: u32,
+        key_modifiers: String,
 
         callback: impl FnOnce(
             &super::ReducerEventContext,
@@ -139,6 +144,7 @@ impl svc_enqueue for super::RemoteReducers {
         key_level: u32,
         talents: String,
         talent_points: u32,
+        key_modifiers: String,
 
         callback: impl FnOnce(
             &super::ReducerEventContext,
@@ -161,6 +167,7 @@ impl svc_enqueue for super::RemoteReducers {
                 key_level,
                 talents,
                 talent_points,
+                key_modifiers,
             },
             callback,
         )

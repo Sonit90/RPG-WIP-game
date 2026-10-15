@@ -161,9 +161,36 @@ fn specs(
         .collect()
 }
 
-/// What the instance's key multiplies its monsters' health and damage by.
+/// What the instance's key multiplies its monsters' health and damage by: the progression
+/// table of `modifiers.json`, or the dungeon's own linear rule if the catalog has no table.
 fn key_scaling(instance: &DungeonInstance, dungeon: &crate::level::Dungeon) -> (f32, f32) {
-    engine_realm::key::scaling(&dungeon.definition.keys, instance.key_level.max(1))
+    let level = instance.key_level.max(1);
+    match crate::level::catalog() {
+        Ok(catalog) => catalog
+            .modifiers()
+            .key_scaling(&dungeon.definition.keys, level),
+        Err(_) => engine_realm::key::scaling(&dungeon.definition.keys, level),
+    }
+}
+
+/// Puts the run's key modifiers and reward bonus in force in `fight`, from the instance row:
+/// what a new fight starts with, what a rebuilt one gets back, and what a reroll changes.
+pub fn apply_run_rules(instance: &DungeonInstance, fight: &mut CombatInstance) {
+    let mods = engine_realm::modifiers::decode_modifiers(&instance.modifiers);
+    match crate::level::catalog() {
+        Ok(catalog) => {
+            fight.set_modifiers(
+                catalog
+                    .modifiers()
+                    .resolve(instance.key_level.max(1), &mods),
+            );
+        }
+        Err(error) => log::error!(
+            "event=modifiers_not_applied instance_id={} error={error}",
+            instance.id
+        ),
+    }
+    fight.set_reward_bonus(instance.reward_bonus_pct);
 }
 
 /// The run's reward bonus, per cent: how much more every drop and payout is worth.
@@ -172,8 +199,8 @@ fn key_scaling(instance: &DungeonInstance, dungeon: &crate::level::Dungeon) -> (
 /// the fight is armed with it when built or rebuilt, and `instance::finish` scales the run's
 /// resource payout with it, so the two cannot disagree. It reads the instance (not the live
 /// fight) because a rebuilt fight must come back with the same bonus.
-pub fn reward_bonus(_ctx: &ReducerContext, _instance: &DungeonInstance) -> u32 {
-    0
+pub fn reward_bonus(_ctx: &ReducerContext, instance: &DungeonInstance) -> u32 {
+    instance.reward_bonus_pct
 }
 
 /// Gives a freshly built (or rebuilt) fight the loot rules, the key level and the reward bonus.
@@ -204,6 +231,7 @@ pub fn start(ctx: &ReducerContext, instance: &DungeonInstance) -> Result<(), Rea
         key_scaling(instance, &dungeon),
     );
     arm(ctx, instance, &mut fight);
+    apply_run_rules(instance, &mut fight);
     ctx.db.instance_combat().insert(InstanceCombat {
         instance_id: instance.id,
         tick: fight.tick(),
@@ -333,6 +361,7 @@ fn rebuild(
         &state,
     );
     arm(ctx, instance, &mut fight);
+    apply_run_rules(instance, &mut fight);
     // The rebuilt fight dropped what no row holds (summoned monsters); its first projection
     // writes every row again, which removes them.
     fight.forget_written();

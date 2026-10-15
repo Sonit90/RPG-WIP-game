@@ -66,6 +66,9 @@ fn winning(account: Uuid, character: Uuid, key: &store::KeyRow, tag: &str) -> Du
         damage_report: None,
         talent_points: 2,
         looted: Vec::new(),
+        currency_spent: vec![],
+        participant_key_bump: false,
+        own_key_level: 0,
     }
 }
 
@@ -393,8 +396,43 @@ async fn talent_points_are_granted_once_per_result_and_only_for_a_success() {
     drop_account(&pool, account).await;
 }
 
-/// Gold held, as stored.
-async fn gold(pool: &PgPool, account: Uuid, character: Uuid) -> u64 {
+// --- key modifiers, downgrade, cleanse, currency and participant keys -------------------
+
+/// Puts the key at `level` with `modifiers` already rolled (or not), as an older build left it.
+async fn set_key(
+    pool: &PgPool,
+    character: Uuid,
+    level: u32,
+    modifiers: &[engine_realm::modifiers::KeyModifier],
+    rolled: bool,
+) {
+    sqlx::query(
+        "UPDATE game.dungeon_keys SET level = $2, modifiers = $3, modifiers_rolled = $4
+         WHERE character_id = $1",
+    )
+    .bind(character)
+    .bind(i32::try_from(level).expect("small"))
+    .bind(sqlx::types::Json(modifiers))
+    .bind(rolled)
+    .execute(pool)
+    .await
+    .expect("set key");
+}
+
+/// Gives the character `amount` of `resource`.
+async fn give(pool: &PgPool, account: Uuid, character: Uuid, resource: &str, amount: u64) {
+    store::update_loadout(pool, account, character, |current| {
+        let mut loadout = current.clone();
+        engine_realm::economy::add_resources(&mut loadout, &[(resource.to_owned(), amount)]);
+        Ok(loadout)
+    })
+    .await
+    .expect("give")
+    .expect("owned");
+}
+
+/// How much of `resource` the character holds.
+async fn held(pool: &PgPool, account: Uuid, character: Uuid, resource: &str) -> u64 {
     store::get(pool, account, character)
         .await
         .expect("get")
@@ -402,9 +440,14 @@ async fn gold(pool: &PgPool, account: Uuid, character: Uuid) -> u64 {
         .loadout
         .0
         .resources
-        .get("gold")
+        .get(resource)
         .copied()
         .unwrap_or(0)
+}
+
+/// Gold held, as stored.
+async fn gold(pool: &PgPool, account: Uuid, character: Uuid) -> u64 {
+    held(pool, account, character, "gold").await
 }
 
 #[tokio::test]
@@ -429,6 +472,58 @@ async fn looted_currency_is_paid_once_on_success_and_on_failure() {
     assert!(store::apply_result(&pool, &lost).await.expect("lost"));
     assert_eq!(gold(&pool, account, row.id).await, 55);
     assert_eq!(stored(&pool, account, row.id).await.1, 9, "only the win paid dust");
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_key_that_was_never_rolled_is_rolled_once_when_read() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    // Level 1 has no slots: nothing to roll.
+    let key = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert!(key.modifiers.is_empty());
+    // An older key at a level with two slots and nothing stored.
+    set_key(&pool, row.id, 5, &[], false).await;
+    let first = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert_eq!(first.modifiers.len(), 2);
+    assert!(first.modifiers_rolled);
+    // Read again, and through the list: the same modifiers, not a new roll.
+    let again = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert_eq!(again.modifiers, first.modifiers);
+    let keys = store::keys_of(&pool, account).await.expect("keys");
+    assert_eq!(keys[&row.id].modifiers, first.modifiers);
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_key_that_rises_is_rolled_afresh_for_its_new_level() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, key) = first_character(&pool, account).await;
+    set_key(&pool, row.id, 2, &[], true).await;
+    let mut win = winning(account, row.id, &key, "rise");
+    win.key_level = 2;
+    win.key_level_after = 3;
+    assert!(store::apply_result(&pool, &win).await.expect("win"));
+    let after = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert_eq!(after.level, 3);
+    assert_eq!(after.modifiers.len(), 1, "level 3 has its first slot");
+    assert!(after.modifiers_rolled);
     drop_account(&pool, account).await;
 }
 
@@ -527,5 +622,204 @@ async fn an_enhancement_pays_and_persists_under_the_row_lock() {
         .await
         .is_err());
     drop_account(&pool, other).await;
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_downgrade_lowers_one_level_keeps_the_key_and_stops_at_the_minimum() {
+    use engine_realm::modifiers::KeyModifier;
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    let mods = vec![
+        KeyModifier::base("rotating_beams"),
+        KeyModifier::base("plague_explosion"),
+    ];
+    set_key(&pool, row.id, 5, &mods, true).await;
+    let key = store::downgrade_key(&pool, account, row.id)
+        .await
+        .expect("downgrade")
+        .expect("has a key");
+    assert_eq!(key.level, 4);
+    assert_eq!(
+        key.modifiers,
+        vec![mods[0].clone()],
+        "the extra modifier is gone"
+    );
+    let stored = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert_eq!(stored, key);
+
+    // Down to the minimum, then refused; the key is still there.
+    set_key(&pool, row.id, 2, &[], true).await;
+    let key = store::downgrade_key(&pool, account, row.id)
+        .await
+        .expect("2 to 1")
+        .expect("key");
+    assert_eq!(key.level, 1);
+    assert!(store::downgrade_key(&pool, account, row.id).await.is_err());
+    let stored = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("still has one");
+    assert_eq!(stored.level, 1);
+
+    // Someone else's character has no key to the caller.
+    let other = new_account(&pool).await;
+    assert!(store::downgrade_key(&pool, other, row.id)
+        .await
+        .expect("other")
+        .is_none());
+    drop_account(&pool, other).await;
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_cleanse_costs_gold_all_or_nothing() {
+    use engine_realm::modifiers::KeyModifier;
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    let mods = vec![KeyModifier::base("rotating_beams")];
+    set_key(&pool, row.id, 3, &mods, true).await;
+
+    // 99 gold: refused, nothing changes.
+    give(&pool, account, row.id, "gold", 99).await;
+    assert!(store::cleanse_key(&pool, account, row.id).await.is_err());
+    assert_eq!(held(&pool, account, row.id, "gold").await, 99);
+    let key = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert_eq!(key.modifiers, mods);
+
+    // 100 more is enough: modifiers gone, 100 gold taken, and they stay gone when read again.
+    give(&pool, account, row.id, "gold", 51).await;
+    let key = store::cleanse_key(&pool, account, row.id)
+        .await
+        .expect("cleanse")
+        .expect("key");
+    assert!(key.modifiers.is_empty());
+    assert_eq!(held(&pool, account, row.id, "gold").await, 50);
+    let again = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert!(
+        again.modifiers.is_empty(),
+        "a cleansed key is not rolled again"
+    );
+    assert_eq!(again.level, 3);
+
+    // A clean key is not charged for.
+    assert!(store::cleanse_key(&pool, account, row.id).await.is_err());
+    assert_eq!(held(&pool, account, row.id, "gold").await, 50);
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn spent_currency_is_debited_once_and_never_below_zero() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, key) = first_character(&pool, account).await;
+    give(&pool, account, row.id, "aether_shard", 3).await;
+
+    let mut run = winning(account, row.id, &key, "spend");
+    run.currency_spent = vec![("aether_shard".into(), 2)];
+    assert!(store::apply_result(&pool, &run).await.expect("first"));
+    assert_eq!(held(&pool, account, row.id, "aether_shard").await, 1);
+    // Re-delivered: not debited again.
+    assert!(!store::apply_result(&pool, &run).await.expect("again"));
+    assert_eq!(held(&pool, account, row.id, "aether_shard").await, 1);
+
+    // A failed run still costs what was spent, and a claim above the balance stops at zero.
+    let mut failed = winning(account, row.id, &key, "spend-fail");
+    failed.success = false;
+    failed.experience = 0;
+    failed.resources = vec![];
+    failed.key_level_after = 0;
+    failed.key_owner = false;
+    failed.currency_spent = vec![("aether_shard".into(), 50)];
+    assert!(store::apply_result(&pool, &failed).await.expect("failed"));
+    assert_eq!(held(&pool, account, row.id, "aether_shard").await, 0);
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_participants_key_rises_once_and_only_from_the_level_it_had() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    set_key(&pool, row.id, 2, &[], true).await;
+    let participant = |tag: &str, own: u32, after: u32| DungeonResult {
+        result_id: format!("{tag}:{}", Uuid::new_v4()),
+        account_id: account.to_string(),
+        character_id: row.id.to_string(),
+        dungeon_id: realm_game::catalog().dungeons()[0].id.clone(),
+        success: true,
+        duration_us: 1,
+        experience: 10,
+        key_level: 6,
+        key_owner: false,
+        key_level_after: after,
+        resources: vec![],
+        damage_report: None,
+        talent_points: 0,
+        looted: vec![],
+        currency_spent: vec![],
+        participant_key_bump: true,
+        own_key_level: own,
+    };
+    // The realm snapshot said 2: the key rises to 3, rolled for its new level.
+    let run = participant("bump", 2, 3);
+    assert!(store::apply_result(&pool, &run).await.expect("bump"));
+    let key = store::get_key(&pool, account, row.id)
+        .await
+        .expect("key")
+        .expect("has");
+    assert_eq!(key.level, 3);
+    assert_eq!(key.modifiers.len(), 1);
+    // Re-delivered: nothing.
+    assert!(!store::apply_result(&pool, &run).await.expect("again"));
+    assert_eq!(
+        store::get_key(&pool, account, row.id)
+            .await
+            .expect("k")
+            .expect("h")
+            .level,
+        3
+    );
+    // Another run that also saw 2 (a stale snapshot) cannot lift it again.
+    assert!(store::apply_result(&pool, &participant("stale", 2, 3))
+        .await
+        .expect("stale"));
+    assert_eq!(
+        store::get_key(&pool, account, row.id)
+            .await
+            .expect("k")
+            .expect("h")
+            .level,
+        3
+    );
+    // Without the flag nothing moves.
+    let mut unflagged = participant("flag", 3, 4);
+    unflagged.participant_key_bump = false;
+    assert!(store::apply_result(&pool, &unflagged)
+        .await
+        .expect("unflagged"));
+    assert_eq!(
+        store::get_key(&pool, account, row.id)
+            .await
+            .expect("k")
+            .expect("h")
+            .level,
+        3
+    );
     drop_account(&pool, account).await;
 }

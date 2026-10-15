@@ -242,6 +242,9 @@ pub struct QueueTicket {
     pub key_dungeon_id: String,
     /// The key's level, from the persistence API. Zero: no key.
     pub key_level: u32,
+    /// The key's modifiers as JSON (`[{"id":"rotating_beams","magnitude_pct":0}]`), from the
+    /// persistence API. Part of the immutable snapshot, like the level.
+    pub key_modifiers: String,
     /// When it was queued. Survives a cancelled ready check.
     pub enqueued_at: Timestamp,
     /// Searching or in a ready check.
@@ -312,6 +315,8 @@ pub struct PartyMember {
     pub key_dungeon_id: String,
     /// Their key's level. Zero: no key.
     pub key_level: u32,
+    /// Their key's modifiers as JSON: every member sees them before the key goes in.
+    pub key_modifiers: String,
     /// Their ready-check answer.
     pub ready: ReadyTag,
     /// Connected or not.
@@ -353,6 +358,44 @@ pub struct DungeonInstance {
     pub created_at: Timestamp,
     /// When it completed or failed.
     pub finished_at: Option<Timestamp>,
+    /// The key's modifiers as JSON, with the magnitudes rerolls have given them. What the
+    /// fight resolves; clients read it for the modifier panel.
+    pub modifiers: String,
+    /// Rerolls the run has used (the party shares the allowance).
+    pub rerolls: u32,
+    /// The run's reward bonus, per cent: set by a reroll, paid on success.
+    pub reward_bonus_pct: u32,
+    /// Counts rerolls; a client plays the reveal when it grows.
+    pub reroll_seq: u32,
+    /// The latest reroll as JSON (`engine_realm::modifiers::RerollEvent`); empty before one.
+    pub last_reroll: String,
+}
+
+/// What one player may spend during one run, and has: the key reroll's currency.
+///
+/// Private; the player reads their own row through `my_instance_spend`. The balance is the
+/// snapshot's (the loadout the character queued with), so what is spendable is what the
+/// persistence API will debit when the result lands.
+#[spacetimedb::table(accessor = instance_spend)]
+#[derive(Debug, Clone)]
+pub struct InstanceSpend {
+    /// `"<instance id>:<account id>"`.
+    #[primary_key]
+    pub spend_id: String,
+    /// The player.
+    #[index(btree)]
+    pub identity: Identity,
+    /// The instance.
+    #[index(btree)]
+    pub instance_id: u64,
+    /// Their account id.
+    pub account_id: String,
+    /// The currency a reroll costs.
+    pub resource: String,
+    /// How much of it the snapshot held.
+    pub balance: u64,
+    /// How much of it has been spent this run.
+    pub spent: u64,
 }
 
 /// A player inside an instance: the runtime state the server owns.
@@ -516,7 +559,8 @@ pub struct ChatMessage {
 ///
 /// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
 /// here is appended after the last one and added there, at the same position
-/// (`key_level`, `key_owner`, `key_level_after`, `resources`, `damage_report`, `talent_points` follow
+/// (`key_level`, `key_owner`, `key_level_after`, `resources`, `damage_report`, `talent_points`,
+/// `currency_spent`, `participant_key_bump`, `own_key_level` follow
 /// `created_at`).
 #[spacetimedb::table(accessor = pending_result)]
 #[derive(Debug, Clone)]
@@ -556,6 +600,14 @@ pub struct PendingResult {
     /// What the player picked up from monsters (gold, aether shards), as JSON text:
     /// `[["gold",40],["aether_shard",1]]`. Paid on success and on failure alike.
     pub looted: String,
+    /// What the player spent during the run, as JSON text: `[["aether_shard",1]]`. Debited by
+    /// the persistence API in the transaction that records the result.
+    pub currency_spent: String,
+    /// A member who did not open the run: their own key was lower than the one used, so the
+    /// run raises it.
+    pub participant_key_bump: bool,
+    /// The level of the player's own key when they queued: the bump's compare-and-set guard.
+    pub own_key_level: u32,
 }
 
 /// What a finished run paid one player, for their results screen. Kept until the instance is

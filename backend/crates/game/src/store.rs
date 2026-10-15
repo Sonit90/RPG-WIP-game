@@ -3,12 +3,13 @@
 //! check after the fact, is the ownership rule.
 
 use engine_realm::api::{DungeonCompletion, DungeonResult, LootDelivery};
-use engine_realm::economy::add_resources;
+use engine_realm::economy::{add_resources, debit_resources, spend_resource};
 use engine_realm::enhance::{enhance, EnhanceError, EnhanceOutcome};
 use engine_realm::loadout::{
     add_stack_to_bag, add_stack_to_mail, migrate_removed_slots, starting_loadout, BagError,
     Loadout, SlotRef, MAIL_BAG_FULL, MAIL_DUNGEON_DROP, MAIL_UNCLAIMED,
 };
+use engine_realm::modifiers::KeyModifier;
 use generic_auth_core::AppError;
 use sqlx::types::Json;
 use sqlx::PgPool;
@@ -35,7 +36,11 @@ pub struct CharacterRow {
 pub struct KeyRow {
     pub dungeon_id: String,
     pub level: u32,
-    pub modifiers: serde_json::Value,
+    /// The modifiers the key carries, rolled when it was created or its level last changed.
+    pub modifiers: Vec<KeyModifier>,
+    /// Whether the modifiers were ever rolled. A key that was not (an older key, or one created
+    /// for a level with slots) is rolled once, the next time it is read.
+    pub modifiers_rolled: bool,
 }
 
 fn db(e: sqlx::Error) -> AppError {
@@ -109,45 +114,270 @@ pub async fn get(
     .map_err(db)
 }
 
-type KeyColumns = (Uuid, String, i32, Json<serde_json::Value>);
+type KeyColumns = (Uuid, String, i32, Json<serde_json::Value>, bool);
 
-fn key_row((_, dungeon_id, level, Json(modifiers)): KeyColumns) -> KeyRow {
+const KEY_COLUMNS: &str = "character_id, dungeon_id, level, modifiers, modifiers_rolled";
+
+fn key_row((_, dungeon_id, level, Json(modifiers), modifiers_rolled): KeyColumns) -> KeyRow {
     KeyRow {
         dungeon_id,
         level: u32::try_from(level).unwrap_or(1),
-        modifiers,
+        modifiers: serde_json::from_value(modifiers).unwrap_or_default(),
+        modifiers_rolled,
     }
 }
 
-/// The key of one of the account's characters. `None` if it has none or is not the account's.
-pub async fn get_key(
+/// A seed from the operating system's random source: a version 4 UUID is exactly that.
+fn fresh_seed() -> u64 {
+    // The low 64 bits of 122 random ones.
+    (Uuid::new_v4().as_u128() & u128::from(u64::MAX)) as u64
+}
+
+/// The modifiers a key of `level` starts with, rolled from the OS random source.
+#[must_use]
+pub fn roll_modifiers(level: u32) -> Vec<KeyModifier> {
+    crate::catalog()
+        .modifiers()
+        .roll_key_modifiers(level, fresh_seed())
+}
+
+/// Rolls a key's modifiers if they never were, once: the update only lands on a key still
+/// marked unrolled, so two concurrent reads cannot both decide. Returns the key as stored.
+async fn ensure_rolled(
     pool: &PgPool,
     account_id: Uuid,
     character_id: Uuid,
-) -> Result<Option<KeyRow>, AppError> {
-    let row: Option<KeyColumns> = sqlx::query_as(
-        "SELECT character_id, dungeon_id, level, modifiers FROM game.dungeon_keys
-         WHERE character_id = $1 AND account_id = $2",
+    mut key: KeyRow,
+) -> Result<KeyRow, AppError> {
+    if key.modifiers_rolled {
+        return Ok(key);
+    }
+    let rolled = roll_modifiers(key.level);
+    let done = sqlx::query(
+        "UPDATE game.dungeon_keys SET modifiers = $3, modifiers_rolled = true, updated_at = now()
+         WHERE character_id = $1 AND account_id = $2 AND modifiers_rolled = false AND level = $4",
     )
+    .bind(character_id)
+    .bind(account_id)
+    .bind(Json(&rolled))
+    .bind(i32::try_from(key.level).unwrap_or(i32::MAX))
+    .execute(pool)
+    .await
+    .map_err(db)?;
+    if done.rows_affected() == 1 {
+        key.modifiers = rolled;
+        key.modifiers_rolled = true;
+        return Ok(key);
+    }
+    // Someone else rolled (or the level moved) first: take what is stored.
+    let row: Option<KeyColumns> = sqlx::query_as(&format!(
+        "SELECT {KEY_COLUMNS} FROM game.dungeon_keys WHERE character_id = $1 AND account_id = $2"
+    ))
     .bind(character_id)
     .bind(account_id)
     .fetch_optional(pool)
     .await
     .map_err(db)?;
-    Ok(row.map(key_row))
+    Ok(row.map_or(key, key_row))
 }
 
-/// Every key the account's characters hold, by character id.
+/// The key of one of the account's characters. `None` if it has none or is not the account's.
+/// A key whose modifiers were never rolled is rolled here, once, and stored.
+pub async fn get_key(
+    pool: &PgPool,
+    account_id: Uuid,
+    character_id: Uuid,
+) -> Result<Option<KeyRow>, AppError> {
+    let row: Option<KeyColumns> = sqlx::query_as(&format!(
+        "SELECT {KEY_COLUMNS} FROM game.dungeon_keys WHERE character_id = $1 AND account_id = $2"
+    ))
+    .bind(character_id)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db)?;
+    match row {
+        Some(row) => Ok(Some(
+            ensure_rolled(pool, account_id, character_id, key_row(row)).await?,
+        )),
+        None => Ok(None),
+    }
+}
+
+/// Every key the account's characters hold, by character id (unrolled ones are rolled).
 pub async fn keys_of(pool: &PgPool, account_id: Uuid) -> Result<HashMap<Uuid, KeyRow>, AppError> {
-    let rows: Vec<KeyColumns> = sqlx::query_as(
-        "SELECT character_id, dungeon_id, level, modifiers FROM game.dungeon_keys WHERE account_id = $1",
-    )
+    let rows: Vec<KeyColumns> = sqlx::query_as(&format!(
+        "SELECT {KEY_COLUMNS} FROM game.dungeon_keys WHERE account_id = $1"
+    ))
     .bind(account_id)
     .fetch_all(pool)
     .await
     .map_err(db)?;
-    Ok(rows.into_iter().map(|row| (row.0, key_row(row))).collect())
+    let mut keys = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let character_id = row.0;
+        let key = ensure_rolled(pool, account_id, character_id, key_row(row)).await?;
+        keys.insert(character_id, key);
+    }
+    Ok(keys)
 }
+
+/// The key change a downgrade makes: one level lower, only as many modifiers as that level
+/// carries.
+///
+/// # Errors
+///
+/// A conflict when the key is already at the dungeon's lowest level. A key is never
+/// downgraded below it and never deleted.
+pub fn plan_downgrade(
+    min_level: u32,
+    level: u32,
+    modifiers: &[KeyModifier],
+) -> Result<(u32, Vec<KeyModifier>), AppError> {
+    if level <= min_level.max(1) {
+        return Err(AppError::Conflict(
+            "Your key is already at its lowest level.".into(),
+        ));
+    }
+    Ok(crate::catalog()
+        .modifiers()
+        .downgrade(min_level, level, modifiers))
+}
+
+/// Downgrades a character's key one level, dropping the modifiers the lower level has no slot
+/// for. Free. `Ok(None)` if the character has no key of the account's.
+///
+/// # Errors
+///
+/// A conflict when the key is already at its dungeon's lowest level.
+pub async fn downgrade_key(
+    pool: &PgPool,
+    account_id: Uuid,
+    character_id: Uuid,
+) -> Result<Option<KeyRow>, AppError> {
+    let mut tx = pool.begin().await.map_err(db)?;
+    let row: Option<KeyColumns> = sqlx::query_as(&format!(
+        "SELECT {KEY_COLUMNS} FROM game.dungeon_keys
+         WHERE character_id = $1 AND account_id = $2 FOR UPDATE"
+    ))
+    .bind(character_id)
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut key = key_row(row);
+    let min_level = crate::catalog()
+        .dungeon(&key.dungeon_id)
+        .map_or(1, |dungeon| dungeon.keys.min_level);
+    // A key never rolled would have been rolled when the player looked at it: roll it first, so
+    // the downgrade keeps the modifiers they saw.
+    let current = if key.modifiers_rolled {
+        key.modifiers.clone()
+    } else {
+        roll_modifiers(key.level)
+    };
+    let (level, kept) = plan_downgrade(min_level, key.level, &current)?;
+    sqlx::query(
+        "UPDATE game.dungeon_keys SET level = $3, modifiers = $4, modifiers_rolled = true,
+            updated_at = now() WHERE character_id = $1 AND account_id = $2",
+    )
+    .bind(character_id)
+    .bind(account_id)
+    .bind(i32::try_from(level).unwrap_or(i32::MAX))
+    .bind(Json(&kept))
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+    tx.commit().await.map_err(db)?;
+    tracing::info!(account_id = %account_id, character_id = %character_id, from = key.level, to = level, "key downgraded");
+    key.level = level;
+    key.modifiers = kept;
+    key.modifiers_rolled = true;
+    Ok(Some(key))
+}
+
+/// Strips every modifier from a character's key for gold: all or nothing, in one transaction
+/// with the character row locked. `Ok(None)` if the character or its key is not the account's.
+///
+/// # Errors
+///
+/// A conflict when the key has no modifiers (nothing is charged) or the character holds too
+/// little gold.
+pub async fn cleanse_key(
+    pool: &PgPool,
+    account_id: Uuid,
+    character_id: Uuid,
+) -> Result<Option<KeyRow>, AppError> {
+    let mut tx = pool.begin().await.map_err(db)?;
+    // The character first, then its key: the order `apply_result` locks them in.
+    let stored: Option<Json<Loadout>> = sqlx::query_scalar(
+        "SELECT loadout FROM game.characters WHERE id = $1 AND account_id = $2 FOR UPDATE",
+    )
+    .bind(character_id)
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    let Some(Json(mut loadout)) = stored else {
+        return Ok(None);
+    };
+    let row: Option<KeyColumns> = sqlx::query_as(&format!(
+        "SELECT {KEY_COLUMNS} FROM game.dungeon_keys
+         WHERE character_id = $1 AND account_id = $2 FOR UPDATE"
+    ))
+    .bind(character_id)
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut key = key_row(row);
+    let current = if key.modifiers_rolled {
+        key.modifiers.clone()
+    } else {
+        roll_modifiers(key.level)
+    };
+    let rules = crate::catalog().modifiers();
+    let gold = loadout.resources.get(GOLD).copied().unwrap_or(0);
+    rules
+        .check_cleanse(&current, gold)
+        .map_err(|e| AppError::Conflict(e.message))?;
+    spend_resource(
+        &mut loadout,
+        GOLD,
+        u64::from(rules.config().cleanse_gold_cost),
+        "gold",
+    )
+    .map_err(|e| AppError::Conflict(e.to_string()))?;
+    sqlx::query("UPDATE game.characters SET loadout = $2, updated_at = now() WHERE id = $1")
+        .bind(character_id)
+        .bind(Json(&loadout))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query(
+        "UPDATE game.dungeon_keys SET modifiers = '[]'::jsonb, modifiers_rolled = true,
+            updated_at = now() WHERE character_id = $1 AND account_id = $2",
+    )
+    .bind(character_id)
+    .bind(account_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+    tx.commit().await.map_err(db)?;
+    tracing::info!(account_id = %account_id, character_id = %character_id, cost = rules.config().cleanse_gold_cost, "key cleansed");
+    key.modifiers = engine_realm::modifiers::cleanse(&current);
+    key.modifiers_rolled = true;
+    Ok(Some(key))
+}
+
+/// The resource a cleanse is paid in.
+const GOLD: &str = "gold";
 
 /// Replaces a character's loadout. `false` if it is not the account's.
 pub async fn save_loadout(
@@ -465,8 +695,9 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
     let recorded = sqlx::query(
         "INSERT INTO game.dungeon_results
             (result_id, account_id, character_id, dungeon_id, success, duration_us, experience,
-             key_level, key_owner, key_level_after, resources, talent_points)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             key_level, key_owner, key_level_after, resources, talent_points,
+             currency_spent, participant_key_bump, own_key_level)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          ON CONFLICT (result_id) DO NOTHING",
     )
     .bind(&result.result_id)
@@ -481,6 +712,9 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
     .bind(i32::try_from(result.key_level_after).unwrap_or(i32::MAX))
     .bind(Json(&result.resources))
     .bind(i32::try_from(granted_talent_points(result)).unwrap_or(i32::MAX))
+    .bind(Json(&result.currency_spent))
+    .bind(result.participant_key_bump)
+    .bind(i32::try_from(result.own_key_level).unwrap_or(i32::MAX))
     .execute(&mut *tx)
     .await
     .map_err(db)?;
@@ -503,6 +737,9 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
                 .iter()
                 .map(|(id, amount)| (id.clone(), u64::from(*amount)))
                 .collect();
+            // What the run cost the character (key rerolls) comes off first, whether or not the
+            // run succeeded, and never takes the balance below zero.
+            debit_resources(&mut loadout, &result.debits());
             // A failed run pays nothing, whatever the row carries.
             if result.success {
                 add_resources(&mut loadout, &gains);
@@ -529,18 +766,31 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-            if result.success && result.key_owner && result.key_level_after > result.key_level {
-                sqlx::query(
-                    "UPDATE game.dungeon_keys SET level = $3, updated_at = now()
-                     WHERE character_id = $1 AND account_id = $2 AND level = $4",
-                )
-                .bind(character_id)
-                .bind(account_id)
-                .bind(i32::try_from(result.key_level_after).unwrap_or(i32::MAX))
-                .bind(i32::try_from(result.key_level).unwrap_or(i32::MAX))
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
+            // The owner's key rises from the level the run used, a participant's from the level
+            // their own key had; the key moves only if it still has that level, so it can
+            // never rise twice for one run. A key whose level changes is rolled afresh.
+            if let Some(update) = result.key_update() {
+                let max_level = crate::catalog()
+                    .dungeon(&result.dungeon_id)
+                    .map_or(u32::MAX, |dungeon| dungeon.keys.max_level);
+                let new_level = update.new_level.min(max_level);
+                if new_level > update.expected_level {
+                    sqlx::query(
+                        "UPDATE game.dungeon_keys SET level = $3, modifiers = $4,
+                            modifiers_rolled = true, updated_at = now()
+                         WHERE character_id = $1 AND account_id = $2 AND level = $5
+                            AND dungeon_id = $6",
+                    )
+                    .bind(character_id)
+                    .bind(account_id)
+                    .bind(i32::try_from(new_level).unwrap_or(i32::MAX))
+                    .bind(Json(roll_modifiers(new_level)))
+                    .bind(i32::try_from(update.expected_level).unwrap_or(i32::MAX))
+                    .bind(&result.dungeon_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                }
             }
             if result.success {
                 sqlx::query(
@@ -724,6 +974,9 @@ mod tests {
             damage_report: report,
             talent_points: 0,
             looted: Vec::new(),
+            currency_spent: Vec::new(),
+            participant_key_bump: false,
+            own_key_level: 0,
         }
     }
 
@@ -766,7 +1019,10 @@ mod tests {
     fn a_completed_runs_report_becomes_a_row() {
         let row = damage_report_row(&result(true, Some(report()))).expect("a row");
         assert_eq!(row.instance_id, "12");
-        assert_eq!(row.class, "Fire Mage", "the player's own class, not the party's first");
+        assert_eq!(
+            row.class, "Fire Mage",
+            "the player's own class, not the party's first"
+        );
         assert_eq!(row.total_damage, 5000);
         assert_eq!(row.boss_kill_seconds, Some(20.0));
         assert_eq!(row.party.as_array().map(Vec::len), Some(2));
@@ -795,7 +1051,45 @@ mod tests {
     fn only_a_success_grants_talent_points_and_never_an_absurd_number() {
         assert_eq!(granted_talent_points(&result_with_points(true, 2)), 2);
         assert_eq!(granted_talent_points(&result_with_points(false, 2)), 0);
-        assert_eq!(granted_talent_points(&result_with_points(true, u32::MAX)), 10);
+        assert_eq!(
+            granted_talent_points(&result_with_points(true, u32::MAX)),
+            10
+        );
+    }
+
+    #[test]
+    fn a_downgrade_is_refused_at_the_minimum_and_otherwise_drops_the_extras() {
+        let mods = vec![
+            KeyModifier::base("rotating_beams"),
+            KeyModifier::base("plague_explosion"),
+        ];
+        let (level, kept) = plan_downgrade(1, 5, &mods).expect("5 to 4");
+        assert_eq!((level, kept.len()), (4, 1));
+        let (level, kept) = plan_downgrade(1, 3, &mods[..1]).expect("3 to 2");
+        assert_eq!((level, kept.len()), (2, 0));
+        for (min, level) in [(1, 1), (3, 3), (4, 3), (1, 0)] {
+            assert!(
+                matches!(
+                    plan_downgrade(min, level, &mods),
+                    Err(AppError::Conflict(_))
+                ),
+                "min {min} level {level}"
+            );
+        }
+    }
+
+    #[test]
+    fn rolled_modifiers_fit_the_level_and_differ_between_rolls() {
+        assert!(roll_modifiers(1).is_empty());
+        assert!(roll_modifiers(2).is_empty());
+        assert_eq!(roll_modifiers(3).len(), 1);
+        assert_eq!(roll_modifiers(5).len(), 2);
+        let seen: std::collections::HashSet<String> =
+            (0..40).map(|_| roll_modifiers(3)[0].id.clone()).collect();
+        assert!(
+            seen.len() > 1,
+            "an OS seed gives both modifiers over 40 rolls"
+        );
     }
 
     #[test]

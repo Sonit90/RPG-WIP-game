@@ -141,6 +141,19 @@ pub enum NetCommand {
     TransferLeader(String),
     /// Start the dungeon (leader).
     StartDungeon,
+    /// Reroll the key's `index`th modifier (in a running dungeon), paying with the caller's own
+    /// currency.
+    RerollModifier(u8),
+    /// Lower a character's key one level (hub only).
+    DowngradeKey {
+        /// Which character.
+        character_id: String,
+    },
+    /// Strip a character's key of its modifiers for gold (hub only).
+    CleanseKey {
+        /// Which character.
+        character_id: String,
+    },
     /// Insert the caller's own key into the party (while choosing the key).
     InsertKey,
     /// Take the caller's key back out (key owner, before the start).
@@ -201,6 +214,10 @@ pub enum Action {
     TransferLeader,
     /// Starting the dungeon.
     StartDungeon,
+    /// Rerolling a key modifier.
+    Reroll,
+    /// Downgrading or cleansing a key.
+    KeyChange,
     /// Inserting the key.
     InsertKey,
     /// Withdrawing the key.
@@ -622,6 +639,23 @@ impl Worker {
                     Ok(response) => self.emit(NetEvent::Enhanced(Box::new(response))),
                     Err(error) => self.fail(Action::Enhance, error),
                 }
+            }
+            NetCommand::DowngradeKey { character_id } => {
+                let Some(token) = self.access() else { return };
+                match self.api.downgrade_key(&token, &character_id) {
+                    Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
+                    Err(error) => self.fail(Action::KeyChange, error),
+                }
+            }
+            NetCommand::CleanseKey { character_id } => {
+                let Some(token) = self.access() else { return };
+                match self.api.cleanse_key(&token, &character_id) {
+                    Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
+                    Err(error) => self.fail(Action::KeyChange, error),
+                }
+            }
+            NetCommand::RerollModifier(index) => {
+                self.with_link(Action::Reroll, |link| link.modifier_reroll(index));
             }
             NetCommand::FetchEconomy => {
                 let Some(token) = self.access() else { return };

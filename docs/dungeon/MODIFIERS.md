@@ -20,9 +20,10 @@ modifiers.json ─► engine-realm::modifiers ─ roll / resolve / reroll / down
   Strength = `(1 + scaling_per_level * (level - introduced_at_level)) * (1 + magnitude_pct / 100)`.
 * `progression[]`: per key level `modifier_slots, health_mult, damage_mult`. It is the source of
   key-level monster scaling through `ModifierCatalog::key_scaling`; the dungeon's
-  `keys.health_per_level` stays as the fallback (the realm module still calls `key::scaling`
-  until it is switched over).
+  `keys.health_per_level` stays as the fallback (the realm module uses `key_scaling`).
 * `magnitude_limits`: the clamp for a key's total reroll magnitude (-50..+100).
+* `config`: `reroll_unlock_fraction` (0.5), `reroll_resource` (`aether_shard`), `reroll_cost` (1),
+  `max_rerolls_per_run` (1), `reroll_reward_bonus_pct` (25), `cleanse_gold_cost` (100).
 
 ## First two modifiers
 
@@ -45,10 +46,68 @@ Under remote authority nothing runs; `ModifierRuntime::observe` mirrors the even
 the server's clock to receipt) and presentation derives its floor indicators each frame
 (`TelegraphIndicators::sync_modifiers`). Dev: `--modifiers rotating_beams,plague_explosion:1.5`.
 
-## Not wired yet
+## Wiring (keys, party, instance, API)
 
-Key storage of `KeyModifier` (JSONB `dungeon_keys.modifiers`), rolling at key creation,
-`CombatInstance::set_modifiers` at instance build with `resolve`, the reroll / downgrade /
-cleanse reducers (use `reroll_outcome`, `apply_reroll`, `downgrade`, `cleanse`;
-`Simulation::dungeon_kill_progress` for the 50 % unlock), the key panel UI, switching the module
-to `key_scaling`.
+```text
+API: key created / level changes ─► roll_key_modifiers(level, OS seed) ─► dungeon_keys.modifiers
+POST /realm/queue ─► svc_enqueue(..., key_modifiers JSON) ─► ticket ─► party_member.key_modifiers
+                                     every member sees every key's modifiers (KeySelect, Party)
+party_start ─► instance.modifiers (the owner's key, sanitized) ─► resolve(level, mods)
+                 ─► CombatInstance::set_modifiers   + key_scaling from the progression table
+modifier_reroll(index) ─► plan_reroll ─► instance row + fight ─► notice + reveal ─► result
+```
+
+* **Storage.** `game.dungeon_keys.modifiers` (JSONB `[{"id","magnitude_pct"}]`) plus
+  `modifiers_rolled`. A key is rolled when it is created or its level changes (a run's
+  success raises it); an older key with `[]` at a level that has slots is rolled once, lazily,
+  when it is next read (`store::get_key` / `keys_of`, a compare-and-set on `modifiers_rolled`).
+  A cleansed key stays empty because the flag is already set. The seed is the OS RNG.
+* **Snapshot.** The API passes the key's modifiers to `svc_enqueue` (last argument); the realm
+  sanitizes them (unknown / repeated modifiers dropped, magnitude clamped, at most the level's
+  slots) and copies them to the ticket and the party member. Nothing is picked at random in the
+  realm: the inserted key's own modifiers are the instance's.
+* **Instance.** `dungeon_instance` carries `modifiers` (JSON, magnitudes after rerolls),
+  `rerolls`, `reward_bonus_pct`, `reroll_seq` and `last_reroll` (`RerollEvent`). The fight is
+  rebuilt from the row after a restart (`combat::apply_run_rules`). Monster health and damage
+  come from `ModifierCatalog::key_scaling` (the progression table), not `key::scaling`.
+  The admin snapshot lists the modifiers as `Plague Explosion +17%`.
+* **Reroll** (`modifier_reroll(index)`, any party member, on their own currency). Refused
+  unless the instance is `Active`, `dungeon_kill_progress` is at least
+  `config.reroll_unlock_fraction` (0.5), the run has a reroll left (`max_rerolls_per_run`, 1 for
+  the whole party), the modifier can move, and the caller holds `reroll_cost` (1) of
+  `reroll_resource` (`aether_shard`) beyond what they already spent this run. The balance is the
+  snapshot loadout's; the spend is the private `instance_spend` row (read through
+  `my_instance_spend`). The dice come from `ctx.random`, the result goes through
+  `reroll_outcome` + `apply_reroll`, the fight gets `set_modifiers(resolve(..))` (the floor
+  indicators restart; magnitudes change mid-run), and every member gets a notice
+  `<Name> rerolled <Modifier>: +17% (stronger)`. The instance row's `reroll_seq` tells the
+  clients to play the reveal: the client only animates "ROLLING... 60% Strengthen / 40% Weaken"
+  and then the server's result.
+* **Reward bonus.** A reroll sets `reward_bonus_pct = config.reroll_reward_bonus_pct` (25):
+  `CombatInstance::set_reward_bonus` forwards it to the simulation's loot rules and the run's
+  resource payout is scaled with `RunRewards::with_bonus` when the run succeeds. The Modifier
+  panel shows "+25% loot bonus active"; the completion panel shows the bonus.
+* **Currency.** The realm reports `pending_result.currency_spent` (`[["aether_shard",1]]`); the
+  API debits it in the result transaction (success or failure), saturating at zero, once per
+  `result_id`. A member who leaves, or an instance torn down before a result, still settles the
+  spend (`instance::settle_spend` writes a result with no rewards and no key change).
+* **Downgrade and cleanse** (hub only; both refuse with 409 while the account is queued, in a
+  party or in an instance, like equipment): `POST /characters/{id}/key/downgrade` lowers the
+  key one level (never below the dungeon's minimum, never deleted) and drops the modifiers the
+  lower level has no slot for; `POST /characters/{id}/key/cleanse` removes every modifier for
+  `config.cleanse_gold_cost` gold, all or nothing in one transaction, refused when the key has
+  none (no charge) or the character has too little gold. Both answer with the character.
+* **Participant progression.** On a success the realm flags every member who did not open the
+  run and whose own key (same dungeon) was lower than the key used
+  (`key::participant_progress`); the result carries `participant_key_bump` and `own_key_level`
+  and the API raises that key by one, rolled afresh, with a compare-and-set on `own_key_level`
+  (`DungeonResult::key_update`), so it rises once per run.
+* **Interface.** The Modifier panel (`ui::modifiers`, key `K` or the KEY button beside Recount)
+  lists the modifiers with icon, name, description and magnitude, the cleared share of the
+  dungeon, the unlock, the cost and the player's balance, and Reroll buttons. Key selection
+  ("Available Keys") lists every member's key with its modifiers and an Insert button on the
+  player's own row; the Party panel shows the inserted key's modifiers; the hub has a key panel
+  with Downgrade and Cleanse buttons, each asking for confirmation. Sounds: `ModifierReroll`
+  (tick), `ModifierResult` / `ModifierResultWeak` (stingers).
+* **Operator hooks** (owner only, for `realm-bot scenario modifiers`): `admin_clear_dungeon
+  (instance, percent)` and `admin_grant_spend(instance, account, balance)`.

@@ -19,6 +19,11 @@ pub struct DungeonInstance {
     pub barrier_open: bool,
     pub created_at: __sdk::Timestamp,
     pub finished_at: Option<__sdk::Timestamp>,
+    pub modifiers: String,
+    pub rerolls: u32,
+    pub reward_bonus_pct: u32,
+    pub reroll_seq: u32,
+    pub last_reroll: String,
 }
 
 impl __sdk::InModule for DungeonInstance {
@@ -39,6 +44,11 @@ pub struct DungeonInstanceCols {
     pub barrier_open: __sdk::__query_builder::Col<DungeonInstance, bool>,
     pub created_at: __sdk::__query_builder::Col<DungeonInstance, __sdk::Timestamp>,
     pub finished_at: __sdk::__query_builder::Col<DungeonInstance, Option<__sdk::Timestamp>>,
+    pub modifiers: __sdk::__query_builder::Col<DungeonInstance, String>,
+    pub rerolls: __sdk::__query_builder::Col<DungeonInstance, u32>,
+    pub reward_bonus_pct: __sdk::__query_builder::Col<DungeonInstance, u32>,
+    pub reroll_seq: __sdk::__query_builder::Col<DungeonInstance, u32>,
+    pub last_reroll: __sdk::__query_builder::Col<DungeonInstance, String>,
 }
 
 impl __sdk::__query_builder::HasCols for DungeonInstance {
@@ -55,6 +65,11 @@ impl __sdk::__query_builder::HasCols for DungeonInstance {
             barrier_open: __sdk::__query_builder::Col::new(table_name, "barrier_open"),
             created_at: __sdk::__query_builder::Col::new(table_name, "created_at"),
             finished_at: __sdk::__query_builder::Col::new(table_name, "finished_at"),
+            modifiers: __sdk::__query_builder::Col::new(table_name, "modifiers"),
+            rerolls: __sdk::__query_builder::Col::new(table_name, "rerolls"),
+            reward_bonus_pct: __sdk::__query_builder::Col::new(table_name, "reward_bonus_pct"),
+            reroll_seq: __sdk::__query_builder::Col::new(table_name, "reroll_seq"),
+            last_reroll: __sdk::__query_builder::Col::new(table_name, "last_reroll"),
         }
     }
 }

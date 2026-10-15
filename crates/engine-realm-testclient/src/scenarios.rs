@@ -622,7 +622,7 @@ pub fn security(endpoints: &RealmEndpoints) -> Outcome {
         endpoints,
         &token,
         "svc_enqueue",
-        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "{}", "graveyard_crypt", {"tank": []}, "graveyard_crypt", 1, "[]", 0]),
+        &serde_json::json!([account, "fake-character", "Cheater", "warrior", 60, 99999, "{}", "graveyard_crypt", {"tank": []}, "graveyard_crypt", 1, "[]", 0, "[]"]),
     );
     check(
         module_refused(status),
@@ -1555,5 +1555,228 @@ pub fn loot(endpoints: &RealmEndpoints) -> Outcome {
         after == snapshot,
         "loot and gold are delivered exactly once",
     )?;
+    Ok(())
+}
+
+/// Calls an owner-only reducer through the `spacetime` CLI (set `SPACETIME_CLI` if it is not
+/// on PATH).
+fn admin_call(endpoints: &RealmEndpoints, function: &str, args: &[String]) -> Outcome {
+    let cli = std::env::var("SPACETIME_CLI").unwrap_or_else(|_| "spacetime".into());
+    let output = std::process::Command::new(&cli)
+        .args([
+            "call",
+            "--server",
+            &endpoints.spacetimedb_url,
+            &endpoints.spacetimedb_database,
+            function,
+        ])
+        .args(args)
+        .output()
+        .map_err(|e| format!("could not run {cli}: {e}"))?;
+    check(
+        output.status.success(),
+        &format!("the owner called {function}"),
+    )
+}
+
+/// Wins the current run (admin finish), waits for the keys to be saved, and sends everyone back
+/// to the hub; the bots then queue again by themselves.
+fn win_and_requeue(bots: &mut [Bot], endpoints: &RealmEndpoints) -> Outcome {
+    let instance = bots[0]
+        .mirror
+        .instance
+        .as_ref()
+        .map(|i| i.id)
+        .ok_or("no instance")?;
+    let before = key_level_of(&bots[0]);
+    finish_instance(endpoints, instance, true)?;
+    let done = drive(bots, Duration::from_secs(5), |bots| {
+        bots.iter().all(|b| b.mirror.run_summary.is_some())
+    });
+    check(done, "the run completed and every client has its summary")?;
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        refetch(bots, Duration::from_millis(800));
+        if key_level_of(&bots[0]) > before {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("FAILED: the run's key progression was not persisted".into());
+        }
+    }
+    for bot in bots.iter() {
+        bot.send(NetCommand::LeaveParty);
+    }
+    let left = drive(bots, Duration::from_secs(5), |bots| {
+        bots.iter()
+            .all(|b| b.mirror.party.is_none() && b.mirror.instance.is_none())
+    });
+    check(left, "everyone left the finished run")
+}
+
+/// Key modifiers end to end: keys that carry modifiers, shown to the whole party before the
+/// start; the reroll refused before half the dungeon is dead and after the run's one; the
+/// currency and the reward bonus; participants' keys rising with the run.
+///
+/// Needs the realm owner's `spacetime` CLI (like `results`): it clears half the dungeon with
+/// `admin_clear_dungeon` and grants the reroll currency with `admin_grant_spend`.
+pub fn modifiers(endpoints: &RealmEndpoints) -> Outcome {
+    log::info!("scenario: modifiers");
+    let tag = run_tag();
+    let mut bots = trio(&tag, "mods", endpoints, false, true)?;
+    // Two wins take the tank's key from level 1 to 3 (the first level with a modifier) and, as
+    // participants, lift the others' keys from 1 to 2 (the second run used a level above theirs).
+    for run in 0..2 {
+        let active = drive(&mut bots, Duration::from_secs(60), all_active);
+        check(active, &format!("run {} became active", run + 1))?;
+        win_and_requeue(&mut bots, endpoints)?;
+    }
+    check(
+        key_level_of(&bots[0]) == 3,
+        "the owner's key reached level 3",
+    )?;
+    check(
+        bots[0]
+            .character()
+            .and_then(|c| c.key.as_ref())
+            .is_some_and(|key| key.modifiers.len() == 1),
+        "a level 3 key carries one modifier, rolled and stored by the API",
+    )?;
+    check(
+        bots[1..].iter().all(|b| key_level_of(b) == 2),
+        "a participant whose key was lower than the one used rose one level, once",
+    )?;
+
+    // The new party: every member sees the tank's key and its modifier before anything starts.
+    let seen = drive(&mut bots, Duration::from_secs(60), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .members
+                .iter()
+                .any(|m| m.key_level == 3 && m.key_modifiers.len() == 1)
+        })
+    });
+    check(
+        seen,
+        "every member sees the tank's key and its modifiers before the start",
+    )?;
+    let active = drive(&mut bots, Duration::from_secs(60), all_active);
+    check(active, "the third run became active")?;
+    let instance = bots[0].mirror.instance.clone().ok_or("no instance")?;
+    check(
+        instance.modifiers.len() == 1 && instance.rerolls == 0 && instance.reward_bonus_pct == 0,
+        "the instance carries the inserted key's modifier, unrolled and with no bonus",
+    )?;
+
+    // Before half the dungeon is dead the reroll is refused.
+    let failures = bots[1].failures.len();
+    bots[1].send(NetCommand::RerollModifier(0));
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    check(
+        bots[1].failures.len() > failures
+            && refused(&bots[1], Action::Reroll) == Some(ErrorCategory::Dungeon),
+        "a reroll before half the dungeon is cleared is refused",
+    )?;
+
+    // Half the dungeon dies; without currency the reroll is still refused.
+    admin_call(
+        endpoints,
+        "admin_clear_dungeon",
+        &[instance.id.to_string(), "50".into()],
+    )?;
+    let unlocked = drive(&mut bots, Duration::from_secs(10), |bots| {
+        let (mut killed, mut total) = (0u32, 0u32);
+        for m in bots[1].mirror.monsters.values() {
+            if m.key >= engine_realm::combat::instance::SUMMONED_KEY_BASE {
+                continue;
+            }
+            total += 1;
+            killed += u32::from(!m.alive);
+        }
+        total > 0 && killed * 2 >= total
+    });
+    check(unlocked, "half the placed monsters are dead on the clients")?;
+    let failures = bots[1].failures.len();
+    bots[1].send(NetCommand::RerollModifier(0));
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    check(
+        bots[1].failures.len() > failures,
+        "a reroll without the currency is refused",
+    )?;
+
+    // With currency it works once: the server rolls, everyone is told, the bonus is set.
+    let healer = bots[1]
+        .session
+        .as_ref()
+        .map(|s| s.account_id.clone())
+        .ok_or("no session")?;
+    admin_call(
+        endpoints,
+        "admin_grant_spend",
+        &[instance.id.to_string(), healer, "3".into()],
+    )?;
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    bots[1].send(NetCommand::RerollModifier(0));
+    let rerolled = drive(&mut bots, Duration::from_secs(5), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .instance
+                .as_ref()
+                .is_some_and(|i| i.rerolls == 1 && i.last_reroll.is_some())
+        })
+    });
+    check(
+        rerolled,
+        "the reroll happened and every client saw its result",
+    )?;
+    let after = bots[0].mirror.instance.clone().ok_or("no instance")?;
+    check(
+        after.reward_bonus_pct == 25,
+        "a reroll sets the +25% reward bonus for the run",
+    )?;
+    check(
+        after.last_reroll.as_ref().is_some_and(|r| {
+            r.delta_pct != 0 && r.magnitude_pct == after.modifiers[0].magnitude_pct
+        }),
+        "the instance's modifier carries the rolled magnitude the clients animate",
+    )?;
+    check(
+        bots[1].mirror.spend.as_ref().is_some_and(|s| s.spent == 1),
+        "the roller's spend row says one currency was spent",
+    )?;
+    check(
+        bots.iter().all(|b| {
+            b.mirror
+                .notices
+                .iter()
+                .any(|n| n.code == "modifier_rerolled")
+        }),
+        "the whole party got the reroll notice",
+    )?;
+    let failures = bots[2].failures.len();
+    bots[2].send(NetCommand::RerollModifier(0));
+    drive(&mut bots, Duration::from_secs(2), |_| false);
+    check(
+        bots[2].failures.len() > failures,
+        "a second reroll in the same run is refused",
+    )?;
+
+    // Winning pays; the participants' keys rise again.
+    win_and_requeue(&mut bots, endpoints)?;
+    check(
+        key_level_of(&bots[0]) == 4,
+        "the owner's key rose to level 4",
+    )?;
+    check(
+        bots[1..].iter().all(|b| key_level_of(b) == 3),
+        "the participants' keys rose to 3 with the run",
+    )?;
+    for bot in &mut bots {
+        bot.config.queue = false;
+        bot.send(NetCommand::LeaveParty);
+    }
+    drive(&mut bots, Duration::from_secs(3), |bots| {
+        bots.iter().all(|b| b.mirror.party.is_none())
+    });
     Ok(())
 }

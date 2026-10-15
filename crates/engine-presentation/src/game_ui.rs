@@ -2294,6 +2294,40 @@ impl GameUi {
         )
     }
 
+    /// Where the Modifier button sits: beside the Recount button, further left.
+    #[must_use]
+    pub fn modifier_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let recount = self.recount_button_rect(viewport);
+        UiRect::new(
+            recount.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            recount.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// The Modifier button, which opens the key's modifiers and the reroll. Drawn only while the
+    /// player is in a dungeon run (the application decides), lit while a reroll is available.
+    pub fn push_modifier_button(&mut self, viewport: (u32, u32), ready: bool) {
+        let rect = self.modifier_button_rect(viewport);
+        self.list.rect(rect, self.theme.panel);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            if ready {
+                self.theme.slot_empowered
+            } else {
+                self.theme.target_outline
+            },
+        );
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "KEY", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "K", self.theme.target_outline, 1.5, align);
+    }
+
     /// The Recount button, which opens the combat statistics window.
     pub fn push_recount_button(&mut self, viewport: (u32, u32)) {
         let rect = self.recount_button_rect(viewport);

@@ -42,6 +42,33 @@ pub fn progress(rules: &KeyRules, level: u32, success: bool) -> u32 {
     next.clamp(rules.min_level, rules.max_level)
 }
 
+/// A party member's own key after a run they did not open: one level up, once, when the run
+/// was a success and the key they brought was lower than the one used.
+///
+/// `None` for the owner (their key follows [`progress`]), for a failed run, for a member whose
+/// key is already as high as the used one, and for a snapshot with no valid key
+/// (`own_level` outside the rules). The result is within the rules whatever came in. The
+/// persistence API applies it with a compare-and-set on `own_level`, so a key never rises
+/// twice for one run.
+#[must_use]
+pub fn participant_progress(
+    rules: &KeyRules,
+    used_level: u32,
+    own_level: u32,
+    success: bool,
+    is_owner: bool,
+) -> Option<u32> {
+    if !success
+        || is_owner
+        || own_level < rules.min_level
+        || own_level > rules.max_level
+        || own_level >= used_level
+    {
+        return None;
+    }
+    Some(progress(rules, own_level, true))
+}
+
 /// Whether a key for `key_dungeon_id` at `level` may be used in `dungeon`.
 ///
 /// # Errors
@@ -102,6 +129,21 @@ mod tests {
         assert_eq!(progress(&rules, 0, true), rules.min_level);
         assert_eq!(progress(&rules, 999, false), rules.max_level);
         assert_eq!(progress(&rules, u32::MAX, true), rules.max_level);
+    }
+
+    #[test]
+    fn a_participant_with_a_lower_key_rises_one_level_on_success_only() {
+        let rules = crypt().keys;
+        assert_eq!(participant_progress(&rules, 5, 2, true, false), Some(3));
+        assert_eq!(participant_progress(&rules, 5, 4, true, false), Some(5));
+        // Equal or higher keys, the owner and failures stay put.
+        assert_eq!(participant_progress(&rules, 5, 5, true, false), None);
+        assert_eq!(participant_progress(&rules, 5, 9, true, false), None);
+        assert_eq!(participant_progress(&rules, 5, 2, true, true), None);
+        assert_eq!(participant_progress(&rules, 5, 2, false, false), None);
+        // No key (level 0) or an impossible one earns nothing.
+        assert_eq!(participant_progress(&rules, 5, 0, true, false), None);
+        assert_eq!(participant_progress(&rules, 99, 999, true, false), None);
     }
 
     #[test]

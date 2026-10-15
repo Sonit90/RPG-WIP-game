@@ -23,6 +23,9 @@ pub struct PendingResult {
     pub damage_report: String,
     pub talent_points: u32,
     pub looted: String,
+    pub currency_spent: String,
+    pub participant_key_bump: bool,
+    pub own_key_level: u32,
 }
 
 impl __sdk::InModule for PendingResult {
@@ -49,6 +52,9 @@ pub struct PendingResultCols {
     pub damage_report: __sdk::__query_builder::Col<PendingResult, String>,
     pub talent_points: __sdk::__query_builder::Col<PendingResult, u32>,
     pub looted: __sdk::__query_builder::Col<PendingResult, String>,
+    pub currency_spent: __sdk::__query_builder::Col<PendingResult, String>,
+    pub participant_key_bump: __sdk::__query_builder::Col<PendingResult, bool>,
+    pub own_key_level: __sdk::__query_builder::Col<PendingResult, u32>,
 }
 
 impl __sdk::__query_builder::HasCols for PendingResult {
@@ -71,6 +77,12 @@ impl __sdk::__query_builder::HasCols for PendingResult {
             damage_report: __sdk::__query_builder::Col::new(table_name, "damage_report"),
             talent_points: __sdk::__query_builder::Col::new(table_name, "talent_points"),
             looted: __sdk::__query_builder::Col::new(table_name, "looted"),
+            currency_spent: __sdk::__query_builder::Col::new(table_name, "currency_spent"),
+            participant_key_bump: __sdk::__query_builder::Col::new(
+                table_name,
+                "participant_key_bump",
+            ),
+            own_key_level: __sdk::__query_builder::Col::new(table_name, "own_key_level"),
         }
     }
 }

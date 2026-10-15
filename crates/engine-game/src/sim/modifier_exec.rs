@@ -76,6 +76,29 @@ impl Simulation {
         (killed, total)
     }
 
+    /// Slays living placed monsters (never the boss, never summons) until `fraction` of them
+    /// are dead, and returns how many it slew. An operator and test tool: the realm's
+    /// `admin_clear_dungeon` uses it to reach the reroll's unlock without playing half a dungeon.
+    pub fn slay_placed_until(&mut self, fraction: f32) -> u32 {
+        let (killed, total) = self.dungeon_kill_progress();
+        let wanted = (total as f32 * fraction.clamp(0.0, 1.0)).ceil() as u32;
+        let mut to_slay = Vec::new();
+        for encounter in &self.encounters {
+            let placed = encounter.len().saturating_sub(encounter.summon_count());
+            for member in &encounter.members()[..placed] {
+                if !self.is_boss_entity(*member) && self.world.is_alive(*member) {
+                    to_slay.push(*member);
+                }
+            }
+        }
+        let count = wanted.saturating_sub(killed) as usize;
+        let slain = count.min(to_slay.len());
+        for entity in to_slay.into_iter().take(slain) {
+            self.slay(entity);
+        }
+        slain as u32
+    }
+
     /// Whether `entity` is the dungeon's boss, or any boss-tier monster.
     fn is_boss_entity(&self, entity: EntityId) -> bool {
         // The enemy table is out during the AI's own step, so the dungeon's rules answer

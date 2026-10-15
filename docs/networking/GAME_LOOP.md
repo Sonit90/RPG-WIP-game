@@ -57,7 +57,7 @@ game.dungeon_keys (
   account_id   UUID NOT NULL,
   dungeon_id   TEXT NOT NULL,
   level        INT  NOT NULL CHECK (level >= 1),
-  modifiers    JSONB NOT NULL DEFAULT '[]',   -- reserved for the modifier ticket; always [] in P0
+  modifiers    JSONB NOT NULL DEFAULT '[]',   -- rolled key modifiers (0010 adds modifiers_rolled)
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 )
 ```
@@ -67,8 +67,8 @@ characters) for the first dungeon in the catalog at the dungeon's `keys.min_leve
 
 ### Snapshot
 
-`POST /realm/queue` reads the character's key and passes `(key_dungeon_id, key_level)` to
-`svc_enqueue` (empty / 0 when the character has no key). The realm copies it to the ticket and
+`POST /realm/queue` reads the character's key and passes `(key_dungeon_id, key_level)` and its
+modifiers to `svc_enqueue` (empty / 0 / `[]` when the character has no key). The realm copies it to the ticket and
 party member. A client never sends a key level.
 
 ### Party: `ChoosingKey`
@@ -105,12 +105,16 @@ Catalog (`assets/catalog/dungeons.json`, per dungeon):
              "resources": [ { "id": "crypt_dust", "amount": 5, "per_level": 2 } ] }
 ```
 
-* Monster health × `1 + health_per_level × (level − 1)`, damage × `1 + damage_per_level ×
-  (level − 1)`, on top of the party-size scaling (`DungeonScaling` gains a key factor).
+* Monster health and damage are multiplied by the key level's row of the modifier progression
+  table (`ModifierCatalog::key_scaling`; `health_per_level` / `damage_per_level` above are the
+  fallback), on top of the party-size scaling (`DungeonScaling` gains a key factor).
 * Rewards (`engine_realm::rewards::run_rewards`): on success experience and each resource scale
   linearly with level; on failure nothing.
 * Progression (`engine_realm::key::progress`): success → owner's key `level + 1` (capped at
-  `max_level`); failure → unchanged. Never below `min_level`.
+  `max_level`); failure → unchanged. Never below `min_level`. Every other participant whose own
+  key is lower than the key used also rises one level (`key::participant_progress`), and a key
+  whose level changes is rolled afresh. Modifiers, rerolls, downgrade and cleanse:
+  `docs/dungeon/MODIFIERS.md`.
 
 ### Exactly once
 
@@ -119,7 +123,9 @@ fields: `key_level` (used), `key_owner` (bool), `key_level_after`. The API appli
 one transaction keyed by `result_id`: experience, completion, resources into the loadout, and
 — for the owner on success — `UPDATE dungeon_keys SET level = key_level_after WHERE
 character_id = … AND level = key_level`. A re-delivered result is a no-op (idempotency key),
-and the `level = key_level` guard means a key can never advance twice for one run.
+and the `level = key_level` guard means a key can never advance twice for one run. A participant's
+bump uses `own_key_level` as its guard, and `currency_spent` (key rerolls) is debited in the same
+transaction, never below zero.
 
 ## Resources, salvage, exchange
 

@@ -57,6 +57,7 @@ pub fn svc_enqueue(
     key_level: u32,
     talents: String,
     talent_points: u32,
+    key_modifiers: String,
 ) -> Result<(), String> {
     let config = require_service(ctx)?;
     let identity = player_identity(&config, &account_id);
@@ -115,6 +116,12 @@ pub fn svc_enqueue(
             role,
             key_dungeon_id,
             key_level,
+            // Made safe once, here: what the party and the fight read has only modifiers the
+            // catalog knows, within the limits and the key level's slots.
+            key_modifiers: engine_realm::modifiers::encode_modifiers(&catalog.modifiers().sanitize(
+                key_level,
+                &engine_realm::modifiers::decode_modifiers(&key_modifiers),
+            )),
             enqueued_at: ctx.timestamp,
             status: TicketStatus::Searching,
             party_id: None,

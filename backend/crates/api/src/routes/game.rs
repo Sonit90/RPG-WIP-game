@@ -11,13 +11,15 @@
 //! | `POST /characters/{id}/exchange` | trade resources at a catalog rate |
 //! | `POST /characters/{id}/enhance` | one enhancement attempt: the server rolls, the locked row pays |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
+//! | `POST /characters/{id}/key/downgrade` | key one level lower, extra modifiers dropped (hub only) |
+//! | `POST /characters/{id}/key/cleanse` | strip a key's modifiers for gold (hub only) |
 //! | `PUT  /characters/{id}/talents` | replace talents: keys, points and the engagement lock checked |
 //! | `GET  /player/settings` | the account's synced settings |
 //! | `PUT  /player/settings` | save them, with optimistic versioning |
 //! | `POST /realm/queue` | queue a character: ownership, role and gear checked here |
 //!
-//! Talents and equipment (move, salvage, taking mail) are **locked while the character is
-//! engaged** - queued, in a party, in an instance - because the realm holds a snapshot of
+//! Talents, equipment (move, salvage, taking mail) and the key (downgrade, cleanse) are **locked
+//! while the character is engaged** - queued, in a party, in an instance - because the realm holds a snapshot of
 //! them for the run. The API asks the realm (`svc_engagement`) before each such change and
 //! answers 409 when it is engaged; if the realm cannot be asked, the change is refused too.
 //!
@@ -56,6 +58,8 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/exchange", post(exchange))
         .route("/characters/{id}/enhance", post(enhance))
         .route("/economy", get(get_economy))
+        .route("/characters/{id}/key/downgrade", post(downgrade_key))
+        .route("/characters/{id}/key/cleanse", post(cleanse_key))
         .route("/characters/{id}/talents", put(save_talents))
         .route("/player/settings", get(get_settings).put(put_settings))
         .route("/realm/queue", post(queue))
@@ -352,6 +356,54 @@ fn economy_error(error: engine_realm::economy::EconomyError) -> AppError {
     }
 }
 
+/// Downgrades the character's key one level (free), dropping modifiers the lower level has no
+/// slot for. Hub only: refused while the character is queued, in a party or in a dungeon, because
+/// the realm holds a snapshot of the key. Answers with the character.
+async fn downgrade_key(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<CharacterDetail>> {
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let row = owned(&state, &user, &id).await?;
+    ensure_unlocked(&state, &user).await?;
+    store::downgrade_key(&state.db, user.user_id, row.id)
+        .await
+        .map_err(ApiError)?
+        .ok_or(ApiError(AppError::NotFound))?;
+    let row = owned(&state, &user, &id).await?;
+    detail_of(&state, &user, &row).await
+}
+
+/// Strips the key's modifiers for gold: all or nothing, hub only. Answers with the character.
+async fn cleanse_key(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<CharacterDetail>> {
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let row = owned(&state, &user, &id).await?;
+    ensure_unlocked(&state, &user).await?;
+    store::cleanse_key(&state.db, user.user_id, row.id)
+        .await
+        .map_err(ApiError)?
+        .ok_or(ApiError(AppError::NotFound))?;
+    let row = owned(&state, &user, &id).await?;
+    detail_of(&state, &user, &row).await
+}
+
 async fn get_economy(_user: AuthUser) -> Json<EconomyInfo> {
     let economy = realm_game::catalog().economy();
     Json(EconomyInfo {
@@ -546,6 +598,10 @@ async fn queue(
             .map(|key| key.dungeon_id.clone())
             .unwrap_or_default(),
         key_level: key.as_ref().map_or(0, |key| key.level),
+        key_modifiers: key
+            .as_ref()
+            .map(|key| key.modifiers.clone())
+            .unwrap_or_default(),
         talents: row.talents.0.clone(),
         talent_points: engine_realm::talents::total_points(characters::earned_points(&row)),
     };

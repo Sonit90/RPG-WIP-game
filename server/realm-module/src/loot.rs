@@ -318,6 +318,9 @@ pub fn close_run(ctx: &ReducerContext, instance: &DungeonInstance) {
                 damage_report: String::new(),
                 talent_points: 0,
                 looted: haul::encode_currencies(&currencies),
+                currency_spent: "[]".to_owned(),
+                participant_key_bump: false,
+                own_key_level: 0,
             });
         }
         ctx.db.run_loot().key().delete(&row.key);

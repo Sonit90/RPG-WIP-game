@@ -54,6 +54,7 @@ pub fn summary(row: &CharacterRow, key: Option<&KeyRow>) -> CharacterSummary {
                 .dungeon(&key.dungeon_id)
                 .map_or_else(|| key.dungeon_id.clone(), |dungeon| dungeon.name.clone()),
             level: key.level,
+            modifiers: key.modifiers.clone(),
         }),
         // A BTreeMap: already sorted by id.
         resources: row

@@ -23,17 +23,18 @@ use spacetimedb_sdk::{DbContext, Table, TableWithPrimaryKey};
 use crate::bindings::{
     self as b, DbConnection, MyAccountTableAccess, MyChatTableAccess, MyCombatBatchesTableAccess,
     MyInstanceMeterTableAccess, MyInstanceMonstersTableAccess, MyInstancePlayersTableAccess,
-    MyInstanceTableAccess, MyNoticesTableAccess, MyPartyMembersTableAccess, MyPartyTableAccess,
-    MyPlayerCombatTableAccess, MyRunSummaryTableAccess, MyTicketTableAccess,
-    QueuePopulationTableAccess, chat_send, combat_act, dismiss_notice, move_input,
-    party_insert_key, party_kick, party_leave, party_start, party_transfer_leader,
-    party_withdraw_key, queue_leave, ready_check_respond, server_time,
+    MyInstanceSpendTableAccess, MyInstanceTableAccess, MyNoticesTableAccess,
+    MyPartyMembersTableAccess, MyPartyTableAccess, MyPlayerCombatTableAccess,
+    MyRunSummaryTableAccess, MyTicketTableAccess, QueuePopulationTableAccess, chat_send,
+    combat_act, dismiss_notice, modifier_reroll, move_input, party_insert_key, party_kick,
+    party_leave, party_start, party_transfer_leader, party_withdraw_key, queue_leave,
+    ready_check_respond, server_time,
 };
 use crate::config::RealmEndpoints;
 use crate::model::{
     AccountInfo, ChatMessageInfo, InstanceInfo, MemberInfo, MonsterInfo, Notice, NoticeLevel,
     PartyInfo, PlayerCombatInfo, Population, RealmMirror, RealmUpdate, RemotePlayerState,
-    RunSummaryInfo, TicketInfo,
+    RunSummaryInfo, SpendInfo, TicketInfo,
 };
 use crate::session::{Action, NetEvent, WorkerMessage};
 
@@ -60,7 +61,7 @@ pub enum LinkSignal {
 }
 
 /// Every view the client subscribes to.
-const QUERIES: [&str; 14] = [
+const QUERIES: [&str; 15] = [
     "SELECT * FROM my_account",
     "SELECT * FROM my_ticket",
     "SELECT * FROM my_party",
@@ -75,6 +76,7 @@ const QUERIES: [&str; 14] = [
     "SELECT * FROM my_run_summary",
     "SELECT * FROM my_chat",
     "SELECT * FROM my_instance_meter",
+    "SELECT * FROM my_instance_spend",
 ];
 
 /// An open realm connection.
@@ -332,6 +334,18 @@ impl RealmLink {
         self.report_send(Action::WithdrawKey, sent);
     }
 
+    /// Rerolls the key's `index`th modifier, paying with the caller's own currency.
+    pub fn modifier_reroll(&self, index: u8) {
+        let events = self.events.clone();
+        let sent = self
+            .connection
+            .reducers
+            .modifier_reroll_then(index, move |_, outcome| {
+                report(&events, Action::Reroll, outcome);
+            });
+        self.report_send(Action::Reroll, sent);
+    }
+
     /// Says something. The server names the sender; `target` is a whisper's character name.
     pub fn send_chat(&self, channel: Channel, target: String, text: String) {
         let events = self.events.clone();
@@ -416,6 +430,9 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
     whole_view!(my_instance, |db: &b::RemoteTables| RealmUpdate::Instance(
         db.my_instance().iter().next().map(instance)
     ));
+    whole_view!(my_instance_spend, |db: &b::RemoteTables| {
+        RealmUpdate::Spend(db.my_instance_spend().iter().next().map(spend))
+    });
     whole_view!(my_party_members, |db: &b::RemoteTables| {
         RealmUpdate::Members(db.my_party_members().iter().map(member).collect())
     });
@@ -564,6 +581,7 @@ fn snapshot(db: &b::RemoteTables) -> RealmMirror {
             members
         },
         instance: db.my_instance().iter().next().map(instance),
+        spend: db.my_instance_spend().iter().next().map(spend),
         players: db
             .my_instance_players()
             .iter()
@@ -701,6 +719,7 @@ fn member(row: b::PartyMember) -> MemberInfo {
         gear_score: row.gear_score,
         key_dungeon_id: row.key_dungeon_id,
         key_level: row.key_level,
+        key_modifiers: engine_realm::modifiers::decode_modifiers(&row.key_modifiers),
         ready: match row.ready {
             b::ReadyTag::Pending => ReadyResponse::Pending,
             b::ReadyTag::Accepted => ReadyResponse::Accepted,
@@ -762,6 +781,19 @@ fn instance(row: b::DungeonInstance) -> InstanceInfo {
         },
         countdown_ends_at: row.countdown_ends_at.map(micros),
         barrier_open: row.barrier_open,
+        key_level: row.key_level,
+        modifiers: engine_realm::modifiers::decode_modifiers(&row.modifiers),
+        rerolls: row.rerolls,
+        reward_bonus_pct: row.reward_bonus_pct,
+        last_reroll: engine_realm::modifiers::RerollEvent::from_json(&row.last_reroll),
+    }
+}
+
+fn spend(row: b::InstanceSpend) -> SpendInfo {
+    SpendInfo {
+        resource: row.resource,
+        balance: row.balance,
+        spent: row.spent,
     }
 }
 
