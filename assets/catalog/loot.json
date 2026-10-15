@@ -257,6 +257,46 @@
         "haste": 9,
         "spirit": 4
       }
+    },
+    {
+      "id": "wardens_rallying_bell",
+      "name": "Warden's Rallying Bell",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket_ward",
+      "stats": { "stamina": 5, "versatility": 3 },
+      "active": { "effect": "group_damage_reduction", "cooldown_s": 120, "radius_m": 30, "duration_s": 8, "magnitude": 0.15 }
+    },
+    {
+      "id": "censer_of_cleansing_ash",
+      "name": "Censer of Cleansing Ash",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket_dispel",
+      "stats": { "spirit": 4, "main_stat": 3 },
+      "active": { "effect": "mass_dispel", "cooldown_s": 90, "radius_m": 12 }
+    },
+    {
+      "id": "hourglass_of_the_patient_dead",
+      "name": "Hourglass of the Patient Dead",
+      "slot": "trinket",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "trinket_haste",
+      "stats": { "haste": 6, "main_stat": 5 },
+      "active": { "effect": "group_cooldown_reduction", "cooldown_s": 120, "radius_m": 30, "magnitude": 0.10 }
+    },
+    {
+      "id": "aegis_of_the_last_vigil",
+      "name": "Aegis of the Last Vigil",
+      "slot": "trinket",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "trinket_absorb",
+      "stats": { "stamina": 8, "versatility": 5 },
+      "active": { "effect": "group_absorb", "cooldown_s": 120, "radius_m": 30, "duration_s": 10, "magnitude": 0.20 }
     }
   ],
   "boss_tables": {
@@ -340,7 +380,11 @@
       {
         "item": "heart_of_the_crypt",
         "weight": 10
-      }
+      },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 }
     ]
   },
   "mob_table": {

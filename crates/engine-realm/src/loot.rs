@@ -36,6 +36,7 @@ use engine_game::loot::{
     BossTable, CurrencyRules, EpicRules, GoldRules, LootRules, LootTable, MobLootRules,
     QualityBucket, QualityRules, WeightedItem,
 };
+use engine_game::trinket::{TrinketActive, TrinketEffect};
 use serde::Deserialize;
 
 use crate::catalog::{CATALOG_VERSION, CatalogError, Economy};
@@ -61,6 +62,39 @@ pub struct LootItem {
     /// The icon family; the slot's if absent.
     #[serde(default)]
     pub icon: Option<String>,
+    /// The button a trinket gives while worn. Quality and enhancement do not scale it.
+    #[serde(default)]
+    pub active: Option<LootActive>,
+}
+
+/// A trinket's active as written: `{ "effect": "group_absorb", "cooldown_s": 120, ... }`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LootActive {
+    /// `"group_damage_reduction"`, `"mass_dispel"`, `"group_cooldown_reduction"` or
+    /// `"group_absorb"`.
+    pub effect: String,
+    /// Seconds before it can be used again.
+    pub cooldown_s: f32,
+    /// How far from the user it reaches, in metres.
+    pub radius_m: f32,
+    /// Seconds an effect it leaves lasts; zero for an instant one.
+    #[serde(default)]
+    pub duration_s: f32,
+    /// Its strength as a fraction; unused by Mass Dispel.
+    #[serde(default)]
+    pub magnitude: f32,
+}
+
+impl LootActive {
+    fn parsed(&self) -> Option<TrinketActive> {
+        Some(TrinketActive {
+            effect: TrinketEffect::from_key(&self.effect)?,
+            cooldown: self.cooldown_s,
+            radius: self.radius_m,
+            duration: self.duration_s,
+            magnitude: self.magnitude,
+        })
+    }
 }
 
 /// One row of a drop table as written.
@@ -255,6 +289,17 @@ impl LootCatalog {
             if row.stats.is_empty() {
                 return Err(err(format!("item {:?} grants nothing", row.id)));
             }
+            if let Some(active) = &row.active {
+                if row.slot != "trinket" {
+                    return Err(err(format!(
+                        "item {:?} has an active but is not a trinket",
+                        row.id
+                    )));
+                }
+                if !active.parsed().is_some_and(|parsed| parsed.is_valid()) {
+                    return Err(err(format!("item {:?} has a bad active", row.id)));
+                }
+            }
             for (name, value) in &row.stats {
                 if Stat::from_key(name).is_none() {
                     return Err(err(format!("item {:?} has unknown stat {name:?}", row.id)));
@@ -378,6 +423,7 @@ impl LootCatalog {
                         .iter()
                         .filter_map(|(name, value)| Some((Stat::from_key(name)?, *value)))
                         .collect(),
+                    active: row.active.as_ref().and_then(LootActive::parsed),
                 })
             })
             .collect()
@@ -520,6 +566,7 @@ mod tests {
     use engine_game::loot::{
         epic_chance_at, quality_odds, roll_equipment, roll_mob_currency, roll_quality,
     };
+    use engine_game::trinket::TrinketEffect;
 
     const CRYPT_SCENE: &str = include_str!("../../../assets/scenes/graveyard_crypt.json");
 
@@ -542,7 +589,7 @@ mod tests {
         let loot = catalog.loot();
         assert!(loot.items.len() >= 20, "only {} items", loot.items.len());
         let epics = loot.items.iter().filter(|row| row.rarity == "epic").count();
-        assert!((4..=5).contains(&epics), "{epics} epics");
+        assert!((4..=7).contains(&epics), "{epics} epics");
         for (index, row) in loot.items.iter().enumerate() {
             let def = item_by_key(&row.id).expect("registered");
             assert_eq!(
@@ -755,6 +802,76 @@ mod tests {
             "\"id\": \"gravewardens_cowl\"",
         );
         assert!(LootCatalog::parse(&twice).is_err());
+    }
+
+    #[test]
+    fn the_four_active_trinkets_carry_the_specified_numbers_and_sit_in_the_boss_table() {
+        let catalog = Catalog::builtin().expect("the shipped catalog parses");
+        let rules = rules();
+        let table = rules.boss_table("lord_ashgrave").expect("the table");
+        let expected = [
+            (
+                "wardens_rallying_bell",
+                TrinketEffect::GroupDamageReduction,
+                120.0,
+                30.0,
+                8.0,
+                0.15,
+            ),
+            (
+                "censer_of_cleansing_ash",
+                TrinketEffect::MassDispel,
+                90.0,
+                12.0,
+                0.0,
+                0.0,
+            ),
+            (
+                "hourglass_of_the_patient_dead",
+                TrinketEffect::GroupCooldownReduction,
+                120.0,
+                30.0,
+                0.0,
+                0.10,
+            ),
+            (
+                "aegis_of_the_last_vigil",
+                TrinketEffect::GroupAbsorb,
+                120.0,
+                30.0,
+                10.0,
+                0.20,
+            ),
+        ];
+        assert_eq!(
+            catalog
+                .loot()
+                .items
+                .iter()
+                .filter(|row| row.active.is_some())
+                .count(),
+            4
+        );
+        for (key, effect, cooldown, radius, duration, magnitude) in expected {
+            let def = item_by_key(key).expect("registered");
+            let active = def.active.expect("has an active");
+            assert_eq!(
+                (active.effect, active.cooldown, active.radius),
+                (effect, cooldown, radius)
+            );
+            assert_eq!((active.duration, active.magnitude), (duration, magnitude));
+            assert!(
+                table.entries.iter().any(|entry| entry.item == def.id),
+                "{key}"
+            );
+            // Quality scales the passive stats only.
+            let weak = engine_game::character::ItemProps::rolled(60);
+            assert!(def.stats_for(weak).get(Stat::Stamina) <= def.stats.get(Stat::Stamina));
+        }
+        let bad = LOOT_JSON.replacen("\"cooldown_s\": 120", "\"cooldown_s\": 0", 1);
+        assert!(LootCatalog::parse(&bad).is_err());
+        let off_slot = LOOT_JSON.replacen("\"effect\": \"mass_dispel\"", "\"effect\": \"moon\"", 1);
+        assert!(LootCatalog::parse(&off_slot).is_err());
     }
 
     #[test]

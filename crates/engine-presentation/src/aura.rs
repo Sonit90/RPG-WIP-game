@@ -104,6 +104,8 @@ impl AuraKind {
                 StatusKind::BattleFervor => UiIcon::BattleFervor,
                 StatusKind::Plagued => UiIcon::AuraPlagued,
                 StatusKind::Barkskin => UiIcon::WildRush,
+                StatusKind::TrinketWard => UiIcon::TrinketWard,
+                StatusKind::TrinketAbsorb => UiIcon::TrinketAbsorb,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,

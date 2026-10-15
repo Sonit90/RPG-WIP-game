@@ -23,6 +23,8 @@ pub enum NetAction {
     OpenChest,
 
     ChannelAim(V3),
+
+    Trinket(u8),
 }
 
 impl __sdk::InModule for NetAction {

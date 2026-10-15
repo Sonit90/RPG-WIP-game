@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="trinket_dispel_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(10,28,28)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(22,64,62)"></stop>
+	</linearGradient>
+	<radialGradient id="trinket_dispel_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(110,230,210)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(110,230,210)"></stop>
+	</radialGradient>
+	<clipPath id="trinket_dispel_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#trinket_dispel_tile)">
+	<path fill="url(#trinket_dispel_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#trinket_dispel_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(70,170,160)" d="M 256 96 C 350 96 420 166 420 260 C 420 354 350 424 256 424 C 162 424 92 354 92 260 C 92 166 162 96 256 96 Z M 256 160 C 198 160 156 202 156 260 C 156 318 198 360 256 360 C 314 360 356 318 356 260 C 356 202 314 160 256 160 Z"></path>
+	<path fill="rgb(190,248,238)" d="M 256 96 C 306 96 350 116 382 150 L 340 192 C 318 172 290 160 256 160 C 198 160 156 202 156 260 L 92 260 C 92 166 162 96 256 96 Z"></path>
+	<path fill="rgb(40,104,98)" d="M 256 424 C 206 424 162 404 130 370 L 172 328 C 194 348 222 360 256 360 C 314 360 356 318 356 260 L 420 260 C 420 354 350 424 256 424 Z"></path>
+	<path fill="rgb(190,248,238)" d="M 256 196 L 276 240 L 320 260 L 276 280 L 256 324 L 236 280 L 192 260 L 236 240 Z"></path>
+</g>
+</svg>

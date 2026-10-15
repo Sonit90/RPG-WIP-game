@@ -775,6 +775,10 @@ pub fn icon_for_item(icon: ItemIcon) -> UiIcon {
         ItemIcon::Amulet => UiIcon::Amulet,
         ItemIcon::Ring => UiIcon::Ring,
         ItemIcon::Trinket => UiIcon::Trinket,
+        ItemIcon::TrinketWard => UiIcon::TrinketWard,
+        ItemIcon::TrinketDispel => UiIcon::TrinketDispel,
+        ItemIcon::TrinketHaste => UiIcon::TrinketHaste,
+        ItemIcon::TrinketAbsorb => UiIcon::TrinketAbsorb,
     }
 }
 

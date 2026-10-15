@@ -24,6 +24,7 @@ use engine_game::event::{AggroChange, CombatEvent, ControlKind, DamageEvent};
 use engine_game::firemage::{BeamEnd, FireAbility, ZoneShape};
 use engine_game::sim::CastEnd;
 use engine_game::status::{StatusEnd, StatusKind};
+use engine_game::trinket::TrinketEffect;
 use serde::{Deserialize, Serialize};
 
 use crate::loot::ensure_items_registered;
@@ -399,6 +400,12 @@ pub enum WireEvent {
         entity: EntityRef,
         /// `BeamEnd` by position.
         reason: u8,
+    },
+    TrinketUsed {
+        entity: EntityRef,
+        slot: u8,
+        /// `TrinketEffect` by wire index.
+        effect: u8,
     },
 }
 
@@ -828,6 +835,16 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
         CombatEvent::BeamChannelEnded { entity, reason, .. } => WireEvent::BeamChannelEnded {
             entity: name(entity),
             reason: reason.index(),
+        },
+        CombatEvent::TrinketUsed {
+            entity,
+            slot,
+            effect,
+            ..
+        } => WireEvent::TrinketUsed {
+            entity: name(entity),
+            slot,
+            effect: effect.index(),
         },
         _ => return None,
     })
@@ -1314,6 +1331,16 @@ pub fn decode(
             reason: BeamEnd::from_index(*reason),
             tick,
         },
+        WireEvent::TrinketUsed {
+            entity,
+            slot,
+            effect,
+        } => CombatEvent::TrinketUsed {
+            entity: need(entity)?,
+            slot: *slot,
+            effect: TrinketEffect::from_index(*effect)?,
+            tick,
+        },
     })
 }
 
@@ -1670,6 +1697,41 @@ mod tests {
             time: 0.0,
         };
         assert!(decode(&stranger, &resolve, 0).is_none());
+    }
+
+    #[test]
+    fn a_trinket_use_round_trips_through_json() {
+        let server = EntityId::new(3, 1);
+        let client = EntityId::new(8, 2);
+        let name = |_: EntityId| EntityRef::Player("acct".into());
+        let resolve = |r: &EntityRef| matches!(r, EntityRef::Player(_)).then_some(client);
+        for effect in TrinketEffect::ALL {
+            let event = CombatEvent::TrinketUsed {
+                entity: server,
+                slot: 1,
+                effect,
+                tick: 4,
+            };
+            let wire = encode(&event, &name).expect("carried");
+            let json = serde_json::to_string(&wire).expect("serializes");
+            let back: WireEvent = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, wire);
+            assert_eq!(
+                decode(&back, &resolve, 9),
+                Some(CombatEvent::TrinketUsed {
+                    entity: client,
+                    slot: 1,
+                    effect,
+                    tick: 9,
+                })
+            );
+        }
+        let unknown = WireEvent::TrinketUsed {
+            entity: EntityRef::Player("acct".into()),
+            slot: 0,
+            effect: 99,
+        };
+        assert!(decode(&unknown, &resolve, 0).is_none());
     }
 
     #[test]

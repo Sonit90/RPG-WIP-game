@@ -699,6 +699,15 @@ fn describe(event: &CombatEvent) -> String {
             reason,
             tick,
         } => format!("beam {} ended {reason:?} on {tick}", entity.index()),
+        CombatEvent::TrinketUsed {
+            entity,
+            slot,
+            effect,
+            tick,
+        } => format!(
+            "trinket {} slot {slot} {effect:?} on {tick}",
+            entity.index()
+        ),
         CombatEvent::Aggro {
             enemy,
             entity,

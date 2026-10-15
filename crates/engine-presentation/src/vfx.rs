@@ -153,6 +153,17 @@ const VALOR_TINT: [f32; 4] = [0.95, 0.82, 0.35, 1.0];
 /// Puncture Blood's shell.
 const ABSORB_TINT: [f32; 4] = [0.85, 0.25, 0.30, 0.85];
 
+/// The tint of the ring a trinket sends out, per effect: steel blue, teal, amber, violet.
+fn trinket_tint(effect: engine_game::trinket::TrinketEffect) -> [f32; 4] {
+    use engine_game::trinket::TrinketEffect;
+    match effect {
+        TrinketEffect::GroupDamageReduction => [0.45, 0.65, 0.95, 1.0],
+        TrinketEffect::MassDispel => [0.35, 0.95, 0.85, 1.0],
+        TrinketEffect::GroupCooldownReduction => [0.98, 0.78, 0.35, 1.0],
+        TrinketEffect::GroupAbsorb => [0.75, 0.55, 1.0, 1.0],
+    }
+}
+
 /// A spell going back where it came from.
 const REFLECT_TINT: [f32; 4] = [0.70, 0.55, 0.95, 1.0];
 
@@ -741,6 +752,17 @@ impl VfxDirector {
                         .with_radius(1.1)
                         .lasting(duration)
                         .tinted(ABSORB_TINT),
+                );
+            }
+            // A trinket: the nova the catalogue already has, in the effect's colour.
+            CombatEvent::TrinketUsed { entity, effect, .. } => {
+                let Some(position) = simulation.world().position(entity) else {
+                    return;
+                };
+                self.spawn(
+                    VfxSpawn::at(VfxId::BlinkArrival, position + Vec3::new(0.0, 0.2, 0.0))
+                        .with_radius(2.2)
+                        .tinted(trinket_tint(effect)),
                 );
             }
             CombatEvent::SpellReflected { source, .. } => {

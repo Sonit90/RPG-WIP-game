@@ -38,6 +38,7 @@
 use std::sync::{LazyLock, OnceLock};
 
 use super::stat::{Stat, StatBlock};
+use crate::trinket::TrinketActive;
 
 /// One of the thirteen places a character wears something.
 ///
@@ -350,11 +351,19 @@ pub enum ItemIcon {
     Ring,
     /// A trinket.
     Trinket,
+    /// A trinket with an active: the one that lessens the damage the party takes.
+    TrinketWard,
+    /// A trinket with an active: the one that strips effects in an area.
+    TrinketDispel,
+    /// A trinket with an active: the one that hastens the party's cooldowns.
+    TrinketHaste,
+    /// A trinket with an active: the one that puts up a shield.
+    TrinketAbsorb,
 }
 
 impl ItemIcon {
-    /// Every icon, in family order.
-    pub const ALL: [Self; 11] = [
+    /// Every icon, in family order, then the trinkets that have a picture of their own.
+    pub const ALL: [Self; 15] = [
         Self::Helm,
         Self::Shoulders,
         Self::Chestpiece,
@@ -366,13 +375,25 @@ impl ItemIcon {
         Self::Amulet,
         Self::Ring,
         Self::Trinket,
+        Self::TrinketWard,
+        Self::TrinketDispel,
+        Self::TrinketHaste,
+        Self::TrinketAbsorb,
     ];
 
     /// The icon authored under `key`, which is the key of the family it belongs to
-    /// (`"head"` is the helm).
+    /// (`"head"` is the helm), or one of the active trinkets' own names (`"trinket_ward"`).
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
-        ItemFamily::from_key(key).map(Self::of_family)
+        ItemFamily::from_key(key)
+            .map(Self::of_family)
+            .or(match key {
+                "trinket_ward" => Some(Self::TrinketWard),
+                "trinket_dispel" => Some(Self::TrinketDispel),
+                "trinket_haste" => Some(Self::TrinketHaste),
+                "trinket_absorb" => Some(Self::TrinketAbsorb),
+                _ => None,
+            })
     }
 
     /// The icon a bare slot draws when nothing is in it.
@@ -443,6 +464,9 @@ pub struct ItemDef {
     pub stats: StatBlock,
     /// How many of it fit in one inventory cell. One for equipment; more for a consumable.
     pub max_stack: u16,
+    /// The button it gives while worn, if it is a trinket with one. Quality and enhancement
+    /// do not scale it: see [`crate::trinket`].
+    pub active: Option<TrinketActive>,
 }
 
 impl ItemDef {
@@ -492,6 +516,7 @@ const fn white(
         icon,
         stats: StatBlock::zero(),
         max_stack: 1,
+        active: None,
     }
 }
 
@@ -597,6 +622,7 @@ pub const ITEMS: [ItemDef; 12] = [
         icon: ItemIcon::Ring,
         stats: StatBlock::of_const(Stat::Stamina, 10.0),
         max_stack: 1,
+        active: None,
     },
 ];
 
@@ -951,6 +977,7 @@ static LOOT: LazyLock<Vec<ItemDef>> = LazyLock::new(|| {
                     icon: ItemIcon::of_family(family),
                     stats,
                     max_stack: 1,
+                    active: None,
                 });
                 pair_index += 1;
             }
@@ -993,6 +1020,8 @@ pub struct CatalogItem {
     pub icon: ItemIcon,
     /// Its base stats, at quality 100.
     pub stats: Vec<(Stat, f32)>,
+    /// The button it gives while worn, for a trinket that has one.
+    pub active: Option<TrinketActive>,
 }
 
 /// The registered catalog rows, in registration order. Set once.
@@ -1032,6 +1061,7 @@ pub fn register_catalog_items(items: Vec<CatalogItem>) -> bool {
                     icon: row.icon,
                     stats,
                     max_stack: 1,
+                    active: row.active,
                 }
             })
             .collect()

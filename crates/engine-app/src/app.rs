@@ -474,6 +474,8 @@ pub struct App {
     character_config: CharacterConfigManager,
     /// Which ability button the pointer is over, for the tooltip.
     hovered_ability: Option<FireAbility>,
+    /// The trinket button the pointer is over this frame, for its tooltip. Taken when drawn.
+    hovered_trinket: Option<usize>,
     /// Which action bar slot that ability is in, when the pointer is over a bar.
     ///
     /// Remembered rather than searched for again: the same spell may sit in several slots on
@@ -1401,6 +1403,7 @@ impl App {
             ui_pointer: (0.0, 0.0),
             character_config,
             hovered_ability: None,
+            hovered_trinket: None,
             aura_pointer: None,
             hovered_slot: None,
             targeting_decal: None,
@@ -2653,6 +2656,21 @@ impl App {
                 self.hovered_slot = None;
                 if ui_input.pointer_pressed {
                     pressed = Some(view.ability);
+                }
+            }
+        }
+
+        // The trinket buttons above them: a click uses the trinket (the key is the input map's).
+        for index in 0..self.snapshot.trinkets.len() {
+            if self.snapshot.trinkets[index].is_none() {
+                continue;
+            }
+            let rect = self.game_ui.trinket_rect(index, viewport);
+            if rect.contains(ui_input.pointer.0, ui_input.pointer.1) {
+                self.hovered_trinket = Some(index);
+                if ui_input.pointer_pressed {
+                    self.simulation
+                        .push_command(engine_game::PlayerCommand::UseTrinket(index));
                 }
             }
         }
@@ -4270,6 +4288,10 @@ impl App {
             .info()
             .map(|_| self.dungeon_map.minimap_layout(viewport).bounds());
         self.game_ui.set_minimap_bounds(minimap);
+        self.game_ui.set_trinket_keys([
+            self.bindings.trinket_one.label(),
+            self.bindings.trinket_two.label(),
+        ]);
         #[cfg(feature = "dev-tools")]
         self.game_ui
             .set_dev_boss_button(self.dev_boss_button_visible());
@@ -4292,6 +4314,17 @@ impl App {
         // The tooltip for whatever the pointer is over, then the talent menu, then the
         // pause menu: painter's order is the whole sort. A buff or debuff icon first: they
         // never sit under an action bar slot, so at most one of the two is hovered.
+        if let Some(index) = self.hovered_trinket.take()
+            && self.hovered_ability.is_none()
+            && let Some(view) = self.snapshot.trinkets[index]
+        {
+            let dock = self
+                .hud_layout
+                .rect_of(HudElementId::Tooltip, scale, viewport);
+            let direction = self.hud_layout.direction(HudElementId::Tooltip);
+            self.game_ui
+                .push_trinket_tooltip(dock, direction, &view, viewport);
+        }
         if self.hovered_ability.is_none()
             && let Some(pointer) = self.aura_pointer
         {
@@ -6667,6 +6700,7 @@ impl Application for App {
                     | engine_game::PlayerCommand::UseAbilityAt { .. }
                     | engine_game::PlayerCommand::UseUltimate { .. }
                     | engine_game::PlayerCommand::UseExtra(_)
+                    | engine_game::PlayerCommand::UseTrinket(_)
                     | engine_game::PlayerCommand::OpenChest => may_move,
                     engine_game::PlayerCommand::SelectNearestTarget
                     | engine_game::PlayerCommand::CycleTarget

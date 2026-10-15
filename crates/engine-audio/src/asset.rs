@@ -343,10 +343,12 @@ pub enum SoundId {
     LootDrop,
     /// An epic dropping: the same chime, lower and longer, with a shimmer over it.
     LootEpic,
+    /// A trinket being used: a bell-like swell with a rising shimmer.
+    TrinketUse,
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 58;
+pub const SOUND_COUNT: usize = 59;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
@@ -409,6 +411,7 @@ impl SoundId {
         Self::UiCancel,
         Self::LootDrop,
         Self::LootEpic,
+        Self::TrinketUse,
     ];
 
     /// Its index into [`SOUNDS`] and into any per-sound array.
@@ -1184,6 +1187,18 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     .gain(0.45)
     .jitter(0.0, 0.0)
     .limit(1, 0.4),
+    SoundDesc::sfx(
+        "trinket_use",
+        ABILITIES,
+        Recipe::new(0.8)
+            .tone(0.7, 440.0, 660.0)
+            .tone(0.45, 880.0, 1_320.0)
+            .noise(0.2, 2_400.0, 6_000.0)
+            .envelope(0.02, 0.12, 1.7),
+        PRIORITY_CAST,
+    )
+    .gain(0.7)
+    .limit(2, 0.15),
 ];
 
 /// One sound's samples: mono PCM and the rate it was authored at.

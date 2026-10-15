@@ -408,6 +408,22 @@ const ICONS: &[IconEntry] = &[
         constant: "TRINKET",
     },
     IconEntry {
+        file: "equipment/trinket_ward.svg",
+        constant: "TRINKET_WARD",
+    },
+    IconEntry {
+        file: "equipment/trinket_dispel.svg",
+        constant: "TRINKET_DISPEL",
+    },
+    IconEntry {
+        file: "equipment/trinket_haste.svg",
+        constant: "TRINKET_HASTE",
+    },
+    IconEntry {
+        file: "equipment/trinket_absorb.svg",
+        constant: "TRINKET_ABSORB",
+    },
+    IconEntry {
         file: "map/map_pack.svg",
         constant: "MAP_PACK",
     },

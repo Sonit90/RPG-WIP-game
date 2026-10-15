@@ -418,6 +418,7 @@ pub(crate) mod tests {
             item_level: 10,
             icon: ItemIcon::of_family(family),
             stats: vec![(Stat::Stamina, value)],
+            active: None,
         };
         crate::character::register_catalog_items(vec![
             mk("test_rare_ring", ItemFamily::Ring, ItemQuality::Rare, 10.0),

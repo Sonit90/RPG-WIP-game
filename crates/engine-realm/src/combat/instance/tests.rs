@@ -176,6 +176,15 @@ fn malformed_and_foreign_actions_are_refused() {
         Err(ActionError::Malformed)
     );
     assert!(fight.act("dps", &press(ActionKind::Target)).is_ok());
+    assert_eq!(
+        fight.act("dps", &press(ActionKind::Trinket(2))),
+        Err(ActionError::Malformed)
+    );
+    assert!(fight.act("dps", &press(ActionKind::Trinket(1))).is_ok());
+    assert_eq!(
+        fight.act("intruder", &press(ActionKind::Trinket(0))),
+        Err(ActionError::NotInFight)
+    );
 }
 
 #[test]

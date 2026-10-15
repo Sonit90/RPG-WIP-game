@@ -660,6 +660,8 @@ pub struct GameUi {
     tooltip: crate::ui::tooltip::TooltipModel,
     /// The open tooltip, wrapped and laid out; wrapped again only when its text changes.
     tooltip_panel: crate::ui::tooltip::TooltipPanel,
+    /// The labels of the keys that use the two trinkets, set by the application.
+    trinket_keys: [&'static str; 2],
     /// Where the arranged bar one was drawn last frame, which the Ultimate and the extras
     /// hang off. `None` before the first arranged frame or with bar one hidden or upright.
     bar_one: Option<UiRect>,
@@ -730,6 +732,7 @@ impl GameUi {
             aura_hits: crate::ui::aura_row::AuraHits::new(),
             tooltip: crate::ui::tooltip::TooltipModel::new(),
             tooltip_panel: crate::ui::tooltip::TooltipPanel::new(),
+            trinket_keys: ["", ""],
             bar_one: None,
             minimap: None,
             #[cfg(feature = "dev-tools")]
@@ -1276,6 +1279,7 @@ impl GameUi {
         self.push_player_bars(snapshot, viewport);
         self.push_resource_bars(snapshot, viewport);
         self.push_ability_bar(snapshot, viewport);
+        self.push_trinket_buttons(snapshot, viewport);
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
         self.push_mailbox_button(snapshot, viewport);
@@ -1338,6 +1342,7 @@ impl GameUi {
         // and the extras have a place of their own beside the bar, and the application
         // hit-tests them at exactly these rectangles.
         self.push_side_buttons(snapshot, viewport);
+        self.push_trinket_buttons(snapshot, viewport);
 
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
@@ -2136,6 +2141,109 @@ impl GameUi {
         )
     }
 
+    /// Where trinket button `index` sits: a row above the Ultimate and the extras.
+    #[must_use]
+    pub fn trinket_rect(&self, index: usize, viewport: (u32, u32)) -> UiRect {
+        let ultimate = self.ultimate_rect(viewport);
+        let size = self.metrics.slot_size;
+        let gap = self.metrics.slot_gap;
+        UiRect::new(
+            ultimate.x + (size + gap) * index as f32,
+            ultimate.y - size - gap,
+            size,
+            size,
+        )
+    }
+
+    /// Tells the HUD which keys use the trinkets, for the label on each button.
+    pub fn set_trinket_keys(&mut self, keys: [&'static str; 2]) {
+        self.trinket_keys = keys;
+    }
+
+    /// The two trinket buttons, for whichever slots have a trinket with an active.
+    pub fn push_trinket_buttons(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        for view in snapshot.trinkets.iter().flatten() {
+            let rect = self.trinket_rect(view.index, viewport);
+            self.push_trinket_button(rect, view);
+        }
+    }
+
+    /// One trinket button: its picture, a cooldown sweep with the seconds left, a glow while
+    /// the effect it left is up, and the key that uses it.
+    pub fn push_trinket_button(&mut self, rect: UiRect, view: &crate::snapshot::TrinketView) {
+        let px = |logical: f32| self.metrics.scale.px(logical);
+        let corner = px(5.0);
+        self.list.panel(
+            rect,
+            corner,
+            [0.07, 0.08, 0.10, 0.92],
+            [0.03, 0.035, 0.045, 0.92],
+        );
+        let art = rect.inset(px(2.0));
+        let tint = if view.is_cooling() {
+            self.theme.icon_tint(SlotAvailability::Cooling)
+        } else {
+            self.theme.icon_tint(SlotAvailability::Ready)
+        };
+        self.list.icon(
+            art,
+            crate::ui::character_menu::icon_for_item(view.icon),
+            tint,
+        );
+        if view.is_cooling() {
+            let fraction = view.cooldown_fraction();
+            self.list
+                .radial_from(art, fraction, 1.0 - fraction, self.theme.cooldown_radial);
+            self.title.clear();
+            write_seconds(&mut self.title, view.cooldown_remaining);
+            let size = (rect.height * 0.34).max(9.0);
+            self.list.styled_label(
+                (
+                    rect.x + rect.width * 0.5,
+                    cap_centred_top(UiFont::SemiBold, size, rect.y + rect.height * 0.52),
+                ),
+                &self.title,
+                [1.0, 0.97, 0.90, 1.0],
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                plate_text_style([0.0, 0.0, 0.0, 0.95], size, 0.04),
+            );
+        }
+        let border = if view.is_active() {
+            self.theme.slot_casting
+        } else if view.is_cooling() {
+            self.theme.slot_color(SlotAvailability::Cooling)
+        } else {
+            self.theme.slot_color(SlotAvailability::Ready)
+        };
+        if view.is_active() {
+            // The buff glow, for as long as the ward or the shield stands.
+            self.list.glow(rect, corner, px(7.0), faded(border, 0.55));
+        }
+        let width = if view.is_active() || view.is_cooling() {
+            px(2.0).max(2.0)
+        } else {
+            px(1.0).max(1.0)
+        };
+        self.list.panel_stroke(rect, corner, width, border);
+        let small = (rect.height * 0.26).max(9.0);
+        let edge = plate_text_style([0.0, 0.0, 0.0, 0.95], small, 0.02);
+        let key = self.trinket_keys.get(view.index).copied().unwrap_or("");
+        self.list.styled_label(
+            (
+                rect.x + px(4.0),
+                cap_centred_top(UiFont::SemiBold, small, rect.y + small * 0.65),
+            ),
+            key,
+            [0.92, 0.92, 0.90, 1.0],
+            UiFont::SemiBold,
+            small,
+            TextAlign::Left,
+            edge,
+        );
+    }
+
     /// Where the hero's `index`th extra button sits: after the Ultimate, in a row.
     #[must_use]
     pub fn extra_rect(&self, index: usize, viewport: (u32, u32)) -> UiRect {
@@ -2667,6 +2775,27 @@ impl GameUi {
         viewport: (u32, u32),
     ) -> UiRect {
         crate::ui::tooltip::fill_ability(&mut self.tooltip, view, context);
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        )
+    }
+
+    /// The tooltip for a trinket button, docked like an ability's.
+    pub fn push_trinket_tooltip(
+        &mut self,
+        dock: UiRect,
+        direction: crate::ui::flow::FlowDirection,
+        view: &crate::snapshot::TrinketView,
+        viewport: (u32, u32),
+    ) -> UiRect {
+        let key = self.trinket_keys.get(view.index).copied().unwrap_or("");
+        crate::ui::tooltip::fill_trinket(&mut self.tooltip, view, key);
         let kit = crate::ui::kit::Kit::new(self.metrics.scale);
         self.tooltip_panel.push(
             &mut self.list,
@@ -3424,6 +3553,90 @@ mod tests {
             found.iter().any(|text| text.contains("ARMED")),
             "the armed state is invisible: {found:?}"
         );
+    }
+
+    /// The arena with the Group Absorb trinket in the first slot.
+    fn trinket_sim() -> Simulation {
+        use engine_game::character::{EquipSlot, ItemStack, item_by_key};
+        engine_realm::loot::ensure_items_registered();
+        let mut simulation = sim();
+        let id = item_by_key("aegis_of_the_last_vigil")
+            .expect("the shipped trinket")
+            .id;
+        let hero = simulation.hero();
+        simulation
+            .roster_mut()
+            .sheet_mut(hero)
+            .equipment_mut()
+            .equip(EquipSlot::Trinket1, ItemStack::one(id))
+            .expect("a trinket fits");
+        simulation.refresh_character();
+        // Past the short cooldown that putting a trinket on starts.
+        simulation.step_many(31 * 60);
+        simulation
+    }
+
+    #[test]
+    fn a_worn_trinket_draws_a_button_with_its_key_cooldown_and_glow_and_a_tooltip() {
+        let mut simulation = trinket_sim();
+        let (set, config) = plates(&simulation);
+        let draw = |simulation: &Simulation| {
+            let mut ui = GameUi::new();
+            ui.set_trinket_keys(["T", "Y"]);
+            let snapshot = UiSnapshot::build(simulation);
+            ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+            (ui, snapshot)
+        };
+
+        // Only the worn slot with an active has a button, and it sits above the Ultimate.
+        let (ui, snapshot) = draw(&simulation);
+        assert!(snapshot.trinkets[0].is_some() && snapshot.trinkets[1].is_none());
+        let rect = ui.trinket_rect(0, VIEWPORT);
+        assert!(rect.bottom() < ui.ultimate_rect(VIEWPORT).y);
+        assert!(ui.trinket_rect(1, VIEWPORT).x > rect.x);
+        assert!(said(&ui).split(' ').any(|word| word == "T"), "no key label");
+        let icons_before = ui
+            .list()
+            .commands()
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    UiCommand::Icon {
+                        icon: engine_render_data::ui::UiIcon::TrinketAbsorb,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(icons_before, 1, "the trinket's own picture is drawn");
+        assert!(!snapshot.trinkets[0].expect("worn").is_cooling());
+
+        // Used: the sweep, the seconds, and the glow while the shield stands.
+        simulation.use_trinket(0).expect("ready");
+        simulation.step_once();
+        let (ui, snapshot) = draw(&simulation);
+        let view = snapshot.trinkets[0].expect("worn");
+        assert!(view.is_cooling() && view.is_active());
+        let found = said(&ui);
+        assert!(found.split(' ').any(|word| word == "120"), "{found}");
+
+        // The tooltip says what it does, how long it cools and how far it reaches.
+        let mut ui = GameUi::new();
+        ui.set_trinket_keys(["T", "Y"]);
+        ui.push_trinket_tooltip(
+            UiRect::new(1500.0, 950.0, 380.0, 64.0),
+            crate::ui::flow::FlowDirection::READING,
+            &view,
+            VIEWPORT,
+        );
+        let found = said(&ui);
+        assert!(
+            found.contains("Shields party members within 30 m"),
+            "{found}"
+        );
+        assert!(found.contains("120 sec cooldown"), "{found}");
+        assert!(found.contains("30 m radius"), "{found}");
     }
 
     #[test]

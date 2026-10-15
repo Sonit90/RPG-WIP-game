@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="trinket_haste_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(32,22,8)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(76,52,16)"></stop>
+	</linearGradient>
+	<radialGradient id="trinket_haste_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(250,200,100)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(250,200,100)"></stop>
+	</radialGradient>
+	<clipPath id="trinket_haste_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#trinket_haste_tile)">
+	<path fill="url(#trinket_haste_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#trinket_haste_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(212,160,66)" d="M 150 92 L 362 92 L 362 130 C 362 190 310 230 280 256 C 310 282 362 322 362 382 L 362 420 L 150 420 L 150 382 C 150 322 202 282 232 256 C 202 230 150 190 150 130 Z"></path>
+	<path fill="rgb(252,226,150)" d="M 150 92 L 362 92 L 362 130 C 362 160 350 184 332 204 L 180 204 C 162 184 150 160 150 130 Z"></path>
+	<path fill="rgb(120,84,28)" d="M 256 280 L 330 372 L 182 372 Z"></path>
+	<path fill="rgb(252,226,150)" d="M 200 396 L 312 396 L 312 420 L 200 420 Z"></path>
+</g>
+</svg>

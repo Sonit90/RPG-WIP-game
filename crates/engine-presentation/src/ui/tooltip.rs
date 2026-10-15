@@ -770,6 +770,43 @@ pub fn fill_ability(model: &mut TooltipModel, view: &AbilitySlotView, context: A
     }
 }
 
+/// Fills `model` with a trinket's button: its name, what it does, its cooldown and radius.
+///
+/// `key` is the label of the key that uses it. The numbers are the item's own: quality and
+/// enhancement scale a trinket's stats and never these.
+pub fn fill_trinket(model: &mut TooltipModel, view: &crate::snapshot::TrinketView, key: &str) {
+    use std::fmt::Write as _;
+    model.clear();
+    model.title.push_str(view.name);
+    model.title_color = color::TEXT_TITLE;
+    model.tag.push_str(key);
+    model.tag_color = color::TEXT_SECONDARY;
+    let active = &view.active;
+    model.border = color::alpha(color::BRONZE_BRIGHT, 0.7);
+    let _ = write!(model.meta[0].0, "{}", active.effect.name());
+    let _ = write!(model.meta[0].1, "{:.0} sec cooldown", active.cooldown);
+    let _ = write!(model.meta[1].0, "{:.0} m radius", active.radius);
+    if active.effect.has_duration() {
+        let _ = write!(model.meta[1].1, "{:.0} sec", active.duration);
+    }
+    model
+        .section(SectionKind::Description)
+        .text
+        .push_str(&format!("Use: {}", active.description()));
+    let section = model.section(SectionKind::Details);
+    section.color = color::TEXT_SECONDARY;
+    if view.is_cooling() {
+        let _ = write!(
+            section.text,
+            "{:.0} sec until ready",
+            view.cooldown_remaining.ceil()
+        );
+    } else {
+        section.text.push_str("Ready");
+    }
+    model.footer.push_str("Not on the global cooldown.");
+}
+
 /// Fills `model` with a buff or debuff.
 pub fn fill_aura(model: &mut TooltipModel, aura: &crate::aura::Aura) {
     use std::fmt::Write as _;

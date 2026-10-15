@@ -232,6 +232,7 @@ impl RealmLink {
             ActionKind::Extra(index) => b::NetAction::Extra(index),
             ActionKind::OpenChest => b::NetAction::OpenChest,
             ActionKind::ChannelAim(p) => b::NetAction::ChannelAim(aimed(p)),
+            ActionKind::Trinket(index) => b::NetAction::Trinket(index),
         };
         let result = self
             .connection
@@ -870,6 +871,8 @@ fn player_combat(row: &b::PlayerCombat) -> PlayerCombatInfo {
             astral: row.resources.astral,
             global_cooldown: row.resources.global_cooldown,
             absorb: row.resources.absorb,
+            trinket1: row.resources.trinket_1,
+            trinket2: row.resources.trinket_2,
         },
         cooldowns: row
             .cooldowns
