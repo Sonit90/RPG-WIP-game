@@ -290,6 +290,10 @@ pub struct DungeonResult {
     /// Resources paid, `(resource id, amount)`.
     #[serde(default)]
     pub resources: Vec<(String, u32)>,
+    /// The player's damage report, computed by the realm from its own combat events. `None`
+    /// when the realm had none (an admin-finished run, an unreadable row).
+    #[serde(default)]
+    pub damage_report: Option<crate::meter::DamageReport>,
 }
 
 /// One chest item to deliver to a character, as the bridge hands it to the persistence store.

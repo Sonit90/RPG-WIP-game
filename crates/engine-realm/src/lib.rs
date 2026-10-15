@@ -29,6 +29,7 @@
 //! | [`economy`] | resources, salvage and exchanges |
 //! | [`key`] | dungeon keys: validity, progression, scaling |
 //! | [`rewards`] | what a finished run pays |
+//! | [`meter`] | Recount: combat statistics from server events, and the persisted damage report |
 //! | [`matchmaking`] | which queued tickets become a party |
 //! | [`party`] | the party state machine, the ready check, who may do what |
 //! | [`instance`] | the dungeon instance lifecycle, countdown and barrier |
@@ -49,6 +50,7 @@ pub mod instance;
 pub mod key;
 pub mod loadout;
 pub mod matchmaking;
+pub mod meter;
 pub mod movement;
 pub mod ops;
 pub mod party;

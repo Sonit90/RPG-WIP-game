@@ -180,3 +180,17 @@ fn my_combat_batches(ctx: &ViewContext) -> Vec<CombatBatch> {
         .filter(me.instance_id)
         .collect()
 }
+
+/// Recount for the caller's whole instance: every member's figures, so the party sees each
+/// other. There is no parameter to ask for another instance.
+#[view(accessor = my_instance_meter, public, primary_key = identity)]
+fn my_instance_meter(ctx: &ViewContext) -> Vec<PlayerMeter> {
+    let Some(me) = ctx.db.instance_player().identity().find(ctx.sender()) else {
+        return Vec::new();
+    };
+    ctx.db
+        .instance_meter()
+        .instance_id()
+        .filter(me.instance_id)
+        .collect()
+}

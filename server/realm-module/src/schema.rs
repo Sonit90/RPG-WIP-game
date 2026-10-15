@@ -507,7 +507,8 @@ pub struct ChatMessage {
 ///
 /// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
 /// here is appended after the last one and added there, at the same position
-/// (`key_level`, `key_owner`, `key_level_after`, `resources` follow `created_at`).
+/// (`key_level`, `key_owner`, `key_level_after`, `resources`, `damage_report` follow
+/// `created_at`).
 #[spacetimedb::table(accessor = pending_result)]
 #[derive(Debug, Clone)]
 pub struct PendingResult {
@@ -538,6 +539,9 @@ pub struct PendingResult {
     pub key_level_after: u32,
     /// Resources awarded, as JSON text: `[["crypt_dust",9],...]`.
     pub resources: String,
+    /// The player's damage report (`engine_realm::meter::DamageReport`) as JSON text: an
+    /// aggregate computed from the server's own combat events. Empty when there is none.
+    pub damage_report: String,
 }
 
 /// What a finished run paid one player, for their results screen. Kept until the instance is
@@ -779,4 +783,26 @@ pub struct CombatBatch {
     pub created_at: Timestamp,
     /// The events.
     pub events: String,
+}
+
+/// One player's Recount figures for their instance: `engine_realm::meter::MeterBlob` as JSON.
+///
+/// Private; clients read their whole instance's rows through `my_instance_meter` (a group
+/// meter: the party sees each other). Projected at most once a second and only when the text
+/// changed, never per tick.
+#[spacetimedb::table(accessor = instance_meter)]
+#[derive(Debug, Clone)]
+pub struct PlayerMeter {
+    /// The player.
+    #[primary_key]
+    pub identity: Identity,
+    /// Which instance.
+    #[index(btree)]
+    pub instance_id: u64,
+    /// Their account id.
+    pub account_id: String,
+    /// The overall and current-fight figures, as JSON text.
+    pub data: String,
+    /// When it was last written.
+    pub updated_at: Timestamp,
 }

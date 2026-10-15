@@ -296,6 +296,63 @@ pub async fn save_settings(
     saved.ok_or_else(|| AppError::Conflict("Settings were changed on another machine.".into()))
 }
 
+/// A damage report as `game.dungeon_damage_reports` stores it, validated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageReportRow {
+    pub instance_id: String,
+    pub class: String,
+    pub party: serde_json::Value,
+    pub total_damage: i64,
+    pub dps: f32,
+    pub duration_seconds: f32,
+    pub boss_kill_seconds: Option<f32>,
+    pub abilities: serde_json::Value,
+}
+
+/// The row to store for `result`'s damage report, or `None` when there is nothing worth storing
+/// or it would not satisfy the table's checks.
+///
+/// Only a completed run is stored (a failed run's duration and damage say nothing about the
+/// dungeon's pace), and a report with a non-finite or negative figure is dropped: the insert
+/// shares a transaction with the experience, and a constraint violation there would lose the
+/// player's reward over a statistic.
+#[must_use]
+pub fn damage_report_row(result: &DungeonResult) -> Option<DamageReportRow> {
+    let report = result.damage_report.as_ref()?;
+    if !result.success {
+        return None;
+    }
+    let sound = |value: f32| value.is_finite() && value >= 0.0;
+    if !sound(report.dps)
+        || !sound(report.duration_seconds)
+        || !report.boss_kill_seconds.is_none_or(sound)
+    {
+        tracing::warn!(result_id = %result.result_id, "damage report has impossible figures; not stored");
+        return None;
+    }
+    let instance_id = result
+        .result_id
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let class = report
+        .party
+        .iter()
+        .find(|member| member.account_id == result.account_id)
+        .map_or_else(|| "unknown".to_owned(), |member| member.class.clone());
+    Some(DamageReportRow {
+        instance_id,
+        class,
+        party: serde_json::to_value(&report.party).ok()?,
+        total_damage: i64::try_from(report.total_damage).unwrap_or(i64::MAX),
+        dps: report.dps,
+        duration_seconds: report.duration_seconds,
+        boss_kill_seconds: report.boss_kill_seconds,
+        abilities: serde_json::to_value(&report.abilities).ok()?,
+    })
+}
+
 /// Applies one realm result exactly once. Returns whether it was new.
 ///
 /// Inside one transaction: record the result under its idempotency key; if that key was
@@ -398,6 +455,33 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
                 .map_err(db)?;
             }
         }
+    }
+    // The player's damage report, in the same transaction: it exists exactly when its result
+    // was new, so a re-delivery cannot write it twice (the table also keys it by result id).
+    if let Some(report) = damage_report_row(result) {
+        sqlx::query(
+            "INSERT INTO game.dungeon_damage_reports
+                (result_id, instance_id, dungeon_id, key_level, character_id, account_id, class,
+                 party, total_damage, dps, duration_seconds, boss_kill_seconds, abilities)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             ON CONFLICT (result_id) DO NOTHING",
+        )
+        .bind(&result.result_id)
+        .bind(&report.instance_id)
+        .bind(&result.dungeon_id)
+        .bind(i32::try_from(result.key_level).unwrap_or(i32::MAX))
+        .bind(character_id)
+        .bind(account_id)
+        .bind(&report.class)
+        .bind(Json(&report.party))
+        .bind(report.total_damage)
+        .bind(report.dps)
+        .bind(report.duration_seconds)
+        .bind(report.boss_kill_seconds)
+        .bind(Json(&report.abilities))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     }
     tx.commit().await.map_err(db)?;
     tracing::info!(
@@ -508,4 +592,84 @@ pub async fn apply_loot(pool: &PgPool, delivery: &LootDelivery) -> Result<bool, 
         tracing::warn!(loot_id = %delivery.loot_id, item = %delivery.item, outcome, "dungeon loot not delivered");
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_realm::meter::{DamageReport, ReportAbility, ReportMember};
+
+    fn result(success: bool, report: Option<DamageReport>) -> DungeonResult {
+        DungeonResult {
+            result_id: "12:acct".into(),
+            account_id: "acct".into(),
+            character_id: String::new(),
+            dungeon_id: "graveyard_crypt".into(),
+            success,
+            duration_us: 1,
+            experience: 0,
+            key_level: 3,
+            key_owner: false,
+            key_level_after: 0,
+            resources: Vec::new(),
+            damage_report: report,
+        }
+    }
+
+    fn report() -> DamageReport {
+        DamageReport {
+            party: vec![
+                ReportMember {
+                    account_id: "other".into(),
+                    character_name: "Bo".into(),
+                    class: "Warrior".into(),
+                    role: "tank".into(),
+                },
+                ReportMember {
+                    account_id: "acct".into(),
+                    character_name: "Ash".into(),
+                    class: "Fire Mage".into(),
+                    role: "dps".into(),
+                },
+            ],
+            total_damage: 5000,
+            dps: 25.0,
+            duration_seconds: 200.0,
+            boss_kill_seconds: Some(20.0),
+            abilities: vec![ReportAbility {
+                ability: "Firebolt".into(),
+                damage: 5000,
+                casts: 40,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_completed_runs_report_becomes_a_row() {
+        let row = damage_report_row(&result(true, Some(report()))).expect("a row");
+        assert_eq!(row.instance_id, "12");
+        assert_eq!(row.class, "Fire Mage", "the player's own class, not the party's first");
+        assert_eq!(row.total_damage, 5000);
+        assert_eq!(row.boss_kill_seconds, Some(20.0));
+        assert_eq!(row.party.as_array().map(Vec::len), Some(2));
+        assert_eq!(row.abilities[0]["ability"], "Firebolt");
+    }
+
+    #[test]
+    fn no_report_or_a_failed_run_stores_nothing() {
+        assert!(damage_report_row(&result(true, None)).is_none());
+        assert!(damage_report_row(&result(false, Some(report()))).is_none());
+    }
+
+    #[test]
+    fn impossible_figures_are_dropped_not_stored() {
+        for bad in [f32::NAN, -1.0, f32::INFINITY] {
+            let mut r = report();
+            r.dps = bad;
+            assert!(damage_report_row(&result(true, Some(r))).is_none());
+            let mut r = report();
+            r.boss_kill_seconds = Some(bad);
+            assert!(damage_report_row(&result(true, Some(r))).is_none());
+        }
+    }
 }

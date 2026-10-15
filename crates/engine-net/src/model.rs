@@ -21,6 +21,7 @@ use engine_realm::combat::{
     CastState, CooldownState, EntityRef, Resources, StatusState, WireEvent,
 };
 use engine_realm::instance::InstanceState;
+use engine_realm::meter::MeterBlob;
 use engine_realm::party::{PartyState, ReadyResponse};
 
 /// This account, as the realm knows it.
@@ -331,6 +332,10 @@ pub enum RealmUpdate {
     CombatRemoved(String),
     /// What happened in one combat pass, in order.
     CombatEvents(Vec<WireEvent>),
+    /// One player's Recount figures inserted or changed.
+    MeterUpsert(String, Box<MeterBlob>),
+    /// One player's Recount row gone.
+    MeterRemoved(String),
     /// One notice arrived.
     NoticeAdded(Notice),
     /// One notice expired or was dismissed.
@@ -364,6 +369,11 @@ pub struct RealmMirror {
     pub combat: BTreeMap<String, PlayerCombatInfo>,
     /// Combat events not yet taken by the game, oldest first.
     pub events: Vec<WireEvent>,
+    /// Recount: every instance member's server-computed figures, by account id.
+    pub meter: BTreeMap<String, MeterBlob>,
+    /// Counts changes to [`RealmMirror::meter`] only (a few a second at most), so the window
+    /// that shows it rebuilds when its data changed rather than on every combat event.
+    pub meter_revision: u64,
     /// Unread notices, oldest first.
     pub notices: Vec<Notice>,
     /// Queue counts per dungeon id.
@@ -382,9 +392,10 @@ impl RealmMirror {
         self.revision = self.revision.wrapping_add(1);
         match update {
             RealmUpdate::Reset(mirror) => {
-                let revision = self.revision;
+                let (revision, meter_revision) = (self.revision, self.meter_revision);
                 *self = *mirror;
                 self.revision = revision;
+                self.meter_revision = meter_revision.wrapping_add(1);
             }
             RealmUpdate::Account(account) => self.account = account,
             RealmUpdate::Ticket(ticket) => self.ticket = ticket,
@@ -399,6 +410,8 @@ impl RealmMirror {
                     self.monsters.clear();
                     self.combat.clear();
                     self.events.clear();
+                    self.meter.clear();
+                    self.meter_revision = self.meter_revision.wrapping_add(1);
                 }
                 self.instance = instance;
             }
@@ -426,6 +439,14 @@ impl RealmMirror {
                 self.events.extend(events);
                 let excess = self.events.len().saturating_sub(4096);
                 self.events.drain(..excess);
+            }
+            RealmUpdate::MeterUpsert(account_id, blob) => {
+                self.meter.insert(account_id, *blob);
+                self.meter_revision = self.meter_revision.wrapping_add(1);
+            }
+            RealmUpdate::MeterRemoved(account_id) => {
+                self.meter.remove(&account_id);
+                self.meter_revision = self.meter_revision.wrapping_add(1);
             }
             RealmUpdate::NoticeAdded(notice) => {
                 if !self.notices.iter().any(|existing| existing.id == notice.id) {
@@ -573,6 +594,37 @@ mod tests {
             resources: vec![("crypt_dust".into(), 7)],
             loot_item: String::new(),
         }
+    }
+
+    fn blob(damage: u64) -> MeterBlob {
+        MeterBlob {
+            overall: engine_realm::meter::Summary {
+                damage,
+                seconds: 10.0,
+                ..Default::default()
+            },
+            ..MeterBlob::default()
+        }
+    }
+
+    #[test]
+    fn meter_rows_mirror_upserts_and_removals() {
+        let mut mirror = RealmMirror::default();
+        mirror.apply(RealmUpdate::MeterUpsert("a".into(), Box::new(blob(100))));
+        mirror.apply(RealmUpdate::MeterUpsert("b".into(), Box::new(blob(50))));
+        mirror.apply(RealmUpdate::MeterUpsert("a".into(), Box::new(blob(300))));
+        assert_eq!(mirror.meter.len(), 2);
+        assert_eq!(mirror.meter["a"].overall.damage, 300);
+        mirror.apply(RealmUpdate::MeterRemoved("b".into()));
+        assert_eq!(mirror.meter.keys().collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn leaving_the_instance_clears_the_meter() {
+        let mut mirror = RealmMirror::default();
+        mirror.apply(RealmUpdate::MeterUpsert("a".into(), Box::new(blob(100))));
+        mirror.apply(RealmUpdate::Instance(None));
+        assert!(mirror.meter.is_empty());
     }
 
     #[test]

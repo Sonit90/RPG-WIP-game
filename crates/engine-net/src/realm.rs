@@ -14,6 +14,7 @@ use engine_realm::combat::{
     StatusState, WireEvent,
 };
 use engine_realm::instance::InstanceState;
+use engine_realm::meter::MeterBlob;
 use engine_realm::movement::InputFrame;
 use engine_realm::party::{PartyState, ReadyResponse};
 use engine_realm::{ErrorCategory, RealmError, Role};
@@ -21,11 +22,12 @@ use spacetimedb_sdk::{DbContext, Table, TableWithPrimaryKey};
 
 use crate::bindings::{
     self as b, DbConnection, MyAccountTableAccess, MyChatTableAccess, MyCombatBatchesTableAccess,
-    MyInstanceMonstersTableAccess, MyInstancePlayersTableAccess, MyInstanceTableAccess,
-    MyNoticesTableAccess, MyPartyMembersTableAccess, MyPartyTableAccess, MyPlayerCombatTableAccess,
-    MyRunSummaryTableAccess, MyTicketTableAccess, QueuePopulationTableAccess, chat_send,
-    combat_act, dismiss_notice, move_input, party_insert_key, party_kick, party_leave, party_start,
-    party_transfer_leader, party_withdraw_key, queue_leave, ready_check_respond, server_time,
+    MyInstanceMeterTableAccess, MyInstanceMonstersTableAccess, MyInstancePlayersTableAccess,
+    MyInstanceTableAccess, MyNoticesTableAccess, MyPartyMembersTableAccess, MyPartyTableAccess,
+    MyPlayerCombatTableAccess, MyRunSummaryTableAccess, MyTicketTableAccess,
+    QueuePopulationTableAccess, chat_send, combat_act, dismiss_notice, move_input,
+    party_insert_key, party_kick, party_leave, party_start, party_transfer_leader,
+    party_withdraw_key, queue_leave, ready_check_respond, server_time,
 };
 use crate::config::RealmEndpoints;
 use crate::model::{
@@ -58,7 +60,7 @@ pub enum LinkSignal {
 }
 
 /// Every view the client subscribes to.
-const QUERIES: [&str; 13] = [
+const QUERIES: [&str; 14] = [
     "SELECT * FROM my_account",
     "SELECT * FROM my_ticket",
     "SELECT * FROM my_party",
@@ -72,6 +74,7 @@ const QUERIES: [&str; 13] = [
     "SELECT * FROM my_combat_batches",
     "SELECT * FROM my_run_summary",
     "SELECT * FROM my_chat",
+    "SELECT * FROM my_instance_meter",
 ];
 
 /// An open realm connection.
@@ -495,6 +498,27 @@ fn register_callbacks(connection: &DbConnection, events: &Sender<NetEvent>) {
         )));
     });
 
+    // Recount: the server's figures for every member of the instance. Rows that arrive with
+    // the subscription are state, not history, so they apply like any other.
+    let tx = events.clone();
+    db.my_instance_meter().on_insert(move |_, row| {
+        if let Some(update) = meter_update(row) {
+            let _ = tx.send(NetEvent::Realm(update));
+        }
+    });
+    let tx = events.clone();
+    db.my_instance_meter().on_update(move |_, _, row| {
+        if let Some(update) = meter_update(row) {
+            let _ = tx.send(NetEvent::Realm(update));
+        }
+    });
+    let tx = events.clone();
+    db.my_instance_meter().on_delete(move |_, row| {
+        let _ = tx.send(NetEvent::Realm(RealmUpdate::MeterRemoved(
+            row.account_id.clone(),
+        )));
+    });
+
     // Each batch once, as it is inserted. Batches already there when the subscription
     // applies are history and are not replayed.
     let tx = events.clone();
@@ -555,6 +579,12 @@ fn snapshot(db: &b::RemoteTables) -> RealmMirror {
             .map(|row| (row.account_id.clone(), player_combat(&row)))
             .collect(),
         events: Vec::new(),
+        meter: db
+            .my_instance_meter()
+            .iter()
+            .filter_map(|row| Some((row.account_id.clone(), meter_blob(&row)?)))
+            .collect(),
+        meter_revision: 0,
         notices: {
             let mut notices: Vec<Notice> = db.my_notices().iter().map(|row| notice(&row)).collect();
             notices.sort_by_key(|notice| notice.id);
@@ -575,6 +605,22 @@ fn snapshot(db: &b::RemoteTables) -> RealmMirror {
         run_summary: latest_run_summary(db),
         revision: 0,
     }
+}
+
+/// A Recount row's figures; `None` (and a warning) for text this build cannot read.
+fn meter_blob(row: &b::PlayerMeter) -> Option<MeterBlob> {
+    let blob = MeterBlob::from_json(&row.data);
+    if blob.is_none() {
+        log::warn!("realm: unreadable recount row for {}", row.account_id);
+    }
+    blob
+}
+
+fn meter_update(row: &b::PlayerMeter) -> Option<RealmUpdate> {
+    Some(RealmUpdate::MeterUpsert(
+        row.account_id.clone(),
+        Box::new(meter_blob(row)?),
+    ))
 }
 
 fn micros(timestamp: spacetimedb_sdk::Timestamp) -> i64 {

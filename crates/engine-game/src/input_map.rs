@@ -74,6 +74,11 @@ pub struct Bindings {
     /// collision is a key an action bar slot will one day share. The application reads the
     /// player's choice of it from `settings.cfg` and keeps this default if that collides.
     pub toggle_map: KeyCode,
+    /// Open and close the Recount window (combat statistics).
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key nothing can check for a
+    /// collision is a key an action bar slot will one day share.
+    pub recount: KeyCode,
     /// Restore the dummies and clear the combat session. A developer control.
     pub reset_dummies: KeyCode,
     /// The mouse button held to turn the camera, which also turns the character.
@@ -105,6 +110,8 @@ impl Default for Bindings {
             // F and G: the two keys next to the digits that nothing else in the game wants.
             extra_one: KeyCode::F,
             extra_two: KeyCode::G,
+            // O: free of the genre's fixed keys, the class's and the developer's.
+            recount: KeyCode::O,
             // Not `R`: that is the Ultimate. A developer control has no business taking a
             // key the class needs.
             reset_dummies: KeyCode::Backspace,
@@ -120,7 +127,7 @@ impl Bindings {
     /// ones. A test walks the whole list, which is what stops two actions from quietly
     /// sharing a key again.
     #[must_use]
-    pub fn named_keys(&self) -> [KeyCode; 15] {
+    pub fn named_keys(&self) -> [KeyCode; 16] {
         [
             self.toggle_map,
             self.interact,
@@ -136,6 +143,7 @@ impl Bindings {
             self.ultimate,
             self.character_sheet,
             self.mailbox,
+            self.recount,
             self.reset_dummies,
         ]
     }
@@ -168,6 +176,7 @@ impl Bindings {
             (self.extra_two, "THE SECOND EXTRA ABILITY"),
             (self.character_sheet, "THE CHARACTER SHEET"),
             (self.mailbox, "THE MAILBOX"),
+            (self.recount, "RECOUNT"),
             (self.toggle_map, "THE DUNGEON MAP"),
             (self.interact, "INTERACT"),
             (self.reset_dummies, "RESET DUMMIES"),

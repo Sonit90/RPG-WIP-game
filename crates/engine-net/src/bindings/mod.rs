@@ -31,6 +31,7 @@ pub mod move_input_reducer;
 pub mod my_account_table;
 pub mod my_chat_table;
 pub mod my_combat_batches_table;
+pub mod my_instance_meter_table;
 pub mod my_instance_monsters_table;
 pub mod my_instance_players_table;
 pub mod my_instance_table;
@@ -62,6 +63,7 @@ pub mod party_withdraw_key_reducer;
 pub mod pending_loot_type;
 pub mod pending_result_type;
 pub mod player_combat_type;
+pub mod player_meter_type;
 pub mod player_notice_type;
 pub mod presence_tag_type;
 pub mod queue_leave_reducer;
@@ -110,6 +112,7 @@ pub use move_input_reducer::move_input;
 pub use my_account_table::*;
 pub use my_chat_table::*;
 pub use my_combat_batches_table::*;
+pub use my_instance_meter_table::*;
 pub use my_instance_monsters_table::*;
 pub use my_instance_players_table::*;
 pub use my_instance_table::*;
@@ -141,6 +144,7 @@ pub use party_withdraw_key_reducer::party_withdraw_key;
 pub use pending_loot_type::PendingLoot;
 pub use pending_result_type::PendingResult;
 pub use player_combat_type::PlayerCombat;
+pub use player_meter_type::PlayerMeter;
 pub use player_notice_type::PlayerNotice;
 pub use presence_tag_type::PresenceTag;
 pub use queue_leave_reducer::queue_leave;
@@ -407,6 +411,7 @@ pub struct DbUpdate {
     my_chat: __sdk::TableUpdate<ChatLine>,
     my_combat_batches: __sdk::TableUpdate<CombatBatch>,
     my_instance: __sdk::TableUpdate<DungeonInstance>,
+    my_instance_meter: __sdk::TableUpdate<PlayerMeter>,
     my_instance_monsters: __sdk::TableUpdate<InstanceMonster>,
     my_instance_players: __sdk::TableUpdate<InstancePlayer>,
     my_notices: __sdk::TableUpdate<PlayerNotice>,
@@ -436,6 +441,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "my_instance" => db_update
                     .my_instance
                     .append(my_instance_table::parse_table_update(table_update)?),
+                "my_instance_meter" => db_update
+                    .my_instance_meter
+                    .append(my_instance_meter_table::parse_table_update(table_update)?),
                 "my_instance_monsters" => db_update.my_instance_monsters.append(
                     my_instance_monsters_table::parse_table_update(table_update)?,
                 ),
@@ -498,6 +506,9 @@ impl __sdk::DbUpdate for DbUpdate {
             .with_updates_by_pk(|row| &row.id);
         diff.my_instance =
             cache.apply_diff_to_table::<DungeonInstance>("my_instance", &self.my_instance);
+        diff.my_instance_meter = cache
+            .apply_diff_to_table::<PlayerMeter>("my_instance_meter", &self.my_instance_meter)
+            .with_updates_by_pk(|row| &row.identity);
         diff.my_instance_monsters = cache
             .apply_diff_to_table::<InstanceMonster>(
                 "my_instance_monsters",
@@ -542,6 +553,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_instance" => db_update
                     .my_instance
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "my_instance_meter" => db_update
+                    .my_instance_meter
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "my_instance_monsters" => db_update
                     .my_instance_monsters
@@ -595,6 +609,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "my_instance" => db_update
                     .my_instance
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "my_instance_meter" => db_update
+                    .my_instance_meter
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "my_instance_monsters" => db_update
                     .my_instance_monsters
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -641,6 +658,7 @@ pub struct AppliedDiff<'r> {
     my_chat: __sdk::TableAppliedDiff<'r, ChatLine>,
     my_combat_batches: __sdk::TableAppliedDiff<'r, CombatBatch>,
     my_instance: __sdk::TableAppliedDiff<'r, DungeonInstance>,
+    my_instance_meter: __sdk::TableAppliedDiff<'r, PlayerMeter>,
     my_instance_monsters: __sdk::TableAppliedDiff<'r, InstanceMonster>,
     my_instance_players: __sdk::TableAppliedDiff<'r, InstancePlayer>,
     my_notices: __sdk::TableAppliedDiff<'r, PlayerNotice>,
@@ -673,6 +691,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<DungeonInstance>(
             "my_instance",
             &self.my_instance,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<PlayerMeter>(
+            "my_instance_meter",
+            &self.my_instance_meter,
             event,
         );
         callbacks.invoke_table_row_callbacks::<InstanceMonster>(
@@ -1372,6 +1395,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         my_chat_table::register_table(client_cache);
         my_combat_batches_table::register_table(client_cache);
         my_instance_table::register_table(client_cache);
+        my_instance_meter_table::register_table(client_cache);
         my_instance_monsters_table::register_table(client_cache);
         my_instance_players_table::register_table(client_cache);
         my_notices_table::register_table(client_cache);
@@ -1387,6 +1411,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "my_chat",
         "my_combat_batches",
         "my_instance",
+        "my_instance_meter",
         "my_instance_monsters",
         "my_instance_players",
         "my_notices",

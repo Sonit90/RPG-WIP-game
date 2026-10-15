@@ -66,6 +66,7 @@ use engine_presentation::ui::frontend::{
     FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard,
     QueueCard, ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
 };
+use engine_presentation::ui::recount::{RecountRow, RecountScope};
 use engine_realm::api::{CharacterSummary, EconomyInfo};
 use engine_realm::catalog::Catalog;
 use engine_realm::combat::{AbilityRef, ActionKind, CombatAction, EntityRef, StatusState};
@@ -515,6 +516,48 @@ impl OnlineSession {
     #[must_use]
     pub fn in_hub(&self) -> bool {
         self.view.screen == Screen::Hub
+    }
+
+    /// A number that changes when the realm's Recount figures do (about once a second in a
+    /// fight): the window rebuilds its rows only then.
+    #[must_use]
+    pub fn recount_version(&self) -> u64 {
+        self.mirror.meter_revision
+    }
+
+    /// Whether a finished run's completion panel is up: the cue to show the whole-run tab.
+    #[must_use]
+    pub fn run_finished(&self) -> bool {
+        self.view.completion.is_some()
+    }
+
+    /// The party's Recount rows from the realm's meter: names and classes from the instance's
+    /// players, targets named by the monsters in the mirror. Empty outside an instance.
+    #[must_use]
+    pub fn recount_rows(&self) -> Vec<RecountRow> {
+        let target_name = |key: u64| {
+            self.mirror
+                .monsters
+                .get(&key)
+                .map_or_else(|| "Enemy".to_owned(), |monster| monster.name.clone())
+        };
+        self.mirror
+            .meter
+            .iter()
+            .map(|(account, blob)| {
+                let player = self.mirror.players.get(account);
+                let hero = player
+                    .and_then(|p| self.catalog.character(&p.definition_id))
+                    .map_or(engine_game::hero::Hero::Warrior, |d| d.hero);
+                RecountRow {
+                    account: account.clone(),
+                    name: player.map_or_else(|| "Unknown".to_owned(), |p| p.name.clone()),
+                    hero,
+                    overall: RecountScope::from_summary(&blob.overall, target_name),
+                    fight: RecountScope::from_summary(&blob.fight, target_name),
+                }
+            })
+            .collect()
     }
 
     /// Whether the pointer is over online interface.

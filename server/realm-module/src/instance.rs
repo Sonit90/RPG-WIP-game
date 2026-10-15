@@ -6,6 +6,7 @@
 //! instance id, and every view a client reads starts from the caller's own membership.
 
 use engine_realm::RealmError;
+use engine_realm::meter::ReportMember;
 use engine_realm::instance::{
     Countdown, InstanceState, MemberPresence, barrier_closed, should_clean_up,
 };
@@ -330,6 +331,43 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
     } else {
         Vec::new()
     };
+    // Recount: the statistics freeze here, and each player's report is built from what the
+    // server's simulation saw (aggregates only), then travels with their result.
+    let catalog = crate::level::catalog().ok();
+    let party: Vec<ReportMember> = ctx
+        .db
+        .instance_player()
+        .instance_id()
+        .filter(instance_id)
+        .map(|player| ReportMember {
+            class: catalog
+                .as_ref()
+                .and_then(|c| c.character(&player.definition_id))
+                .map_or_else(|| player.definition_id.clone(), |d| d.class.clone()),
+            role: engine_realm::Role::from(player.role).key().to_owned(),
+            account_id: player.account_id,
+            character_name: player.name,
+        })
+        .collect();
+    let (reports, meter_rows) = crate::combat::with_fight(ctx, &instance, |fight| {
+        let now = fight.time();
+        fight.meter_mut().finish(now);
+        let rows = fight.meter_rows(micros(ctx.timestamp), true);
+        let reports: Vec<(String, String)> = party
+            .iter()
+            .map(|member| {
+                let report = fight
+                    .meter()
+                    .damage_report(&member.account_id, party.clone())
+                    .map(|report| report.to_json())
+                    .unwrap_or_default();
+                (member.account_id.clone(), report)
+            })
+            .collect();
+        (reports, rows)
+    })
+    .unwrap_or_default();
+    crate::combat::write_meter(ctx, instance_id, meter_rows);
     for player in ctx.db.instance_player().instance_id().filter(instance_id) {
         let member = ctx.db.party_member().identity().find(player.identity);
         let result_id = format!("{instance_id}:{}", player.account_id);
@@ -379,6 +417,11 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             key_owner: is_owner,
             key_level_after,
             resources: resources.clone(),
+            damage_report: reports
+                .iter()
+                .find(|(account, _)| *account == player.account_id)
+                .map(|(_, report)| report.clone())
+                .unwrap_or_default(),
         });
         ctx.db.run_summary().insert(RunSummary {
             result_id: format!("{instance_id}:{}", player.account_id),
