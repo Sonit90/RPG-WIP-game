@@ -49,8 +49,8 @@ Override with `APP__OPS__ANOMALY__<KEY>`.
 | `min_boss_kill_seconds` | boss killed faster than this is flagged | 10 |
 | `list_limit` | rows per list | 20 |
 
-Damage checks read `game.dungeon_damage_reports` (migration `0006`). Nothing writes it yet
-(the realm does not report damage), so that panel is empty until a writer lands.
+Damage checks read `game.dungeon_damage_reports` (migration `0006`), written by the result
+bridge for completed runs (see [RECOUNT.md](RECOUNT.md)).
 
 ## Deploying
 

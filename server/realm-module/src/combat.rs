@@ -180,8 +180,46 @@ pub fn start(ctx: &ReducerContext, instance: &DungeonInstance) -> Result<(), Rea
         unlocked: false,
     });
     FIGHTS.with(|fights| fights.borrow_mut().insert(instance.id, fight));
-    with_fight(ctx, instance, |fight| project(ctx, instance.id, fight))?;
+    with_fight(ctx, instance, |fight| {
+        project(ctx, instance.id, fight);
+        write_meter(ctx, instance.id, fight.meter_rows(micros(ctx.timestamp), true));
+    })?;
     Ok(())
+}
+
+/// Writes the Recount rows `rows` (`(account, JSON)`) for `instance_id`: an insert for a
+/// player without a row, an update when the text differs, nothing otherwise.
+pub fn write_meter(ctx: &ReducerContext, instance_id: u64, rows: Vec<(String, String)>) {
+    if rows.is_empty() {
+        return;
+    }
+    let players: Vec<InstancePlayer> = ctx
+        .db
+        .instance_player()
+        .instance_id()
+        .filter(instance_id)
+        .collect();
+    for (account, data) in rows {
+        let Some(player) = players.iter().find(|p| p.account_id == account) else {
+            continue;
+        };
+        let row = PlayerMeter {
+            identity: player.identity,
+            instance_id,
+            account_id: account,
+            data,
+            updated_at: ctx.timestamp,
+        };
+        match ctx.db.instance_meter().identity().find(player.identity) {
+            Some(existing) if existing.data == row.data => {}
+            Some(_) => {
+                ctx.db.instance_meter().identity().update(row);
+            }
+            None => {
+                ctx.db.instance_meter().insert(row);
+            }
+        }
+    }
 }
 
 /// Runs `body` with `instance`'s fight, rebuilding it from the rows first if this module
@@ -265,6 +303,13 @@ fn rebuild(
     // The rebuilt fight dropped what no row holds (summoned monsters); its first projection
     // writes every row again, which removes them.
     fight.forget_written();
+    // The statistics are not in the tables' fight state; the rows the previous module instance
+    // projected carry them (to within a second), so the run's totals survive.
+    for row in ctx.db.instance_meter().instance_id().filter(instance.id) {
+        if let Some(blob) = engine_realm::meter::MeterBlob::from_json(&row.data) {
+            fight.meter_mut().seed(&row.account_id, &blob);
+        }
+    }
     log::warn!(
         "event=combat_rebuilt instance_id={} tick={} monsters={}",
         instance.id,
@@ -297,6 +342,16 @@ pub fn forget(ctx: &ReducerContext, instance_id: u64) {
         .collect();
     for id in batches {
         ctx.db.combat_batch().id().delete(id);
+    }
+    let meters: Vec<_> = ctx
+        .db
+        .instance_meter()
+        .instance_id()
+        .filter(instance_id)
+        .map(|row| row.identity)
+        .collect();
+    for identity in meters {
+        ctx.db.instance_meter().identity().delete(identity);
     }
 }
 
@@ -493,15 +548,18 @@ pub fn combat_tick(ctx: &ReducerContext, _timer: CombatTimer) -> Result<(), Stri
         let outcome = with_fight(ctx, &instance, |fight| {
             let events = fight.advance(u32::try_from(run).unwrap_or(0));
             project(ctx, instance.id, fight);
+            // Recount: at most once a second, and only rows whose text changed.
+            let meter_rows = fight.meter_rows(now, false);
             (
                 events,
                 fight.tick(),
                 fight.credited(),
                 fight.unlocked(),
                 fight.completed(),
+                meter_rows,
             )
         });
-        let (events, tick, credited, unlocked, completed) = match outcome {
+        let (events, tick, credited, unlocked, completed, meter_rows) = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
                 log::error!(
@@ -511,6 +569,7 @@ pub fn combat_tick(ctx: &ReducerContext, _timer: CombatTimer) -> Result<(), Stri
                 continue;
             }
         };
+        write_meter(ctx, instance.id, meter_rows);
         if !events.is_empty() {
             match serde_json::to_string(&events) {
                 Ok(json) => {

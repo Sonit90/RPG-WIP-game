@@ -32,6 +32,7 @@
 //! | [`key`] | dungeon keys: validity, progression, scaling |
 //! | [`modifiers`] | dungeon key modifiers: rolling, scaling, reroll, downgrade |
 //! | [`rewards`] | what a finished run pays |
+//! | [`meter`] | Recount: combat statistics from server events, and the persisted damage report |
 //! | [`matchmaking`] | which queued tickets become a party |
 //! | [`party`] | the party state machine, the ready check, who may do what |
 //! | [`instance`] | the dungeon instance lifecycle, countdown and barrier |
@@ -54,6 +55,7 @@ pub mod key;
 pub mod loadout;
 pub mod loot;
 pub mod matchmaking;
+pub mod meter;
 pub mod modifiers;
 pub mod movement;
 pub mod ops;

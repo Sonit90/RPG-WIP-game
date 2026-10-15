@@ -63,6 +63,7 @@ fn winning(account: Uuid, character: Uuid, key: &store::KeyRow, tag: &str) -> Du
         key_owner: true,
         key_level_after: key.level + 1,
         resources: vec![("crypt_dust".into(), 9)],
+        damage_report: None,
     }
 }
 
@@ -280,5 +281,72 @@ async fn character_key_and_loot_survive_a_refetch() {
         .inventory
         .iter()
         .any(|entry| entry.item == item));
+    drop_account(&pool, account).await;
+}
+
+/// A damage report for a run by `account`.
+fn report_for(account: Uuid) -> engine_realm::meter::DamageReport {
+    use engine_realm::meter::{DamageReport, ReportAbility, ReportMember};
+    DamageReport {
+        party: vec![ReportMember {
+            account_id: account.to_string(),
+            character_name: "Ash".into(),
+            class: "Fire Mage".into(),
+            role: "dps".into(),
+        }],
+        total_damage: 12_345,
+        dps: 61.7,
+        duration_seconds: 200.0,
+        boss_kill_seconds: Some(33.0),
+        abilities: vec![ReportAbility {
+            ability: "Firebolt".into(),
+            damage: 12_345,
+            casts: 50,
+        }],
+    }
+}
+
+async fn reports_of(pool: &PgPool, result_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM game.dungeon_damage_reports WHERE result_id = $1")
+        .bind(result_id)
+        .fetch_one(pool)
+        .await
+        .expect("count reports")
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_damage_report_is_stored_once_per_result_id() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, key) = first_character(&pool, account).await;
+    let mut run = winning(account, row.id, &key, "report");
+    run.damage_report = Some(report_for(account));
+
+    assert!(store::apply_result(&pool, &run).await.expect("first"));
+    assert_eq!(reports_of(&pool, &run.result_id).await, 1);
+    // The bridge re-delivers after a crash: the result is a no-op, so is its report.
+    assert!(!store::apply_result(&pool, &run).await.expect("second"));
+    assert_eq!(reports_of(&pool, &run.result_id).await, 1);
+    let (class, total): (String, i64) = sqlx::query_as(
+        "SELECT class, total_damage FROM game.dungeon_damage_reports WHERE result_id = $1",
+    )
+    .bind(&run.result_id)
+    .fetch_one(&pool)
+    .await
+    .expect("report row");
+    assert_eq!((class.as_str(), total), ("Fire Mage", 12_345));
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_result_without_a_report_stores_none() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, key) = first_character(&pool, account).await;
+    let run = winning(account, row.id, &key, "noreport");
+    assert!(store::apply_result(&pool, &run).await.expect("applies"));
+    assert_eq!(reports_of(&pool, &run.result_id).await, 0);
     drop_account(&pool, account).await;
 }

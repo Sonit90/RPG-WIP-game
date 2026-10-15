@@ -12,6 +12,7 @@
 //! so it needs no secret and no route to this service.
 
 use engine_realm::api::{DungeonResult, LootDelivery};
+use engine_realm::meter::DamageReport;
 use engine_realm::Role;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -80,6 +81,8 @@ struct PendingRow {
     key_level_after: u32,
     /// JSON text: `[["crypt_dust", 9], ...]`.
     resources: String,
+    /// JSON text of an `engine_realm::meter::DamageReport`; empty when there is none.
+    damage_report: String,
 }
 
 /// The resources a result row carries. Malformed text pays nothing (and says so).
@@ -91,6 +94,19 @@ fn parse_resources(text: &str, result_id: &str) -> Vec<(String, u32)> {
         tracing::warn!(result_id, error = %e, "result resources are malformed; paying none");
         Vec::new()
     })
+}
+
+/// The damage report a result row carries. Empty text is no report; malformed text is dropped
+/// (and says so) rather than failing the result, which still pays.
+fn parse_report(text: &str, result_id: &str) -> Option<DamageReport> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let report = DamageReport::from_json(text);
+    if report.is_none() {
+        tracing::warn!(result_id, "damage report is malformed; dropping it");
+    }
+    report
 }
 
 /// One `PendingLoot` row, positional like [`PendingRow`]: `server/realm-module/src/schema.rs`.
@@ -186,6 +202,7 @@ impl RealmBridge {
             .into_iter()
             .map(|row| DungeonResult {
                 resources: parse_resources(&row.resources, &row.result_id),
+                damage_report: parse_report(&row.damage_report, &row.result_id),
                 result_id: row.result_id,
                 account_id: row.account_id,
                 character_id: row.character_id,
@@ -266,7 +283,7 @@ mod tests {
 
     #[test]
     fn pending_rows_read_positionally() {
-        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]"]]"#;
+        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]",""]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert_eq!(rows[0].result_id, "12:acct");
         assert!(rows[0].success);
@@ -281,9 +298,26 @@ mod tests {
     }
 
     #[test]
+    fn a_row_carries_its_damage_report() {
+        let report = r#"{"party":[{"account_id":"acct","character_name":"Ash","class":"Fire Mage","role":"dps"}],"total_damage":1200,"dps":40.0,"duration_seconds":30.0,"boss_kill_seconds":12.5,"abilities":[{"ability":"Firebolt","damage":1200,"casts":10}]}"#;
+        let body = serde_json::json!([[
+            "12:acct", "acct", "char", "graveyard_crypt", 12, true, 5_000_000, 250, [1], 3, true,
+            4, "[]", report
+        ]])
+        .to_string();
+        let rows: Vec<PendingRow> = serde_json::from_str(&body).unwrap();
+        let parsed = parse_report(&rows[0].damage_report, "12:acct").expect("a report");
+        assert_eq!(parsed.total_damage, 1200);
+        assert_eq!(parsed.boss_kill_seconds, Some(12.5));
+        assert_eq!(parsed.abilities[0].ability, "Firebolt");
+        assert!(parse_report("", "r").is_none());
+        assert!(parse_report("{broken", "r").is_none());
+    }
+
+    #[test]
     fn a_non_owner_row_without_resources_reads() {
         let body =
-            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]"]]"#;
+            r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]",""]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert!(!rows[0].key_owner);
         assert!(parse_resources(&rows[0].resources, "12:b").is_empty());

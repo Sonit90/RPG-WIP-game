@@ -82,6 +82,8 @@ pub mod monster_playground;
 pub mod paint;
 /// The raid frames: one filled, rounded cell per member.
 pub mod raid_frame;
+/// Recount: the combat-statistics window, fed by the realm's meter or the local one.
+pub mod recount;
 pub mod screen;
 /// What a right click on an action bar slot opens.
 pub mod slot_menu;

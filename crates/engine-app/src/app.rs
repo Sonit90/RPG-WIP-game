@@ -74,6 +74,7 @@ use engine_presentation::ui::mailbox::{MailboxMenu, MailboxOutcome, push_mailbox
 use engine_presentation::ui::monster_playground::{
     PlaygroundAction, PlaygroundKeys, PlaygroundPanels,
 };
+use engine_presentation::ui::recount::{RecountOutcome, RecountRow, RecountWindow, push_recount};
 use engine_presentation::ui::slot_menu::{SlotMenu, SlotMenuOutcome, push_slot_menu};
 use engine_presentation::ui::talent_menu::{TalentMenu, TalentMenuOutcome, TalentTheme};
 use engine_presentation::ui::targeting::{GroundTargeting, TargetingOutcome};
@@ -436,6 +437,14 @@ pub struct App {
     item_tooltip: ItemTooltip,
     /// The mailbox window, opened from its corner button or the mailbox key.
     mailbox_menu: MailboxMenu,
+    /// Recount, opened from its corner button or the Recount key. Not modal.
+    recount: RecountWindow,
+    /// The realm's Recount version the window's rows were built from (online).
+    recount_version: Option<u64>,
+    /// Seconds until the offline rows are rebuilt from the local meter.
+    recount_timer: f32,
+    /// Whether the window was opened for the current run's completion panel.
+    recount_for_completion: bool,
     /// Development loot (sample mail, a spawned chest) is on the character: never written to
     /// the character file, so a screenshot run cannot leave letters in the player's save.
     dev_loot: bool,
@@ -1364,6 +1373,10 @@ impl App {
             character_scratch: String::with_capacity(64),
             item_tooltip: ItemTooltip::new(),
             mailbox_menu: MailboxMenu::with_scale(ui_scale),
+            recount: RecountWindow::with_scale(ui_scale),
+            recount_version: None,
+            recount_timer: 0.0,
+            recount_for_completion: false,
             dev_loot: args.sample_mail > 0 || args.spawn_chest,
             dev_open_chest: args.open_chest_after,
             loot_hud: LootHud::new(),
@@ -2182,6 +2195,7 @@ impl App {
         self.aura_pointer = None;
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
+        self.refresh_recount(ctx.time().real_delta().as_secs_f32());
 
         // Edit HUD, which replaces the interface's ordinary behaviour entirely. Nothing
         // below runs while it is on, which is what makes "a click that moves a bar cannot
@@ -2341,6 +2355,11 @@ impl App {
             return;
         }
 
+        // The Recount key. The window is not modal, so this does not end the frame.
+        if !chat_keys && ctx.input().was_key_pressed(self.bindings.recount) {
+            self.recount.toggle();
+        }
+
         // The mailbox key, on the same terms as the character key.
         if !chat_keys && ctx.input().was_key_pressed(self.bindings.mailbox) {
             if self.mailbox_menu.is_open() {
@@ -2406,6 +2425,25 @@ impl App {
                 }
                 TalentMenuOutcome::Idle | TalentMenuOutcome::Closed => {}
             }
+            return;
+        }
+
+        // Recount, a window that sits over the world: a click on it is its own.
+        match self.recount.update(&ui_input, viewport) {
+            RecountOutcome::Idle => {}
+            RecountOutcome::Consumed | RecountOutcome::Closed => {
+                self.hovered_ability = None;
+                self.hovered_slot = None;
+                if ui_input.pointer_pressed {
+                    return;
+                }
+            }
+        }
+        let recount_button = self.game_ui.recount_button_rect(viewport);
+        if ui_input.pointer_pressed
+            && recount_button.contains(ui_input.pointer.0, ui_input.pointer.1)
+        {
+            self.recount.toggle();
             return;
         }
 
@@ -2626,6 +2664,45 @@ impl App {
         self.hovered_ability = None;
         self.hovered_slot = None;
         self.character_menu.open();
+    }
+
+    /// Rebuilds Recount's rows when their source changed: the realm's meter when the version
+    /// moved (about once a second in a fight), the local meter four times a second offline. Also
+    /// opens the window on the whole-run tab when a run's completion panel comes up.
+    fn refresh_recount(&mut self, delta: f32) {
+        if let Some(online) = self.online.as_ref() {
+            let finished = online.run_finished();
+            if finished && !self.recount_for_completion {
+                self.recount.show_overall();
+            }
+            self.recount_for_completion = finished;
+            let version = online.recount_version();
+            if self.recount_version != Some(version) {
+                self.recount_version = Some(version);
+                self.recount.set_rows(online.recount_rows());
+            }
+            return;
+        }
+        self.recount_timer -= delta;
+        if self.recount_timer > 0.0 || !self.recount.is_open() {
+            return;
+        }
+        self.recount_timer = 0.25;
+        let simulation = &self.simulation;
+        let row = RecountRow::from_local(
+            "local",
+            "You",
+            simulation.hero(),
+            simulation.meter(),
+            |entity| {
+                simulation
+                    .enemy_name(entity)
+                    .map(str::to_owned)
+                    .or_else(|| simulation.world().label(entity).map(str::to_owned))
+                    .unwrap_or_else(|| "Target".to_owned())
+            },
+        );
+        self.recount.set_rows(vec![row]);
     }
 
     /// Opens the mailbox, closing whatever other window was up.
@@ -3581,6 +3658,7 @@ impl App {
         self.playground_panels.set_scale(scale);
         self.character_menu.set_scale(scale);
         self.mailbox_menu.set_scale(scale);
+        self.recount.set_scale(scale);
         self.slot_menu.set_scale(scale);
         self.hud_editor.layout(scale, self.renderer.size());
         if persist && self.settings.save_if_dirty() {
@@ -4075,6 +4153,12 @@ impl App {
         }
         self.push_affected_highlights(viewport);
         self.push_loot_ui(viewport);
+        push_recount(
+            self.game_ui.list_mut(),
+            &mut self.recount,
+            self.ui_pointer,
+            viewport,
+        );
         if self.scene.is_monsters() {
             self.playground_panels.push(
                 self.game_ui.list_mut(),
@@ -6304,6 +6388,13 @@ impl Application for App {
                 || self.hud_editor.is_active()
                 || self.slot_menu.is_open()
                 || self.dungeon_map.is_open()
+                || self.recount.wants_pointer(
+                    {
+                        let pointer = ctx.input().mouse_position();
+                        (pointer.0 as f32, pointer.1 as f32)
+                    },
+                    self.renderer.size(),
+                )
                 || self.online.as_ref().is_some_and(|online| {
                     online.wants_pointer(self.renderer.size(), self.game_ui.scale())
                 })

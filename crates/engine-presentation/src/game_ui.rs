@@ -1279,6 +1279,7 @@ impl GameUi {
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
         self.push_mailbox_button(snapshot, viewport);
+        self.push_recount_button(viewport);
         #[cfg(feature = "dev-tools")]
         self.push_dev_boss_button(viewport);
         self.push_cast_bar(snapshot, viewport);
@@ -1341,6 +1342,7 @@ impl GameUi {
         self.push_talent_button(snapshot, viewport);
         self.push_character_button(viewport);
         self.push_mailbox_button(snapshot, viewport);
+        self.push_recount_button(viewport);
         #[cfg(feature = "dev-tools")]
         self.push_dev_boss_button(viewport);
         // The player's cast bar is an arranged element too: wherever, and whatever size,
@@ -2278,6 +2280,35 @@ impl GameUi {
             self.metrics.talent_button_size,
             self.metrics.talent_button_size,
         )
+    }
+
+    /// Where the Recount button sits: beside the mailbox button, further left.
+    #[must_use]
+    pub fn recount_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let mailbox = self.mailbox_button_rect(viewport);
+        UiRect::new(
+            mailbox.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            mailbox.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// The Recount button, which opens the combat statistics window.
+    pub fn push_recount_button(&mut self, viewport: (u32, u32)) {
+        let rect = self.recount_button_rect(viewport);
+        self.list.rect(rect, self.theme.panel);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            self.theme.target_outline,
+        );
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "REC", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "O", self.theme.target_outline, 1.5, align);
     }
 
     /// The mailbox button, with a badge counting the letters not yet read.

@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use super::wire::{AbilityRef, EntityRef, WireEvent, encode};
 use crate::catalog::StartPoint;
 use crate::loadout::{Loadout, sheet_of};
+use crate::meter::{InstanceMeter, MeterProjector};
 use crate::movement::{Barrier, BarrierKind, InputFrame, barrier_label};
 
 /// Keys at and above this name monsters the fight summoned rather than the level placed.
@@ -336,6 +337,8 @@ pub struct CombatInstance {
     completed: Option<f32>,
     written: HashMap<u64, (MonsterState, u64)>,
     written_players: HashMap<String, (PlayerState, u64)>,
+    meter: InstanceMeter,
+    projector: MeterProjector,
 }
 
 impl CombatInstance {
@@ -407,6 +410,8 @@ impl CombatInstance {
             completed: None,
             written: HashMap::new(),
             written_players: HashMap::new(),
+            meter: InstanceMeter::new(players.iter().map(|p| p.account_id.clone())),
+            projector: MeterProjector::default(),
         };
         // Placed monsters, keyed by spawn order: the same level gives the same keys.
         let placed: Vec<EntityId> = instance.sim.enemies().map(|(entity, _)| entity).collect();
@@ -444,10 +449,10 @@ impl CombatInstance {
         state: &Restore,
     ) -> Self {
         let mut instance = Self::new(scene, players, barriers, key_scaling);
+        instance.tick_base = state.tick;
         if barrier_open {
             instance.open_start_barrier();
         }
-        instance.tick_base = state.tick;
         let records: HashMap<u64, &MonsterRecord> =
             state.monsters.iter().map(|m| (m.key, m)).collect();
         let placed: Vec<(u64, EntityId)> =
@@ -579,6 +584,9 @@ impl CombatInstance {
 
     /// Lifts the start barrier.
     pub fn open_start_barrier(&mut self) {
+        // The run's clock for the statistics starts when the barrier lifts.
+        let now = self.time();
+        self.meter.activate(now);
         if self.start_barrier.is_empty() {
             return;
         }
@@ -700,9 +708,42 @@ impl CombatInstance {
             }
             let events: Vec<CombatEvent> = self.sim.events().to_vec();
             let name = |entity: EntityId| self.name(entity);
+            let first = out.len();
             out.extend(events.iter().filter_map(|event| encode(event, &name)));
+            // The statistics read the same events, on the fight's own clock.
+            let now = self.time();
+            let engaged = self
+                .sim
+                .dungeon_run()
+                .is_some_and(engine_game::dungeon_run::DungeonRun::is_engaged);
+            self.meter.set_boss_engaged(now, engaged);
+            self.meter.observe(now, &out[first..]);
         }
         out
+    }
+
+    /// The fight's clock in seconds: ticks at 60 Hz, surviving a rebuild.
+    #[must_use]
+    pub fn time(&self) -> f64 {
+        self.tick() as f64 / 60.0
+    }
+
+    /// The run's statistics.
+    #[must_use]
+    pub fn meter(&self) -> &InstanceMeter {
+        &self.meter
+    }
+
+    /// The run's statistics, mutably: the realm marks them finished with this.
+    pub fn meter_mut(&mut self) -> &mut InstanceMeter {
+        &mut self.meter
+    }
+
+    /// The statistics rows worth writing at `now` (server microseconds): `(account, JSON)`.
+    /// Rate-limited to once a second and limited to rows whose text changed; `force` is for
+    /// the end of the run.
+    pub fn meter_rows(&mut self, now: crate::Micros, force: bool) -> Vec<(String, String)> {
+        self.projector.project(now, &mut self.meter, force)
     }
 
     fn key_new_monsters(&mut self) {
