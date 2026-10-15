@@ -267,7 +267,7 @@ impl Simulation {
                         self.announce_self_ability(entity, ability);
                     } else if let EnemyEffect::Charge { .. } = ability.definition().effect {
                         // A charge has no wind-up: the run starts on the tick it is chosen.
-                        let victim = recipient_of(ability, &percept);
+                        let victim = self.charge_recipient(entity, ability, &percept);
                         runtime.dash = self.begin_dash(entity, ability, victim);
                     } else {
                         let victim = recipient_of(ability, &percept);
@@ -532,6 +532,13 @@ impl Simulation {
                     // Every zone starts its own clock now, drawn from this moment.
                     for (anchor, shape, _, laid_on) in cast.zone_list() {
                         let follow = if definition.follow { laid_on } else { None };
+                        // A mark is a mark *on somebody*: one whose victim died or left
+                        // during the cast has nobody to follow and is not laid.
+                        if definition.follow
+                            && !follow.is_some_and(|victim| self.world.is_alive(victim))
+                        {
+                            continue;
+                        }
                         self.lay_strike(
                             entity,
                             cast.ability,
@@ -1023,9 +1030,12 @@ impl Simulation {
             return false;
         }
         // Between the ability's minimum and maximum: a leap is never aimed at somebody
-        // already standing in the monster's reach.
+        // already standing in the monster's reach. And in sight: a mark, an arrow or a leap
+        // picked on somebody behind a wall is a cast thrown away.
         self.describe_target(entity, candidate)
-            .is_some_and(|described| described.distance >= range.0 && described.distance <= range.1)
+            .is_some_and(|described| {
+                described.visible && described.distance >= range.0 && described.distance <= range.1
+            })
     }
 
     /// Fills the empty slots of `targets` with the nearest other hostiles in `range`.
@@ -1058,6 +1068,35 @@ impl Simulation {
                 None => break,
             }
         }
+    }
+
+    /// Who an instant charge runs at.
+    ///
+    /// A charge that selects [`EnemyTarget::Random`] (a pounce) leaps at a hostile chosen
+    /// from the simulation's seeded generator, between its minimum range and its range and
+    /// in sight, preferring anyone who is not the monster's current target. The brain only
+    /// knows its own victim, who is usually standing in its face: asking `recipient_of`
+    /// would send every pounce at the tank, or never fire it at all.
+    fn charge_recipient(
+        &mut self,
+        entity: EntityId,
+        ability: EnemyAbility,
+        percept: &AiPercept,
+    ) -> Option<AiTarget> {
+        let definition = ability.definition();
+        if definition.select == EnemyTarget::Random {
+            let exclude = percept.target.map(|target| target.entity);
+            let chosen = self.random_hostile(
+                entity,
+                (definition.min_range, definition.range),
+                exclude,
+                &[None; MAX_TARGETS],
+            );
+            if let Some(chosen) = chosen.and_then(|chosen| self.describe_target(entity, chosen)) {
+                return Some(chosen);
+            }
+        }
+        recipient_of(ability, percept)
     }
 
     /// The hostile furthest from `entity` it could still reach with anything.
@@ -1198,10 +1237,14 @@ impl Simulation {
             .then(|| self.most_wounded_ally(entity, heal_range))
             .flatten();
         // Likewise the furthest hostile: only a monster with a charge ready asks.
+        // Both a charge at the farthest and a leap at a random player (a random pick with a
+        // minimum range) need to know somebody is out there to run at.
         let charge_range = brain
             .abilities()
             .filter(|ability| {
-                ability.definition().select == EnemyTarget::Farthest
+                let definition = ability.definition();
+                (definition.select == EnemyTarget::Farthest
+                    || (definition.select == EnemyTarget::Random && definition.min_range > 0.0))
                     && brain.cooldown(*ability) <= 0.0
             })
             .map(|ability| ability.definition().range)
@@ -1632,6 +1675,9 @@ impl Simulation {
                     hits.push(candidate);
                 }
             }
+            // Burning ground is damage over time: flagged so the combat text draws a tick
+            // smaller than the hit that lit it, as it does for every other burn.
+            self.periodic_damage = true;
             for victim in &hits {
                 self.deal_damage(
                     hazard.owner,
@@ -1642,6 +1688,7 @@ impl Simulation {
                     false,
                 );
             }
+            self.periodic_damage = false;
             hits.clear();
             self.hits = hits;
         }
@@ -1972,6 +2019,11 @@ impl Simulation {
 /// what the brain aimed at and what combat resolves cannot be two different things.
 fn recipient_of(ability: EnemyAbility, percept: &AiPercept) -> Option<AiTarget> {
     match ability.definition().select {
+        // A random leap is aimed by `charge_recipient`; the farthest hostile is only the
+        // fallback if nothing could be picked.
+        EnemyTarget::Random if ability.definition().min_range > 0.0 => {
+            percept.farthest.or_else(|| percept.victim())
+        }
         EnemyTarget::Victim | EnemyTarget::Random => percept.victim(),
         EnemyTarget::WoundedAlly => percept.wounded_ally,
         EnemyTarget::Farthest => percept.farthest.or_else(|| percept.victim()),
