@@ -266,6 +266,8 @@ fn tenths(seconds: f64) -> f32 {
 #[derive(Debug, Clone)]
 struct PlayerAcc {
     account: String,
+    /// Left the run: still counted in the figures so far, no longer listed.
+    departed: bool,
     overall: Tally,
     fight: Tally,
     /// The ability cast most recently, with its time and whether the fight tally saw it: an
@@ -309,6 +311,7 @@ impl InstanceMeter {
                 .into_iter()
                 .map(|account| PlayerAcc {
                     account: account.into(),
+                    departed: false,
                     overall: Tally::default(),
                     fight: Tally::default(),
                     last_cast: None,
@@ -608,9 +611,22 @@ impl InstanceMeter {
         Some((self.boss_killed_at? - self.boss_engaged_at?).max(0.0))
     }
 
-    /// The accounts being measured, in the order they were given.
+    /// Marks `account` as having left the run. What they did stays in [`InstanceMeter::blob`]
+    /// and the persisted report; they are no longer in [`InstanceMeter::accounts`] or
+    /// [`InstanceMeter::blobs`], so nothing lists them as present or projects them again.
+    pub fn depart(&mut self, account: &str) {
+        if let Some(player) = self.players.iter_mut().find(|p| p.account == account) {
+            player.departed = true;
+            self.dirty = true;
+        }
+    }
+
+    /// The accounts being measured and present, in the order they were given.
     pub fn accounts(&self) -> impl Iterator<Item = &str> {
-        self.players.iter().map(|p| p.account.as_str())
+        self.players
+            .iter()
+            .filter(|p| !p.departed)
+            .map(|p| p.account.as_str())
     }
 
     /// One player's blob.
@@ -624,11 +640,12 @@ impl InstanceMeter {
         })
     }
 
-    /// Every player's blob, in the order they were given.
+    /// Every present player's blob, in the order they were given.
     #[must_use]
     pub fn blobs(&self) -> Vec<(String, MeterBlob)> {
         self.players
             .iter()
+            .filter(|p| !p.departed)
             .filter_map(|p| Some((p.account.clone(), self.blob(&p.account)?)))
             .collect()
     }

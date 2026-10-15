@@ -554,6 +554,11 @@ pub fn reconnect_party(endpoints: &RealmEndpoints) -> Outcome {
     )?;
 
     // The healer chooses Leave.
+    let healer = bots[1]
+        .session
+        .as_ref()
+        .map(|s| s.account_id.clone())
+        .unwrap_or_default();
     bots[1].send(NetCommand::LeaveParty);
     let left = drive(&mut bots, Duration::from_secs(10), |bots| {
         bots[1].mirror.party.is_none()
@@ -571,6 +576,30 @@ pub fn reconnect_party(endpoints: &RealmEndpoints) -> Outcome {
             .as_ref()
             .is_some_and(|i| i.state == InstanceState::Active),
         "the run continues for the rest",
+    )?;
+    // Their body left the fight with them: the others see no healer among the instance's
+    // players, and no monster is still fighting one.
+    let healer_ref = engine_realm::combat::EntityRef::Player(healer.clone());
+    let body_gone = drive(&mut bots[..1], Duration::from_secs(5), |bots| {
+        bots[0]
+            .mirror
+            .players
+            .values()
+            .all(|p| p.account_id != healer)
+            && bots[0]
+                .mirror
+                .combat
+                .values()
+                .all(|c| c.account_id != healer)
+            && bots[0]
+                .mirror
+                .monsters
+                .values()
+                .all(|m| m.target != healer_ref)
+    });
+    check(
+        body_gone,
+        "the leaver's body is gone from the fight for the rest",
     )?;
     refetch(&mut bots, Duration::from_secs(3));
     check(
@@ -1980,10 +2009,7 @@ pub fn modifiers(endpoints: &RealmEndpoints) -> Outcome {
     let spent = drive(&mut bots, Duration::from_secs(5), |bots| {
         bots[1].mirror.spend.as_ref().is_some_and(|s| s.spent == 1)
     });
-    check(
-        spent,
-        "the roller's spend row says one currency was spent",
-    )?;
+    check(spent, "the roller's spend row says one currency was spent")?;
     check(
         bots.iter().all(|b| {
             b.mirror

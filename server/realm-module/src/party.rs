@@ -520,8 +520,23 @@ pub fn depart(ctx: &ReducerContext, loaded: &Loaded, leaving: &PartyMember, how:
             {
                 crate::instance::settle_spend(ctx, &instance, Some(&leaving.account_id));
             }
+            // Their body leaves the fight with them (read before the rows go, so a rebuilt
+            // fight still knows who they were). A dropped connection never gets here: it
+            // only waits, and the janitor calls this once the grace has run out.
+            // A run with no fight (not started, already torn down) has nobody to remove.
+            if let Some(instance) = loaded
+                .party
+                .instance_id
+                .and_then(|id| ctx.db.dungeon_instance().id().find(id))
+            {
+                let _ = crate::combat::with_fight(ctx, &instance, |fight| {
+                    fight.remove_member(&leaving.account_id)
+                });
+            }
             ctx.db.party_member().identity().delete(leaving.identity);
             ctx.db.instance_player().identity().delete(leaving.identity);
+            ctx.db.player_combat().identity().delete(leaving.identity);
+            ctx.db.instance_meter().identity().delete(leaving.identity);
             let remaining: Vec<PartyMember> = loaded
                 .members
                 .iter()
