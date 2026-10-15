@@ -256,3 +256,73 @@ fn under_a_remote_authority_presses_go_to_the_server_and_nothing_is_decided_loca
     party.sim.present_health(enemy, before * 0.25, before);
     assert!((health(&party.sim, enemy) - before * 0.25).abs() < 1e-3);
 }
+
+#[test]
+fn removing_the_active_player_promotes_the_next_one_with_their_own_state() {
+    let mut party = party(EnemyKind::SkeletonWarrior, 60.0);
+    assert!(party.sim.remove_player(party.mage));
+    assert_eq!(party.sim.player_count(), 2);
+    assert!(!party.sim.is_player_entity(party.mage));
+    assert!(!party.sim.world().contains(party.mage));
+    assert_eq!(party.sim.player().entity, party.warrior);
+    assert_eq!(party.sim.hero(), Hero::Warrior);
+    assert_eq!(
+        party.sim.player_entities(),
+        vec![party.warrior, party.druid]
+    );
+    assert_eq!(
+        party.sim.with_player(party.druid, |s| s.hero()),
+        Some(Hero::Druid)
+    );
+    assert!(!party.sim.party().contains(party.mage));
+    run(&mut party.sim, 60);
+}
+
+#[test]
+fn the_last_player_cannot_be_removed() {
+    let mut party = party(EnemyKind::SkeletonWarrior, 60.0);
+    assert!(party.sim.remove_player(party.warrior));
+    assert!(party.sim.remove_player(party.druid));
+    assert!(!party.sim.remove_player(party.mage));
+    assert_eq!(party.sim.player_count(), 1);
+    assert!(party.sim.world().contains(party.mage));
+}
+
+#[test]
+fn a_removed_player_is_forgotten_by_the_enemies_and_the_wipe_check() {
+    let mut party = party(EnemyKind::SkeletonWarrior, 8.0);
+    let (enemy, mage, warrior) = (party.enemy, party.mage, party.warrior);
+    party
+        .sim
+        .push_command_for(party.druid, PlayerCommand::SelectTarget { entity: warrior });
+    party
+        .sim
+        .push_command(PlayerCommand::SelectTarget { entity: enemy });
+    party.sim.push_command(PlayerCommand::UseAbility(0));
+    run(&mut party.sim, 120);
+    assert!(
+        party
+            .sim
+            .brain(enemy)
+            .is_some_and(|b| b.threat().contains(mage))
+    );
+    assert!(party.sim.remove_player(mage));
+    assert!(
+        party
+            .sim
+            .brain(enemy)
+            .is_some_and(|b| !b.threat().contains(mage) && b.target() != Some(mage))
+    );
+    // A selection of a removed body is cleared everywhere.
+    assert!(party.sim.remove_player(warrior));
+    assert_eq!(
+        party.sim.with_player(party.druid, |s| s.player().target),
+        Some(None)
+    );
+    run(&mut party.sim, 120);
+    // Only the druid is left: a wipe is the druid down.
+    assert!(!party.sim.all_players_dead());
+    let full = health(&party.sim, party.druid);
+    party.sim.world_mut().damage(party.druid, full * 10.0);
+    assert!(party.sim.all_players_dead());
+}

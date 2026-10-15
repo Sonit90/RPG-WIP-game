@@ -658,3 +658,247 @@ fn the_operator_can_clear_half_the_dungeon_to_unlock_a_reroll() {
     // Asking again for the same share slays nobody more.
     assert_eq!(fight.slay_placed_until(0.5), 0);
 }
+
+fn accounts_in(fight: &mut CombatInstance) -> Vec<String> {
+    fight
+        .player_states()
+        .into_iter()
+        .map(|state| state.account_id)
+        .collect()
+}
+
+fn kill(fight: &mut CombatInstance, account: &str) {
+    let entity = fight
+        .resolve(&EntityRef::Player(account.into()))
+        .expect("a member");
+    fight.sim.world_mut().damage(entity, 1.0e7);
+}
+
+#[test]
+fn a_member_who_is_not_the_active_player_leaves_the_fight() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    fight.open_start_barrier();
+    let healer = fight
+        .resolve(&EntityRef::Player("healer".into()))
+        .expect("healer");
+    assert!(fight.remove_member("healer"));
+    assert!(!fight.remove_member("healer"), "only once");
+    assert!(!fight.remove_member("stranger"));
+    assert_eq!(accounts_in(&mut fight), ["tank", "dps"]);
+    assert!(fight.resolve(&EntityRef::Player("healer".into())).is_none());
+    assert!(!fight.simulation().world().contains(healer));
+    assert!(!fight.simulation().is_player_entity(healer));
+    assert_eq!(fight.simulation().player_count(), 2);
+    assert_eq!(
+        fight.act(
+            "healer",
+            &CombatAction {
+                target: EntityRef::None,
+                kind: ActionKind::Ability(0)
+            }
+        ),
+        Err(ActionError::NotInFight)
+    );
+    assert!(fight.apply_frames("healer", &[walk(1)]).is_none());
+    fight.advance(60);
+}
+
+#[test]
+fn the_active_first_member_can_leave_and_the_others_carry_on() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    fight.open_start_barrier();
+    let tank = fight
+        .resolve(&EntityRef::Player("tank".into()))
+        .expect("tank");
+    assert_eq!(fight.simulation().player().entity, tank);
+    assert!(fight.remove_member("tank"));
+    assert_eq!(accounts_in(&mut fight), ["healer", "dps"]);
+    assert!(!fight.simulation().world().contains(tank));
+    assert_ne!(fight.simulation().player().entity, tank);
+    // The classes stayed with their players.
+    let healer = fight
+        .resolve(&EntityRef::Player("healer".into()))
+        .expect("healer");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    assert_eq!(
+        fight.sim.with_player(healer, |s| s.hero()),
+        Some(Hero::Druid)
+    );
+    assert_eq!(
+        fight.sim.with_player(mage, |s| s.hero()),
+        Some(Hero::FireMage)
+    );
+    // The remaining players still move and act.
+    let (body, last) = fight.apply_frames("dps", &[walk(1), walk(2)]).expect("dps");
+    assert_eq!(last, 2);
+    assert!(body.position.z.is_finite());
+    fight.advance(60);
+    assert_eq!(accounts_in(&mut fight), ["healer", "dps"]);
+    // The last member stays.
+    assert!(fight.remove_member("healer"));
+    assert!(!fight.remove_member("dps"));
+    assert_eq!(accounts_in(&mut fight), ["dps"]);
+}
+
+#[test]
+fn monsters_that_fought_a_leaver_turn_on_whoever_is_left() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    fight.open_start_barrier();
+    let monster = fight.monster_states().into_iter().next().expect("monster");
+    let entity = fight
+        .resolve(&EntityRef::Monster(monster.key))
+        .expect("monster");
+    let tank = fight
+        .resolve(&EntityRef::Player("tank".into()))
+        .expect("tank");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    for (who, offset) in [(tank, 3.0), (mage, 6.0)] {
+        if let Some(body) = fight.sim.world_mut().body_mut(who) {
+            *body = Body::at(monster.position + Vec3::new(0.0, 0.0, offset));
+        }
+    }
+    fight.sim.apply_damage(
+        tank,
+        entity,
+        1.0,
+        AbilityId::from_fire(FireAbility::Firebolt),
+        DamageType::Fire,
+    );
+    fight.advance(60);
+    let target_of = |fight: &CombatInstance| {
+        fight
+            .monster_states()
+            .into_iter()
+            .find(|m| m.key == monster.key)
+            .map(|m| m.target)
+    };
+    assert_eq!(
+        target_of(&fight),
+        Some(EntityRef::Player("tank".into())),
+        "the one who pulled is fought"
+    );
+    assert!(fight.remove_member("tank"));
+    for _ in 0..4 {
+        fight.advance(30);
+        assert_ne!(
+            target_of(&fight),
+            Some(EntityRef::Player("tank".into())),
+            "nobody fights a body that is gone"
+        );
+    }
+    assert_eq!(
+        target_of(&fight),
+        Some(EntityRef::Player("dps".into())),
+        "the monster found the player still standing there"
+    );
+    let brain = fight.sim.brain(entity).expect("brain");
+    assert!(!brain.threat().contains(tank));
+}
+
+#[test]
+fn a_wipe_needs_only_the_remaining_players_down() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    fight.open_start_barrier();
+    assert!(fight.remove_member("healer"));
+    kill(&mut fight, "tank");
+    assert!(!fight.wiped(), "the mage stands");
+    kill(&mut fight, "dps");
+    assert!(fight.wiped(), "every remaining player is down");
+}
+
+#[test]
+fn a_run_completes_without_the_leaver_and_the_chest_is_not_theirs() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    fight.open_start_barrier();
+    assert!(fight.remove_member("tank"));
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    for _ in 0..400 {
+        slay_all(&mut fight, mage);
+        fight.advance(30);
+        if fight.completed().is_some() {
+            break;
+        }
+    }
+    assert!(fight.completed().is_some(), "the run completed");
+    assert!(fight.loot_of("dps").is_some());
+    assert!(fight.loot_of("healer").is_some());
+    assert!(fight.loot_of("tank").is_none(), "the leaver rolls nothing");
+    assert!(fight.loot_items_of("tank").is_empty());
+}
+
+#[test]
+fn the_meter_keeps_what_a_leaver_did_but_no_longer_lists_them() {
+    let (scene, barriers, players) = crypt();
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    fight.open_start_barrier();
+    let monster = fight.monster_states().into_iter().next().expect("monster");
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    if let Some(body) = fight.sim.world_mut().body_mut(mage) {
+        *body = Body::at(monster.position + Vec3::new(0.0, 0.0, 15.0));
+    }
+    fight
+        .act(
+            "dps",
+            &CombatAction {
+                target: EntityRef::Monster(monster.key),
+                kind: ActionKind::Ability(0),
+            },
+        )
+        .expect("a press");
+    fight.advance(180);
+    let before = fight.meter().blob("dps").expect("blob").overall.damage;
+    assert!(before > 0, "the mage did damage");
+    assert!(fight.remove_member("dps"));
+    let after = fight.meter().blob("dps").expect("still measured");
+    assert_eq!(after.overall.damage, before);
+    assert!(fight.meter().accounts().all(|a| a != "dps"));
+    assert!(fight.meter().blobs().iter().all(|(a, _)| a != "dps"));
+    let rows = fight.meter_rows(1_000_000_000, true);
+    assert!(rows.iter().all(|(account, _)| account != "dps"));
+    assert!(
+        fight
+            .meter()
+            .damage_report("dps", Vec::new())
+            .is_some_and(|report| report.total_damage == before)
+    );
+}
+
+#[test]
+fn a_restored_fight_does_not_bring_a_departed_member_back() {
+    let (scene, barriers, players) = crypt();
+    let remaining: Vec<PlayerSpec> = players
+        .into_iter()
+        .filter(|spec| spec.account_id != "healer")
+        .collect();
+    let state = Restore {
+        tick: 600,
+        players: vec![PlayerRecord {
+            account_id: "healer".into(),
+            body: Body::at(Vec3::ZERO),
+            health: 50.0,
+            last_seq: 3,
+        }],
+        ..Restore::default()
+    };
+    let mut rebuilt =
+        CombatInstance::restore(&scene, &remaining, &barriers, (1.0, 1.0), true, &state);
+    assert_eq!(accounts_in(&mut rebuilt), ["tank", "dps"]);
+    assert!(
+        rebuilt
+            .resolve(&EntityRef::Player("healer".into()))
+            .is_none()
+    );
+}

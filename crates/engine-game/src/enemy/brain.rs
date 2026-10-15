@@ -628,6 +628,17 @@ impl EnemyBrain {
         self.threat.add(attacker, amount);
     }
 
+    /// Forgets `entity` for good: its threat row, a taunt it held and the fight against it.
+    ///
+    /// For a player who has left the simulation rather than died. The next think chooses
+    /// among whoever is left, or finds nobody and walks home.
+    pub fn forget(&mut self, entity: EntityId) {
+        self.threat.remove(entity);
+        if self.target == Some(entity) {
+            self.target = None;
+        }
+    }
+
     /// Forces it to attack `taunter` for `seconds`, whatever its threat table says.
     ///
     /// Like [`EnemyBrain::add_threat`] it decides nothing by itself: the next think re-chooses

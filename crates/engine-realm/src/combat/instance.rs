@@ -685,6 +685,28 @@ impl CombatInstance {
             .collect()
     }
 
+    /// Takes `account` out of the fight: they left the run for good (a reconnect grace that
+    /// ran out is that too; a dropped connection alone is not). Returns whether they were here.
+    ///
+    /// Their body is despawned and the simulation forgets them (see
+    /// [`Simulation::remove_player`]): monsters re-target the others, a wipe needs only the
+    /// remaining players down, and later chest rolls and completion give them nothing. The
+    /// meter keeps what they did so far but stops listing them. A chest share already rolled
+    /// for them stays the realm's to settle. The last member cannot be removed.
+    pub fn remove_member(&mut self, account: &str) -> bool {
+        let Some(index) = self.members.iter().position(|m| m.account_id == account) else {
+            return false;
+        };
+        let entity = self.members[index].entity;
+        if !self.sim.remove_player(entity) {
+            return false;
+        }
+        self.members.remove(index);
+        self.written_players.remove(account);
+        self.meter.depart(account);
+        true
+    }
+
     /// Whether every player is down.
     #[must_use]
     pub fn wiped(&self) -> bool {

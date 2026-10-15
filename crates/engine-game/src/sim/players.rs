@@ -178,13 +178,48 @@ impl Simulation {
         let _ = self.with_slot(index, Simulation::refresh_character);
     }
 
-    /// Removes a player added with [`Simulation::add_player`]. The entity stays in the world;
-    /// the caller despawns it if the player has gone.
-    pub fn remove_player(&mut self, entity: EntityId) {
-        if let Some(index) = self.slot_index(entity) {
-            self.others.remove(index);
-            self.party.leave(entity);
+    /// Takes a player out of the simulation: their state, their body and every trace the rest
+    /// of the fight holds of them. Returns whether anyone was removed.
+    ///
+    /// Any player can go, the active one included: the first slot is *promoted* by trading its
+    /// state into the active fields (see [`Simulation::exchange`]), which leaves the leaver's
+    /// state in the slot, and the slot is dropped. The last player cannot be removed - the
+    /// simulation always has an active one - and `false` says so.
+    ///
+    /// What goes with them: the party seat, external movement, a beam they channelled, their
+    /// seeds, the ground and delayed zones they laid, every enemy's threat row and target for
+    /// them, every player's selection of them - enemies re-choose among whoever is left and a
+    /// wipe is judged on the remaining players only. Their body is despawned.
+    ///
+    /// Call it between ticks and from outside [`Simulation::with_player`]: while a player is
+    /// swapped in, the slots hold other players' state.
+    pub fn remove_player(&mut self, entity: EntityId) -> bool {
+        if self.player_count() < 2 || !self.is_player_entity(entity) {
+            return false;
         }
+        // A channel is announced ended while its owner is still known.
+        let _ = self.with_player(entity, |sim| sim.end_beam(crate::firemage::BeamEnd::Reset));
+        if self.player.entity == entity {
+            // Promote the first other player; the slot now holds the leaver and is dropped.
+            let Some(mut slot) = self.others.remove(0) else {
+                return false;
+            };
+            self.exchange(&mut slot);
+        } else if let Some(index) = self.slot_index(entity) {
+            self.others.remove(index);
+        }
+        self.party.leave(entity);
+        self.externally_moved.retain(|e| *e != entity);
+        self.seeds
+            .retain(|seed| seed.owner != entity && seed.target != entity);
+        self.clear_hazards_of(entity);
+        self.clear_strikes_of(entity);
+        for runtime in self.enemies.iter_mut().flatten() {
+            runtime.brain.forget(entity);
+        }
+        self.world.despawn(entity);
+        self.forget_target_everywhere(entity);
+        true
     }
 
     fn slot_index(&self, entity: EntityId) -> Option<usize> {
