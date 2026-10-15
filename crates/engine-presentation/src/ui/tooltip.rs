@@ -789,7 +789,7 @@ pub fn fill_aura(model: &mut TooltipModel, aura: &crate::aura::Aura) {
     model
         .section(SectionKind::Description)
         .text
-        .push_str(aura.kind.description());
+        .push_str(&aura.description());
 
     let section = model.section(SectionKind::Details);
     section.color = color::TEXT_SECONDARY;

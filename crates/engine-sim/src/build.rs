@@ -279,16 +279,16 @@ impl WarriorBuild {
     }
 }
 
-/// The Warrior's single-target build: Valor and Battle Fervor sooner, and the finisher.
+/// The Warrior's single-target build: a harder stomp, the finisher, and Battle Fervor kept up.
 #[must_use]
 pub fn warrior_burst_build() -> WarriorBuild {
     WarriorBuild::new(
         "Build A",
         &[
             WarriorTalent::UnbrokenMomentum,
+            WarriorTalent::Shockwave,
             WarriorTalent::Executioner,
             WarriorTalent::BloodiedValor,
-            WarriorTalent::RelentlessCharge,
             WarriorTalent::Unyielding,
         ],
     )

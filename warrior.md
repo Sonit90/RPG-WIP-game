@@ -279,11 +279,11 @@ are templates filled from the same numbers.
 | Talent (tier, cost) | Effect |
 |---|---|
 | Unbroken Momentum (1, 3) | Battle Fervor needs 4 Valor, not 5 (the Valor bar is four pips long). |
-| Shockwave (1, 3) | War Stomp's reach +40 % (both how far a target may be and the cone) and it applies one extra Sundered stack; Colossus Strike's damage, impact and bleed, -10 %. |
-| Executioner (2, 4) | Colossus Strike deals +60 % to a target under 35 % health, on the impact and on every bleed tick (read when the tick lands); its cooldown +2 s. |
+| Shockwave (1, 3) | War Stomp's reach +40 % (both how far a target may be and the cone), damage +30 % and one extra Sundered stack; its cooldown +1 s. |
+| Executioner (2, 4) | Colossus Strike deals +50 % to a target under 35 % health, on the impact and on every bleed tick (read when the tick lands); its cooldown +1 s. |
 | Bloodied Valor (2, 4) | The last tick of a Colossus Strike bleed that ran its whole course pays +1 Valor. Once per tick however many bleeds end together; a bleed cut short (target dead, dispelled) pays nothing. |
 | Fervent Guard (3, 4) | Battle Fervor per stack is +6 % damage dealt and -6 % damage taken, instead of +10 % / -3 %. |
-| Relentless Charge (3, 4) | Shield Charge holds two charges; its impact damage -25 %. |
+| Relentless Charge (3, 4) | Shield Charge holds two charges; its impact damage -10 %. |
 | Bulwark Rhythm (4, 5) | Every Battle Fervor stack gained (each fill of the bar, including a refresh at three stacks, and Unyielding's) takes 5 s off Shield Block's remaining cooldown. |
 | Unyielding (4, 5) | Last Stand immediately grants 2 stacks of Battle Fervor; its cooldown +30 s. |
 
@@ -294,7 +294,7 @@ Where the numbers land:
   by the `AbilityBook` beside the FireMage's talent effects, so every cooldown reader
   (the bar, the simulator) sees them; the Warrior's executor sets them whenever the grid
   changes.
-* **Fervent Guard** does not touch the status registry's Battle Fervor row (which states the
+* **Fervent Guard** (its aura tooltip prints the talent's numbers) does not touch the status registry's Battle Fervor row (which states the
   untalented 10 % / 3 %). `WarriorTalentEffects` gives the ratio of the two sets of numbers
   for the stacks held, and the two places damage multipliers are read (the damage pipeline
   and the effect readout) apply it for the Warrior only.

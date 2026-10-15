@@ -80,6 +80,12 @@ impl Simulation {
             &effects,
         );
         book.adjust(
+            FireAbility::WarStomp,
+            0,
+            fx.war_stomp_cooldown_extra,
+            &effects,
+        );
+        book.adjust(
             FireAbility::ColossusStrike,
             0,
             fx.colossus_cooldown_extra,
@@ -355,10 +361,11 @@ impl Simulation {
         }
         let stats = self.mage.stats();
         let source = self.player.entity;
+        let damage = definition.base_damage(&stats) * self.warrior_effects.war_stomp_damage_scale;
         let mut affected = 0;
         for index in 0..self.hits.len() {
             let target = self.hits[index];
-            self.strike(target, definition.base_damage(&stats), ability, true, 0.0);
+            self.strike(target, damage, ability, true, 0.0);
             if !self.world.is_alive(target) {
                 continue;
             }
@@ -391,14 +398,13 @@ impl Simulation {
         }
         let stats = self.mage.stats();
         let max_health = self.player_max_health();
-        let scale = self.warrior_effects.colossus_damage_scale;
-        let impact = definition.base_damage_with_health(&stats, max_health) * scale;
+        let impact = definition.base_damage_with_health(&stats, max_health);
         // The bleed's *coefficients*, not its damage: the flat half is decided now because
         // it is a share of attack power, and the health half is deliberately left as a
         // fraction so that every tick reads the Warrior's maximum health at the moment it
         // happens. See `Status::source_health_per_tick`.
-        let tick_flat = definition.base_tick_damage(&stats) * scale;
-        let tick_health = definition.warrior().tick_health_coefficient * scale;
+        let tick_flat = definition.base_tick_damage(&stats);
+        let tick_health = definition.warrior().tick_health_coefficient;
         let source = self.player.entity;
         let bleeding = self.bleed_targets();
         let mut affected = 0;

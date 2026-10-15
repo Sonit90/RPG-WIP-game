@@ -67,11 +67,12 @@ pub const DEFS: [TalentDef; 8] = [
         name: "SHOCKWAVE",
         tier: 1,
         cost: 3,
-        description: "WAR STOMP RADIUS +{radius_bonus%}% AND IT APPLIES {extra_stacks} EXTRA SUNDERED STACK. COLOSSUS STRIKE DAMAGE -{colossus_penalty%}%",
+        description: "WAR STOMP RADIUS +{radius_bonus%}%, DAMAGE +{damage_bonus%}% AND +{extra_stacks} SUNDERED STACK. ITS COOLDOWN +{cooldown_penalty} S",
         values: &[
             ("radius_bonus", 0.4),
+            ("damage_bonus", 0.3),
             ("extra_stacks", 1.0),
-            ("colossus_penalty", 0.1),
+            ("cooldown_penalty", 1.0),
         ],
     },
     TalentDef {
@@ -81,9 +82,9 @@ pub const DEFS: [TalentDef; 8] = [
         cost: 4,
         description: "COLOSSUS STRIKE DEALS +{bonus%}% TO TARGETS BELOW {threshold%}% HEALTH. ITS COOLDOWN +{cooldown_penalty} S",
         values: &[
-            ("bonus", 0.6),
+            ("bonus", 0.5),
             ("threshold", 0.35),
-            ("cooldown_penalty", 2.0),
+            ("cooldown_penalty", 1.0),
         ],
     },
     TalentDef {
@@ -108,7 +109,7 @@ pub const DEFS: [TalentDef; 8] = [
         tier: 3,
         cost: 4,
         description: "SHIELD CHARGE HAS {charges} CHARGES. ITS IMPACT DAMAGE -{impact_penalty%}%",
-        values: &[("charges", 2.0), ("impact_penalty", 0.25)],
+        values: &[("charges", 2.0), ("impact_penalty", 0.1)],
     },
     TalentDef {
         key: "bulwark_rhythm",
@@ -137,8 +138,10 @@ pub struct WarriorTalentEffects {
     pub war_stomp_range_scale: f32,
     /// Shockwave: Sundered stacks War Stomp applies beyond the first.
     pub war_stomp_extra_stacks: u8,
-    /// Shockwave: multiplier on Colossus Strike's damage, impact and bleed.
-    pub colossus_damage_scale: f32,
+    /// Shockwave: multiplier on War Stomp's damage.
+    pub war_stomp_damage_scale: f32,
+    /// Shockwave: seconds added to War Stomp's cooldown.
+    pub war_stomp_cooldown_extra: f32,
     /// Executioner: extra Colossus Strike damage against a target under the threshold, as a
     /// fraction. Zero: off.
     pub executioner_bonus: f32,
@@ -186,7 +189,8 @@ impl WarriorTalentEffects {
             valor_capacity: VALOR_MAX,
             war_stomp_range_scale: 1.0,
             war_stomp_extra_stacks: 0,
-            colossus_damage_scale: 1.0,
+            war_stomp_damage_scale: 1.0,
+            war_stomp_cooldown_extra: 0.0,
             executioner_bonus: 0.0,
             executioner_threshold: 0.0,
             colossus_cooldown_extra: 0.0,
@@ -206,7 +210,8 @@ impl WarriorTalentEffects {
         if on(Shockwave) {
             fx.war_stomp_range_scale = 1.0 + v(Shockwave, "radius_bonus");
             fx.war_stomp_extra_stacks = v(Shockwave, "extra_stacks").round().max(0.0) as u8;
-            fx.colossus_damage_scale = 1.0 - v(Shockwave, "colossus_penalty");
+            fx.war_stomp_damage_scale = 1.0 + v(Shockwave, "damage_bonus");
+            fx.war_stomp_cooldown_extra = v(Shockwave, "cooldown_penalty");
         }
         if on(Executioner) {
             fx.executioner_bonus = v(Executioner, "bonus");

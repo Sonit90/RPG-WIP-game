@@ -204,8 +204,25 @@ fn shockwave_widens_war_stomp_and_stacks_sundered_faster() {
 }
 
 #[test]
-fn shockwave_softens_colossus_strike_by_a_tenth() {
-    let hit = |talents: &[WarriorTalent]| {
+fn shockwave_hits_war_stomp_harder_and_slows_its_cooldown() {
+    let stomp = |talents: &[WarriorTalent]| {
+        let mut simulation = warrior_with(talents);
+        close_to_target(&mut simulation, 3.0);
+        simulation.cast(FireAbility::WarStomp).expect("in range");
+        (
+            damage_of(&simulation, FireAbility::WarStomp, false),
+            simulation
+                .mage()
+                .abilities
+                .recharge_remaining(FireAbility::WarStomp),
+        )
+    };
+    let (plain, plain_cooldown) = stomp(&[]);
+    let (wide, wide_cooldown) = stomp(&[WarriorTalent::Shockwave]);
+    assert!((wide / plain - 1.3).abs() < 0.02, "{}", wide / plain);
+    assert!((wide_cooldown - plain_cooldown - 1.0).abs() < 0.05);
+    // Colossus Strike is untouched.
+    let smash = |talents: &[WarriorTalent]| {
         let mut simulation = warrior_with(talents);
         close_to_target(&mut simulation, 3.0);
         simulation
@@ -213,8 +230,7 @@ fn shockwave_softens_colossus_strike_by_a_tenth() {
             .expect("self-cast");
         damage_of(&simulation, FireAbility::ColossusStrike, false)
     };
-    let ratio = hit(&[WarriorTalent::Shockwave]) / hit(&[]);
-    assert!((ratio - 0.9).abs() < 0.02, "{ratio}");
+    assert!((smash(&[WarriorTalent::Shockwave]) / smash(&[]) - 1.0).abs() < 0.01);
 }
 
 // ---------------------------------------------------------------------------- tier 2
@@ -241,12 +257,12 @@ fn executioner_hits_a_nearly_dead_target_harder_and_slows_the_cooldown() {
     };
     let (plain_impact, plain_tick, plain_cooldown) = hit(&[], 0.30);
     let (exec_impact, exec_tick, exec_cooldown) = hit(&[WarriorTalent::Executioner], 0.30);
-    assert!((exec_impact / plain_impact - 1.6).abs() < 0.02);
-    assert!(plain_tick > 0.0 && (exec_tick / plain_tick - 1.6).abs() < 0.02);
+    assert!((exec_impact / plain_impact - 1.5).abs() < 0.02);
+    assert!(plain_tick > 0.0 && (exec_tick / plain_tick - 1.5).abs() < 0.02);
     let cooldown = FireAbility::ColossusStrike.definition().cooldown;
     // Six seconds in (two of them past the impact) the plain strike has this much to go.
     assert!(
-        (exec_cooldown - plain_cooldown - 2.0).abs() < 0.05,
+        (exec_cooldown - plain_cooldown - 1.0).abs() < 0.05,
         "{plain_cooldown} then {exec_cooldown} of {cooldown}"
     );
 
@@ -367,7 +383,7 @@ fn relentless_charge_holds_two_charges_and_hits_softer() {
         total
     };
     let ratio = impact(&[WarriorTalent::RelentlessCharge]) / impact(&[]);
-    assert!((ratio - 0.75).abs() < 0.02, "{ratio}");
+    assert!((ratio - 0.9).abs() < 0.02, "{ratio}");
 }
 
 // ---------------------------------------------------------------------------- tier 4

@@ -923,6 +923,7 @@ impl GameUi {
                 duration: 12.0,
                 indefinite: false,
                 amount: 0.0,
+                talented: false,
             }
         }
         const BUFFS: [Aura; 10] = [
