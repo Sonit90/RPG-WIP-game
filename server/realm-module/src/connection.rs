@@ -133,8 +133,21 @@ pub fn client_connected(ctx: &ReducerContext) -> Result<(), String> {
         ctx.db.party_member().identity().update(PartyMember {
             presence: PresenceTag::Present,
             disconnected_at: None,
-            ..member
+            ..member.clone()
         });
+        // The others close their "has disconnected" panel (their view of the member is present
+        // again) and are told who is back.
+        for other in ctx.db.party_member().party_id().filter(member.party_id) {
+            if other.identity != member.identity {
+                notify(
+                    ctx,
+                    other.identity,
+                    "member_reconnected",
+                    NoticeLevel::Info,
+                    format!("{} reconnected.", member.character_name),
+                );
+            }
+        }
     }
     if let Some(player) = ctx.db.instance_player().identity().find(ctx.sender())
         && player.presence != PresenceTag::Present
@@ -193,9 +206,13 @@ pub fn client_disconnected(ctx: &ReducerContext) {
 
     if let Some(member) = ctx.db.party_member().identity().find(ctx.sender()) {
         let party_id = member.party_id;
+        // The grace the janitor will apply, written beside the timestamp so the party can
+        // count down to the same instant.
+        let grace = config(ctx).map_or(member.reconnect_grace_us, |c| c.reconnect_grace_us);
         ctx.db.party_member().identity().update(PartyMember {
             presence: PresenceTag::TemporarilyDisconnected,
             disconnected_at: Some(ctx.timestamp),
+            reconnect_grace_us: grace,
             ..member
         });
         if let Some(party) = ctx.db.party().id().find(party_id)

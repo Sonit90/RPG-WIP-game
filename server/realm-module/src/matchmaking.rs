@@ -157,6 +157,7 @@ pub fn matchmaking_tick(ctx: &ReducerContext, _timer: MatchmakingTimer) -> Resul
                 ready: ReadyTag::Pending,
                 presence: PresenceTag::Present,
                 disconnected_at: None,
+                reconnect_grace_us: config.reconnect_grace_us,
                 enqueued_at: ticket.enqueued_at,
                 slot: u8::try_from(slot).unwrap_or(u8::MAX),
             });

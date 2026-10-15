@@ -458,7 +458,7 @@ pub fn push_talent_menu(
     if menu.is_locked() {
         list.text_at(
             (panel.x + metrics.padding, panel.y + scale.px(44.0)),
-            "LOCKED: TALENTS CANNOT CHANGE WHILE YOU ARE IN A DUNGEON OR QUEUE",
+            "LOCKED FOR THIS RUN: TALENTS CANNOT CHANGE WHILE YOU ARE QUEUED, IN A PARTY OR IN A DUNGEON",
             theme.hover,
             scale.text(1.5),
         );

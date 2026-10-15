@@ -62,10 +62,10 @@ use engine_net::{
 use engine_presentation::RemoteFrame;
 use engine_presentation::ui::chat::{ChatEvent, ChatInput, ChatLineView, ChatPanel, ChatView};
 use engine_presentation::ui::frontend::{
-    BagRow, CharacterCard, CompletionCard, CompletionItem, DungeonCard, EnhanceCard, EnhanceCost,
-    EnhanceDetail, EnhanceTarget, EnhanceWorn, ExchangeRow, FieldKeys, FrontEndAction, FrontEndUi,
-    FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard, QueueCard,
-    ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
+    AwayMember, BagRow, CharacterCard, CompletionCard, CompletionItem, DungeonCard, EnhanceCard,
+    EnhanceCost, EnhanceDetail, EnhanceTarget, EnhanceWorn, ExchangeRow, FieldKeys, FrontEndAction,
+    FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard,
+    QueueCard, ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
 };
 use engine_presentation::ui::modifiers::{ModifierLine, ModifierPanelView, Reveal};
 use engine_presentation::ui::recount::{RecountRow, RecountScope};
@@ -77,6 +77,7 @@ use engine_realm::loadout::SlotRef;
 use engine_realm::matchmaking::MatchmakingConfig;
 use engine_realm::movement::{BarrierKind, MovementRules, barriers_of};
 use engine_realm::party::{PartyState, ReadyResponse};
+use engine_realm::reconnect::SeenMember;
 use engine_realm::{ErrorCategory, Role};
 use engine_render_data::ui::{UiDrawList, UiIcon, UiScale};
 
@@ -1421,6 +1422,12 @@ impl OnlineSession {
                 self.stage = Screen::Hub;
             }
             FrontEndAction::ReturnToHub => self.return_to_hub(),
+            FrontEndAction::StageSalvage(_)
+            | FrontEndAction::SalvageTray
+            | FrontEndAction::Enhance
+            | FrontEndAction::DowngradeKey
+            | FrontEndAction::CleanseKey
+                if self.refuse_while_engaged() => {}
             FrontEndAction::StageSalvage(index) => {
                 if !self.salvage_tray.contains(&index)
                     && self.salvage_tray.len() < self.salvage_slots()
@@ -1489,6 +1496,16 @@ impl OnlineSession {
                 }
             }
         }
+    }
+
+    /// Salvage, enhancement and key changes are locked while the realm holds a snapshot of the
+    /// character (queued, in a party, in a run). The API refuses them too; this says so first.
+    fn refuse_while_engaged(&mut self) -> bool {
+        if !self.mirror.is_engaged() {
+            return false;
+        }
+        self.toast(StatusLevel::Warning, engine_realm::api::ENGAGED_MESSAGE);
+        true
     }
 
     /// Whether the Dungeon Finder may be opened: not while searching, grouped or saving.
@@ -2286,6 +2303,7 @@ impl OnlineSession {
             });
         }
         let toasts = toasts.into_iter().rev().take(4).rev().collect();
+        let away = self.away_members(now);
         FrontEndView {
             screen,
             connection,
@@ -2306,7 +2324,41 @@ impl OnlineSession {
             countdown,
             reconnecting,
             toasts,
+            away,
         }
+    }
+
+    /// The party members to wait for, from the realm's own timestamps (see
+    /// `engine_realm::reconnect`). Empty outside a run.
+    fn away_members(&self, now: i64) -> Vec<AwayMember> {
+        let (Some(party), Some(me)) = (self.mirror.party.as_ref(), self.mirror.my_account_id())
+        else {
+            return Vec::new();
+        };
+        let seen: Vec<SeenMember> = self
+            .mirror
+            .members
+            .iter()
+            .map(|m| SeenMember {
+                account: m.account_id.clone(),
+                present: m.present,
+                disconnected_at: m.disconnected_at,
+                grace: m.reconnect_grace,
+            })
+            .collect();
+        engine_realm::reconnect::prompt_for(party.state, me, &seen, now)
+            .into_iter()
+            .map(|waiting| AwayMember {
+                name: self
+                    .mirror
+                    .members
+                    .iter()
+                    .find(|m| m.account_id == waiting.account)
+                    .map_or_else(|| waiting.account.clone(), |m| m.character_name.clone()),
+                key: waiting.key,
+                seconds_left: waiting.seconds_left,
+            })
+            .collect()
     }
 
     /// Shows each server notice for a few seconds, then dismisses it on the server.

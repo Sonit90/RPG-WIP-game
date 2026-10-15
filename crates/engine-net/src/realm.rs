@@ -736,6 +736,8 @@ fn member(row: b::PartyMember) -> MemberInfo {
             b::ReadyTag::Declined => ReadyResponse::Declined,
         },
         present: matches!(row.presence, b::PresenceTag::Present),
+        disconnected_at: row.disconnected_at.map(micros),
+        reconnect_grace: row.reconnect_grace_us,
         slot: row.slot,
     }
 }

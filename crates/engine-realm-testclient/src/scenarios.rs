@@ -425,6 +425,227 @@ pub fn reconnect(endpoints: &RealmEndpoints) -> Outcome {
     Ok(())
 }
 
+/// Everything about a character that a run snapshots, as one comparable string: the API's
+/// stored equipment and bag, its talents, and its gear score.
+fn configuration_of(bot: &mut Bot, wait: Duration) -> String {
+    let Some(id) = bot.character().map(|c| c.id.clone()) else {
+        return String::new();
+    };
+    bot.detail = None;
+    bot.send(NetCommand::FetchCharacter(id));
+    drive(std::slice::from_mut(bot), wait, |bots| {
+        bots[0].detail.is_some()
+    });
+    bot.detail.as_ref().map_or_else(String::new, |detail| {
+        format!(
+            "{:?}|{:?}|{:?}|{}",
+            detail.summary.equipment, detail.inventory, detail.talents, detail.summary.gear_score
+        )
+    })
+}
+
+/// A party member drops during combat and the others are told; one of them leaves and is
+/// safely back in the hub, nothing of theirs touched, the run going on for the rest; the
+/// dropped member returns to the same instance with the configuration the run was locked with.
+///
+/// The boss encounter itself is not scripted: nothing in the realm's admin surface walks a
+/// party to the boss (`admin_finish_instance` ends a run, it does not engage it). Presence is a
+/// column on the player row and the fight keeps ticking whatever it is doing, so the engaged
+/// boss takes the same path; it is checked by hand.
+pub fn reconnect_party(endpoints: &RealmEndpoints) -> Outcome {
+    log::info!("scenario: reconnect_party");
+    let tag = run_tag();
+    let mut bots = trio(&tag, "rejoin", endpoints, false, true)?;
+    drive(&mut bots, Duration::from_secs(45), all_active);
+    check(all_active(&bots), "the run became active")?;
+    // The baseline: each character's key and currency as the API has them.
+    refetch(&mut bots, Duration::from_secs(3));
+    let keys: Vec<u32> = bots.iter().map(key_level_of).collect();
+    let resources: Vec<Vec<(String, u64)>> = bots
+        .iter()
+        .map(|b| {
+            b.character()
+                .map(|c| c.resources.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+
+    // Locked configuration: while engaged the API refuses every change.
+    let token = bots[0]
+        .acquire_probe_token(endpoints)
+        .map_err(|e| e.message)?;
+    let id = bots[0]
+        .character()
+        .map(|c| c.id.clone())
+        .unwrap_or_default();
+    let head = serde_json::json!({"kind": "equipment", "slot": "head"});
+    let locked: [(&str, String, serde_json::Value); 6] = [
+        (
+            "POST",
+            format!("/api/v1/characters/{id}/equipment/move"),
+            serde_json::json!({"from": head, "to": {"kind": "inventory", "index": 0}}),
+        ),
+        (
+            "POST",
+            format!("/api/v1/characters/{id}/salvage"),
+            serde_json::json!({"indices": [0]}),
+        ),
+        (
+            "POST",
+            format!("/api/v1/characters/{id}/enhance"),
+            serde_json::json!({"slot": head}),
+        ),
+        (
+            "POST",
+            format!("/api/v1/characters/{id}/key/downgrade"),
+            serde_json::Value::Null,
+        ),
+        (
+            "POST",
+            format!("/api/v1/characters/{id}/key/cleanse"),
+            serde_json::Value::Null,
+        ),
+        (
+            "PUT",
+            format!("/api/v1/characters/{id}/talents"),
+            serde_json::json!({"talents": []}),
+        ),
+    ];
+    for (method, path, body) in &locked {
+        let status = call_api(endpoints, &token, method, path, body);
+        check(
+            status == 409,
+            &format!("{method} {path} is refused while engaged ({status})"),
+        )?;
+    }
+    let before_dps = configuration_of(&mut bots[2], Duration::from_secs(3));
+
+    // The dps drops mid-run.
+    let gone = bots.remove(2);
+    let account = gone
+        .session
+        .as_ref()
+        .map(|s| s.account_id.clone())
+        .unwrap_or_default();
+    let instance = gone.mirror.instance.as_ref().map(|i| i.id);
+    let position = gone.mirror.me().map(|p| p.position);
+    let max_health = gone.mirror.me().map(|p| p.max_health);
+    let gear_score = gone.mirror.my_membership().map(|m| m.gear_score);
+    let config = gone.config.clone();
+    drop(gone);
+
+    let noticed = drive(&mut bots, Duration::from_secs(10), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .members
+                .iter()
+                .any(|m| m.account_id == account && !m.present && m.disconnected_at.is_some())
+        })
+    });
+    check(noticed, "the others see the member disconnected, with when")?;
+    check(
+        bots.iter().all(|b| {
+            b.mirror
+                .members
+                .iter()
+                .any(|m| m.account_id == account && m.reconnect_grace > 0)
+        }),
+        "and how long their place is held",
+    )?;
+
+    // The healer chooses Leave.
+    bots[1].send(NetCommand::LeaveParty);
+    let left = drive(&mut bots, Duration::from_secs(10), |bots| {
+        bots[1].mirror.party.is_none()
+            && bots[1].mirror.instance.is_none()
+            && bots[0].mirror.members.len() == 2
+    });
+    check(
+        left,
+        "the leaver is out of the party and the instance (the hub)",
+    )?;
+    check(
+        bots[0]
+            .mirror
+            .instance
+            .as_ref()
+            .is_some_and(|i| i.state == InstanceState::Active),
+        "the run continues for the rest",
+    )?;
+    refetch(&mut bots, Duration::from_secs(3));
+    check(
+        key_level_of(&bots[1]) == keys[1],
+        "the leaver's key is untouched",
+    )?;
+    check(
+        bots[1]
+            .character()
+            .map(|c| c.resources.clone())
+            .unwrap_or_default()
+            == resources[1],
+        "the leaver lost no currency",
+    )?;
+    check(
+        key_level_of(&bots[0]) == keys[0],
+        "the key owner's key is untouched",
+    )?;
+
+    // The dropped member returns.
+    let mut back = Bot::start(
+        BotConfig {
+            queue: false,
+            ..config
+        },
+        endpoints,
+    )
+    .map_err(|e| e.message)?;
+    let resumed = drive(
+        std::slice::from_mut(&mut back),
+        Duration::from_secs(20),
+        |bots| {
+            bots[0].mirror.instance.as_ref().map(|i| i.id) == instance
+                && bots[0].mirror.me().is_some()
+        },
+    );
+    check(resumed, "the dropped member resumed in the same instance")?;
+    let now = back.mirror.me().map(|p| (p.position, p.max_health));
+    check(
+        matches!((position, now), (Some(a), Some((b, _))) if (a - b).length() < 1.0),
+        "at the position they left",
+    )?;
+    check(
+        now.map(|(_, health)| health) == max_health,
+        "with the same maximum health",
+    )?;
+    check(
+        back.mirror.my_membership().map(|m| m.gear_score) == gear_score,
+        "and the gear score the run was locked with",
+    )?;
+    refetch(std::slice::from_mut(&mut back), Duration::from_secs(3));
+    check(
+        configuration_of(&mut back, Duration::from_secs(3)) == before_dps,
+        "equipment, bag and talents are what they were",
+    )?;
+    bots.push(back);
+    let present = drive(&mut bots, Duration::from_secs(5), |bots| {
+        bots.iter().all(|b| {
+            b.mirror
+                .members
+                .iter()
+                .find(|m| m.account_id == account)
+                .is_some_and(|m| m.present && m.disconnected_at.is_none())
+        })
+    });
+    check(present, "the party sees them present again (prompt closes)")?;
+    for bot in bots.iter().filter(|b| b.mirror.party.is_some()) {
+        bot.send(NetCommand::LeaveParty);
+    }
+    drive(&mut bots, Duration::from_secs(2), |bots| {
+        bots.iter().all(|b| b.mirror.party.is_none())
+    });
+    Ok(())
+}
+
 /// Calls a realm function over SpacetimeDB's HTTP API, the way any HTTP client could.
 fn call_realm(
     endpoints: &RealmEndpoints,
@@ -471,6 +692,10 @@ fn call_api(
             .get(url)
             .header("Authorization", format!("Bearer {token}"))
             .call(),
+        "PUT" => agent
+            .put(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send_json(body),
         _ => agent
             .post(url)
             .header("Authorization", format!("Bearer {token}"))

@@ -299,6 +299,9 @@ pub struct CharacterMenu {
     hovered: Option<ItemSlot>,
     drag: Option<Drag>,
     refused: Option<ItemSlot>,
+    /// The character is committed to a run (queued, in a party, in a dungeon): the sheet shows
+    /// the locked configuration and moves nothing.
+    locked: bool,
     metrics: CharacterMetrics,
 }
 
@@ -323,8 +326,24 @@ impl CharacterMenu {
             hovered: None,
             drag: None,
             refused: None,
+            locked: false,
             metrics: CharacterMetrics::new(scale),
         }
+    }
+
+    /// Locks or unlocks the sheet. Set every frame by the application from what the realm says;
+    /// a locked sheet is read-only: it starts no drag and emits no move.
+    pub fn set_locked(&mut self, locked: bool) {
+        self.locked = locked;
+        if locked {
+            self.drag = None;
+        }
+    }
+
+    /// Whether the sheet is read-only.
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        self.locked
     }
 
     /// Lays the panel out at a new scale from here on.
@@ -452,6 +471,7 @@ impl CharacterMenu {
         // A right-click is the whole drag in one gesture: a bag item goes where it is worn,
         // a worn item goes to the bag.
         if input.secondary_pressed
+            && !self.locked
             && self.drag.is_none()
             && let Some(slot) = over
             && let Some(stack) = character.at(slot)
@@ -472,7 +492,8 @@ impl CharacterMenu {
         // Picking up: a press on a slot with something in it.
         if input.pointer_pressed {
             self.refused = None;
-            if let Some(slot) = over
+            if !self.locked
+                && let Some(slot) = over
                 && let Some(stack) = character.at(slot)
             {
                 let rect = self.slot_rect(slot, viewport);
@@ -807,6 +828,9 @@ pub fn average_item_level(character: &CharacterView) -> f32 {
     }
 }
 
+/// What the sheet's header says while the character is committed to a run.
+pub const LOCKED_BANNER: &str = "Locked for this run";
+
 /// Draws the character sheet, if it is open.
 ///
 /// `scratch` is the caller's, reused: the panel formats a dozen numbers every frame it is up
@@ -876,6 +900,17 @@ fn push_header(
         color::TEXT_TITLE,
         TextAlign::Left,
     );
+    if menu.is_locked() {
+        kit.text(
+            list,
+            panel.x + panel.width - metrics.padding,
+            centre,
+            LOCKED_BANNER,
+            type_scale::NAME,
+            color::AMBER,
+            TextAlign::Right,
+        );
+    }
 
     // The hero, in their colour, and what they are, quieter after it.
     let tint = hero_tint(character.hero);
@@ -1550,7 +1585,11 @@ fn push_footer(list: &mut UiDrawList, menu: &CharacterMenu, kit: &Kit, viewport:
         list,
         panel.x + metrics.padding,
         panel.bottom() - metrics.padding - metrics.footer * 0.25,
-        "Drag an item onto a slot to equip it  -  Right-click to equip or unequip  -  Esc closes",
+        if menu.is_locked() {
+            "Equipment is read-only while you are queued, in a party or in a dungeon  -  Esc closes"
+        } else {
+            "Drag an item onto a slot to equip it  -  Right-click to equip or unequip  -  Esc closes"
+        },
         type_scale::META,
         color::TEXT_MUTED,
         TextAlign::Left,
@@ -2005,6 +2044,47 @@ mod tests {
                 from: ItemSlot::Equipment(EquipSlot::Feet),
                 to: ItemSlot::Inventory(_),
             }
+        ));
+    }
+
+    #[test]
+    fn a_locked_sheet_says_so_and_moves_nothing() {
+        let snapshot = snapshot();
+        let mut menu = open();
+        menu.set_locked(true);
+        assert!(texts(&render(&menu, &snapshot)).contains(&LOCKED_BANNER.to_owned()));
+        let mut unlocked = open();
+        unlocked.set_locked(false);
+        assert!(!texts(&render(&unlocked, &snapshot)).contains(&LOCKED_BANNER.to_owned()));
+
+        // Right-click on a worn item: nothing.
+        let (x, y) = centre(menu.equipment_rect(EquipSlot::Feet, VIEWPORT));
+        assert_eq!(
+            menu.update(&right_click(x, y), &snapshot, VIEWPORT),
+            CharacterMenuOutcome::Idle
+        );
+        // A full drag from a worn item to the bag: no pick-up, no move.
+        let free = snapshot
+            .character
+            .inventory
+            .iter()
+            .position(Option::is_none)
+            .expect("a free bag cell");
+        assert_eq!(
+            menu.update(&press(x, y), &snapshot, VIEWPORT),
+            CharacterMenuOutcome::Idle
+        );
+        let (bx, by) = centre(menu.cell_rect(free, VIEWPORT));
+        assert_eq!(
+            menu.update(&release(bx, by), &snapshot, VIEWPORT),
+            CharacterMenuOutcome::Idle
+        );
+        // The same gesture unlocked does move it.
+        let mut open_menu = open();
+        open_menu.update(&press(x, y), &snapshot, VIEWPORT);
+        assert!(matches!(
+            open_menu.update(&release(bx, by), &snapshot, VIEWPORT),
+            CharacterMenuOutcome::Move { .. }
         ));
     }
 

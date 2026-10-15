@@ -639,6 +639,55 @@ async fn queue(
 mod tests {
     use super::*;
 
+    /// The text of the handler `name`, up to the next top-level item.
+    fn handler(name: &str) -> &'static str {
+        let source = include_str!("game.rs");
+        let start = source
+            .find(&format!("async fn {name}("))
+            .unwrap_or_else(|| panic!("no handler {name}"));
+        let rest = &source[start..];
+        let end = rest[1..]
+            .find("\nasync fn ")
+            .map_or(rest.len(), |at| at + 1);
+        &rest[..end]
+    }
+
+    /// Every route that changes what a run snapshots (equipment, talents, the key) asks the
+    /// realm whether the character is engaged before it writes. The decision itself is
+    /// `lock_decision` (tested in `realm-game`); this keeps a new or edited route from skipping
+    /// the question. Exchange and mail-read touch only resources and flags, and stay open.
+    #[test]
+    fn every_route_that_changes_the_snapshot_checks_the_lock() {
+        for direct in [
+            "move_item",
+            "enhance_with",
+            "downgrade_key",
+            "cleanse_key",
+            "save_talents",
+        ] {
+            assert!(
+                handler(direct).contains("ensure_unlocked("),
+                "{direct} must call ensure_unlocked"
+            );
+        }
+        for through_mail_change in ["take_mail", "salvage"] {
+            assert!(
+                handler(through_mail_change).contains("mail_change(&state, &user, &id, true,"),
+                "{through_mail_change} must lock through mail_change"
+            );
+        }
+        assert!(
+            handler("mail_change").contains("ensure_unlocked("),
+            "mail_change must check the lock when asked to"
+        );
+        for open in ["exchange", "read_mail"] {
+            assert!(
+                handler(open).contains("mail_change(&state, &user, &id, false,"),
+                "{open} is a resources/flags change and stays open"
+            );
+        }
+    }
+
     fn druid() -> engine_game::hero::Hero {
         realm_game::catalog()
             .character("druid")

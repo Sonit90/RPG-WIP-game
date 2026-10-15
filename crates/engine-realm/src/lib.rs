@@ -37,6 +37,7 @@
 //! | [`matchmaking`] | which queued tickets become a party |
 //! | [`party`] | the party state machine, the ready check, who may do what |
 //! | [`instance`] | the dungeon instance lifecycle, countdown and barrier |
+//! | [`reconnect`] | who is told a party member dropped, and the grace countdown |
 //! | [`progression`] | levels and experience |
 //! | [`movement`] | one input frame applied to one body, and the input budget |
 //! | [`talents`] | stable talent keys, validated server-side |
@@ -64,6 +65,7 @@ pub mod ops;
 pub mod party;
 pub mod progression;
 pub mod rate_limit;
+pub mod reconnect;
 pub mod rewards;
 pub mod role;
 pub mod talents;

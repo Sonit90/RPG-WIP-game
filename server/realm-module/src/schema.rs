@@ -323,6 +323,9 @@ pub struct PartyMember {
     pub presence: PresenceTag,
     /// When they disconnected, while disconnected.
     pub disconnected_at: Option<Timestamp>,
+    /// How long their place is held after `disconnected_at` (the realm's grace at that moment),
+    /// so the party can count down to the same instant the janitor acts at.
+    pub reconnect_grace_us: i64,
     /// When they originally queued, so a cancelled check re-queues them in place.
     pub enqueued_at: Timestamp,
     /// Party order: decides the spawn point.
