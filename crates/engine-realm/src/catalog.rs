@@ -282,9 +282,9 @@ pub struct ExchangeRule {
     pub to_amount: u32,
 }
 
-/// One resource an enhancement attempt costs.
+/// One resource a sharpening attempt costs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct EnhancementCost {
+pub struct SharpeningCost {
     /// The attempt this is part of the price of: the level it tries to reach, `1..=max_level`.
     pub level: u8,
     /// The resource's id.
@@ -293,31 +293,31 @@ pub struct EnhancementCost {
     pub amount: u64,
 }
 
-/// How equipment is enhanced: what each attempt costs and how likely it is to break the item.
+/// How equipment is sharpened: what each attempt costs and how likely it is to break the item.
 ///
 /// Attempt `n` tries to take an item from `+(n-1)` to `+n`. The cost is paid whatever the
 /// outcome.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-pub struct EnhancementRule {
-    /// The highest level. Zero (the default) means equipment cannot be enhanced.
+pub struct SharpeningRule {
+    /// The highest level. Zero (the default) means equipment cannot be sharpened.
     #[serde(default)]
     pub max_level: u8,
     /// What a level adds, in per cent of the base stats. Must equal
-    /// `engine_game::character::ENHANCE_STEP_PCT`, which is what stats are *read* with.
+    /// `engine_game::character::SHARPEN_STEP_PCT`, which is what stats are *read* with.
     #[serde(default)]
     pub step_pct: u8,
     /// The price of each attempt; a level may list several resources.
     #[serde(default)]
-    pub costs: Vec<EnhancementCost>,
+    pub costs: Vec<SharpeningCost>,
     /// The chance an attempt breaks the item, by target level minus one: index 0 is the
     /// attempt to reach +1. One entry per level.
     #[serde(default)]
     pub break_chance_by_level: Vec<f64>,
 }
 
-impl EnhancementRule {
+impl SharpeningRule {
     /// What the attempt to reach `target` level costs.
-    pub fn costs_for(&self, target: u8) -> impl Iterator<Item = &EnhancementCost> {
+    pub fn costs_for(&self, target: u8) -> impl Iterator<Item = &SharpeningCost> {
         self.costs.iter().filter(move |cost| cost.level == target)
     }
 
@@ -341,9 +341,9 @@ pub struct Economy {
     pub resources: Vec<ResourceDefinition>,
     /// What salvaging an item yields.
     pub salvage: SalvageRule,
-    /// How equipment is enhanced.
-    #[serde(default)]
-    pub enhancement: EnhancementRule,
+    /// How equipment is sharpened.
+    #[serde(default, alias = "enhancement")]
+    pub sharpening: SharpeningRule,
     /// Every trade on offer.
     pub exchanges: Vec<ExchangeRule>,
 }
@@ -376,7 +376,7 @@ impl Economy {
                 self.salvage.resource
             )));
         }
-        self.validate_enhancement()?;
+        self.validate_sharpening()?;
         for (index, exchange) in self.exchanges.iter().enumerate() {
             if self.exchanges[..index].iter().any(|e| e.id == exchange.id) {
                 return Err(CatalogError(format!(
@@ -402,23 +402,23 @@ impl Economy {
         Ok(())
     }
 
-    fn validate_enhancement(&self) -> Result<(), CatalogError> {
-        let rule = &self.enhancement;
+    fn validate_sharpening(&self) -> Result<(), CatalogError> {
+        let rule = &self.sharpening;
         if rule.max_level == 0 {
             return Ok(());
         }
-        let bad = |what: String| Err(CatalogError(format!("enhancement {what}")));
-        if rule.max_level > engine_game::character::ENHANCEMENT_CEILING {
+        let bad = |what: String| Err(CatalogError(format!("sharpening {what}")));
+        if rule.max_level > engine_game::character::SHARPENING_CEILING {
             return bad(format!(
                 "max_level is above {}",
-                engine_game::character::ENHANCEMENT_CEILING
+                engine_game::character::SHARPENING_CEILING
             ));
         }
-        if rule.step_pct != engine_game::character::ENHANCE_STEP_PCT {
+        if rule.step_pct != engine_game::character::SHARPEN_STEP_PCT {
             return bad(format!(
                 "step_pct {} disagrees with the {} the game reads stats with",
                 rule.step_pct,
-                engine_game::character::ENHANCE_STEP_PCT
+                engine_game::character::SHARPEN_STEP_PCT
             ));
         }
         if rule.break_chance_by_level.len() != usize::from(rule.max_level) {
@@ -912,9 +912,9 @@ mod tests {
     }
 
     #[test]
-    fn the_enhancement_rules_are_read_and_checked() {
+    fn the_sharpening_rules_are_read_and_checked() {
         let catalog = Catalog::builtin().expect("the shipped catalog parses");
-        let rule = &catalog.economy().enhancement;
+        let rule = &catalog.economy().sharpening;
         assert_eq!((rule.max_level, rule.step_pct), (10, 1));
         assert_eq!(rule.break_chance_by_level.len(), 10);
         assert_eq!(&rule.break_chance_by_level[..4], &[0.0; 4]);

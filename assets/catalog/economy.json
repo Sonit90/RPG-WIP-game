@@ -28,7 +28,7 @@
     }
   ],
   "salvage": { "resource": "bone_shard", "base": 1, "per_item_level": 1, "slots": 16 },
-  "enhancement": {
+  "sharpening": {
     "max_level": 10,
     "step_pct": 1,
     "costs": [

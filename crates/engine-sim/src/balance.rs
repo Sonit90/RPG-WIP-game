@@ -520,18 +520,18 @@ fn gear_profiles(out: &mut String) {
     let _ = writeln!(
         out,
         "Gear is real: each profile names items from `assets/catalog/loot.json` (best in slot \
-         for the hero's main stat, chosen deterministically) and the quality and enhancement \
+         for the hero's main stat, chosen deterministically) and the quality and sharpening \
          they are worn at. The simulator builds the character sheet with the realm's own \
          `sheet_of` and lets the game compute the stats (`gear_stats`, the rating curve \
          `x / (x + 100)`, the main-stat bridge), exactly as a realm fight does. `low` wears the \
          best rare in every slot; `medium` an epic in every other slot and rares between; \
          `high` the best epic in each slot that has one (the catalog has epics for head, chest, \
          necklace, one ring and the trinkets, so the rest are rares); `p2_max` the same pieces \
-         at the quality ceiling with a heavy enhancement. `--gear top` is an alias of `high`.\n"
+         at the quality ceiling with a heavy sharpening. `--gear top` is an alias of `high`.\n"
     );
     let _ = writeln!(
         out,
-        "| Profile | Quality | Enhancement | Warrior | Mage / Druid |"
+        "| Profile | Quality | Sharpening | Warrior | Mage / Druid |"
     );
     let _ = writeln!(out, "|---|---:|---:|---|---|");
     for profile in PROFILES {
@@ -540,7 +540,7 @@ fn gear_profiles(out: &mut String) {
             "| {} | {} | +{} | {} | {} |",
             profile.label(),
             profile.quality,
-            profile.enhancement,
+            profile.sharpening,
             profile.describe(Class::Warrior.hero()),
             profile.describe(Class::Mage.hero()),
         );

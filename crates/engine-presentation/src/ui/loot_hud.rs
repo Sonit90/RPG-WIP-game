@@ -44,7 +44,7 @@ const CURRENCY_SECONDS: f32 = 4.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Toast {
     item: ItemId,
-    /// The copy's quality, enhancement and broken state.
+    /// The copy's quality, sharpening and broken state.
     props: ItemProps,
     /// A monster's drop: the headline names its rarity (`RARE DROP`).
     drop: bool,

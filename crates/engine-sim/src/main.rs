@@ -5,6 +5,7 @@
 //! engine-sim --class mage --gear high         one class, one gear tier
 //! engine-sim --iterations 20 --seed 7 --out docs/balance/sim-report.md
 //! engine-sim --search [--budget N]            the FireMage talent combination search
+//! engine-sim --loot-sim [--samples N]         how often drops are pre-sharpened (loot.json)
 //! ```
 //!
 //! It drives the game's own [`engine_game::sim::Simulation`]: the same ability table, the
@@ -18,6 +19,7 @@
 //! scenario.rs one fight                  metrics.rs  what a fight is measured by
 //! matrix.rs   every combination          report.rs   markdown
 //! study.rs    the FireMage talent search (--search)
+//! loot_sim.rs the sharpening-drop distribution (--loot-sim)
 //! validation.rs  is any talent mandatory or worthless (the report's section 6)
 //! scaling.rs  does each gear tier beat the one below it (section 7)
 //! ```
@@ -27,6 +29,7 @@ mod balance;
 mod build;
 mod class;
 mod gear;
+mod loot_sim;
 mod matrix;
 mod metrics;
 mod report;
@@ -51,6 +54,10 @@ use gear::{GearProfile, GearTier};
 pub struct Options {
     /// Run the FireMage talent combination search instead of the balance matrix.
     pub search: bool,
+    /// Run the loot-sharpening distribution instead of the combat matrix.
+    pub loot_sim: bool,
+    /// Items rolled per source and key level by `--loot-sim`.
+    pub samples: u32,
     /// Fights averaged per scenario.
     pub iterations: u32,
     /// Fights averaged per scenario during the search sweep.
@@ -75,6 +82,8 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             search: false,
+            loot_sim: false,
+            samples: 100_000,
             iterations: 10,
             sweep_iterations: 8,
             finalists: 12,
@@ -105,7 +114,14 @@ fn main() {
     };
 
     let started = Instant::now();
-    let text = if options.search {
+    let text = if options.loot_sim {
+        let Some(rules) = engine_realm::loot::builtin_rules() else {
+            eprintln!("the shipped loot rules did not build");
+            std::process::exit(2);
+        };
+        let cells = loot_sim::run(rules, options.samples, options.seed);
+        loot_sim::report(rules, &cells, options.seed)
+    } else if options.search {
         study::run(&options)
     } else {
         let profiles = GearProfile::select(&options.tiers);
@@ -162,6 +178,8 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match argument.as_str() {
             "--search" => options.search = true,
+            "--loot-sim" => options.loot_sim = true,
+            "--samples" => options.samples = parse_number("--samples", &value("--samples")?)?,
             "--no-validation" => options.validate = false,
             "--iterations" => {
                 options.iterations = parse_number("--iterations", &value("--iterations")?)?;
@@ -201,7 +219,8 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
                     "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|all]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH] [--no-validation]\n\
                      engine-sim --search [--budget N] [--sweep-iterations N] [--finalists N]\n\
-                     \x20          [--iterations N] [--seed N] [--out PATH]"
+                     \x20          [--iterations N] [--seed N] [--out PATH]
+\n                     engine-sim --loot-sim [--samples N] [--seed N] [--out PATH]"
                 );
                 return Ok(None);
             }

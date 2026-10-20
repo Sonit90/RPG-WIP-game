@@ -492,7 +492,7 @@ pub fn reconnect_party(endpoints: &RealmEndpoints) -> Outcome {
         ),
         (
             "POST",
-            format!("/api/v1/characters/{id}/enhance"),
+            format!("/api/v1/characters/{id}/sharpen"),
             serde_json::json!({"slot": head}),
         ),
         (

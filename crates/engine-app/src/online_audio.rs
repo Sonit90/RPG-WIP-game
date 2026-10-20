@@ -45,10 +45,10 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::SelectDungeon(_)
         | A::ConfirmDungeon
         | A::SelectRole(_)
-        | A::SelectEnhance(_)
+        | A::SelectSharpen(_)
         | A::StartDungeon
         | A::Exchange(_)
-        | A::Enhance
+        | A::Sharpen
         | A::SalvageTray => SoundId::UiSelect,
         A::JoinQueue
         | A::InsertKey

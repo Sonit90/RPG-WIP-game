@@ -33,9 +33,10 @@ use engine_game::character::{
 };
 use engine_game::enemy::EnemyKind;
 use engine_game::loot::{
-    BossTable, CurrencyRules, EpicRules, GoldRules, LootRules, LootTable, MobLootRules,
-    QualityBucket, QualityRules, WeightedItem,
+    BossTable, CurrencyRules, DropSource, EpicRules, GoldRules, LootRules, LootTable, MobLootRules,
+    QualityBucket, QualityRules, SharpeningDrops, WeightedItem,
 };
+use engine_game::sharpen_drops::{SharpenCurve, validate_weights};
 use engine_game::trinket::{TrinketActive, TrinketEffect};
 use serde::Deserialize;
 
@@ -62,7 +63,7 @@ pub struct LootItem {
     /// The icon family; the slot's if absent.
     #[serde(default)]
     pub icon: Option<String>,
-    /// The button a trinket gives while worn. Quality and enhancement do not scale it.
+    /// The button a trinket gives while worn. Quality and sharpening do not scale it.
     #[serde(default)]
     pub active: Option<LootActive>,
 }
@@ -204,6 +205,63 @@ pub struct GoldDrops {
     pub boss_amount: u32,
 }
 
+/// One sharpening curve override as written.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SharpeningCurveRow {
+    /// `"mob"`, `"elite"`, `"boss"`, `"chest"` or `"special"`.
+    pub source: String,
+    /// Limits the curve to one dungeon (its stable id).
+    #[serde(default)]
+    pub dungeon: Option<String>,
+    /// The lowest key level it applies at.
+    #[serde(default)]
+    pub min_key_level: u32,
+    /// Weight per sharpening level (index = level), strictly decreasing.
+    pub weights: Vec<f32>,
+}
+
+/// The default curve as written.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SharpeningDefault {
+    /// Weight per sharpening level, strictly decreasing.
+    pub weights: Vec<f32>,
+}
+
+/// How the key level shifts a curve upward, as written.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct SharpeningKeyShift {
+    /// Growth of the per-level multiplier, per key level above the first.
+    #[serde(default)]
+    pub per_level: f32,
+    /// The most any level's weight is multiplied by.
+    #[serde(default = "default_shift_max")]
+    pub max: f32,
+}
+
+fn default_shift_max() -> f32 {
+    1.0
+}
+
+fn default_highlight_from() -> u8 {
+    engine_game::character::SHARPEN_HIGHLIGHT_DEFAULT
+}
+
+/// Pre-sharpened drops as written: `"sharpening_drops"`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SharpeningDropsRow {
+    /// A copy sharpened to at least this is marked in the interface.
+    #[serde(default = "default_highlight_from")]
+    pub highlight_from: u8,
+    /// The curve when nothing more specific matches.
+    pub default: SharpeningDefault,
+    /// The overrides.
+    #[serde(default)]
+    pub curves: Vec<SharpeningCurveRow>,
+    /// The key level's upward shift.
+    #[serde(default)]
+    pub key_shift: Option<SharpeningKeyShift>,
+}
+
 /// The whole loot catalog.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LootCatalog {
@@ -224,6 +282,9 @@ pub struct LootCatalog {
     pub currency: CurrencyDrops,
     /// Gold.
     pub gold: GoldDrops,
+    /// How drops are pre-sharpened. Absent: every drop is `+0`.
+    #[serde(default)]
+    pub sharpening_drops: Option<SharpeningDropsRow>,
 }
 
 fn err(message: impl Into<String>) -> CatalogError {
@@ -253,6 +314,9 @@ impl LootCatalog {
     }
 
     fn validate(&self) -> Result<(), CatalogError> {
+        self.validate_sharpening_drops(
+            usize::from(engine_game::character::SHARPENING_CEILING) + 1,
+        )?;
         for (index, row) in self.items.iter().enumerate() {
             if row.id.trim().is_empty() {
                 return Err(err("an item has no id"));
@@ -397,6 +461,42 @@ impl LootCatalog {
                 return Err(err(format!("drops unknown resource {id:?}")));
             }
         }
+        // A drop cannot be sharpened past what the Workshop allows.
+        let levels = usize::from(economy.sharpening.max_level) + 1;
+        self.validate_sharpening_drops(levels)?;
+        Ok(())
+    }
+
+    /// Checks every sharpening curve: not empty, at most `max_len` weights, positive and strictly
+    /// decreasing, with a known source.
+    fn validate_sharpening_drops(&self, max_len: usize) -> Result<(), CatalogError> {
+        let Some(drops) = &self.sharpening_drops else {
+            return Ok(());
+        };
+        let check = |what: &str, weights: &[f32]| {
+            validate_weights(weights, max_len)
+                .map_err(|problem| err(format!("sharpening_drops {what}: {problem}")))
+        };
+        check("default", &drops.default.weights)?;
+        for (index, curve) in drops.curves.iter().enumerate() {
+            if DropSource::from_key(&curve.source).is_none() {
+                return Err(err(format!(
+                    "sharpening_drops curve {index} has unknown source {:?}",
+                    curve.source
+                )));
+            }
+            check(&format!("curve {index}"), &curve.weights)?;
+        }
+        if let Some(shift) = &drops.key_shift
+            && !(shift.per_level.is_finite()
+                && shift.per_level >= 0.0
+                && shift.max.is_finite()
+                && shift.max >= 1.0)
+        {
+            return Err(err(
+                "sharpening_drops key_shift must be per_level >= 0, max >= 1",
+            ));
+        }
         Ok(())
     }
 
@@ -433,6 +533,8 @@ impl LootCatalog {
     /// process wins).
     pub fn register_items(&self) {
         register_catalog_items(self.items_for_registration());
+        // The interface marks highly sharpened copies from the same number the file states.
+        engine_game::character::set_sharpen_highlight_from(self.sharpening_rules().highlight_from);
     }
 
     /// The plain-data rules the simulation rolls with. **Registers the items first**, because
@@ -509,7 +611,37 @@ impl LootCatalog {
                 per_mob_max: self.gold.per_mob_max,
                 boss_amount: self.gold.boss_amount,
             },
+            sharpening: self.sharpening_rules(),
         })
+    }
+}
+
+impl LootCatalog {
+    /// The sharpening-drop rules as `engine-game` rolls them. Also what the interface marks
+    /// as highly sharpened (`highlight_from`).
+    #[must_use]
+    pub fn sharpening_rules(&self) -> SharpeningDrops {
+        let Some(drops) = &self.sharpening_drops else {
+            return SharpeningDrops::none();
+        };
+        SharpeningDrops {
+            highlight_from: drops.highlight_from,
+            default: drops.default.weights.clone(),
+            curves: drops
+                .curves
+                .iter()
+                .filter_map(|curve| {
+                    Some(SharpenCurve {
+                        source: DropSource::from_key(&curve.source)?,
+                        dungeon: curve.dungeon.clone(),
+                        min_key_level: curve.min_key_level,
+                        weights: curve.weights.clone(),
+                    })
+                })
+                .collect(),
+            key_shift_per_level: drops.key_shift.map_or(0.0, |shift| shift.per_level),
+            key_shift_max: drops.key_shift.map_or(1.0, |shift| shift.max),
+        }
     }
 }
 
@@ -564,7 +696,7 @@ mod tests {
     use engine_game::enemy::MonsterRole;
     use engine_game::firemage::Rng;
     use engine_game::loot::{
-        epic_chance_at, quality_odds, roll_equipment, roll_mob_currency, roll_quality,
+        DropSource, epic_chance_at, quality_odds, roll_equipment, roll_mob_currency, roll_quality,
     };
     use engine_game::trinket::TrinketEffect;
 
@@ -710,7 +842,9 @@ mod tests {
             let n = 20_000_u32;
             (0..n)
                 .filter(|_| {
-                    let (id, _) = roll_equipment(table, rules, level, &mut rng).expect("items");
+                    let (id, _) =
+                        roll_equipment(table, rules, DropSource::Chest, "", level, &mut rng)
+                            .expect("items");
                     item(id).expect("registered").quality == ItemQuality::Epic
                 })
                 .count() as f32
@@ -729,7 +863,7 @@ mod tests {
         let run = |seed| {
             let mut rng = Rng::new(seed);
             (0..50)
-                .map(|_| roll_equipment(table, rules, 5, &mut rng))
+                .map(|_| roll_equipment(table, rules, DropSource::Chest, "", 5, &mut rng))
                 .collect::<Vec<Option<(ItemId, ItemProps)>>>()
         };
         assert_eq!(run(9), run(9));
@@ -913,5 +1047,153 @@ mod tests {
         let bad = LOOT_JSON.replacen("\"aether_shard\"", "\"moon_cheese\"", 1);
         let loot = LootCatalog::parse(&bad).expect("it is internally consistent");
         assert!(loot.validate_resources(catalog.economy()).is_err());
+    }
+
+    fn with_drops(edit: impl FnOnce(&mut serde_json::Value)) -> Result<LootCatalog, CatalogError> {
+        let mut value: serde_json::Value = serde_json::from_str(LOOT_JSON).expect("json");
+        edit(&mut value["sharpening_drops"]);
+        LootCatalog::parse(&value.to_string())
+    }
+
+    #[test]
+    fn the_shipped_sharpening_curves_are_valid_and_checked_against_the_economy() {
+        let catalog = LootCatalog::parse(LOOT_JSON).expect("shipped file");
+        let economy = Catalog::builtin().expect("catalog");
+        catalog
+            .validate_resources(economy.economy())
+            .expect("curves fit the economy");
+        let drops = catalog.sharpening_rules();
+        assert_eq!(drops.highlight_from, 5);
+        for source in DropSource::ALL {
+            let weights = drops.resolve(source, "graveyard_crypt", 1);
+            assert!(weights.len() > 1, "{source:?} has its own curve");
+            assert!(weights.len() <= usize::from(economy.economy().sharpening.max_level) + 1);
+        }
+    }
+
+    #[test]
+    fn bad_sharpening_curves_are_refused_at_parse() {
+        let bad = |weights: serde_json::Value| {
+            with_drops(|drops| drops["default"]["weights"] = weights).is_err()
+        };
+        assert!(bad(serde_json::json!([])), "empty");
+        assert!(bad(serde_json::json!([1, 1])), "not decreasing");
+        assert!(bad(serde_json::json!([1, 2])), "rising");
+        assert!(bad(serde_json::json!([1, -1])), "negative");
+        assert!(bad(serde_json::json!([0, 0])), "zero");
+        assert!(
+            bad(serde_json::json!(
+                (0..22).map(|i| 100 - i).collect::<Vec<_>>()
+            )),
+            "too long"
+        );
+        assert!(
+            with_drops(|drops| drops["curves"][0]["source"] = "bogus".into()).is_err(),
+            "unknown source"
+        );
+        assert!(
+            with_drops(|drops| drops["curves"][0]["weights"] = serde_json::json!([1, 2])).is_err(),
+            "a curve override is checked too"
+        );
+        // Longer than the Workshop's max level + 1 is caught against the economy.
+        let long = with_drops(|drops| {
+            drops["default"]["weights"] =
+                serde_json::json!((0..13).map(|i| 100 - i).collect::<Vec<_>>());
+        })
+        .expect("within the engine ceiling");
+        let economy = Catalog::builtin().expect("catalog");
+        assert!(long.validate_resources(economy.economy()).is_err());
+    }
+
+    #[test]
+    fn realm_chest_and_mob_rolls_carry_sharpening() {
+        let rules = rules();
+        let mut rng = Rng::new(99);
+        let (mut chest_sharp, mut mob_sharp) = (0, 0);
+        for _ in 0..4_000 {
+            let table = &rules.boss_tables[0].table;
+            let (_, props) = roll_equipment(
+                table,
+                rules,
+                DropSource::Boss,
+                "graveyard_crypt",
+                10,
+                &mut rng,
+            )
+            .expect("items");
+            chest_sharp += u32::from(props.sharpening > 0);
+            let (_, props) = roll_equipment(
+                &rules.mob.table,
+                rules,
+                DropSource::Mob,
+                "graveyard_crypt",
+                10,
+                &mut rng,
+            )
+            .expect("items");
+            mob_sharp += u32::from(props.sharpening > 0);
+            assert!(!props.broken);
+        }
+        assert!(chest_sharp > 1_000, "{chest_sharp}");
+        assert!(mob_sharp > 300 && mob_sharp < chest_sharp, "{mob_sharp}");
+    }
+
+    #[test]
+    fn effective_stats_are_quality_plus_sharpening_for_epic_and_rare_rows() {
+        use engine_game::character::{ItemStack, Stat};
+        ensure_items_registered();
+        let rows = engine_game::character::catalog_items();
+        let pick = |quality| {
+            rows.iter()
+                .filter_map(|row| item_by_key(row.key))
+                .find(|def| def.quality == quality && def.active.is_none())
+                .expect("a catalog row of that rarity")
+        };
+        for def in [pick(ItemQuality::Rare), pick(ItemQuality::Epic)] {
+            for (quality, sharpening) in [(50, 0), (82, 7), (110, 10), (100, 3)] {
+                let props = ItemProps::new(quality, sharpening, false);
+                let want = f32::from(quality) + f32::from(sharpening);
+                assert_eq!(props.multiplier(), want / 100.0);
+                let got = ItemStack::with_props(def.id, props).stats();
+                for stat in Stat::STORED {
+                    // The row's own base stat times (quality + sharpening) / 100: no rarity
+                    // multiplier, no other factor.
+                    let expected = def.stats.get(stat) * want / 100.0;
+                    assert!(
+                        (got.get(stat) - expected).abs() < 1e-3,
+                        "{} {stat:?}: {} vs {expected}",
+                        def.key,
+                        got.get(stat)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_shipped_tail_is_non_decreasing_in_the_key_level() {
+        let drops = rules().sharpening.clone();
+        let tail = |weights: &[f32], from: usize| {
+            let total: f64 = weights.iter().map(|w| f64::from(*w)).sum();
+            weights[from..].iter().map(|w| f64::from(*w)).sum::<f64>() / total
+        };
+        for source in DropSource::ALL {
+            let levels = drops.weights_at(source, "graveyard_crypt", 1).len();
+            let mut before: Vec<f64> = (1..levels)
+                .map(|k| tail(&drops.weights_at(source, "graveyard_crypt", 1), k))
+                .collect();
+            for key in 1..=99 {
+                let weights = drops.weights_at(source, "graveyard_crypt", key);
+                assert!(
+                    weights.windows(2).all(|pair| pair[1] < pair[0]),
+                    "{source:?} key {key} is strictly decreasing"
+                );
+                for (k, held) in before.iter_mut().enumerate() {
+                    let now = tail(&weights, k + 1);
+                    assert!(now >= *held - 1e-12, "{source:?} key {key} P(>=+{})", k + 1);
+                    *held = now;
+                }
+            }
+        }
     }
 }

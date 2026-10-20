@@ -38,7 +38,7 @@ disagree with it.
 * `POST /api/v1/characters/{id}/mail/{mail_id}/read` — marks the letter read.
   Both answer with the character in full, which the client applies exactly as it applies a
   move, so the mailbox window redraws from the server's copy.
-* `POST /api/v1/characters/{id}/enhance` - see [ECONOMY.md](ECONOMY.md). Locked while engaged, like equipment.
+* `POST /api/v1/characters/{id}/sharpen` - see [ECONOMY.md](ECONOMY.md). Locked while engaged, like equipment.
 * `PUT /api/v1/characters/{id}/talents` — every key must be a talent the character's hero
   has and the set must cost no more than the character's points (400 / 409), and the
   character must not be engaged (409, see below). Answers with the character.
@@ -102,7 +102,7 @@ API bridge (with results, every 5 s): svc_take_loot (settled rows only)
             (loot_id = "<instance>:<account>:loot:<index>" or "<instance>:<account>:mob:<n>")
        if new: lock the character; `bag` ─► first free cell, or the mailbox as `bag_full` if
                there is none; `mail` ─► the mailbox with the reason it was sent for
-               - the item arrives with the quality, enhancement and broken state it was rolled with
+               - the item arrives with the quality, sharpening and broken state it was rolled with
   ─► svc_ack_loot(ids) ─► realm deletes them
 ```
 

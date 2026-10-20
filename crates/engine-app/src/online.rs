@@ -62,14 +62,14 @@ use engine_net::{
 use engine_presentation::RemoteFrame;
 use engine_presentation::ui::chat::{ChatEvent, ChatInput, ChatLineView, ChatPanel, ChatView};
 use engine_presentation::ui::frontend::{
-    AwayMember, BagRow, CharacterCard, CompletionCard, CompletionItem, DungeonCard, EnhanceCard,
-    EnhanceCost, EnhanceDetail, EnhanceTarget, EnhanceWorn, ExchangeRow, FieldKeys, FrontEndAction,
-    FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard, MemberRow, PartyCard,
-    QueueCard, ReadyState, Screen, StatusLevel, Toast, WorkshopCard,
+    AwayMember, BagRow, CharacterCard, CompletionCard, CompletionItem, DungeonCard, ExchangeRow,
+    FieldKeys, FrontEndAction, FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard,
+    MemberRow, PartyCard, QueueCard, ReadyState, Screen, SharpenCard, SharpenCost, SharpenDetail,
+    SharpenTarget, SharpenWorn, StatusLevel, Toast, WorkshopCard,
 };
 use engine_presentation::ui::modifiers::{ModifierLine, ModifierPanelView, Reveal};
 use engine_presentation::ui::recount::{RecountRow, RecountScope};
-use engine_realm::api::{CharacterSummary, EconomyInfo, EnhanceOutcomeName};
+use engine_realm::api::{CharacterSummary, EconomyInfo, SharpenOutcomeName};
 use engine_realm::catalog::Catalog;
 use engine_realm::combat::{AbilityRef, ActionKind, CombatAction, EntityRef, StatusState};
 use engine_realm::instance::{Countdown, CountdownDisplay, InstanceState};
@@ -388,10 +388,10 @@ pub struct OnlineSession {
     salvage_tray: Vec<u32>,
     /// Chest loot (or its mail) the bridge may not have persisted yet.
     loot_watch: Option<LootWatch>,
-    /// Whether the Workshop shows the enhance panel instead of the tray and exchanges.
-    enhance_mode: bool,
-    /// The item selected in the enhance panel.
-    enhance_target: Option<EnhanceTarget>,
+    /// Whether the Workshop shows the sharpen panel instead of the tray and exchanges.
+    sharpen_mode: bool,
+    /// The item selected in the sharpen panel.
+    sharpen_target: Option<SharpenTarget>,
     /// The History and Leaderboards pages' fetched data and selections.
     records: crate::online_records::Records,
     /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
@@ -494,8 +494,8 @@ impl OnlineSession {
             stored_loadout: None,
             salvage_tray: Vec::new(),
             loot_watch: None,
-            enhance_mode: false,
-            enhance_target: None,
+            sharpen_mode: false,
+            sharpen_target: None,
             records: crate::online_records::Records::default(),
             seen_reroll: None,
             sounds: crate::online_audio::NetSoundWatch::default(),
@@ -1193,14 +1193,14 @@ impl OnlineSession {
                 self.check_saving();
             }
             NetEvent::Economy(economy) => self.economy = Some(*economy),
-            NetEvent::Enhanced(response) => {
+            NetEvent::Sharpened(response) => {
                 let response = *response;
                 match response.outcome {
-                    EnhanceOutcomeName::Success => self.toast(
+                    SharpenOutcomeName::Success => self.toast(
                         StatusLevel::Good,
                         format!("Success: +{}", response.new_level),
                     ),
-                    EnhanceOutcomeName::Broken => self.toast(StatusLevel::Bad, "BROKEN"),
+                    SharpenOutcomeName::Broken => self.toast(StatusLevel::Bad, "BROKEN"),
                 }
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
@@ -1434,8 +1434,8 @@ impl OnlineSession {
                 self.stage = Screen::Workshop;
                 self.error = None;
                 self.salvage_tray.clear();
-                self.enhance_mode = false;
-                self.enhance_target = None;
+                self.sharpen_mode = false;
+                self.sharpen_target = None;
                 // The bag as the server has it, and the catalog if it never arrived.
                 if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
                     self.client.send(NetCommand::FetchCharacter(id));
@@ -1563,7 +1563,7 @@ impl OnlineSession {
             FrontEndAction::ReturnToHub => self.return_to_hub(),
             FrontEndAction::StageSalvage(_)
             | FrontEndAction::SalvageTray
-            | FrontEndAction::Enhance
+            | FrontEndAction::Sharpen
             | FrontEndAction::DowngradeKey
             | FrontEndAction::CleanseKey
                 if self.refuse_while_engaged() => {}
@@ -1590,24 +1590,24 @@ impl OnlineSession {
                 }
             }
             FrontEndAction::WorkshopMode(on) => {
-                self.enhance_mode = on;
-                self.enhance_target = None;
+                self.sharpen_mode = on;
+                self.sharpen_target = None;
             }
-            FrontEndAction::SelectEnhance(target) => self.enhance_target = Some(target),
-            FrontEndAction::Enhance => {
+            FrontEndAction::SelectSharpen(target) => self.sharpen_target = Some(target),
+            FrontEndAction::Sharpen => {
                 let (Some(target), Some(character_id)) = (
-                    self.enhance_target.clone(),
+                    self.sharpen_target.clone(),
                     self.selected_character_summary().map(|c| c.id.clone()),
                 ) else {
                     return;
                 };
                 let slot = match target {
-                    EnhanceTarget::Worn(slot) => SlotRef::Equipment { slot },
-                    EnhanceTarget::Bag(index) => SlotRef::Inventory { index },
+                    SharpenTarget::Worn(slot) => SlotRef::Equipment { slot },
+                    SharpenTarget::Bag(index) => SlotRef::Inventory { index },
                 };
-                self.set_busy(BusyKind::Workshop, "Enhancing...");
+                self.set_busy(BusyKind::Workshop, "Sharpening...");
                 // The server rolls: nothing about the outcome is decided here.
-                self.client.send(NetCommand::Enhance { character_id, slot });
+                self.client.send(NetCommand::Sharpen { character_id, slot });
             }
             FrontEndAction::DowngradeKey => {
                 if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone())
@@ -1637,7 +1637,7 @@ impl OnlineSession {
         }
     }
 
-    /// Salvage, enhancement and key changes are locked while the realm holds a snapshot of the
+    /// Salvage, sharpening and key changes are locked while the realm holds a snapshot of the
     /// character (queued, in a party, in a run). The API refuses them too; this says so first.
     fn refuse_while_engaged(&mut self) -> bool {
         if !self.mirror.is_engaged() {
@@ -2083,49 +2083,49 @@ impl OnlineSession {
             tray_yield,
             resources: self.named_resources(&character.resources),
             exchanges,
-            enhance: self.enhance_mode.then(|| self.enhance_card(character)),
+            sharpen: self.sharpen_mode.then(|| self.sharpen_card(character)),
         }
     }
 
-    /// The enhance panel: the worn items, and the selected item's price and risk from the
+    /// The sharpen panel: the worn items, and the selected item's price and risk from the
     /// rules the server applies (the server alone rolls).
-    fn enhance_card(&self, character: &CharacterSummary) -> EnhanceCard {
+    fn sharpen_card(&self, character: &CharacterSummary) -> SharpenCard {
         let Some((_, loadout)) = self.stored_loadout.as_ref() else {
-            return EnhanceCard::default();
+            return SharpenCard::default();
         };
         let worn = loadout
             .equipment
             .iter()
             .filter_map(|entry| {
                 let def = engine_game::character::item_by_key(&entry.item)?;
-                Some(EnhanceWorn {
+                Some(SharpenWorn {
                     slot: entry.slot.clone(),
                     icon: def.icon,
                     quality: def.quality,
-                    level: if entry.broken { 0 } else { entry.enhancement },
+                    level: if entry.broken { 0 } else { entry.sharpening },
                     broken: entry.broken,
                 })
             })
             .collect();
         let detail = self
-            .enhance_target
+            .sharpen_target
             .as_ref()
-            .and_then(|target| self.enhance_detail(character, loadout, target));
-        EnhanceCard {
+            .and_then(|target| self.sharpen_detail(character, loadout, target));
+        SharpenCard {
             worn,
-            selected: self.enhance_target.clone(),
+            selected: self.sharpen_target.clone(),
             detail,
         }
     }
 
-    fn enhance_detail(
+    fn sharpen_detail(
         &self,
         character: &CharacterSummary,
         loadout: &engine_realm::loadout::Loadout,
-        target: &EnhanceTarget,
-    ) -> Option<EnhanceDetail> {
+        target: &SharpenTarget,
+    ) -> Option<SharpenDetail> {
         let (slot, key, props) = match target {
-            EnhanceTarget::Worn(slot) => {
+            SharpenTarget::Worn(slot) => {
                 let entry = loadout.equipment.iter().find(|e| e.slot == *slot)?;
                 (
                     SlotRef::Equipment { slot: slot.clone() },
@@ -2133,7 +2133,7 @@ impl OnlineSession {
                     entry.props(),
                 )
             }
-            EnhanceTarget::Bag(index) => {
+            SharpenTarget::Bag(index) => {
                 let entry = loadout.inventory.iter().find(|e| e.index == *index)?;
                 (
                     SlotRef::Inventory { index: *index },
@@ -2144,12 +2144,12 @@ impl OnlineSession {
         };
         let def = engine_game::character::item_by_key(key)?;
         let economy = self.catalog.economy();
-        let mut detail = EnhanceDetail {
+        let mut detail = SharpenDetail {
             name: def.name.to_owned(),
             quality: def.quality,
             current: format!(
-                "Enhancement +{}%   Total {}%",
-                props.enhancement_pct().round(),
+                "Sharpening +{}%   Effective Quality {}%",
+                props.sharpening_pct().round(),
                 props.total_pct().round()
             ),
             blocked: None,
@@ -2157,17 +2157,18 @@ impl OnlineSession {
             cost: Vec::new(),
             break_chance: None,
         };
-        match engine_realm::enhance::preview(loadout, &slot, economy) {
+        match engine_realm::sharpen::preview(loadout, &slot, economy) {
             Ok(preview) => {
                 detail.next = format!(
-                    "Next: +{} (+{}% of base stats)",
+                    "Next: +{}  ->  Effective Quality {}%",
                     preview.target,
-                    engine_game::character::ENHANCE_STEP_PCT
+                    (props.total_pct() + f32::from(engine_game::character::SHARPEN_STEP_PCT))
+                        .round()
                 );
                 detail.cost = preview
                     .price
                     .iter()
-                    .map(|(id, needed)| EnhanceCost {
+                    .map(|(id, needed)| SharpenCost {
                         name: self.resource_name(id),
                         needed: *needed,
                         owned: character

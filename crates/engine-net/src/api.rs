@@ -7,9 +7,9 @@
 use std::time::Duration;
 
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, EconomyInfo, EnhanceRequest, EnhanceResponse, ErrorBody,
-    ExchangeRequest, LoginRequest, MoveItemRequest, QueueRequest, RefreshRequest, RegisterRequest,
-    RequestIdBody, SalvageRequest, SettingsDocument, TokenPair, UserProfile,
+    CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, LoginRequest,
+    MoveItemRequest, QueueRequest, RefreshRequest, RegisterRequest, RequestIdBody, SalvageRequest,
+    SettingsDocument, SharpenRequest, SharpenResponse, TokenPair, UserProfile,
 };
 use engine_realm::loadout::SlotRef;
 use engine_realm::{ErrorCategory, RealmError};
@@ -280,26 +280,26 @@ impl ApiClient {
         )
     }
 
-    /// Tries to take the item in `slot` one enhancement level higher. The server rolls; the
+    /// Tries to take the item in `slot` one sharpening level higher. The server rolls; the
     /// answer says how it went and carries the character as it is afterwards.
     ///
     /// # Errors
     ///
-    /// The item is broken, fully enhanced or not equipment, the price cannot be paid, the
+    /// The item is broken, fully sharpened or not equipment, the price cannot be paid, the
     /// character is engaged in a dungeon or queue, it is not the caller's, or the server is
     /// unreachable.
-    pub fn enhance(
+    pub fn sharpen(
         &self,
         token: &str,
         id: &str,
         slot: &SlotRef,
         request_id: &str,
-    ) -> Result<EnhanceResponse, RealmError> {
+    ) -> Result<SharpenResponse, RealmError> {
         self.post(
             &self.persistence,
-            &format!("/api/v1/characters/{}/enhance", path_segment(id)),
+            &format!("/api/v1/characters/{}/sharpen", path_segment(id)),
             Some(token),
-            &EnhanceRequest {
+            &SharpenRequest {
                 slot: slot.clone(),
                 request_id: Some(request_id.to_owned()),
             },

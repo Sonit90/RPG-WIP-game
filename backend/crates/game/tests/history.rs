@@ -343,7 +343,7 @@ async fn delivered_loot_lands_on_its_result_whichever_arrives_first() {
         kind: "bag".into(),
         reason: String::new(),
         quality: 104,
-        enhancement: 2,
+        sharpening: 2,
         broken: false,
     };
     engine_realm::loot::ensure_items_registered();

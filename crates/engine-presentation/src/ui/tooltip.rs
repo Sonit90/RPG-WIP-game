@@ -75,7 +75,7 @@ pub enum SectionKind {
     Details,
     /// An item's stat lines, in the body size and the stat green.
     Stats,
-    /// An item copy's quality, enhancement and total, or that it is broken.
+    /// An item copy's quality, sharpening and total, or that it is broken.
     Quality,
     /// What an item's stats are worth to the character looking at it.
     Numbers,
@@ -773,7 +773,7 @@ pub fn fill_ability(model: &mut TooltipModel, view: &AbilitySlotView, context: A
 /// Fills `model` with a trinket's button: its name, what it does, its cooldown and radius.
 ///
 /// `key` is the label of the key that uses it. The numbers are the item's own: quality and
-/// enhancement scale a trinket's stats and never these.
+/// sharpening scale a trinket's stats and never these.
 pub fn fill_trinket(model: &mut TooltipModel, view: &crate::snapshot::TrinketView, key: &str) {
     use std::fmt::Write as _;
     model.clear();
@@ -983,7 +983,7 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
     let Some(def) = stack.def() else {
         return;
     };
-    // What this copy grants: the table's stats scaled by its quality and enhancement.
+    // What this copy grants: the table's stats scaled by its quality and sharpening.
     let granted = stack.stats();
     super::map_style::write_title_case(&mut model.title, def.name);
     let quality = super::character_menu::quality_color(def.quality);
@@ -991,6 +991,12 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
     model.border = color::alpha(quality, 0.6);
     super::map_style::write_title_case(&mut model.tag, def.family.name());
     model.tag_color = color::TEXT_SECONDARY;
+    // A highly sharpened copy says so, in its quality colour: the only marker, no effects.
+    if stack.props.is_highly_sharpened() {
+        model.tag.push_str(" - Sharpened +");
+        write_integer(&mut model.tag, i64::from(stack.props.sharpening));
+        model.tag_color = quality;
+    }
 
     // Meta: how good it is, then where it is.
     let (rank, level) = &mut model.meta[0];
@@ -1024,7 +1030,7 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
         super::map_style::push_title_case(&mut stats.text, stat.display_for(hero));
     }
 
-    // This copy's quality: what it rolled, what enhancement added, what it is worth in all.
+    // This copy's quality: what it rolled, what sharpening added, what it is worth in all.
     if !granted.is_empty() {
         write_quality_lines(model, stack.props);
     }
@@ -1109,8 +1115,8 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
     });
 }
 
-/// Writes the quality sections of an item copy: `Base Quality: 106%`, `Enhancement: +7%`,
-/// `Total: 113%`, and for a broken one a red line saying so.
+/// Writes the quality sections of an item copy: `Base Quality: 106%`, `Sharpening: +7%`,
+/// `Effective Quality: 113%`, and for a broken one a red line saying so.
 fn write_quality_lines(model: &mut TooltipModel, props: ItemProps) {
     let section = model.section(SectionKind::Quality);
     section.color = color::TEXT_SECONDARY;
@@ -1118,11 +1124,11 @@ fn write_quality_lines(model: &mut TooltipModel, props: ItemProps) {
     write_amount(&mut section.text, props.base_quality_pct());
     section.text.push('%');
     if props.broken {
-        section.text.push_str("\nTotal: ");
+        section.text.push_str("\nEffective Quality: ");
     } else {
-        section.text.push_str("\nEnhancement: +");
-        write_amount(&mut section.text, props.enhancement_pct());
-        section.text.push_str("%\nTotal: ");
+        section.text.push_str("\nSharpening: +");
+        write_amount(&mut section.text, props.sharpening_pct());
+        section.text.push_str("%\nEffective Quality: ");
     }
     write_amount(&mut section.text, props.total_pct());
     section.text.push('%');
@@ -1131,7 +1137,7 @@ fn write_quality_lines(model: &mut TooltipModel, props: ItemProps) {
         broken.color = color::CRIMSON;
         broken.text.push_str("BROKEN (-");
         write_integer(&mut broken.text, (BROKEN_PENALTY * 100.0).round() as i64);
-        broken.text.push_str("%) - cannot be enhanced");
+        broken.text.push_str("%) - cannot be sharpened");
     }
 }
 
@@ -1487,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn an_items_quality_enhancement_and_total_are_printed() {
+    fn an_items_quality_sharpening_and_effective_quality_are_printed() {
         let def = loot_item();
         let stack = ItemStack::with_props(def.id, ItemProps::new(106, 7, false));
         let model = tooltip_of(stack);
@@ -1495,7 +1501,10 @@ mod tests {
             .find(SectionKind::Quality)
             .expect("quality lines")
             .text;
-        assert_eq!(lines, "Base Quality: 106%\nEnhancement: +7%\nTotal: 113%");
+        assert_eq!(
+            lines,
+            "Base Quality: 106%\nSharpening: +7%\nEffective Quality: 113%"
+        );
         // The stats shown are the props-scaled ones, not the table's.
         let base = tooltip_of(ItemStack::one(def.id));
         let (scaled, plain) = (
@@ -1507,17 +1516,50 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_item_says_so_in_red_and_loses_its_enhancement_line() {
+    fn sharpening_is_printed_at_plus_zero_and_a_high_one_is_marked() {
+        let def = loot_item();
+        let text = |props| {
+            let model = tooltip_of(ItemStack::with_props(def.id, props));
+            (
+                model
+                    .find(SectionKind::Quality)
+                    .expect("lines")
+                    .text
+                    .clone(),
+                model.tag.clone(),
+            )
+        };
+        let (lines, tag) = text(ItemProps::new(82, 0, false));
+        assert_eq!(
+            lines,
+            "Base Quality: 82%
+Sharpening: +0%
+Effective Quality: 82%"
+        );
+        assert!(!tag.contains("Sharpened"), "{tag}");
+        let (lines, tag) = text(ItemProps::new(82, 7, false));
+        assert_eq!(
+            lines,
+            "Base Quality: 82%
+Sharpening: +7%
+Effective Quality: 89%"
+        );
+        assert!(tag.ends_with("Sharpened +7"), "{tag}");
+        assert!(!text(ItemProps::new(82, 4, false)).1.contains("Sharpened"));
+    }
+
+    #[test]
+    fn a_broken_item_says_so_in_red_and_loses_its_sharpening_line() {
         let def = loot_item();
         let model = tooltip_of(ItemStack::with_props(def.id, ItemProps::new(100, 0, true)));
         let mut quality = model
             .sections()
             .filter(|section| section.kind == Some(SectionKind::Quality));
         let lines = quality.next().expect("quality lines");
-        assert_eq!(lines.text, "Base Quality: 100%\nTotal: 85%");
+        assert_eq!(lines.text, "Base Quality: 100%\nEffective Quality: 85%");
         let broken = quality.next().expect("a broken line");
         assert!(broken.text.starts_with("BROKEN (-15%)"), "{}", broken.text);
-        assert!(broken.text.contains("cannot be enhanced"));
+        assert!(broken.text.contains("cannot be sharpened"));
         assert_eq!(broken.color, color::CRIMSON);
     }
 

@@ -536,6 +536,7 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
             per_mob_max: 2,
             boss_amount: 40,
         },
+        sharpening: engine_game::loot::SharpeningDrops::none(),
     }
 }
 

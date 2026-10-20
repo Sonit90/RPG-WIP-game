@@ -93,7 +93,7 @@ pub fn loot_entry(delivery: &engine_realm::api::LootDelivery) -> RunLoot {
     RunLoot {
         item: delivery.item.clone(),
         quality: props.quality,
-        sharpening: props.enhancement,
+        sharpening: props.sharpening,
         broken: props.broken,
     }
 }

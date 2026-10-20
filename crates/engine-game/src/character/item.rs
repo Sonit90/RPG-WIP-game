@@ -23,7 +23,7 @@
 //! # Instance properties
 //!
 //! Two copies of the same ring are not the same ring: each rolled its own quality (50 to 110
-//! per cent of the base stats), may have been enhanced, and may have broken. [`ItemProps`]
+//! per cent of the base stats), may have been sharpened, and may have broken. [`ItemProps`]
 //! carries that, and [`ItemProps::multiplier`] is the one function every stat read goes
 //! through. Stacks only merge when their props are equal ([`ItemStack::can_merge`]).
 //!
@@ -464,7 +464,7 @@ pub struct ItemDef {
     pub stats: StatBlock,
     /// How many of it fit in one inventory cell. One for equipment; more for a consumable.
     pub max_stack: u16,
-    /// The button it gives while worn, if it is a trinket with one. Quality and enhancement
+    /// The button it gives while worn, if it is a trinket with one. Quality and sharpening
     /// do not scale it: see [`crate::trinket`].
     pub active: Option<TrinketActive>,
 }
@@ -674,33 +674,63 @@ pub const QUALITY_MAX: u8 = 110;
 /// stored before quality existed. Exactly its base stats.
 pub const QUALITY_DEFAULT: u8 = 100;
 
-/// What one enhancement level adds, in per cent of the base stats.
+/// What one sharpening level adds, in per cent of the base stats.
 ///
 /// A constant rather than a catalog value because it is part of how a stack's stats are
 /// *read*, and engine-game cannot read the catalog; the economy catalog states the same
-/// number (`enhancement.step_pct`) and refuses to load if the two disagree.
-pub const ENHANCE_STEP_PCT: u8 = 1;
+/// number (`sharpening.step_pct`) and refuses to load if the two disagree.
+pub const SHARPEN_STEP_PCT: u8 = 1;
 
 /// The share of its stats an item loses when it breaks: a broken item grants
-/// `quality x (1 - BROKEN_PENALTY)` per cent and loses its enhancement.
+/// `quality x (1 - BROKEN_PENALTY)` per cent and loses its sharpening.
 pub const BROKEN_PENALTY: f32 = 0.15;
 
-/// The highest enhancement level a stored value is trusted to hold. The catalog's
-/// `enhancement.max_level` is the real limit; this only bounds a hand-edited row.
-pub const ENHANCEMENT_CEILING: u8 = 20;
+/// The highest sharpening level a stored value is trusted to hold. The catalog's
+/// `sharpening.max_level` is the real limit; this only bounds a hand-edited row.
+pub const SHARPENING_CEILING: u8 = 20;
+
+/// The sharpening level from which a copy is shown as highly sharpened, until the loot catalog's
+/// `sharpening_drops.highlight_from` says otherwise (see [`set_sharpen_highlight_from`]).
+pub const SHARPEN_HIGHLIGHT_DEFAULT: u8 = 5;
+
+static SHARPEN_HIGHLIGHT_FROM: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(SHARPEN_HIGHLIGHT_DEFAULT);
+
+/// Sets the level from which a copy counts as highly sharpened. Called once when the loot
+/// catalog is loaded; the interface reads it through [`ItemProps::is_highly_sharpened`].
+pub fn set_sharpen_highlight_from(level: u8) {
+    SHARPEN_HIGHLIGHT_FROM.store(level, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The level from which a copy counts as highly sharpened.
+#[must_use]
+pub fn sharpen_highlight_from() -> u8 {
+    SHARPEN_HIGHLIGHT_FROM.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// What makes one copy of an item different from another.
 ///
+/// **Naming.** The mechanic is *sharpening* (P1 called it enhancement). Persisted and wire names
+/// stay stable so no database migration and no realm schema change is needed: stored and
+/// wire structs keep the key `"enhancement"` (`#[serde(rename = "enhancement", alias =
+/// "sharpening")]`), the `pending_loot` column and the realm table keep `enhancement`, and the
+/// economy catalog accepts either `"sharpening"` or `"enhancement"`.
+///
+/// **One stat formula.** `multiplier = (quality + sharpening) / 100` ([`ItemProps::total_pct`]).
+/// An epic is a different item *row* (own table stats), never a multiplier; quality and
+/// sharpening add; the broken penalty is the only multiplicative factor and replaces the
+/// sharpening (a broken item has none).
+///
 /// `Copy` and three bytes of payload, so it rides inside every [`ItemStack`] for free. The
-/// default is the legacy item: quality 100, not enhanced, not broken, which is exactly the
+/// default is the legacy item: quality 100, not sharpened, not broken, which is exactly the
 /// item's base stats - so every item that predates this type is unchanged by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ItemProps {
     /// Rolled quality, `QUALITY_MIN..=QUALITY_MAX` per cent of the base stats.
     pub quality: u8,
-    /// Enhancement level; each adds [`ENHANCE_STEP_PCT`] per cent. Zero while broken.
-    pub enhancement: u8,
-    /// Whether a failed enhancement broke it.
+    /// Sharpening level; each adds [`SHARPEN_STEP_PCT`] per cent. Zero while broken.
+    pub sharpening: u8,
+    /// Whether a failed sharpening broke it.
     pub broken: bool,
 }
 
@@ -711,23 +741,23 @@ impl Default for ItemProps {
 }
 
 impl ItemProps {
-    /// Quality 100, not enhanced, not broken: the item as the table states it.
+    /// Quality 100, not sharpened, not broken: the item as the table states it.
     pub const STANDARD: Self = Self {
         quality: QUALITY_DEFAULT,
-        enhancement: 0,
+        sharpening: 0,
         broken: false,
     };
 
     /// Props from stored or rolled numbers, clamped into the legal ranges: a forged row can
-    /// be wrong but cannot be stronger than the rules allow. A broken item has no enhancement.
+    /// be wrong but cannot be stronger than the rules allow. A broken item has no sharpening.
     #[must_use]
-    pub fn new(quality: u8, enhancement: u8, broken: bool) -> Self {
+    pub fn new(quality: u8, sharpening: u8, broken: bool) -> Self {
         Self {
             quality: quality.clamp(QUALITY_MIN, QUALITY_MAX),
-            enhancement: if broken {
+            sharpening: if broken {
                 0
             } else {
-                enhancement.min(ENHANCEMENT_CEILING)
+                sharpening.min(SHARPENING_CEILING)
             },
             broken,
         }
@@ -751,25 +781,31 @@ impl ItemProps {
         f32::from(self.quality)
     }
 
-    /// "Enhancement": what the enhancement levels add, in per cent. Zero when broken.
+    /// "Sharpening": what the sharpening levels add, in per cent. Zero when broken.
     #[must_use]
-    pub fn enhancement_pct(self) -> f32 {
+    pub fn sharpening_pct(self) -> f32 {
         if self.broken {
             0.0
         } else {
-            f32::from(self.enhancement) * f32::from(ENHANCE_STEP_PCT)
+            f32::from(self.sharpening) * f32::from(SHARPEN_STEP_PCT)
         }
     }
 
-    /// "Total": the share of the base stats the item grants, in per cent.
+    /// Whether the copy is sharpened far enough to be marked in the interface.
+    #[must_use]
+    pub fn is_highly_sharpened(self) -> bool {
+        !self.broken && self.sharpening > 0 && self.sharpening >= sharpen_highlight_from()
+    }
+
+    /// "Effective Quality": the share of the base stats the item grants, in per cent.
     ///
-    /// `quality + enhancement x step` normally; `quality x (1 - BROKEN_PENALTY)` once broken.
+    /// `quality + sharpening x step` normally; `quality x (1 - BROKEN_PENALTY)` once broken.
     #[must_use]
     pub fn total_pct(self) -> f32 {
         if self.broken {
             self.base_quality_pct() * (1.0 - BROKEN_PENALTY)
         } else {
-            self.base_quality_pct() + self.enhancement_pct()
+            self.base_quality_pct() + self.sharpening_pct()
         }
     }
 
@@ -790,7 +826,7 @@ pub struct ItemStack {
     pub item: ItemId,
     /// How many. At least one; a stack of zero is an empty slot, which is `None`.
     pub quantity: u16,
-    /// Quality, enhancement and broken state of this copy.
+    /// Quality, sharpening and broken state of this copy.
     pub props: ItemProps,
 }
 
@@ -1286,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_and_enhancement_scale_stats_by_the_one_formula() {
+    fn quality_and_sharpening_scale_stats_by_the_one_formula() {
         let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
         let stamina = |props| {
             ItemStack::with_props(ring.id, props)
@@ -1298,7 +1334,7 @@ mod tests {
         // +1 per cent per level, exactly: a +7 on a 106 is 113 per cent.
         let props = ItemProps::new(106, 7, false);
         assert_eq!(props.base_quality_pct(), 106.0);
-        assert_eq!(props.enhancement_pct(), 7.0);
+        assert_eq!(props.sharpening_pct(), 7.0);
         assert_eq!(props.total_pct(), 113.0);
         assert!((stamina(props) - 11.3).abs() < 1e-4);
         // One level more adds exactly one per cent of the base stats.
@@ -1307,11 +1343,11 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_item_grants_eighty_five_per_cent_of_its_quality_and_no_enhancement() {
+    fn a_broken_item_grants_eighty_five_per_cent_of_its_quality_and_no_sharpening() {
         let broken = ItemProps::new(100, 9, true);
-        assert_eq!(broken.enhancement, 0, "breaking drops the enhancement");
+        assert_eq!(broken.sharpening, 0, "breaking drops the sharpening");
         assert!((broken.total_pct() - 85.0).abs() < 1e-4);
-        assert_eq!(broken.enhancement_pct(), 0.0);
+        assert_eq!(broken.sharpening_pct(), 0.0);
         let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
         let stamina = ItemStack::with_props(ring.id, broken)
             .stats()
@@ -1326,8 +1362,8 @@ mod tests {
         assert_eq!(ItemProps::new(0, 0, false).quality, QUALITY_MIN);
         assert_eq!(ItemProps::new(255, 0, false).quality, QUALITY_MAX);
         assert_eq!(
-            ItemProps::new(100, 200, false).enhancement,
-            ENHANCEMENT_CEILING
+            ItemProps::new(100, 200, false).sharpening,
+            SHARPENING_CEILING
         );
     }
 

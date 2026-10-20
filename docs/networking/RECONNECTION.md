@@ -93,7 +93,7 @@ simulation yet); it is no longer controlled by anyone.
 The run's talents and equipment are the snapshot taken at queue time (`party_member.loadout`,
 `.talents`), and the `PlayerSpec` of the fight is built from it; a reconnecting client is given
 the live rows, never a local rebuild. The API refuses equipment moves, taking mail, salvage,
-enhancement, key downgrade, key cleanse and talent changes while `svc_engagement` says the
+sharpening, key downgrade, key cleanse and talent changes while `svc_engagement` says the
 account is queued, in a party or in an instance (exchange and marking mail read touch only
 resources and flags, and stay open).
 
@@ -102,7 +102,7 @@ On the client the same lock shows before asking:
 * the character sheet is read-only with a **Locked for this run** banner (no drag, no
   right-click move);
 * the talent window shows its lock line and emits nothing;
-* salvage, enhance, key downgrade and cleanse actions are dropped with the API's sentence as a
+* salvage, sharpen, key downgrade and cleanse actions are dropped with the API's sentence as a
   toast, and the hub's key buttons are already hidden while engaged.
 
 ## Tests

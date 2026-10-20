@@ -20,7 +20,7 @@ A trinket row gains an optional block (read by `engine-realm`, handed to `engine
 | `group_cooldown_reduction` | every ability cooldown of party within 30 m loses 10% of its remaining time; 120 s cd | Hourglass of the Patient Dead (epic) |
 | `group_absorb` | party within 30 m gets a shield of 20% of max health for 10 s; 120 s cd | Aegis of the Last Vigil (epic) |
 
-All four are in the boss table (weight 7). **Quality and enhancement scale the passive stats only**;
+All four are in the boss table (weight 7). **Quality and sharpening scale the passive stats only**;
 cooldown, radius, duration and magnitude are the row's numbers for every copy.
 
 Which statuses a Mass Dispel takes is the status table's: a harmful status with a school

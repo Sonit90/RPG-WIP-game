@@ -333,7 +333,7 @@ impl RealmBridge {
                 kind: row.state,
                 reason: row.reason,
                 quality: row.quality,
-                enhancement: row.enhancement,
+                sharpening: row.enhancement,
                 broken: row.broken,
             })
             .collect())

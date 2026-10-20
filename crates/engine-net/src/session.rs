@@ -129,8 +129,8 @@ pub enum NetCommand {
         /// How many times.
         times: u32,
     },
-    /// Try to enhance the item in a slot; the server rolls.
-    Enhance {
+    /// Try to sharpen the item in a slot; the server rolls.
+    Sharpen {
         /// Which character.
         character_id: String,
         /// The worn slot or bag cell.
@@ -238,8 +238,8 @@ pub enum Action {
     Salvage,
     /// Exchanging resources.
     Exchange,
-    /// Enhancing an item.
-    Enhance,
+    /// Sharpening an item.
+    Sharpen,
     /// Loading the economy catalog.
     Economy,
     /// Loading run history or a run.
@@ -323,8 +323,8 @@ pub enum NetEvent {
     Characters(Vec<CharacterSummary>),
     /// One character in full.
     Character(Box<CharacterDetail>),
-    /// An enhancement attempt was made; the character is the server's copy afterwards.
-    Enhanced(Box<engine_realm::api::EnhanceResponse>),
+    /// A sharpening attempt was made; the character is the server's copy afterwards.
+    Sharpened(Box<engine_realm::api::SharpenResponse>),
     /// The economy catalog.
     Economy(Box<EconomyInfo>),
     /// A page of run history; `before` echoes the request (`None`: the first page).
@@ -713,14 +713,14 @@ impl Worker {
                     Err(error) => self.fail(Action::Exchange, error),
                 }
             }
-            NetCommand::Enhance { character_id, slot } => {
+            NetCommand::Sharpen { character_id, slot } => {
                 let Some(token) = self.access() else { return };
                 let result = with_request_id(|request_id| {
-                    self.api.enhance(&token, &character_id, &slot, request_id)
+                    self.api.sharpen(&token, &character_id, &slot, request_id)
                 });
                 match result {
-                    Ok(response) => self.emit(NetEvent::Enhanced(Box::new(response))),
-                    Err(error) => self.fail(Action::Enhance, error),
+                    Ok(response) => self.emit(NetEvent::Sharpened(Box::new(response))),
+                    Err(error) => self.fail(Action::Sharpen, error),
                 }
             }
             NetCommand::DowngradeKey { character_id } => {

@@ -80,7 +80,7 @@ pub fn roll(
         reason: String::new(),
         created_at: ctx.timestamp,
         quality: item.props.quality,
-        enhancement: item.props.enhancement,
+        enhancement: item.props.sharpening,
         broken: item.props.broken,
     });
 }
@@ -232,7 +232,7 @@ fn drop_item(ctx: &ReducerContext, instance_id: u64, account: &str, item: &str, 
         reason: MAIL_DUNGEON_DROP.to_owned(),
         created_at: ctx.timestamp,
         quality: props.quality,
-        enhancement: props.enhancement,
+        enhancement: props.sharpening,
         broken: props.broken,
     });
     ctx.db.run_loot().key().update(with_tally(row, &tally));

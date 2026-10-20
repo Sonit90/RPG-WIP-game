@@ -109,6 +109,7 @@ pub mod nav;
 pub mod party;
 /// The Monster Combat Playground: a test bed's choice of monsters, and nothing that fights.
 pub mod playground;
+pub mod sharpen_drops;
 pub mod sim;
 pub mod status;
 /// Talents for every hero: the generic table, grid and effects framework.

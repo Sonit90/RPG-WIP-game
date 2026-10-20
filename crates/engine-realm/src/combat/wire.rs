@@ -33,10 +33,10 @@ fn default_quality() -> u8 {
     QUALITY_DEFAULT
 }
 
-/// An item's quality, enhancement and broken state as they travel: flat fields, each
+/// An item's quality, sharpening and broken state as they travel: flat fields, each
 /// defaulted, so an event from a build that predates quality still reads (as the legacy item).
-fn props_of(quality: u8, enhancement: u8, broken: bool) -> ItemProps {
-    ItemProps::new(quality, enhancement, broken)
+fn props_of(quality: u8, sharpening: u8, broken: bool) -> ItemProps {
+    ItemProps::new(quality, sharpening, broken)
 }
 
 /// The currency or gold resource id this build knows by `id`, as the `'static` string events
@@ -313,7 +313,8 @@ pub enum WireEvent {
         #[serde(default = "default_quality")]
         quality: u8,
         #[serde(default)]
-        enhancement: u8,
+        #[serde(rename = "enhancement", alias = "sharpening")]
+        sharpening: u8,
         #[serde(default)]
         broken: bool,
         /// Which of the player's chest items this is, in roll order.
@@ -327,7 +328,8 @@ pub enum WireEvent {
         #[serde(default = "default_quality")]
         quality: u8,
         #[serde(default)]
-        enhancement: u8,
+        #[serde(rename = "enhancement", alias = "sharpening")]
+        sharpening: u8,
         #[serde(default)]
         broken: bool,
         #[serde(default)]
@@ -343,7 +345,8 @@ pub enum WireEvent {
         #[serde(default = "default_quality")]
         quality: u8,
         #[serde(default)]
-        enhancement: u8,
+        #[serde(rename = "enhancement", alias = "sharpening")]
+        sharpening: u8,
         #[serde(default)]
         broken: bool,
     },
@@ -713,7 +716,7 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
             player: name(player),
             item: engine_game::character::item(item)?.key.to_owned(),
             quality: props.quality,
-            enhancement: props.enhancement,
+            sharpening: props.sharpening,
             broken: props.broken,
             index,
         },
@@ -726,7 +729,7 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
             player: name(player),
             item: engine_game::character::item(item)?.key.to_owned(),
             quality: props.quality,
-            enhancement: props.enhancement,
+            sharpening: props.sharpening,
             broken: props.broken,
         },
         CombatEvent::MobCurrency {
@@ -750,7 +753,7 @@ pub fn encode(event: &CombatEvent, name: &dyn Fn(EntityId) -> EntityRef) -> Opti
             player: name(player),
             item: engine_game::character::item(item)?.key.to_owned(),
             quality: props.quality,
-            enhancement: props.enhancement,
+            sharpening: props.sharpening,
             broken: props.broken,
             index,
             reason: match reason {
@@ -1201,13 +1204,13 @@ pub fn decode(
             player,
             item,
             quality,
-            enhancement,
+            sharpening,
             broken,
             index,
         } => CombatEvent::LootAwarded {
             player: need(player)?,
             item: engine_game::character::item_by_key(item)?.id,
-            props: props_of(*quality, *enhancement, *broken),
+            props: props_of(*quality, *sharpening, *broken),
             index: *index,
             tick,
         },
@@ -1215,12 +1218,12 @@ pub fn decode(
             player,
             item,
             quality,
-            enhancement,
+            sharpening,
             broken,
         } => CombatEvent::MobLoot {
             player: need(player)?,
             item: engine_game::character::item_by_key(item)?.id,
-            props: props_of(*quality, *enhancement, *broken),
+            props: props_of(*quality, *sharpening, *broken),
             tick,
         },
         WireEvent::MobCurrency {
@@ -1237,14 +1240,14 @@ pub fn decode(
             player,
             item,
             quality,
-            enhancement,
+            sharpening,
             broken,
             index,
             reason,
         } => CombatEvent::LootMailed {
             player: need(player)?,
             item: engine_game::character::item_by_key(item)?.id,
-            props: props_of(*quality, *enhancement, *broken),
+            props: props_of(*quality, *sharpening, *broken),
             index: *index,
             reason: match *reason {
                 0 => MailReason::BagFull,
@@ -1543,7 +1546,7 @@ mod tests {
             player: EntityRef::Player("acct".into()),
             item: "no_such_item".into(),
             quality: 100,
-            enhancement: 0,
+            sharpening: 0,
             broken: false,
             index: 0,
         };

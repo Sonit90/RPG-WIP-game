@@ -621,7 +621,7 @@ fn a_cleared_run_with_loot_rules_rolls_two_items_per_player_and_pays_gold() {
                 "{account}: quality {}",
                 item.props.quality
             );
-            assert!(!item.props.broken && item.props.enhancement == 0);
+            assert!(!item.props.broken && item.props.sharpening <= 9);
         }
         assert!(
             gold_of(&events, account) >= 1,

@@ -345,7 +345,7 @@ struct Member {
 pub struct RolledItem {
     /// The item's stable key.
     pub key: &'static str,
-    /// Its quality, enhancement and broken state.
+    /// Its quality, sharpening and broken state.
     pub props: engine_game::character::ItemProps,
 }
 
@@ -496,6 +496,12 @@ impl CombatInstance {
     /// hold). Without it the boss's chest is the legacy one-item chest and monsters drop nothing.
     pub fn set_loot(&mut self, rules: LootRules, key_level: u32, reward_bonus_pct: u32) {
         self.sim.set_loot_rules(rules, key_level, reward_bonus_pct);
+    }
+
+    /// Names the dungeon the fight's loot is rolled for, so dungeon-specific sharpening curves
+    /// apply. Called with [`CombatInstance::set_loot`].
+    pub fn set_loot_dungeon(&mut self, dungeon: &str) {
+        self.sim.set_loot_dungeon(dungeon);
     }
 
     /// Seeds what the fight rolls loot with: the boss's chest and every monster drop.

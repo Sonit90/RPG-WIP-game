@@ -207,6 +207,7 @@ pub fn reward_bonus(_ctx: &ReducerContext, instance: &DungeonInstance) -> u32 {
 /// (Its chances - crits, enemy decisions, loot - were seeded from the instance's uid when it
 /// was built: see [`fight_seed`].)
 fn arm(ctx: &ReducerContext, instance: &DungeonInstance, fight: &mut CombatInstance) {
+    fight.set_loot_dungeon(&instance.dungeon_id);
     match engine_realm::loot::builtin_rules() {
         Some(rules) => fight.set_loot(
             rules.clone(),

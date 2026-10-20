@@ -12,7 +12,7 @@
 //!
 //! # What scales and what does not
 //!
-//! An item's quality and enhancement scale its **passive stats** (`ItemDef::stats_for`) and
+//! An item's quality and sharpening scale its **passive stats** (`ItemDef::stats_for`) and
 //! nothing about its active: the cooldown, the radius, the duration and the magnitude are the
 //! row's numbers for every copy. A 60 % roll of a Group Absorb trinket still shields for 20 %
 //! of maximum health; it just carries less Haste. That keeps what a party can plan around the

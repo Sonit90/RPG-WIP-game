@@ -199,7 +199,7 @@ impl Inventory {
     ///
     /// A stack joins an existing one first when the item allows more than one per cell and the
     /// two are the same item with equal props ([`ItemStack::can_merge`]); a copy with different
-    /// quality or enhancement never merges. Equipment stacks to one, so it never does.
+    /// quality or sharpening never merges. Equipment stacks to one, so it never does.
     ///
     /// `None` means the bag is full and **nothing was taken**: a caller that unequipped
     /// something to make this call has to put it back.
