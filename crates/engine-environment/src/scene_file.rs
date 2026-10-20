@@ -350,6 +350,9 @@ pub struct MonsterRecord {
     /// What killing it is worth towards completion, when it is not the monster's own value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion: Option<f32>,
+    /// Waypoints `[x, z]` it walks in a loop while idle. Absent means it stands still.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patrol: Vec<[f32; 2]>,
 }
 
 impl MonsterRecord {
@@ -367,6 +370,7 @@ impl MonsterRecord {
             level: placement.level,
             enabled: placement.enabled,
             completion: placement.completion,
+            patrol: placement.patrol.clone(),
         }
     }
 
@@ -384,6 +388,7 @@ impl MonsterRecord {
             level: self.level,
             enabled: self.enabled,
             completion: self.completion,
+            patrol: self.patrol.clone(),
         }
     }
 }
@@ -1306,6 +1311,7 @@ mod tests {
         named.aggro_radius = Some(11.0);
         named.enabled = false;
         named.completion = Some(4.5);
+        named.patrol = vec![[3.0, -9.0], [3.0, -15.0], [-4.0, -15.0]];
         original.push_monster(named);
         original.push_monster(crate::monster::MonsterPlacement::new(
             "crypt_ghoul",
@@ -1337,6 +1343,14 @@ mod tests {
         assert_eq!(placement.level, 1);
         assert!(placement.enabled);
         assert!((placement.scale - 1.0).abs() < f32::EPSILON);
+        assert!(
+            placement.patrol.is_empty(),
+            "no patrol unless the file says so"
+        );
+        assert!(
+            !text.contains("\"patrol\":[]"),
+            "an empty patrol was written"
+        );
 
         let dry = serde_json::to_string(&SceneDocument::from_scene(&scene())).expect("writable");
         assert!(!dry.contains("monsters") && !dry.contains("dungeon"));

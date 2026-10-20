@@ -220,6 +220,7 @@ impl Simulation {
             let destination = match runtime.brain.state() {
                 AiState::Chase => percept.victim().map(|victim| victim.position),
                 AiState::Returning => Some(runtime.brain.home()),
+                AiState::Idle => runtime.brain.patrol_goal(),
                 _ => None,
             };
             match destination {

@@ -606,6 +606,14 @@ pub fn populate_from_scene(
             if let Some(name) = scene.monsters[*index].name.clone() {
                 simulation.set_enemy_name(*entity, name);
             }
+            let patrol = &scene.monsters[*index].patrol;
+            if !patrol.is_empty() {
+                let waypoints = patrol
+                    .iter()
+                    .map(|[x, z]| Vec3::new(*x, scene.ground_at(Vec3::new(*x, 0.0, *z)), *z))
+                    .collect();
+                simulation.set_enemy_patrol(*entity, waypoints);
+            }
             report.total_completion += simulation.completion_value(*entity);
         }
         report.monsters += spawned.len();

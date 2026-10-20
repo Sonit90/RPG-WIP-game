@@ -57,6 +57,12 @@ pub const MAX_TARGETS: usize = 3;
 /// How close to home counts as home, in metres.
 const HOME_TOLERANCE: f32 = 0.6;
 
+/// How close to a patrol waypoint counts as having reached it, in metres.
+const PATROL_TOLERANCE: f32 = 0.8;
+
+/// What fraction of its speed an idle monster walks its patrol at.
+const PATROL_SPEED_SCALE: f32 = 0.45;
+
 /// What an enemy is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AiState {
@@ -403,6 +409,10 @@ pub struct EnemyBrain {
     /// the same decision every other lost cast is — the telegraph comes down and the cast
     /// bar is told why, by the executor, in one place.
     evading: bool,
+    /// Waypoints it walks in a loop while idle. Empty means it stands at home.
+    patrol: Vec<Vec3>,
+    /// Which waypoint it is walking to.
+    patrol_next: usize,
 }
 
 impl EnemyBrain {
@@ -428,7 +438,49 @@ impl EnemyBrain {
             frenzy_haste: 0.0,
             aggro_radius: kind.archetype().aggro_radius,
             evading: false,
+            patrol: Vec::new(),
+            patrol_next: 0,
         }
+    }
+
+    /// Gives it a loop to walk while idle. Survives a reset, like the aggro radius: it is
+    /// where the level put it. Non-finite points are dropped.
+    pub fn set_patrol(&mut self, waypoints: Vec<Vec3>) {
+        self.patrol = waypoints
+            .into_iter()
+            .filter(|point| point.x.is_finite() && point.z.is_finite())
+            .collect();
+        self.resume_patrol_from(self.home);
+    }
+
+    /// Its patrol waypoints.
+    #[must_use]
+    pub fn patrol(&self) -> &[Vec3] {
+        &self.patrol
+    }
+
+    /// Where it is walking to on its patrol, while it is idle and has one.
+    #[must_use]
+    pub fn patrol_goal(&self) -> Option<Vec3> {
+        if self.state == AiState::Idle {
+            self.patrol.get(self.patrol_next).copied()
+        } else {
+            None
+        }
+    }
+
+    /// Picks the waypoint nearest `from` as the next one, so a patrol that was interrupted
+    /// resumes from where it is rather than from wherever the loop started.
+    fn resume_patrol_from(&mut self, from: Vec3) {
+        self.patrol_next = self
+            .patrol
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let distance = |point: &Vec3| (point.x - from.x).hypot(point.z - from.z);
+                distance(a).total_cmp(&distance(b))
+            })
+            .map_or(0, |(index, _)| index);
     }
 
     /// Sets how close the player must come before it notices, in metres.
@@ -678,6 +730,7 @@ impl EnemyBrain {
         self.frenzy = 0.0;
         self.frenzy_haste = 0.0;
         self.evading = false;
+        self.resume_patrol_from(self.home);
     }
 
     /// Drops the fight: forget everyone, and walk home.
@@ -726,7 +779,12 @@ impl EnemyBrain {
     /// phase's `speed_scale` mean something rather than being a number in a table.
     #[must_use]
     pub fn speed(&self) -> f32 {
-        self.archetype().phase_speed(self.phase)
+        let speed = self.archetype().phase_speed(self.phase);
+        if self.state == AiState::Idle && !self.patrol.is_empty() {
+            speed * PATROL_SPEED_SCALE
+        } else {
+            speed
+        }
     }
 
     /// The abilities it can use right now, in preference order.
@@ -964,7 +1022,10 @@ impl EnemyBrain {
                     .filter(|near| near.distance <= self.aggro_radius)
             });
         let Some(noticed) = noticed else {
-            return self.face_home(percept);
+            if self.patrol.is_empty() {
+                return self.face_home(percept);
+            }
+            return self.patrol_step(percept);
         };
         self.target = Some(noticed.entity);
         self.state = AiState::Alert;
@@ -1273,6 +1334,7 @@ impl EnemyBrain {
             self.target = None;
             self.threat.clear();
             self.combat_time = 0.0;
+            self.resume_patrol_from(percept.position);
             return self.face_home(percept);
         }
         AiDecision {
@@ -1284,6 +1346,33 @@ impl EnemyBrain {
             request: AiRequest::None,
             phase: None,
         }
+    }
+
+    /// Idle with a patrol: walk to the next waypoint, and turn for the one after on arrival.
+    fn patrol_step(&mut self, percept: &AiPercept) -> AiDecision {
+        let count = self.patrol.len();
+        // At most one lap of skipping, so waypoints stacked on one spot cannot spin forever.
+        for _ in 0..count {
+            let goal = self.patrol[self.patrol_next % count];
+            let offset = Vec3::new(
+                goal.x - percept.position.x,
+                0.0,
+                goal.z - percept.position.z,
+            );
+            if offset.length() > PATROL_TOLERANCE {
+                return AiDecision {
+                    intent: MoveIntent {
+                        direction: direction_towards(percept.position, goal),
+                        jump: false,
+                        facing: Some(yaw_towards(percept.position, goal)),
+                    },
+                    request: AiRequest::None,
+                    phase: None,
+                };
+            }
+            self.patrol_next = (self.patrol_next + 1) % count;
+        }
+        AiDecision::IDLE
     }
 
     /// Stand at home facing the way it spawned.
@@ -1320,9 +1409,17 @@ impl EnemyBrain {
     }
 
     /// Whether it has been pulled further from home than it is willing to go.
+    ///
+    /// A patrolling monster is measured from the nearest point of its loop, home included, so
+    /// walking its route is never being dragged away from it.
     fn beyond_leash(&self, position: Vec3) -> bool {
-        let offset = Vec3::new(position.x - self.home.x, 0.0, position.z - self.home.z);
-        offset.length() > self.archetype().leash_radius
+        let reach = |anchor: &Vec3| (position.x - anchor.x).hypot(position.z - anchor.z);
+        let nearest = self
+            .patrol
+            .iter()
+            .map(reach)
+            .fold(reach(&self.home), f32::min);
+        nearest > self.archetype().leash_radius
     }
 }
 

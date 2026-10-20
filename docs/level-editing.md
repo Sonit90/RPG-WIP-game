@@ -256,10 +256,14 @@ A level with monsters in it is a fight; the game spawns them when the level load
   "aggro_radius": 18.0,          // overrides the monster's own                   (optional)
   "level": 2,                    // 1-10; +12 % health, +6 % damage per level     (default 1)
   "enabled": false,              // kept in the file, not spawned                 (default true)
-  "completion": 5.0              // overrides the monster's own completion worth  (optional)
+  "completion": 5.0,             // overrides the monster's own completion worth  (optional)
+  "patrol": [[-14, -108], [-14, -96]]  // [x, z] loop it walks while idle (optional; JSON only)
 }
 ```
 
+* **Patrol.** An idle monster with `patrol` waypoints walks the loop at about half speed, routed
+  by the navigator, and aggros from wherever it is on the loop. After a reset it resumes from the
+  waypoint nearest home. The editor keeps the field when it saves; it does not edit it yet.
 * **Packs.** Pulling one member pulls the whole pack; the pack is cleared when all of it is dead.
   A placement with no pack is a pack of one.
 * **Unknown ids** are reported in the log with their index and skipped; the rest of the level

@@ -187,6 +187,13 @@ impl Simulation {
         }
     }
 
+    /// Gives an enemy the loop its level placement asked it to walk while idle.
+    pub fn set_enemy_patrol(&mut self, entity: EntityId, waypoints: Vec<Vec3>) {
+        if let Some(Some(runtime)) = self.enemies.get_mut(entity.index()) {
+            runtime.brain.set_patrol(waypoints);
+        }
+    }
+
     /// What killing an enemy is worth towards dungeon completion.
     #[must_use]
     pub fn completion_value(&self, entity: EntityId) -> f32 {
