@@ -428,7 +428,10 @@ mod tests {
         let mut loadout = loadout(80, 4, 1_000);
         reforge(&mut loadout, &slot(), &mut || u64::MAX, &economy).expect("allowed");
         let item = &loadout.equipment[0];
-        assert_eq!((item.quality, item.sharpening, item.broken), (110, 4, false));
+        assert_eq!(
+            (item.quality, item.sharpening, item.broken),
+            (110, 4, false)
+        );
         assert!((item.props().total_pct() - 114.0).abs() < 1e-4);
     }
 
