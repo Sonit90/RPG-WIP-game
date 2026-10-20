@@ -24,7 +24,7 @@ fn default_build(class: Class) -> ClassBuild {
 /// One fight of the single-target 60 s scenario.
 fn fight(class: Class, build: &ClassBuild, profile: &GearProfile, seed: u64) -> RunResult {
     let config = SCENARIOS[ST60].config(class);
-    let gear = profile.stat_block(class.hero());
+    let gear = profile.worn(class.hero());
     run_scenario(&config, build, &gear, ITERATIONS, seed)
 }
 
@@ -32,7 +32,7 @@ fn fight(class: Class, build: &ClassBuild, profile: &GearProfile, seed: u64) -> 
 fn the_same_seed_replays_exactly_and_a_different_one_does_not() {
     for class in Class::ALL {
         let build = default_build(class);
-        let profile = GearProfile::headline(GearTier::Top);
+        let profile = GearProfile::headline(GearTier::High);
         let first = fight(class, &build, &profile, SEED);
         let second = fight(class, &build, &profile, SEED);
         assert_eq!(first.damage.to_bits(), second.damage.to_bits(), "{class:?}");
@@ -41,7 +41,7 @@ fn the_same_seed_replays_exactly_and_a_different_one_does_not() {
     }
     // Crits and Ignite rolls are random, so another seed is another fight.
     let build = default_build(Class::Mage);
-    let profile = GearProfile::headline(GearTier::Top);
+    let profile = GearProfile::headline(GearTier::High);
     let a = fight(Class::Mage, &build, &profile, SEED);
     let b = fight(Class::Mage, &build, &profile, SEED + 1);
     assert_ne!(a.damage.to_bits(), b.damage.to_bits());
@@ -54,10 +54,10 @@ fn the_matrix_and_its_report_do_not_depend_on_thread_scheduling() {
         seed: SEED,
         ..Options::default()
     };
-    let profiles = GearProfile::select(&[GearTier::None, GearTier::Top]);
+    let profiles = GearProfile::select(&[GearTier::None, GearTier::High]);
     let run = || matrix::run(&Class::ALL, &profiles, 1, SEED, &|_, _| {});
-    let first = matrix_report(&run(), &options, None);
-    let second = matrix_report(&run(), &options, None);
+    let first = matrix_report(&run(), &options, None, None);
+    let second = matrix_report(&run(), &options, None, None);
     assert_eq!(first, second, "two runs of the same seed disagree");
 }
 
@@ -78,26 +78,60 @@ fn every_class_deals_damage_in_every_gear_tier() {
 
 #[test]
 fn better_gear_means_more_damage_for_every_class() {
+    // The "catastrophic scaling" guard: every tier out-damages the one below it, for every
+    // class, through real catalog items. Few iterations and one seed, so it is quick and
+    // never flakes; the report's gear-scaling section is the same check at full accuracy.
     for class in Class::ALL {
         let build = default_build(class);
-        let none = fight(class, &build, &GearProfile::headline(GearTier::None), SEED).dps;
-        let top = fight(class, &build, &GearProfile::headline(GearTier::Top), SEED).dps;
-        for medium in PROFILES.iter().filter(|p| p.tier == GearTier::Medium) {
-            let dps = fight(class, &build, medium, SEED).dps;
+        let dps: Vec<(GearTier, f64)> = PROFILES
+            .iter()
+            .map(|profile| (profile.tier, fight(class, &build, profile, SEED).dps))
+            .collect();
+        for pair in dps.windows(2) {
             assert!(
-                none < dps && dps < top,
-                "{class:?} {}: none {none:.1}, medium {dps:.1}, top {top:.1}",
-                medium.label()
+                pair[0].1 < pair[1].1,
+                "{class:?}: {:?} deals {:.1} DPS but {:?} deals {:.1}",
+                pair[1].0,
+                pair[1].1,
+                pair[0].0,
+                pair[0].1
             );
         }
     }
 }
 
 #[test]
+fn the_scaling_section_reads_the_matrix_and_flags_a_tier_that_does_not_beat_the_one_below() {
+    use crate::scaling::{self, Metric};
+
+    let options = Options {
+        iterations: 1,
+        seed: SEED,
+        classes: vec![Class::Warrior],
+        ..Options::default()
+    };
+    let profiles = GearProfile::select(&options.tiers);
+    let matrix = matrix::run(&options.classes, &profiles, 1, SEED, &|_, _| {});
+    let mut measured = scaling::measure(&matrix, &options, &|_, _| {});
+    assert_eq!(measured.classes.len(), 1);
+    assert_eq!(measured.classes[0].tiers.len(), GearTier::ALL.len());
+    assert!(measured.violations_of(&[Metric::Dps]).is_empty());
+
+    // Flatten the top tier: it is no longer better, and the check says exactly that.
+    measured.classes[0].tiers[4].dps = measured.classes[0].tiers[3].dps;
+    let found = measured.violations_of(&[Metric::Dps]);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].upper, GearTier::P2Max);
+    let mut text = String::new();
+    scaling::write_section(&mut text, &measured);
+    assert!(text.contains("1 violation"), "{text}");
+}
+
+#[test]
 fn the_ability_breakdown_sums_to_the_total_damage() {
     for class in Class::ALL {
         for build in builds_for(class) {
-            let result = fight(class, &build, &GearProfile::headline(GearTier::Top), SEED);
+            let result = fight(class, &build, &GearProfile::headline(GearTier::High), SEED);
             let sum: f64 = result.by_ability.iter().sum();
             assert!(
                 (sum - result.damage).abs() <= result.damage * 1e-9 + 1e-6,
@@ -115,7 +149,7 @@ fn every_uptime_is_a_fraction_and_every_average_stack_count_is_sane() {
         for scenario in &SCENARIOS {
             let build = default_build(class);
             let config = scenario.config(class);
-            let gear = GearProfile::headline(GearTier::Top).stat_block(class.hero());
+            let gear = GearProfile::headline(GearTier::High).worn(class.hero());
             let metrics = run_scenario(&config, &build, &gear, 1, SEED).metrics;
             for aura in 0..AURA_COUNT {
                 for uptime in [metrics.buff_uptime(aura), metrics.debuff_uptime(aura)] {
@@ -137,7 +171,7 @@ fn each_class_maintains_the_debuff_its_rotation_is_built_around() {
     use crate::metrics::{AURA_IGNITE, aura_name};
     use engine_game::status::StatusKind;
 
-    let top = GearProfile::headline(GearTier::Top);
+    let top = GearProfile::headline(GearTier::High);
     let mage = fight(Class::Mage, &default_build(Class::Mage), &top, SEED).metrics;
     assert!(mage.debuff_uptime(AURA_IGNITE) > 0.5, "Ignite barely up");
 
@@ -157,7 +191,7 @@ fn each_class_maintains_the_debuff_its_rotation_is_built_around() {
 
 #[test]
 fn a_rotation_never_casts_more_than_its_cooldowns_allow() {
-    let top = GearProfile::headline(GearTier::Top);
+    let top = GearProfile::headline(GearTier::High);
     for class in Class::ALL {
         let build = default_build(class);
         let metrics = fight(class, &build, &top, SEED).metrics;
@@ -197,9 +231,9 @@ fn the_report_has_every_section_and_every_class() {
         seed: SEED,
         ..Options::default()
     };
-    let profiles = GearProfile::select(&[GearTier::Top]);
+    let profiles = GearProfile::select(&[GearTier::High]);
     let matrix = matrix::run(&Class::ALL, &profiles, 1, SEED, &|_, _| {});
-    let text = matrix_report(&matrix, &options, None);
+    let text = matrix_report(&matrix, &options, None, None);
     for needle in [
         "## 1. Summary matrix",
         "## 2. Balance check",
@@ -233,7 +267,7 @@ fn the_command_line_selects_classes_and_gear() {
         "9",
     ]);
     assert_eq!(options.classes, [Class::Druid]);
-    assert_eq!(options.tiers, [GearTier::Top]);
+    assert_eq!(options.tiers, [GearTier::High]);
     assert_eq!((options.iterations, options.seed), (5, 9));
 
     let all = parse(&["--class", "all", "--gear", "all"]);
@@ -283,11 +317,11 @@ fn the_bar_refills_in_about_a_minute_and_a_half() {
     // The Ultimate is balanced on a sixty-to-ninety-second cadence: the bar must refill in
     // roughly that, whichever way the rotation plays, so the ninety-second cooldown is the
     // slower of the two gates and the energy is a real second one.
-    let profile = GearProfile::headline(GearTier::Top);
+    let profile = GearProfile::headline(GearTier::High);
     for scenario in [ST60, matrix::AOE8] {
         let config = SCENARIOS[scenario].config(Class::Mage).with_duration(400.0);
         let build = default_build(Class::Mage);
-        let gear = profile.stat_block(Class::Mage.hero());
+        let gear = profile.worn(Class::Mage.hero());
         let mut encounter = crate::scenario::Encounter::new(&config, &build, &gear, SEED);
         let mut probe = EnergyProbe {
             inner: build.rotation(),
@@ -314,7 +348,7 @@ fn the_bar_refills_in_about_a_minute_and_a_half() {
 #[test]
 fn the_mage_uses_the_beam_and_it_shows_in_the_damage_table() {
     let build = default_build(Class::Mage);
-    let profile = GearProfile::headline(GearTier::Top);
+    let profile = GearProfile::headline(GearTier::High);
     let result = fight(Class::Mage, &build, &profile, SEED);
     let beam =
         engine_game::ability::AbilityId::from_fire(engine_game::firemage::FireAbility::FireBeam)
@@ -326,8 +360,8 @@ fn the_mage_uses_the_beam_and_it_shows_in_the_damage_table() {
 #[test]
 fn the_warrior_builds_put_their_talents_in_the_game() {
     use engine_game::talent::warrior::WarriorTalentEffects;
-    let profile = GearProfile::headline(GearTier::Top);
-    let gear = profile.stat_block(Class::Warrior.hero());
+    let profile = GearProfile::headline(GearTier::High);
+    let gear = profile.worn(Class::Warrior.hero());
     let none = WarriorTalentEffects::default();
     for build in builds_for(Class::Warrior) {
         let config = SCENARIOS[ST60].config(Class::Warrior);
@@ -347,7 +381,7 @@ fn the_warrior_reports_valor_and_fervor() {
     let result = fight(
         Class::Warrior,
         &build,
-        &GearProfile::headline(GearTier::Top),
+        &GearProfile::headline(GearTier::High),
         SEED,
     );
     let resources = &result.metrics.resources;
@@ -364,11 +398,11 @@ fn the_warriors_area_damage_stays_level_with_the_mages() {
     // The balance target: Mage Default / (Warrior + Druid) near one in an eight-target fight.
     // The bleed cap on Colossus Strike is what holds the Warrior there; a small band, because
     // three iterations are noisy.
-    let profile = GearProfile::headline(GearTier::Top);
+    let profile = GearProfile::headline(GearTier::High);
     let dps = |class: Class| {
         let build = default_build(class);
         let config = SCENARIOS[matrix::AOE8].config(class);
-        let gear = profile.stat_block(class.hero());
+        let gear = profile.worn(class.hero());
         run_scenario(&config, &build, &gear, ITERATIONS, SEED).dps
     };
     let ratio = dps(Class::Mage) / (dps(Class::Warrior) + dps(Class::Druid));
@@ -381,7 +415,7 @@ fn the_validation_names_every_talent_and_flags_what_it_finds() {
         iterations: 1,
         seed: SEED,
         classes: vec![Class::Warrior],
-        tiers: vec![GearTier::Top],
+        tiers: vec![GearTier::High],
         ..Options::default()
     };
     let profiles = GearProfile::select(&options.tiers);
@@ -395,7 +429,7 @@ fn the_validation_names_every_talent_and_flags_what_it_finds() {
     // Something is in the best build, so something has a removal figure.
     assert!(warrior.talents.iter().any(|t| t.removal[0].is_some()));
 
-    let text = matrix_report(&matrix, &options, Some(&validation));
+    let text = matrix_report(&matrix, &options, Some(&validation), None);
     assert!(text.contains("## 6. Talent validation"));
     for talent in engine_game::talent::hero_talents(Class::Warrior.hero())
         .talents

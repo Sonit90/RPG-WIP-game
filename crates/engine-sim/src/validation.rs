@@ -159,6 +159,11 @@ impl TalentRow {
     }
 }
 
+/// The gear tiers the validation measures: the bottom, middle and top of what a character
+/// reaches today. The ceiling tiers are covered by the report's gear-scaling section; adding
+/// them here would double a pass that is already the longest in the run.
+const VALIDATION_TIERS: [GearTier; 3] = [GearTier::None, GearTier::Medium, GearTier::High];
+
 /// One class's validation.
 #[derive(Debug, Clone)]
 pub struct ClassValidation {
@@ -216,7 +221,15 @@ fn run_class(
     class: Class,
     progress: &(dyn Fn(usize, usize) + Sync),
 ) -> Option<ClassValidation> {
-    let tiers = options.tiers.clone();
+    let tiers: Vec<GearTier> = options
+        .tiers
+        .iter()
+        .copied()
+        .filter(|tier| VALIDATION_TIERS.contains(tier))
+        .collect();
+    if tiers.is_empty() {
+        return None;
+    }
     let profiles: Vec<GearProfile> = tiers.iter().map(|t| GearProfile::headline(*t)).collect();
     let builds = builds_for(class);
     let default = builds.first()?.clone();
@@ -407,7 +420,7 @@ pub fn write_section(out: &mut String, validation: &Validation) {
     let _ = writeln!(
         out,
         "Is any talent mandatory, or worth nothing? For every class and gear tier (the \
-         headline profile of each: none, medium/balanced, top) the `Default`, `Build A` and \
+         headline profile of each of none, medium and high) the `Default`, `Build A` and \
          `Build B` builds are measured, then every talent **alone on `Default`** (*solo*) and \
          every talent of the **best build removed from it** (*removal*, \"best\" being the \
          higher single-target DPS of A and B at that tier).\n"
@@ -483,7 +496,7 @@ fn class_section(out: &mut String, class: &ClassValidation) {
     for tier in &class.tiers {
         let _ = write!(out, " Removal {} ST / AoE |", tier_name(*tier));
     }
-    let _ = writeln!(out, " Survival (top) | Verdict |");
+    let _ = writeln!(out, " Survival (high) | Verdict |");
     let _ = write!(out, "|---|");
     for _ in 0..class.tiers.len() * 2 {
         let _ = write!(out, "---:|");

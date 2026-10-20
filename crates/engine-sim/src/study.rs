@@ -26,7 +26,7 @@ fn run_build(config: &ScenarioConfig, build: &Build, iterations: u32, seed: u64)
     run_scenario(
         config,
         &ClassBuild::Mage(build.clone()),
-        &build.gear_stats(),
+        &build.gear_stats().into(),
         iterations,
         seed,
     )
@@ -388,7 +388,7 @@ mod tests {
         let mut encounter = Encounter::new(
             &quick(1, 40.0),
             &ClassBuild::Mage(build.clone()),
-            &build.gear_stats(),
+            &build.gear_stats().into(),
             4,
         );
         let mut patient = RotationAi::with_rules(Style::Haste, DetonateRules::patient());
@@ -397,7 +397,7 @@ mod tests {
         let mut encounter = Encounter::new(
             &quick(1, 40.0),
             &ClassBuild::Mage(build.clone()),
-            &build.gear_stats(),
+            &build.gear_stats().into(),
             4,
         );
         let mut eager = RotationAi::with_rules(Style::Haste, DetonateRules::eager());

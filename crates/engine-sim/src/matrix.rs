@@ -186,7 +186,7 @@ pub fn execute(
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(job) = jobs.get(index) else { break };
-                    let gear = job.profile.stat_block(job.build.class().hero());
+                    let gear = job.profile.worn(job.build.class().hero());
                     let result = run_scenario(&job.config, &job.build, &gear, iterations, seed);
                     if let Ok(mut slots) = results.lock() {
                         slots[index] = Some(result);

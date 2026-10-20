@@ -25,11 +25,12 @@ use engine_game::firemage::Rng;
 use engine_game::sim::{FireCounters, SimConfig, Simulation};
 use engine_game::world::{EntityDesc, EntityKind};
 
-use engine_game::character::stat::StatBlock;
+use engine_game::character::stat::{Stat, health_from_stamina};
 use engine_game::hero::Hero;
 
 use crate::ai::Rotation;
 use crate::build::ClassBuild;
+use crate::gear::Worn;
 use crate::metrics::{Metrics, Recorder};
 
 /// How a fight is set up.
@@ -123,6 +124,9 @@ pub struct RunResult {
     pub counters: FireCounters,
     /// Seconds the fight ran.
     pub seconds: f64,
+    /// The player's maximum health at the end of the fight: Stamina from gear, through the
+    /// game's own curve.
+    pub max_health: f64,
     /// Casts, resources, cooldown usage and aura uptimes.
     pub metrics: Metrics,
 }
@@ -139,6 +143,7 @@ impl Default for RunResult {
             by_ability: [0.0; engine_game::ability::ABILITY_SLOTS],
             counters: FireCounters::default(),
             seconds: 0.0,
+            max_health: 0.0,
             metrics: Metrics::default(),
         }
     }
@@ -152,6 +157,7 @@ impl RunResult {
         self.overkill += other.overkill;
         self.deaths += other.deaths;
         self.seconds += other.seconds;
+        self.max_health += other.max_health;
         self.metrics.accumulate(&other.metrics);
         for (slot, value) in other.by_ability.iter().enumerate() {
             self.by_ability[slot] += value;
@@ -192,6 +198,7 @@ impl RunResult {
         result.dps = scale(self.dps);
         result.overkill = scale(self.overkill);
         result.seconds = scale(self.seconds);
+        result.max_health = scale(self.max_health);
         result.metrics = self.metrics.averaged(runs);
         for value in &mut result.by_ability {
             *value = scale(*value);
@@ -231,10 +238,12 @@ pub struct Encounter {
 impl Encounter {
     /// Builds the fight described by `config` for `build`, wearing `gear`.
     ///
-    /// `gear` is a stat block in the game's units, handed to the simulation through the same
-    /// door equipment uses, so the rating curve and the main-stat bridge are the game's own.
+    /// A [`Worn::Sheet`] is set on the roster and the character refreshed, which is what a
+    /// realm fight does with a player's loadout, so the item arithmetic, the rating curve and
+    /// the main-stat bridge are the game's own. A [`Worn::Bonus`] is a stat block granted on
+    /// top of a bare sheet.
     #[must_use]
-    pub fn new(config: &ScenarioConfig, build: &ClassBuild, gear: &StatBlock, seed: u64) -> Self {
+    pub fn new(config: &ScenarioConfig, build: &ClassBuild, gear: &Worn, seed: u64) -> Self {
         let arena = ArenaConfig {
             arena_half_extent: 60.0,
             ..ArenaConfig::default()
@@ -272,7 +281,13 @@ impl Encounter {
 
         simulation.set_player_entity(player);
         simulation.set_hero(build.class().hero());
-        simulation.set_stat_bonus(*gear);
+        match gear {
+            Worn::Sheet(sheet) => {
+                *simulation.roster_mut().sheet_mut(build.class().hero()) = (**sheet).clone();
+                simulation.refresh_character();
+            }
+            Worn::Bonus(stats) => simulation.set_stat_bonus(*stats),
+        }
         simulation.select_nearest_target();
         build.apply(&mut simulation);
         // The Mage's Ultimate is ready at the pull. A boss fight is entered after trash, and
@@ -384,6 +399,9 @@ impl Encounter {
             by_ability,
             counters: self.simulation.fire_counters(),
             seconds,
+            max_health: f64::from(health_from_stamina(
+                self.simulation.character_stats().get(Stat::Stamina),
+            )),
             metrics,
         }
     }
@@ -401,7 +419,7 @@ impl Encounter {
 pub fn run_scenario(
     config: &ScenarioConfig,
     build: &ClassBuild,
-    gear: &StatBlock,
+    gear: &Worn,
     iterations: u32,
     seed: u64,
 ) -> RunResult {
