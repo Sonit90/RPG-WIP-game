@@ -251,7 +251,11 @@ fn the_drowned_catacombs_load_on_the_realm_path_and_can_be_cleared() {
     let (scene, barriers, players) = dungeon_party("drowned_catacombs");
     let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     let monsters = fight.monster_states();
-    assert_eq!(monsters.len(), scene.monsters.len(), "no unknown ids dropped");
+    assert_eq!(
+        monsters.len(),
+        scene.monsters.len(),
+        "no unknown ids dropped"
+    );
     fight.open_start_barrier();
     let mage = fight
         .resolve(&EntityRef::Player("dps".into()))
@@ -280,7 +284,10 @@ fn the_drowned_catacombs_load_on_the_realm_path_and_can_be_cleared() {
         }
     }
     assert!(saw_unlock, "the gate opened");
-    assert!(fight.completed().is_some(), "the Abbess died and the run completed");
+    assert!(
+        fight.completed().is_some(),
+        "the Abbess died and the run completed"
+    );
 }
 
 #[test]

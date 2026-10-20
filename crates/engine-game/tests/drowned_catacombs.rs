@@ -956,22 +956,37 @@ fn the_level_loads_with_no_unknown_ids_and_a_boss_pack() {
     assert_eq!(report.packs, 9, "eight packs and the boss");
     assert_eq!(report.monsters, scene.monsters.len());
     let boss = report.boss_encounter.expect("a boss encounter");
-    assert_eq!(
-        simulation.encounters()[boss].name(),
-        "THE DROWNED ABBESS"
+    assert_eq!(simulation.encounters()[boss].name(), "THE DROWNED ABBESS");
+    let required = scene
+        .dungeon
+        .as_ref()
+        .expect("a dungeon")
+        .required_completion;
+    assert!(
+        report.total_completion >= required,
+        "the dungeon cannot be completed"
     );
-    let required = scene.dungeon.as_ref().expect("a dungeon").required_completion;
-    assert!(report.total_completion >= required, "the dungeon cannot be completed");
     // Every asset is one the library or the starter kit knows.
-    let known: Vec<&str> = engine_environment::LIBRARY.iter().map(|a| a.name()).collect();
+    let known: Vec<&str> = engine_environment::LIBRARY
+        .iter()
+        .map(|a| a.name())
+        .collect();
     for object in &scene.objects {
-        assert!(known.contains(&object.asset.name()), "{}", object.asset.name());
+        assert!(
+            known.contains(&object.asset.name()),
+            "{}",
+            object.asset.name()
+        );
     }
     assert!(scene.objects.len() > 500);
     assert!(!scene.water.is_empty());
     // The lurkers patrol.
     assert_eq!(
-        scene.monsters.iter().filter(|m| !m.patrol.is_empty()).count(),
+        scene
+            .monsters
+            .iter()
+            .filter(|m| !m.patrol.is_empty())
+            .count(),
         2
     );
 }
@@ -1006,7 +1021,8 @@ fn the_boss_is_sealed_and_the_route_to_every_pack_is_walkable() {
     let mut east: Vec<(f32, f32)> = west.iter().map(|(x, z)| (-x, *z)).collect();
     east[0] = (0.0, -8.0);
     for route in [west.to_vec(), east] {
-        let mut navigator = engine_game::nav::Navigator::new(engine_game::nav::NavConfig::default());
+        let mut navigator =
+            engine_game::nav::Navigator::new(engine_game::nav::NavConfig::default());
         let mut path = Vec::new();
         for hop in route.windows(2) {
             let from = Vec3::new(hop[0].0, 0.0, hop[0].1);

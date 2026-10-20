@@ -183,7 +183,7 @@ struct Builder {
 impl Builder {
     fn new() -> Self {
         let mut scene = EnvironmentScene::with_capacity("drowned_catacombs", 1100);
-        scene.half_extent = 160.0;
+        scene.half_extent = 200.0;
         // Underground and wet: a cold moon through the roof, a green-blue fill, and the warm
         // braziers (and a few cold lamps) doing the real lighting.
         scene.lighting = EnvironmentLighting {
@@ -206,8 +206,7 @@ impl Builder {
     }
 
     fn place(&mut self, asset: EnvironmentAsset, x: f32, z: f32, yaw: f32, scale: f32) {
-        let mut object =
-            EnvironmentObject::decoration(asset, Vec3::new(x, 0.0, z)).with_yaw(yaw);
+        let mut object = EnvironmentObject::decoration(asset, Vec3::new(x, 0.0, z)).with_yaw(yaw);
         object.transform.scale = Vec3::splat(scale);
         object.collision = default_collision(asset);
         self.scene.push(object);
@@ -215,8 +214,7 @@ impl Builder {
 
     /// Placed without any collision, whatever the asset usually blocks.
     fn place_soft(&mut self, asset: EnvironmentAsset, x: f32, z: f32, yaw: f32, scale: f32) {
-        let mut object =
-            EnvironmentObject::decoration(asset, Vec3::new(x, 0.0, z)).with_yaw(yaw);
+        let mut object = EnvironmentObject::decoration(asset, Vec3::new(x, 0.0, z)).with_yaw(yaw);
         object.transform.scale = Vec3::splat(scale);
         object.collision = EnvironmentCollision::None;
         self.scene.push(object);
@@ -244,8 +242,8 @@ impl Builder {
 
     /// A cold lantern: sea-green light with no flame under it.
     fn lamp(&mut self, x: f32, y: f32, z: f32, range: f32) {
-        let light =
-            SceneLight::brazier(Vec3::new(x, y, z), range).with_color(Vec3::new(0.30, 0.78, 0.74), 3.4);
+        let light = SceneLight::brazier(Vec3::new(x, y, z), range)
+            .with_color(Vec3::new(0.30, 0.78, 0.74), 3.4);
         self.scene.push_light(light);
         self.lights += 1;
     }
@@ -302,8 +300,9 @@ impl Builder {
                         (1, 0) => (x + CELL * 0.5, z, FRAC_PI_2),
                         _ => (x - CELL * 0.5, z, FRAC_PI_2),
                     };
-                    let mut wall = EnvironmentObject::decoration(CRYPT_WALL, Vec3::new(wx, 0.0, wz))
-                        .with_yaw(yaw);
+                    let mut wall =
+                        EnvironmentObject::decoration(CRYPT_WALL, Vec3::new(wx, 0.0, wz))
+                            .with_yaw(yaw);
                     wall.collision = default_collision(CRYPT_WALL);
                     self.scene.push(wall);
                     // The two ends of the wall, keyed in half-metres, with the direction the
@@ -326,9 +325,7 @@ impl Builder {
         keys.sort_unstable();
         for key in keys {
             let runs = &vertices[&key];
-            let straight = runs.len() == 2
-                && runs[0].0 == -runs[1].0
-                && runs[0].1 == -runs[1].1;
+            let straight = runs.len() == 2 && runs[0].0 == -runs[1].0 && runs[0].1 == -runs[1].1;
             let (x, z) = (key.0 as f32 * 0.5, key.1 as f32 * 0.5);
             let every_other = ((x / CELL).round() as i32 + (z / CELL).round() as i32) % 2 == 0;
             if straight && !every_other {
@@ -443,7 +440,10 @@ impl Builder {
             0.5,
         );
         // Stepping stones across the channel, and boulders that are cover.
-        for (index, x) in [-22.0, -14.0, -6.0, 2.0, 10.0, 18.0, 25.0].into_iter().enumerate() {
+        for (index, x) in [-22.0, -14.0, -6.0, 2.0, 10.0, 18.0, 25.0]
+            .into_iter()
+            .enumerate()
+        {
             let z = -76.0 + if index % 2 == 0 { 1.2 } else { -1.2 };
             self.place_soft(ROCK_SMALL, x, z, hash01(31, index as u32) * 6.0, 1.3);
         }
@@ -462,7 +462,13 @@ impl Builder {
         self.scatter(BONE_PILE, hub, 4, 3.0, 33);
         // The corridors out of the hall's two ends: galleries.
         for side in [-1.0_f32, 1.0] {
-            self.place_soft(ROCK_SPIRE, side * 36.0, -83.0, hash01(34, side as u32 + 1) * 6.0, 0.9);
+            self.place_soft(
+                ROCK_SPIRE,
+                side * 36.0,
+                -83.0,
+                hash01(34, side as u32 + 1) * 6.0,
+                0.9,
+            );
             self.brazier(side * 36.0, -70.2, false);
             self.scatter(
                 BONE_PILE,
@@ -514,7 +520,13 @@ impl Builder {
     fn east_wing(&mut self) {
         let wing = EAST_WING();
         // Broken columns: knee-high cover, the half-height of a pillar.
-        for (x, z) in [(50.0, -84.0), (62.0, -84.0), (56.0, -72.0), (50.0, -62.0), (62.0, -62.0)] {
+        for (x, z) in [
+            (50.0, -84.0),
+            (62.0, -84.0),
+            (56.0, -72.0),
+            (50.0, -62.0),
+            (62.0, -62.0),
+        ] {
             self.pillar(x, z, 0.5);
         }
         self.pillar(47.0, -93.0, 1.0);
@@ -557,7 +569,13 @@ impl Builder {
                 1.5,
                 61,
             );
-            self.place_soft(ROCK_SPIRE, side * 56.0, -117.0, hash01(62, side as u32 + 1) * 6.0, 0.8);
+            self.place_soft(
+                ROCK_SPIRE,
+                side * 56.0,
+                -117.0,
+                hash01(62, side as u32 + 1) * 6.0,
+                0.8,
+            );
         }
     }
 
@@ -568,7 +586,12 @@ impl Builder {
             self.place(SARCOPHAGUS, x, -105.8, 0.0, 1.0);
             self.place(SARCOPHAGUS, x, -126.2, 0.0, 1.0);
         }
-        for (x, z) in [(-22.0, -111.0), (22.0, -111.0), (-22.0, -122.0), (22.0, -122.0)] {
+        for (x, z) in [
+            (-22.0, -111.0),
+            (22.0, -111.0),
+            (-22.0, -122.0),
+            (22.0, -122.0),
+        ] {
             self.pillar(x, z, 1.0);
         }
         self.scatter(BONE_PILE, hall, 14, 3.0, 71);
@@ -598,7 +621,12 @@ impl Builder {
         let chapel = CHAPEL();
         // The nave of the drowned chapel: four pillars close enough to hold a player against
         // the Undertow, and far enough that the Abbess's slam does not reach them.
-        for (x, z) in [(-14.0, -146.0), (14.0, -146.0), (-14.0, -174.0), (14.0, -174.0)] {
+        for (x, z) in [
+            (-14.0, -146.0),
+            (14.0, -146.0),
+            (-14.0, -174.0),
+            (14.0, -174.0),
+        ] {
             self.pillar(x, z, 1.0);
         }
         self.pillar(-23.0, -160.0, 1.0);
@@ -623,7 +651,12 @@ impl Builder {
             0.12,
             0.8,
         );
-        for (x, z) in [(-26.0, -138.8), (26.0, -138.8), (-26.0, -181.2), (26.0, -181.2)] {
+        for (x, z) in [
+            (-26.0, -138.8),
+            (26.0, -138.8),
+            (-26.0, -181.2),
+            (26.0, -181.2),
+        ] {
             self.brazier(x, z, true);
         }
         self.brazier(-8.0, -178.0, false);
@@ -867,7 +900,11 @@ fn every_pack_stands_on_floor_and_out_of_reach_of_every_other() {
     for placement in &made.monsters {
         let spawn = Vec3::new(0.0, 0.0, -8.0);
         let distance = (placement.position - spawn).length();
-        assert!(distance > aggro + 3.0, "{} is {distance} m from the spawn", placement.monster);
+        assert!(
+            distance > aggro + 3.0,
+            "{} is {distance} m from the spawn",
+            placement.monster
+        );
     }
     // Two packs are two packs: no member of one within a pull of a member of another, the
     // lurkers' walks included.
@@ -886,7 +923,11 @@ fn every_pack_stands_on_floor_and_out_of_reach_of_every_other() {
                     .iter()
                     .any(|q| ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt() < aggro + 2.0)
             });
-            assert!(!near, "{} and {} are within a pull of each other", a.name, b.name);
+            assert!(
+                !near,
+                "{} and {} are within a pull of each other",
+                a.name, b.name
+            );
         }
     }
 }

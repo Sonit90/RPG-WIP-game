@@ -610,7 +610,9 @@ mod tests {
     #[test]
     fn the_abbess_drops_the_epics_for_the_slots_the_crypt_leaves_bare() {
         let rules = rules();
-        let table = rules.boss_table("drowned_abbess").expect("the Abbess has a table");
+        let table = rules
+            .boss_table("drowned_abbess")
+            .expect("the Abbess has a table");
         let slots: std::collections::HashSet<_> = table
             .entries
             .iter()
@@ -631,7 +633,10 @@ mod tests {
             assert_eq!(def.quality, ItemQuality::Epic);
             assert_eq!(def.item_level, 12);
             assert!(stat_total(def.id) >= 19.0, "{key}");
-            assert!(table.entries.iter().any(|entry| entry.item == def.id), "{key}");
+            assert!(
+                table.entries.iter().any(|entry| entry.item == def.id),
+                "{key}"
+            );
         }
     }
 
