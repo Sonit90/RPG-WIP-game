@@ -88,6 +88,8 @@ pub mod paint;
 pub mod raid_frame;
 /// Recount: the combat-statistics window, fed by the realm's meter or the local one.
 pub mod recount;
+/// The dungeon timer at the top of the window.
+pub mod run_timer;
 pub mod screen;
 /// What a right click on an action bar slot opens.
 pub mod slot_menu;

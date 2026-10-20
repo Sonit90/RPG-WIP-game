@@ -518,7 +518,7 @@ pub fn depart(ctx: &ReducerContext, loaded: &Loaded, leaving: &PartyMember, how:
                 .instance_id
                 .and_then(|id| ctx.db.dungeon_instance().id().find(id))
             {
-                crate::instance::settle_spend(ctx, &instance, Some(&leaving.account_id));
+                crate::instance::settle_abandoned(ctx, &instance, Some(&leaving.account_id));
             }
             // Their body leaves the fight with them (read before the rows go, so a rebuilt
             // fight still knows who they were). A dropped connection never gets here: it
@@ -569,6 +569,14 @@ pub fn depart(ctx: &ReducerContext, loaded: &Loaded, leaving: &PartyMember, how:
             );
         }
         DepartureEffect::Disband => {
+            // The last one out: the run ends abandoned, recorded while their rows still exist.
+            if let Some(instance) = loaded
+                .party
+                .instance_id
+                .and_then(|id| ctx.db.dungeon_instance().id().find(id))
+            {
+                crate::instance::settle_abandoned(ctx, &instance, None);
+            }
             ctx.db.party_member().identity().delete(leaving.identity);
             ctx.db.instance_player().identity().delete(leaving.identity);
             if let Some(instance_id) = loaded.party.instance_id {

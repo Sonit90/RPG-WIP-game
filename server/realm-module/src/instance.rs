@@ -6,6 +6,7 @@
 //! instance id, and every view a client reads starts from the caller's own membership.
 
 use engine_realm::RealmError;
+use engine_realm::api::RunMember;
 use engine_realm::combat::RolledItem;
 use engine_realm::haul::{self, SummaryItem};
 use engine_realm::instance::{
@@ -13,6 +14,7 @@ use engine_realm::instance::{
     uid_hex,
 };
 use engine_realm::meter::ReportMember;
+use engine_realm::outcome::{self, RunEnd, RunOutcome};
 use engine_realm::party::PartyState;
 use spacetimedb::{ReducerContext, ScheduleAt, Table, TimeDuration};
 
@@ -275,9 +277,10 @@ pub fn destroy(ctx: &ReducerContext, instance_id: u64, reason: &str) {
     // Chest items nobody took go to their owners' mail; what a player picked up from monsters
     // in a run that never produced their result still reaches them.
     crate::loot::mail_unclaimed(ctx, instance_id);
+    // A run torn down before it ended is abandoned: every player still in it gets a result with
+    // what they spent and picked up, so currency spent is still spent and the history says so.
+    settle_abandoned(ctx, &instance, None);
     crate::loot::close_run(ctx, &instance);
-    // Currency spent on a run that never produced a result is still spent.
-    settle_spend(ctx, &instance, None);
     if let Ok(cleaning) = advance(ctx, &instance, InstanceState::CleaningUp) {
         let _ = advance(ctx, &cleaning, InstanceState::Destroyed);
     }
@@ -353,8 +356,20 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         };
         transition(ctx, &party, next)?;
     }
-    let duration = micros(ctx.timestamp) - micros(instance.created_at);
+    let duration = run_duration(ctx, &instance);
     let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
+    // How it ended against the timer, once, for everyone in the run.
+    let timer_us = outcome::timer_us(&dungeon.definition);
+    let outcome = outcome::classify(
+        if success {
+            RunEnd::Completed
+        } else {
+            RunEnd::Failed
+        },
+        duration,
+        timer_us,
+    );
+    let party_json = run_party_json(ctx, &instance);
     let key_owner = ctx
         .db
         .party()
@@ -509,6 +524,10 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 0
             },
             run_uid: uid_hex(instance.uid),
+            outcome: outcome.key().to_owned(),
+            timer_us: timer_us.unwrap_or(0),
+            party: party_json.clone(),
+            modifiers: instance.modifiers.clone(),
         });
         ctx.db.run_summary().insert(RunSummary {
             // The client reads this row, so it carries the instance id, never the uid.
@@ -557,8 +576,9 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         );
     }
     log::info!(
-        "event=instance_completion instance_id={instance_id} dungeon_id={} success={success} duration_us={duration}",
-        instance.dungeon_id
+        "event=instance_completion instance_id={instance_id} dungeon_id={} success={success} outcome={} duration_us={duration}",
+        instance.dungeon_id,
+        outcome.key()
     );
     Ok(())
 }
@@ -580,60 +600,115 @@ fn take_spend(ctx: &ReducerContext, instance_id: u64, account_id: &str) -> Vec<(
     )]
 }
 
-/// Records what a player spent in a run that ends for them without a result: they left, or the
-/// instance was torn down before it finished. A result with no rewards and no key change, so the
-/// persistence API still debits the currency exactly once (its `result_id` is the idempotency
-/// key). `only` limits it to one account; `None` settles everyone still holding a spend row.
-pub fn settle_spend(ctx: &ReducerContext, instance: &DungeonInstance, only: Option<&str>) {
-    let rows: Vec<InstanceSpend> = ctx
+/// When the run's clock started: the barrier lifting. An instance that never counted down
+/// (torn down while loading) counts from its creation.
+fn run_started(instance: &DungeonInstance) -> i64 {
+    micros(instance.countdown_ends_at.unwrap_or(instance.created_at))
+}
+
+/// How long the run has lasted, microseconds: from the barrier lifting to now, never negative.
+/// The dungeon timer and the leaderboards read this, and the client's timer counts from the same
+/// instant (`dungeon_instance.countdown_ends_at`).
+fn run_duration(ctx: &ReducerContext, instance: &DungeonInstance) -> i64 {
+    (micros(ctx.timestamp) - run_started(instance)).max(0)
+}
+
+/// Who is in the run now, as the history lists the party, as JSON text.
+fn run_party_json(ctx: &ReducerContext, instance: &DungeonInstance) -> String {
+    let catalog = crate::level::catalog().ok();
+    let members: Vec<RunMember> = ctx
         .db
-        .instance_spend()
+        .instance_player()
         .instance_id()
         .filter(instance.id)
-        .filter(|spend| only.is_none_or(|account| spend.account_id == account))
+        .map(|player| RunMember {
+            character_id: ctx
+                .db
+                .party_member()
+                .identity()
+                .find(player.identity)
+                .map(|member| member.character_id)
+                .unwrap_or_default(),
+            name: player.name,
+            hero: catalog
+                .as_ref()
+                .and_then(|c| c.character(&player.definition_id))
+                .map_or_else(|| player.definition_id.clone(), |d| d.class.clone()),
+            role: engine_realm::Role::from(player.role).key().to_owned(),
+        })
         .collect();
-    for spend in rows {
-        let spent = take_spend(ctx, instance.id, &spend.account_id);
-        let result_id = run_result_id(instance.uid, &spend.account_id);
-        if spent.is_empty() {
+    serde_json::to_string(&members).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// Ends the run for players who never got a result because nobody finished it: they left, or
+/// the instance was torn down under them (everyone gone past the reconnect grace). Each gets a
+/// failed, `abandoned` result with what they spent and picked up, so the persistence API still
+/// debits the currency exactly once (the `result_id` is the idempotency key) and the history
+/// records the attempt. `only` limits it to one account (a member leaving a run that goes on:
+/// their result carries no party, so it cannot write the run's own row); `None` settles everyone
+/// still in the run, with the party. A finished run already has its results: nothing to do.
+pub fn settle_abandoned(ctx: &ReducerContext, instance: &DungeonInstance, only: Option<&str>) {
+    if matches!(
+        InstanceState::from(instance.state),
+        InstanceState::Completed
+            | InstanceState::Failed
+            | InstanceState::CleaningUp
+            | InstanceState::Destroyed
+    ) {
+        return;
+    }
+    let party = if only.is_none() {
+        run_party_json(ctx, instance)
+    } else {
+        String::new()
+    };
+    let timer = crate::level::dungeon(&instance.dungeon_id)
+        .ok()
+        .and_then(|dungeon| outcome::timer_us(&dungeon.definition))
+        .unwrap_or(0);
+    let players: Vec<InstancePlayer> = ctx
+        .db
+        .instance_player()
+        .instance_id()
+        .filter(instance.id)
+        .filter(|player| only.is_none_or(|account| player.account_id == account))
+        .collect();
+    for player in players {
+        let result_id = run_result_id(instance.uid, &player.account_id);
+        if ctx
+            .db
+            .pending_result()
+            .result_id()
+            .find(&result_id)
+            .is_some()
+        {
             continue;
         }
-        // An abandoned run may already have a result from the loot it picked up
-        // (`loot::close_run`): the spend rides on that one, never on a second row with the same
-        // id, which the bridge would refuse - and the debit would be lost.
-        if let Some(existing) = ctx.db.pending_result().result_id().find(&result_id) {
-            if existing.currency_spent.is_empty() || existing.currency_spent == "[]" {
-                ctx.db.pending_result().result_id().update(PendingResult {
-                    currency_spent: serde_json::to_string(&spent)
-                        .unwrap_or_else(|_| "[]".to_owned()),
-                    ..existing
-                });
-            }
-            continue;
-        }
+        let spent = take_spend(ctx, instance.id, &player.account_id);
+        let (_, looted) = crate::loot::take_haul(ctx, instance.id, &player.account_id);
         let character_id = ctx
             .db
             .party_member()
             .identity()
-            .find(spend.identity)
+            .find(player.identity)
             .map(|member| member.character_id)
             .or_else(|| {
                 ctx.db
                     .party_member()
                     .party_id()
                     .filter(instance.party_id)
-                    .find(|member| member.account_id == spend.account_id)
+                    .find(|member| member.account_id == player.account_id)
                     .map(|member| member.character_id)
             })
             .unwrap_or_default();
         ctx.db.pending_result().insert(PendingResult {
             result_id,
-            account_id: spend.account_id.clone(),
+            account_id: player.account_id.clone(),
             character_id,
             dungeon_id: instance.dungeon_id.clone(),
             instance_id: instance.id,
             success: false,
-            duration_us: micros(ctx.timestamp) - micros(instance.created_at),
+            duration_us: run_duration(ctx, instance),
             experience: 0,
             created_at: ctx.timestamp,
             key_level: instance.key_level.max(1),
@@ -642,16 +717,20 @@ pub fn settle_spend(ctx: &ReducerContext, instance: &DungeonInstance, only: Opti
             resources: "[]".to_owned(),
             damage_report: String::new(),
             talent_points: 0,
-            looted: "[]".to_owned(),
+            looted: haul::encode_currencies(&looted),
             currency_spent: serde_json::to_string(&spent).unwrap_or_else(|_| "[]".to_owned()),
             participant_key_bump: false,
             own_key_level: 0,
             run_uid: uid_hex(instance.uid),
+            outcome: RunOutcome::Abandoned.key().to_owned(),
+            timer_us: timer,
+            party: party.clone(),
+            modifiers: instance.modifiers.clone(),
         });
         log::info!(
-            "event=spend_settled instance_id={} account_id={}",
+            "event=run_abandoned instance_id={} account_id={}",
             instance.id,
-            spend.account_id
+            player.account_id
         );
     }
 }

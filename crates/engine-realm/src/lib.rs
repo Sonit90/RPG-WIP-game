@@ -34,6 +34,8 @@
 //! | [`key`] | dungeon keys: validity, progression, scaling |
 //! | [`modifiers`] | dungeon key modifiers: rolling, scaling, reroll, downgrade |
 //! | [`rewards`] | what a finished run pays |
+//! | [`outcome`] | how a run ended: timed, overtime, failed, abandoned |
+//! | [`leaderboard`] | the boards, their ranking rule and page size |
 //! | [`meter`] | Recount: combat statistics from server events, and the persisted damage report |
 //! | [`matchmaking`] | which queued tickets become a party |
 //! | [`party`] | the party state machine, the ready check, who may do what |
@@ -56,6 +58,7 @@ pub mod error;
 pub mod haul;
 pub mod instance;
 pub mod key;
+pub mod leaderboard;
 pub mod loadout;
 pub mod loot;
 pub mod mapcheck;
@@ -64,6 +67,7 @@ pub mod meter;
 pub mod modifiers;
 pub mod movement;
 pub mod ops;
+pub mod outcome;
 pub mod party;
 pub mod progression;
 pub mod rate_limit;

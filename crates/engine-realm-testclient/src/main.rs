@@ -58,6 +58,7 @@ fn main() -> ExitCode {
                 ("chat", scenarios::chat),
                 ("loot", scenarios::loot),
                 ("modifiers", scenarios::modifiers),
+                ("history", scenarios::history),
             ];
             let mut failed = false;
             for (name, run) in list {
