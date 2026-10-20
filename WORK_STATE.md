@@ -41,7 +41,11 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 - MERGED `p2-sharpen`: rename, drop curves (`loot.json` `sharpening_drops`, key_shift per_level 0.02
   max 1.4 clamped to keep curves decreasing; tails monotone in key, tested), tooltip, `--loot-sim` →
   `docs/balance/loot-sharpening.md`. Boss P(>=+8) 0.11 % key1 → 1.3 % key20.
-- `p2-dungeon4` (worktree `../myGame-wt-dungeon4`): Bone Foundry.
+- MERGED `p2-dungeon4`: Bone Foundry (ring layout; slag_ironclad Warded, cinder_bomber Detonate,
+  slag_thrower, foundry_foreman Stoked/Bestow; foundry_overseer 19k: brand spread, Ladle soak (overflow
+  1.25 so solo soaks), Conveyor lane, Overheat). Warded/Stoked not dispellable. Unverified 3D/online push.
+- Known bug: an engine-editor test fails while gitignored `assets/generated/` exists (baked minimaps) — fix later.
+- `p2-dungeon5` (worktree `../myGame-wt-dungeon5`): Sanctum of Ash (mini-boss + hardest final boss).
 - `p2-reforge` (worktree `../myGame-wt-reforge`): reforge gamble. Gems start after sets merges (both touch gear_stats).
 - p2-core verified after sharpen+dungeon3 merges: workspace 4457, embedded 312, backend 120, DB 30, clippy clean.
   `engine-renderer` `instanced_scene_equivalence` crashed once (0xc0000005), not reproducible — flaky GPU test.
