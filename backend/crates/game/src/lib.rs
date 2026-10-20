@@ -12,6 +12,7 @@
 
 pub mod bridge;
 pub mod characters;
+pub mod history;
 pub mod store;
 
 use std::sync::OnceLock;
@@ -24,6 +25,16 @@ pub fn catalog() -> &'static Catalog {
     CATALOG.get_or_init(|| match Catalog::builtin() {
         Ok(catalog) => catalog,
         // The catalog is compiled in and tested; a broken one cannot ship.
+        Err(e) => panic!("{e}"),
+    })
+}
+
+/// The leaderboard rules compiled into this service.
+pub fn leaderboards() -> &'static engine_realm::leaderboard::LeaderboardConfig {
+    static CONFIG: OnceLock<engine_realm::leaderboard::LeaderboardConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| match engine_realm::leaderboard::LeaderboardConfig::builtin() {
+        Ok(config) => config,
+        // Compiled in and tested, like the catalog.
         Err(e) => panic!("{e}"),
     })
 }

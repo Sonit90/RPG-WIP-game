@@ -78,6 +78,12 @@ pub struct Summary {
     pub damage: u64,
     /// Total healing.
     pub healing: u64,
+    /// Damage the player took from monsters and the environment.
+    #[serde(default)]
+    pub damage_taken: u64,
+    /// Times the player died.
+    #[serde(default)]
+    pub deaths: u32,
     /// The scope's length in seconds: what DPS divides by.
     pub seconds: f32,
     /// Seconds the player was actually acting in it.
@@ -157,6 +163,8 @@ struct AbilityAcc {
 struct Tally {
     damage: f64,
     healing: f64,
+    taken: f64,
+    deaths: u32,
     abilities: Vec<AbilityAcc>,
     targets: BTreeMap<u64, f64>,
     active: f64,
@@ -186,6 +194,8 @@ impl Tally {
     fn load(&mut self, summary: &Summary) {
         self.damage = summary.damage as f64;
         self.healing = summary.healing as f64;
+        self.taken = summary.damage_taken as f64;
+        self.deaths = summary.deaths;
         self.abilities = summary
             .abilities
             .iter()
@@ -210,6 +220,8 @@ impl Tally {
     fn clear(&mut self) {
         self.damage = 0.0;
         self.healing = 0.0;
+        self.taken = 0.0;
+        self.deaths = 0;
         self.abilities.clear();
         self.targets.clear();
         self.active = 0.0;
@@ -247,6 +259,8 @@ impl Tally {
         Summary {
             damage: whole(self.damage),
             healing: whole(self.healing),
+            damage_taken: whole(self.taken),
+            deaths: self.deaths,
             seconds: tenths(seconds),
             active: tenths(self.active),
             abilities,
@@ -428,6 +442,7 @@ impl InstanceMeter {
                 WireEvent::AbilityUsed {
                     source, ability, ..
                 } => self.cast(now, source, *ability),
+                WireEvent::Death { entity, .. } => self.death(entity),
                 WireEvent::DungeonCompleted { .. } => {
                     if self.boss_engaged_at.is_some() && self.boss_killed_at.is_none() {
                         self.boss_killed_at = Some(now);
@@ -482,12 +497,34 @@ impl InstanceMeter {
                 }
                 self.dirty = true;
             }
-            // A monster hits the party: it keeps the fight alive and starts one.
-            (EntityRef::Monster(_), EntityRef::Player(_)) => {
-                self.touch_fight(now);
+            // A monster (or the environment) hits the party: a monster keeps the fight alive and
+            // starts one; either way the player's damage taken grows.
+            (EntityRef::Monster(_) | EntityRef::None, EntityRef::Player(_)) => {
+                if matches!(source, EntityRef::Monster(_)) {
+                    self.touch_fight(now);
+                }
+                let amount = f64::from(amount);
+                let in_fight = self.fight.is_some();
+                if let Some(player) = self.player_mut(target) {
+                    player.overall.taken += amount;
+                    if in_fight {
+                        player.fight.taken += amount;
+                    }
+                }
                 self.dirty = true;
             }
             _ => {}
+        }
+    }
+
+    fn death(&mut self, entity: &EntityRef) {
+        let in_fight = self.fight.is_some();
+        if let Some(player) = self.player_mut(entity) {
+            player.overall.deaths += 1;
+            if in_fight {
+                player.fight.deaths += 1;
+            }
+            self.dirty = true;
         }
     }
 
@@ -678,6 +715,9 @@ impl InstanceMeter {
             duration_seconds: seconds as f32,
             boss_kill_seconds: self.boss_kill_seconds().map(|s| s as f32),
             abilities,
+            healing: blob.overall.healing,
+            damage_taken: blob.overall.damage_taken,
+            deaths: blob.overall.deaths,
         })
     }
 }
@@ -770,6 +810,15 @@ pub struct DamageReport {
     pub boss_kill_seconds: Option<f32>,
     /// Per ability.
     pub abilities: Vec<ReportAbility>,
+    /// The player's total healing over the run (reports from before it read as zero).
+    #[serde(default)]
+    pub healing: u64,
+    /// Damage the player took over the run.
+    #[serde(default)]
+    pub damage_taken: u64,
+    /// Times the player died during the run.
+    #[serde(default)]
+    pub deaths: u32,
 }
 
 impl DamageReport {
@@ -1045,6 +1094,42 @@ mod tests {
         let blob = m.blob("a").expect("present");
         assert_eq!(blob.overall.damage, 100);
         assert!((m.overall_seconds() - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deaths_and_damage_taken_are_counted_per_player_and_reach_the_report() {
+        let mut m = meter();
+        m.observe(
+            1.0,
+            &[
+                taken("a", 1, 40.0),
+                taken("a", 2, 10.0),
+                taken("b", 1, 5.0),
+                WireEvent::Death {
+                    entity: player("a"),
+                    killer: EntityRef::Monster(1),
+                },
+                // A monster dying is not a player's death.
+                WireEvent::Death {
+                    entity: EntityRef::Monster(1),
+                    killer: player("a"),
+                },
+            ],
+        );
+        let a = m.blob("a").expect("present").overall;
+        assert_eq!((a.damage_taken, a.deaths), (50, 1));
+        let b = m.blob("b").expect("present").overall;
+        assert_eq!((b.damage_taken, b.deaths), (5, 0));
+        m.finish(3.0);
+        let report = m.damage_report("a", Vec::new()).expect("present");
+        assert_eq!((report.damage_taken, report.deaths, report.healing), (50, 1, 0));
+    }
+
+    #[test]
+    fn a_report_from_before_the_extra_figures_still_reads() {
+        let old = r#"{"party":[],"total_damage":10,"dps":1.0,"duration_seconds":10.0,"abilities":[]}"#;
+        let report = DamageReport::from_json(old).expect("reads");
+        assert_eq!((report.deaths, report.damage_taken, report.healing), (0, 0, 0));
     }
 
     #[test]

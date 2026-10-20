@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::loadout::{BagItem, EquippedItem, SlotRef};
 use crate::modifiers::KeyModifier;
+use crate::outcome::RunOutcome;
 use crate::role::Role;
 
 /// `POST /api/v1/auth/login`.
@@ -354,6 +355,20 @@ pub struct DungeonResult {
     /// bump. Zero when there is none.
     #[serde(default)]
     pub own_key_level: u32,
+    /// How this player's run ended. `None` for a result from before outcomes existed: read it
+    /// with [`DungeonResult::outcome`].
+    #[serde(default)]
+    pub outcome: Option<RunOutcome>,
+    /// The dungeon's timer for the run, microseconds; zero when it has none.
+    #[serde(default)]
+    pub timer_us: i64,
+    /// Who played the run. Empty on a result that must not write the run's own row (a member who
+    /// left before it ended); every other result of the run carries the whole party.
+    #[serde(default)]
+    pub party: Vec<RunMember>,
+    /// The key's modifiers as the run had them (rerolls included).
+    #[serde(default)]
+    pub modifiers: Vec<KeyModifier>,
 }
 
 /// A change to a character's key a result asks for, applied only if the key still has
@@ -367,6 +382,13 @@ pub struct KeyUpdate {
 }
 
 impl DungeonResult {
+    /// How the run ended for this player; a result from before outcomes existed is read as
+    /// timed (success) or failed.
+    #[must_use]
+    pub fn outcome(&self) -> RunOutcome {
+        self.outcome.unwrap_or_else(|| RunOutcome::legacy(self.success))
+    }
+
     /// The key change this result asks for, if any. Only a success moves a key: the owner's
     /// key from the level used to `key_level_after`, a participant's from their own level
     /// (`own_key_level`) when the realm flagged the bump.
@@ -455,6 +477,167 @@ impl LootDelivery {
     pub fn props(&self) -> engine_game::character::ItemProps {
         engine_game::character::ItemProps::new(self.quality, self.enhancement, self.broken)
     }
+}
+
+/// One member of a finished run, as the history lists the party.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMember {
+    /// The character's id.
+    #[serde(default)]
+    pub character_id: String,
+    /// The character's name.
+    pub name: String,
+    /// Its class ("Warrior", "Fire Mage").
+    pub hero: String,
+    /// The role it queued as (`tank`, `healer`, `dps`).
+    #[serde(default)]
+    pub role: String,
+}
+
+/// One item a character received in a run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunLoot {
+    /// The item's stable key.
+    pub item: String,
+    /// Rolled quality, per cent of the base stats.
+    #[serde(default = "default_quality")]
+    pub quality: u8,
+    /// Sharpening level (zero for anything just rolled).
+    #[serde(default)]
+    pub sharpening: u8,
+    /// Whether the item came broken.
+    #[serde(default)]
+    pub broken: bool,
+}
+
+/// The most history rows one request returns.
+pub const HISTORY_MAX_LIMIT: u32 = 50;
+
+/// One run in a character's history (`GET /api/v1/characters/{id}/history`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// The run (hex uid); empty for a result from before runs were recorded.
+    #[serde(default)]
+    pub run_uid: String,
+    /// Which dungeon.
+    pub dungeon_id: String,
+    /// The key level.
+    pub key_level: u32,
+    /// How it ended for this character.
+    pub outcome: RunOutcome,
+    /// How long the run took, microseconds.
+    pub duration_us: i64,
+    /// The dungeon's timer, microseconds; zero when it had none.
+    #[serde(default)]
+    pub timer_us: i64,
+    /// When the result was recorded, microseconds since the epoch: the paging cursor.
+    pub applied_at_us: i64,
+    /// Who played (empty when the run's own row was never written).
+    #[serde(default)]
+    pub party: Vec<RunMember>,
+    /// The key's modifiers.
+    #[serde(default)]
+    pub modifiers: Vec<KeyModifier>,
+    /// Times this character died.
+    #[serde(default)]
+    pub deaths: u32,
+    /// Damage this character took.
+    #[serde(default)]
+    pub damage_taken: u64,
+    /// Healing this character did.
+    #[serde(default)]
+    pub healing: u64,
+    /// Damage per second over the run.
+    #[serde(default)]
+    pub dps: f32,
+    /// What this character received.
+    #[serde(default)]
+    pub loot: Vec<RunLoot>,
+}
+
+/// `GET /api/v1/characters/{id}/history?before=&limit=`: newest first.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct HistoryPage {
+    /// The runs, newest first.
+    pub runs: Vec<HistoryEntry>,
+    /// Pass as `before` for the next (older) page; `None` at the end.
+    #[serde(default)]
+    pub next_before: Option<i64>,
+}
+
+/// `GET /api/v1/runs/{run_uid}`: one run, for a player who took part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunDetail {
+    /// The run (hex uid).
+    pub run_uid: String,
+    /// The season it counted in.
+    #[serde(default)]
+    pub season_id: Option<String>,
+    /// Which dungeon.
+    pub dungeon_id: String,
+    /// The key level.
+    pub key_level: u32,
+    /// How the run ended.
+    pub outcome: RunOutcome,
+    /// How long it took, microseconds.
+    pub duration_us: i64,
+    /// The timer, microseconds; zero when none.
+    #[serde(default)]
+    pub timer_us: i64,
+    /// When it finished, microseconds since the epoch.
+    pub finished_at_us: i64,
+    /// Who played.
+    pub party: Vec<RunMember>,
+    /// The key's modifiers.
+    #[serde(default)]
+    pub modifiers: Vec<KeyModifier>,
+    /// The asking player's own figures and loot.
+    pub you: Option<HistoryEntry>,
+}
+
+/// One row of a leaderboard.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeaderboardRow {
+    /// Position on the board, from 1.
+    pub rank: u32,
+    /// The run (hex uid).
+    pub run_uid: String,
+    /// The key level.
+    pub key_level: u32,
+    /// Timed or overtime.
+    pub outcome: RunOutcome,
+    /// How long it took, microseconds.
+    pub duration_us: i64,
+    /// The timer, microseconds; zero when none.
+    #[serde(default)]
+    pub timer_us: i64,
+    /// When it finished, microseconds since the epoch.
+    pub finished_at_us: i64,
+    /// Who played.
+    pub party: Vec<RunMember>,
+}
+
+/// `GET /api/v1/leaderboards?dungeon=&key=&season=&board=&page=`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeaderboardPage {
+    /// The board (`fastest` or `highest`).
+    pub board: String,
+    /// The dungeon.
+    pub dungeon_id: String,
+    /// The key level asked for (`fastest`); `None` for `highest`.
+    #[serde(default)]
+    pub key_level: Option<u32>,
+    /// The season.
+    pub season_id: String,
+    /// The page, from 0.
+    pub page: u32,
+    /// Rows per page.
+    pub page_size: u32,
+    /// The rows of this page, ranked.
+    pub rows: Vec<LeaderboardRow>,
+    /// Whether a later page has rows.
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 /// `POST /api/v1/characters/{id}/enhance`.
@@ -555,7 +738,87 @@ mod tests {
             currency_spent: vec![],
             participant_key_bump: false,
             own_key_level: 0,
+            outcome: None,
+            timer_us: 0,
+            party: vec![],
+            modifiers: vec![],
         }
+    }
+
+    #[test]
+    fn a_result_from_before_outcomes_reads_with_defaults() {
+        let old = r#"{"result_id":"1:a","account_id":"a","character_id":"c","dungeon_id":"graveyard_crypt","success":true,"duration_us":5,"experience":1}"#;
+        let result: DungeonResult = serde_json::from_str(old).expect("reads");
+        assert_eq!(result.outcome, None);
+        assert_eq!(result.outcome(), RunOutcome::Timed);
+        assert_eq!((result.timer_us, result.party.len(), result.modifiers.len()), (0, 0, 0));
+        let failed = DungeonResult {
+            success: false,
+            ..result
+        };
+        assert_eq!(failed.outcome(), RunOutcome::Failed);
+    }
+
+    #[test]
+    fn a_result_round_trips_with_its_outcome_party_and_modifiers() {
+        let result = DungeonResult {
+            outcome: Some(RunOutcome::Overtime),
+            timer_us: 1_500_000_000,
+            party: vec![RunMember {
+                character_id: "c".into(),
+                name: "Ash".into(),
+                hero: "Fire Mage".into(),
+                role: "dps".into(),
+            }],
+            modifiers: vec![KeyModifier::base("rotating_beams")],
+            ..winning_result()
+        };
+        let text = serde_json::to_string(&result).expect("writes");
+        assert!(text.contains(r#""outcome":"overtime""#));
+        let back: DungeonResult = serde_json::from_str(&text).expect("reads");
+        assert_eq!(back, result);
+        assert_eq!(back.outcome(), RunOutcome::Overtime);
+    }
+
+    #[test]
+    fn history_and_board_bodies_round_trip_and_tolerate_missing_optional_fields() {
+        let page = HistoryPage {
+            runs: vec![HistoryEntry {
+                run_uid: "ab".into(),
+                dungeon_id: "graveyard_crypt".into(),
+                key_level: 4,
+                outcome: RunOutcome::Timed,
+                duration_us: 9,
+                timer_us: 10,
+                applied_at_us: 1_700_000_000_000_000,
+                party: vec![],
+                modifiers: vec![],
+                deaths: 2,
+                damage_taken: 30,
+                healing: 4,
+                dps: 12.5,
+                loot: vec![RunLoot {
+                    item: "ashgraves_seal".into(),
+                    quality: 103,
+                    sharpening: 2,
+                    broken: false,
+                }],
+            }],
+            next_before: Some(1_700_000_000_000_000),
+        };
+        let text = serde_json::to_string(&page).expect("writes");
+        assert_eq!(serde_json::from_str::<HistoryPage>(&text).expect("reads"), page);
+        let minimal = r#"{"runs":[{"dungeon_id":"d","key_level":1,"outcome":"failed","duration_us":1,"applied_at_us":2}]}"#;
+        let read: HistoryPage = serde_json::from_str(minimal).expect("reads");
+        assert_eq!(read.next_before, None);
+        assert_eq!(read.runs[0].loot.len(), 0);
+        let loot: RunLoot = serde_json::from_str(r#"{"item":"x"}"#).expect("reads");
+        assert_eq!(loot.quality, engine_game::character::QUALITY_DEFAULT);
+        let board: LeaderboardPage = serde_json::from_str(
+            r#"{"board":"highest","dungeon_id":"d","season_id":"season-0","page":0,"page_size":25,"rows":[]}"#,
+        )
+        .expect("reads");
+        assert!(!board.has_more && board.key_level.is_none());
     }
 
     #[test]

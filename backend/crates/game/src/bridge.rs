@@ -100,6 +100,28 @@ struct PendingRow {
     /// The run's uid (hex). Absent from a module older than the uid.
     #[serde(default)]
     run_uid: String,
+    /// `RunOutcome` key. Absent from a module older than outcomes.
+    #[serde(default)]
+    outcome: String,
+    #[serde(default)]
+    timer_us: i64,
+    /// JSON text: `[RunMember]`; empty for a result that must not write the run.
+    #[serde(default)]
+    party: String,
+    /// JSON text: the key's modifiers.
+    #[serde(default)]
+    modifiers: String,
+}
+
+/// Reads a JSON-text column leniently: empty or malformed text is the default.
+fn parse_text<T: serde::de::DeserializeOwned + Default>(text: &str, result_id: &str) -> T {
+    if text.trim().is_empty() {
+        return T::default();
+    }
+    serde_json::from_str(text).unwrap_or_else(|e| {
+        tracing::warn!(result_id, error = %e, "result column is malformed; using none");
+        T::default()
+    })
 }
 
 /// What a realm answer means for a change to a character's talents or equipment.
@@ -274,6 +296,10 @@ impl RealmBridge {
                 currency_spent: parse_resources(&row.currency_spent, &row.result_id),
                 damage_report: parse_report(&row.damage_report, &row.result_id),
                 looted: parse_resources(&row.looted, &row.result_id),
+                outcome: engine_realm::outcome::RunOutcome::from_key(&row.outcome),
+                timer_us: row.timer_us,
+                party: parse_text(&row.party, &row.result_id),
+                modifiers: parse_text(&row.modifiers, &row.result_id),
                 result_id: row.result_id,
                 account_id: row.account_id,
                 character_id: row.character_id,
@@ -385,6 +411,20 @@ mod tests {
         );
         assert!(!rows[0].participant_key_bump);
         assert_eq!(rows[0].own_key_level, 0);
+    }
+
+    #[test]
+    fn outcome_timer_party_and_modifiers_read_positionally_and_default() {
+        let body = r#"[["u:a","a","c","graveyard_crypt",12,true,5000000,250,[1],3,true,4,"[]","",2,"[]","[]",false,0,"uu","overtime",1500000000,"[{\"character_id\":\"c\",\"name\":\"Ash\",\"hero\":\"Fire Mage\",\"role\":\"dps\"}]","[{\"id\":\"rotating_beams\"}]"]]"#;
+        let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
+        assert_eq!(rows[0].outcome, "overtime");
+        assert_eq!(rows[0].timer_us, 1_500_000_000);
+        let party: Vec<engine_realm::api::RunMember> = parse_text(&rows[0].party, "r");
+        assert_eq!(party[0].name, "Ash");
+        let mods: Vec<engine_realm::modifiers::KeyModifier> = parse_text(&rows[0].modifiers, "r");
+        assert_eq!(mods[0].id, "rotating_beams");
+        let bad: Vec<engine_realm::api::RunMember> = parse_text("{nope", "r");
+        assert!(bad.is_empty());
     }
 
     #[test]

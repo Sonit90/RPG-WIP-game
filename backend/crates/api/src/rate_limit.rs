@@ -62,6 +62,11 @@ pub const CHARACTER_WRITES_PER_ACCOUNT: Rule = Rule {
     capacity: 20.0,
     per_second: 4.0,
 };
+/// History and leaderboard reads per account: paging through is fine, scraping is not.
+pub const READS_PER_ACCOUNT: Rule = Rule {
+    capacity: 20.0,
+    per_second: 2.0,
+};
 /// Settings saves per account.
 pub const SETTINGS_PER_ACCOUNT: Rule = Rule {
     capacity: 5.0,
