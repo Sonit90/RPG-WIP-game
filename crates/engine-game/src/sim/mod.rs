@@ -539,6 +539,11 @@ pub struct Simulation {
     hits_last: Vec<EntityId>,
     /// Hazards that spread this step. Reused; never freed.
     hazard_grown: Vec<crate::enemy::hazard::EnemyHazard>,
+    /// Hymns that finished this step, as `(singer, seconds, haste)`: the AI loop has the
+    /// allies' brains out, so they are spurred on once it puts them back.
+    pending_hymns: Vec<(EntityId, f32, f32)>,
+    /// Allies a boss's new phase calls, for the same reason: spawned once the table is back.
+    pending_summons: Vec<(EntityId, crate::enemy::PhaseSummon)>,
     /// The enemies' own random generator: target picks, scatter, the boss's adds.
     ///
     /// Seeded from [`SimConfig::rng_seed`] and advanced only by enemy decisions, so the
@@ -706,6 +711,8 @@ impl Simulation {
             chain_scratch: Vec::with_capacity(8),
             hits_last: Vec::with_capacity(16),
             hazard_grown: Vec::with_capacity(8),
+            pending_hymns: Vec::new(),
+            pending_summons: Vec::new(),
             // Never zero: xorshift stays at zero forever from a zero state.
             enemy_rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             dungeon: None,

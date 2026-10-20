@@ -63,6 +63,10 @@ const PATROL_TOLERANCE: f32 = 0.8;
 /// What fraction of its speed an idle monster walks its patrol at.
 const PATROL_SPEED_SCALE: f32 = 0.45;
 
+/// The cooldown an ability used once a phase is given: far longer than any fight, undone only
+/// by entering a phase that lists it again.
+const ONCE_PER_PHASE_LOCK: f32 = 1.0e6;
+
 /// What an enemy is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AiState {
@@ -1186,8 +1190,12 @@ impl EnemyBrain {
         // The phase's cooldown scaling is applied here, once, when the ability is started —
         // not when it is read — so a phase change does not retroactively shorten a cooldown
         // that is already running.
-        self.cooldowns[ability.index()] =
-            definition.cooldown * archetype.phase_cooldown_scale(self.phase) / self.haste();
+        self.cooldowns[ability.index()] = if definition.once_per_phase {
+            // Locked for the rest of the phase; entering the next one that lists it frees it.
+            ONCE_PER_PHASE_LOCK
+        } else {
+            definition.cooldown * archetype.phase_cooldown_scale(self.phase) / self.haste()
+        };
         let intent = MoveIntent {
             direction: Vec3::ZERO,
             jump: false,
@@ -1405,6 +1413,12 @@ impl EnemyBrain {
         self.phase = phase;
         // Cooldowns are not cleared: a phase change is not a free rotation reset, and an
         // ability the previous phase just used should still be on its cooldown in the next.
+        // The exception is an ability that is used once a phase: the phase is what frees it.
+        for ability in archetype.phase_abilities(phase) {
+            if ability.definition().once_per_phase {
+                self.cooldowns[ability.index()] = 0.0;
+            }
+        }
         Some(phase)
     }
 

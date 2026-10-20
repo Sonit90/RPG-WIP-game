@@ -36,6 +36,7 @@ pub mod threat;
 use engine_core::math::Vec3;
 
 use crate::combat::DamageType;
+use crate::status::StatusKind;
 use crate::world::horizontal_distance;
 
 /// Half-angle of an enemy cone attack, in radians. Sixty degrees of spread.
@@ -265,6 +266,45 @@ pub enum EnemyEffect {
         /// How much faster it attacks, as a fraction: 0.6 is sixty per cent faster.
         haste: f32,
     },
+    /// A long cast that, **if it completes**, heals the caster and drives every living ally
+    /// to attack faster for a while.
+    ///
+    /// The interrupt-priority ability: the cast bar is the warning, a kick is the answer, and
+    /// what an unanswered one buys is the point of the fight's second half. Aimed at the
+    /// caster itself, so a victim behind a pillar does not lose it.
+    Hymn {
+        /// Health the caster recovers, as a fraction of its maximum.
+        heal_fraction: f32,
+        /// How much faster its allies attack, as a fraction: 0.6 is sixty per cent faster.
+        haste: f32,
+        /// Seconds the allies' haste lasts.
+        duration: f32,
+    },
+    /// A channel that drags every hostile in reach towards the caster while drowning pools
+    /// open around it, and slams the ground at its feet when it ends.
+    ///
+    /// Uninterruptible: the answer is movement. Walking away from the caster at full speed
+    /// out-runs the current, so the pull is a tax on casting and on being slowed rather than
+    /// a death sentence. The ability's own [`EnemyAbilityDef::damage`] is the slam, hitting
+    /// its [`EnemyAbilityDef::shape`] around the caster.
+    Undertow {
+        /// Seconds between the pools it opens.
+        interval: f32,
+        /// How fast the current drags, in metres a second.
+        pull_speed: f32,
+        /// How far from the caster the current reaches, in metres.
+        pull_range: f32,
+        /// Radius of each pool, in metres.
+        pool_radius: f32,
+        /// Damage a second to anything standing in a pool.
+        pool_damage_per_second: f32,
+        /// Seconds a pool lasts.
+        pool_duration: f32,
+        /// The nearest a pool opens to the caster, in metres.
+        pool_near: f32,
+        /// The furthest a pool opens from the caster, in metres.
+        pool_far: f32,
+    },
 }
 
 impl EnemyEffect {
@@ -280,6 +320,12 @@ impl EnemyEffect {
         matches!(self, Self::Channel { .. })
     }
 
+    /// Whether this is the pulling channel.
+    #[must_use]
+    pub const fn is_undertow(self) -> bool {
+        matches!(self, Self::Undertow { .. })
+    }
+
     /// Whether the caster runs at its target when this lands.
     #[must_use]
     pub const fn is_charge(self) -> bool {
@@ -289,7 +335,10 @@ impl EnemyEffect {
     /// Whether this is aimed at the caster itself rather than at anybody else.
     #[must_use]
     pub const fn is_self(self) -> bool {
-        matches!(self, Self::Frenzy { .. })
+        matches!(
+            self,
+            Self::Frenzy { .. } | Self::Hymn { .. } | Self::Undertow { .. }
+        )
     }
 }
 
@@ -319,6 +368,18 @@ pub enum EnemyRider {
         fraction: f32,
         /// Seconds it lasts.
         duration: f32,
+    },
+    /// A status from the effect registry, one stack a hit.
+    ///
+    /// What lets an enemy apply a *dispellable* debuff without a rider of its own: the
+    /// registry row says what it does and which school removes it.
+    Afflict {
+        /// Which effect.
+        kind: StatusKind,
+        /// Seconds it lasts; every new stack refreshes it.
+        duration: f32,
+        /// The most stacks it reaches.
+        max_stacks: u8,
     },
 }
 
@@ -476,10 +537,32 @@ pub enum EnemyAbility {
     MarkOfTheHost,
     /// Lord Ashgrave, unmasked: attacks much faster for a while.
     CrimsonFrenzy,
+
+    // ---------------------------------------------------------------- the Drowned Catacombs
+    /// Drowned Tidecaller: a heal on the most wounded ally.
+    TidalMend,
+    /// Drowned Tidecaller: the filler bolt.
+    TideLash,
+    /// Drowned Cultist: a bolt that leaves Waterlogged on somebody.
+    BrineBolt,
+    /// Catacomb Lurker: a wide frontal cone.
+    TidalCleave,
+    /// Catacomb Lurker: the heavy filler.
+    LurkerClaw,
+    /// Bilge Archer: marked circles around several players that land after a delay.
+    BilgeVolley,
+    /// The Drowned Abbess: the crozier filler.
+    AbbessCrozier,
+    /// The Drowned Abbess: a circle around herself.
+    TidalSlam,
+    /// The Drowned Abbess: a channel that drags the party in while pools open around her.
+    Undertow,
+    /// The Drowned Abbess: a long cast that heals her and spurs her allies if it completes.
+    DrowningHymn,
 }
 
 /// How many enemy abilities exist.
-pub const ENEMY_ABILITY_COUNT: usize = 58;
+pub const ENEMY_ABILITY_COUNT: usize = 68;
 
 impl EnemyAbility {
     /// Every ability, in table order.
@@ -542,6 +625,16 @@ impl EnemyAbility {
         Self::GhastlyWaltz,
         Self::MarkOfTheHost,
         Self::CrimsonFrenzy,
+        Self::TidalMend,
+        Self::TideLash,
+        Self::BrineBolt,
+        Self::TidalCleave,
+        Self::LurkerClaw,
+        Self::BilgeVolley,
+        Self::AbbessCrozier,
+        Self::TidalSlam,
+        Self::Undertow,
+        Self::DrowningHymn,
     ];
 
     /// Its index into [`ENEMY_ABILITIES`].
@@ -651,6 +744,12 @@ pub struct EnemyAbilityDef {
     pub requires: EnemyRequirement,
     /// What its gathering sounds and looks like.
     pub cue: EnemyCue,
+    /// Whether it is used at most once in each phase that lists it.
+    ///
+    /// Starting it locks it for the rest of the phase (an interrupt does not give it back),
+    /// and entering a phase that lists it makes it ready again. How a boss casts something
+    /// "at sixty-six and at thirty-three per cent" with no hand-written trigger.
+    pub once_per_phase: bool,
 }
 
 impl EnemyAbilityDef {
@@ -684,6 +783,7 @@ impl EnemyAbilityDef {
         rider: EnemyRider::None,
         requires: EnemyRequirement::None,
         cue: EnemyCue::Quick,
+        once_per_phase: false,
     };
 
     /// Whether this attack has a cast bar at all.
@@ -715,7 +815,7 @@ impl EnemyAbilityDef {
             EnemyEffect::Charge {
                 shockwave_radius, ..
             } if shockwave_radius > 0.0 => self.damage * (1.0 + SHOCKWAVE_SHARE),
-            EnemyEffect::Heal { .. } | EnemyEffect::Frenzy { .. } => 0.0,
+            EnemyEffect::Heal { .. } | EnemyEffect::Frenzy { .. } | EnemyEffect::Hymn { .. } => 0.0,
             _ => self.damage,
         };
         let bleed = match self.rider {
@@ -1839,6 +1939,190 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         cue: EnemyCue::Heavy,
         ..EnemyAbilityDef::BASE
     },
+    // ======================================================================================
+    // The Drowned Catacombs. Same party, same rule as the crypt: an avoidable hit is survivable
+    // once at full health. This dungeon adds three questions the crypt does not ask — who do I
+    // kick (a heal, a hymn), what do I dispel (Waterlogged), and which way do I run (a cleave
+    // in a corridor, a pull towards the boss). See `docs/dungeon/DROWNED_CATACOMBS.md`.
+    // ======================================================================================
+
+    // ---------------------------------------------------------------- Drowned Tidecaller
+    // Two hundred and eighty on the worst-off ally every six seconds: more than the pack's
+    // damage can outrun, and nothing at all once it is kicked. Not chosen unless somebody is
+    // wounded, so an untouched pack opens with its lash.
+    EnemyAbilityDef {
+        name: "TIDAL MEND",
+        description: "A heal on the most wounded ally in sight.",
+        counter: "Interrupt it, or kill the tidecaller first",
+        range: 22.0,
+        cast_time: 2.2,
+        cooldown: 6.0,
+        damage_type: DamageType::Arcane,
+        select: EnemyTarget::WoundedAlly,
+        effect: EnemyEffect::Heal { amount: 280.0 },
+        interruptible: true,
+        recovery: 0.8,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "TIDE LASH",
+        description: "The filler bolt.",
+        range: 28.0,
+        cast_time: 1.4,
+        cooldown: 2.6,
+        damage: 30.0,
+        damage_type: DamageType::Arcane,
+        interruptible: true,
+        recovery: 0.3,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Drowned Cultist
+    // Aimed past the tank on purpose: the slow and the extra damage land on whoever is
+    // standing furthest from the fight, which is usually the one who can least afford them.
+    // Three stacks is forty-five per cent slower — slower than the Abbess's current.
+    EnemyAbilityDef {
+        name: "BRINE BOLT",
+        description: "A bolt of brine that leaves Waterlogged on a random player: slower, and every blow lands harder.",
+        counter: "Interrupt it; dispel Waterlogged",
+        range: 30.0,
+        cast_time: 1.6,
+        cooldown: 6.0,
+        damage: 36.0,
+        damage_type: DamageType::Arcane,
+        select: EnemyTarget::Random,
+        rider: EnemyRider::Afflict {
+            kind: StatusKind::Waterlogged,
+            duration: 12.0,
+            max_stacks: 3,
+        },
+        interruptible: true,
+        recovery: 0.4,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Catacomb Lurker
+    // A hundred and twenty degrees and nine metres, drawn for the whole cast. The tank turns it
+    // away from the party; in a corridor there is nowhere to stand but the cone or behind it.
+    EnemyAbilityDef {
+        name: "TIDAL CLEAVE",
+        description: "A wide frontal cone, drawn on the floor for the whole cast.",
+        counter: "Tank faces it away from the party; step out of the cone",
+        range: 5.5,
+        cast_time: 1.6,
+        cooldown: 8.0,
+        damage: 95.0,
+        shape: TelegraphShape::Cone {
+            yaw: 0.0,
+            range: 9.0,
+            half_angle: WIDE_CONE_HALF_ANGLE,
+        },
+        aim: EnemyAim::Caster,
+        recovery: 1.0,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "LURKER CLAW",
+        description: "The heavy filler.",
+        range: 3.5,
+        cooldown: 2.0,
+        damage: 42.0,
+        recovery: 0.5,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Bilge Archer
+    // Two circles on each of three players, drawn for almost two seconds from the end of the
+    // cast. A kick stops the whole volley; walking out of the circles stops each of them.
+    EnemyAbilityDef {
+        name: "BILGE VOLLEY",
+        description: "Marked circles around several players that land after a delay.",
+        counter: "Move out of the circles, or interrupt the cast",
+        range: 38.0,
+        cast_time: 1.2,
+        cooldown: 11.0,
+        damage: 75.0,
+        shape: TelegraphShape::Circle { radius: 3.2 },
+        targets: 3,
+        zones: 2,
+        spread: 5.0,
+        delay: 1.9,
+        interruptible: true,
+        recovery: 0.5,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- The Drowned Abbess
+    // Her crozier on the tank, between the bigger things.
+    EnemyAbilityDef {
+        name: "ABBESS CROZIER",
+        description: "The crozier filler.",
+        range: 4.0,
+        cooldown: 1.8,
+        damage: 55.0,
+        recovery: 0.4,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "TIDAL SLAM",
+        description: "A circle around the Abbess.",
+        counter: "Everyone out, including the tank",
+        range: 7.0,
+        cast_time: 1.8,
+        cooldown: 11.0,
+        damage: 85.0,
+        shape: TelegraphShape::Circle { radius: 8.0 },
+        aim: EnemyAim::Caster,
+        recovery: 1.0,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    // The pull is 4.6 m/s against a player's 7: walking away wins by a little, being slowed
+    // (Waterlogged, three stacks) loses by a little, and standing still to cast loses outright.
+    // Whoever is dragged to her feet is caught by the slam when it ends.
+    EnemyAbilityDef {
+        name: "UNDERTOW",
+        description: "Drags every player towards the Abbess while drowning pools open around her, then slams the ground at her feet.",
+        counter: "Walk out against the pull; stay out of the pools and the circle at her feet",
+        range: 40.0,
+        cast_time: 7.0,
+        cooldown: 26.0,
+        damage: 110.0,
+        shape: TelegraphShape::Circle { radius: 7.0 },
+        aim: EnemyAim::Caster,
+        effect: EnemyEffect::Undertow {
+            interval: 1.2,
+            pull_speed: 4.6,
+            pull_range: 40.0,
+            pool_radius: 3.4,
+            pool_damage_per_second: 38.0,
+            pool_duration: 9.0,
+            pool_near: 3.5,
+            pool_far: 9.5,
+        },
+        recovery: 1.2,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    // Six seconds: long enough that someone has to be told to kick it, short enough that a
+    // second kick is not needed. Once a phase, and an interrupt does not give it back.
+    EnemyAbilityDef {
+        name: "DROWNING HYMN",
+        description: "A long hymn that heals the Abbess and makes every ally attack faster, if it is allowed to finish.",
+        counter: "Interrupt it - and kill the tidecallers before the next one",
+        range: 40.0,
+        cast_time: 6.0,
+        cooldown: 20.0,
+        damage_type: DamageType::Arcane,
+        effect: EnemyEffect::Hymn {
+            heal_fraction: 0.10,
+            haste: 0.6,
+            duration: 14.0,
+        },
+        interruptible: true,
+        recovery: 1.5,
+        once_per_phase: true,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
 ];
 
 /// How many abilities one enemy may own in one phase.
@@ -1870,6 +2154,20 @@ pub struct EnemyPhaseDef {
     pub speed_scale: f32,
     /// Multiplies every cooldown it starts in this phase.
     pub cooldown_scale: f32,
+    /// Allies called the moment the phase begins, if it calls any.
+    pub summon: Option<PhaseSummon>,
+}
+
+/// Allies a boss calls when it enters a phase.
+///
+/// They arrive at the dungeon's add spawn points (or beside the boss when it has none), already
+/// in the fight, and belong to the boss's encounter: a wipe takes them away with it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhaseSummon {
+    /// Which monster, exactly as the table has it (not its empowered form).
+    pub kind: EnemyKind,
+    /// How many.
+    pub count: u8,
 }
 
 /// What kind of enemy something is.
@@ -1917,10 +2215,22 @@ pub enum EnemyKind {
     EmpoweredGhoul,
     /// The Graveyard Crypt's boss: Lord Ashgrave, the Hollow Steward.
     CryptSteward,
+
+    // ---------------------------------------------------------------- the Drowned Catacombs
+    /// Support: heals its most wounded ally. Low health, and the cast can be kicked.
+    DrownedTidecaller,
+    /// Caster: a bolt that leaves a dispellable slow and vulnerability on a random player.
+    DrownedCultist,
+    /// Elite melee that patrols the corridors with a wide frontal cleave.
+    CatacombLurker,
+    /// Ranged: volleys that mark the ground around several players.
+    BilgeArcher,
+    /// The Drowned Catacombs' boss: the Drowned Abbess.
+    DrownedAbbess,
 }
 
 /// How many enemy kinds there are.
-pub const ENEMY_KIND_COUNT: usize = 20;
+pub const ENEMY_KIND_COUNT: usize = 25;
 
 /// The six monsters the Graveyard Crypt is built from, in the order they are documented.
 ///
@@ -1958,6 +2268,11 @@ impl EnemyKind {
         Self::EmpoweredBrute,
         Self::EmpoweredGhoul,
         Self::CryptSteward,
+        Self::DrownedTidecaller,
+        Self::DrownedCultist,
+        Self::CatacombLurker,
+        Self::BilgeArcher,
+        Self::DrownedAbbess,
     ];
 
     /// Whether this kind is a boss, for the boss frame and the encounter readout.
@@ -2290,6 +2605,13 @@ impl EnemyArchetype {
         phase
     }
 
+    /// The allies it calls on entering `phase`, if that phase calls any.
+    #[must_use]
+    pub fn phase_summon(&self, phase: usize) -> Option<PhaseSummon> {
+        let index = phase.checked_sub(1)?;
+        self.phases.get(index)?.summon
+    }
+
     /// The longest range any of its abilities reaches, in any phase.
     #[must_use]
     pub fn longest_range(&self) -> f32 {
@@ -2319,6 +2641,7 @@ static REVENANT_PHASES: [EnemyPhaseDef; 1] = [EnemyPhaseDef {
     // and an Ash Burst that cannot be walked out of.
     speed_scale: 1.06,
     cooldown_scale: 0.7,
+    summon: None,
 }];
 
 /// The boss's phases. Descending thresholds, and each one adds a mechanic rather than a
@@ -2337,6 +2660,7 @@ static BOSS_PHASES: [EnemyPhaseDef; 2] = [
         ],
         speed_scale: 1.04,
         cooldown_scale: 0.85,
+        summon: None,
     },
     EnemyPhaseDef {
         name: "PHASE 3 - THE BURNING",
@@ -2354,6 +2678,7 @@ static BOSS_PHASES: [EnemyPhaseDef; 2] = [
         // to be able to leave before it lands.
         speed_scale: 1.10,
         cooldown_scale: 0.7,
+        summon: None,
     },
 ];
 
@@ -2978,6 +3303,226 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         },
         ..EnemyArchetype::BASE
     },
+    // ======================================================================================
+    // The Drowned Catacombs. Models and tints are borrowed from the crypt's, the way the
+    // empowered adds borrow theirs: a sea-green wash over a body the party already knows.
+    // ======================================================================================
+    // Low health on purpose: the question it asks is "can you reach it", not "can you outlast
+    // it". Closer in than the cultists so a pack that is fought properly has it in reach.
+    EnemyArchetype {
+        name: "DROWNED TIDECALLER",
+        max_health: 700.0,
+        radius: 0.5,
+        height: 1.9,
+        speed: 5.5,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 15.0,
+        range_slack: 3.0,
+        alert_time: 0.45,
+        abilities: [
+            Some(EnemyAbility::TidalMend),
+            Some(EnemyAbility::TideLash),
+            None,
+            None,
+            None,
+            None,
+        ],
+        id: "drowned_tidecaller",
+        role: MonsterRole::Support,
+        summary: "Heals whichever ally is worst off: kick the heal, then kill it.",
+        retreat_below: 7.0,
+        completion: 4.0,
+        look: MonsterLook {
+            tint: [0.45, 0.78, 0.86],
+            glow: 0.0,
+            model: "skeleton_bonecaster",
+        },
+        ..EnemyArchetype::BASE
+    },
+    EnemyArchetype {
+        name: "DROWNED CULTIST",
+        max_health: 900.0,
+        radius: 0.5,
+        height: 1.95,
+        speed: 5.4,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 17.0,
+        range_slack: 3.0,
+        alert_time: 0.5,
+        abilities: [
+            Some(EnemyAbility::BrineBolt),
+            Some(EnemyAbility::ShadowBolt),
+            None,
+            None,
+            None,
+            None,
+        ],
+        id: "drowned_cultist",
+        role: MonsterRole::Ranged,
+        summary: "Brine bolts leave Waterlogged on a random player: kick them, dispel the rest.",
+        retreat_below: 7.0,
+        completion: 4.0,
+        look: MonsterLook {
+            tint: [0.36, 0.62, 0.74],
+            glow: 0.0,
+            model: "grave_acolyte",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // Slower than the player and patrolling at half speed, so it can be watched, timed and
+    // walked around — or pulled on purpose, away from the room it guards.
+    EnemyArchetype {
+        name: "CATACOMB LURKER",
+        max_health: 3400.0,
+        radius: 0.85,
+        height: 2.5,
+        speed: 6.0,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 2.6,
+        range_slack: 0.6,
+        alert_time: 0.6,
+        abilities: [
+            Some(EnemyAbility::TidalCleave),
+            Some(EnemyAbility::LurkerClaw),
+            None,
+            None,
+            None,
+            None,
+        ],
+        id: "catacomb_lurker",
+        role: MonsterRole::Elite,
+        summary: "An elite that walks the corridors: turn its cleave away from the party.",
+        completion: 10.0,
+        look: MonsterLook {
+            tint: [0.34, 0.52, 0.58],
+            glow: 0.0,
+            model: "grave_brute",
+        },
+        ..EnemyArchetype::BASE
+    },
+    EnemyArchetype {
+        name: "BILGE ARCHER",
+        max_health: 850.0,
+        radius: 0.5,
+        height: 1.9,
+        speed: 5.6,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 24.0,
+        range_slack: 4.0,
+        alert_time: 0.45,
+        abilities: [
+            Some(EnemyAbility::BilgeVolley),
+            Some(EnemyAbility::BoneArrow),
+            None,
+            None,
+            None,
+            None,
+        ],
+        id: "bilge_archer",
+        role: MonsterRole::Ranged,
+        summary: "Volleys of marked circles: keep moving, and kick the volley.",
+        retreat_below: 9.0,
+        completion: 4.0,
+        look: MonsterLook {
+            tint: [0.52, 0.78, 0.70],
+            glow: 0.0,
+            model: "crypt_archer",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // ---------------------------------------------------------------- the Drowned Abbess
+    EnemyArchetype {
+        name: "THE DROWNED ABBESS",
+        max_health: 17000.0,
+        radius: 1.1,
+        height: 3.1,
+        // Slower than the player in every phase: the Undertow is escaped by walking, and a
+        // boss that outran a player would make that a lie.
+        speed: 6.2,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 70.0,
+        preferred_range: 3.4,
+        range_slack: 0.8,
+        alert_time: 0.8,
+        abilities: [
+            Some(EnemyAbility::TidalSlam),
+            Some(EnemyAbility::AbbessCrozier),
+            Some(EnemyAbility::BrineBolt),
+            None,
+            None,
+            None,
+        ],
+        phases: &ABBESS_PHASES,
+        id: "drowned_abbess",
+        role: MonsterRole::Boss,
+        tier: MonsterTier::Boss,
+        summary: "A pulling current, a hymn that must be kicked, and healers called at half health.",
+        look: MonsterLook {
+            tint: [0.30, 0.62, 0.72],
+            glow: 0.3,
+            model: "grave_acolyte",
+        },
+        ..EnemyArchetype::BASE
+    },
+];
+
+/// The Drowned Abbess. The percentages are the design: the hymn at sixty-six and at
+/// thirty-three (the same ability, once a phase), the tidecallers at fifty, and the Undertow
+/// from the first hymn on. Every cooldown shortens a little as she goes, and she never moves
+/// faster than the player.
+static ABBESS_PHASES: [EnemyPhaseDef; 3] = [
+    EnemyPhaseDef {
+        name: "THE HYMN",
+        at_or_below: 0.66,
+        abilities: [
+            Some(EnemyAbility::DrowningHymn),
+            Some(EnemyAbility::Undertow),
+            Some(EnemyAbility::TidalSlam),
+            Some(EnemyAbility::AbbessCrozier),
+            Some(EnemyAbility::BrineBolt),
+            None,
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.95,
+        summon: None,
+    },
+    EnemyPhaseDef {
+        name: "THE CHOIR",
+        at_or_below: 0.5,
+        abilities: [
+            Some(EnemyAbility::Undertow),
+            Some(EnemyAbility::TidalSlam),
+            Some(EnemyAbility::AbbessCrozier),
+            Some(EnemyAbility::BrineBolt),
+            None,
+            None,
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.9,
+        summon: Some(PhaseSummon {
+            kind: EnemyKind::DrownedTidecaller,
+            count: 2,
+        }),
+    },
+    EnemyPhaseDef {
+        name: "THE DEEP",
+        at_or_below: 0.33,
+        abilities: [
+            Some(EnemyAbility::DrowningHymn),
+            Some(EnemyAbility::Undertow),
+            Some(EnemyAbility::TidalSlam),
+            Some(EnemyAbility::AbbessCrozier),
+            Some(EnemyAbility::BrineBolt),
+            None,
+        ],
+        speed_scale: 1.04,
+        cooldown_scale: 0.8,
+        summon: None,
+    },
 ];
 
 /// Lord Ashgrave unmasked, at thirty per cent: the frenzy joins the list, every cooldown
@@ -2995,6 +3540,7 @@ static STEWARD_PHASES: [EnemyPhaseDef; 1] = [EnemyPhaseDef {
     ],
     speed_scale: 1.05,
     cooldown_scale: 0.8,
+    summon: None,
 }];
 
 #[cfg(test)]

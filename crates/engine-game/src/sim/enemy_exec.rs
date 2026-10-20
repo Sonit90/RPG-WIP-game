@@ -79,6 +79,9 @@ const CHARGE_REACH: f32 = 2.0;
 /// runs a long way out is spared the tick, which is the other honest answer.
 const CHANNEL_LEASH: f32 = 6.0;
 
+/// How close to the caster, edge to edge, the Undertow drags somebody and no closer, in metres.
+const UNDERTOW_HOLD: f32 = 1.2;
+
 /// One enemy's runtime: its brain, and what the last decision asked the body to do.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnemyRuntime {
@@ -262,6 +265,10 @@ impl Simulation {
 
             if let Some(phase) = decision.phase {
                 self.announce_phase(entity, phase, runtime.brain.phase_name());
+                // Called after the loop, when the enemy table is back in `self` and can grow.
+                if let Some(summon) = runtime.brain.archetype().phase_summon(phase) {
+                    self.pending_summons.push((entity, summon));
+                }
             }
 
             match request {
@@ -378,8 +385,19 @@ impl Simulation {
                     }
                 }
             }
+            // The Undertow drags while it runs, and opens a pool every interval.
+            if let Some(cast) = runtime.brain.cast()
+                && cast.ability.definition().effect.is_undertow()
+            {
+                let done = self.tick_undertow(entity, &cast, scale, step);
+                if let Some(cast) = runtime.brain.cast_mut() {
+                    cast.ticks = done;
+                }
+            }
         }
         self.enemies = enemies;
+        self.apply_hymns();
+        self.spawn_phase_summons();
         self.sync_encounter();
     }
 
@@ -538,6 +556,20 @@ impl Simulation {
                     .or_else(|| self.begin_dash_to(entity, cast.ability, None, cast.aims[0]))
             }
             EnemyEffect::Frenzy { .. } => None,
+            EnemyEffect::Hymn {
+                heal_fraction,
+                haste,
+                duration,
+            } => {
+                self.complete_hymn(entity, cast.ability, heal_fraction, haste, duration);
+                None
+            }
+            EnemyEffect::Undertow { .. } => {
+                // The slam at her feet, where the current has been dragging everyone.
+                let at = cast.zones[0];
+                self.resolve_zone(entity, cast.ability, at, cast.shape, at, scale);
+                None
+            }
             EnemyEffect::Damage | EnemyEffect::Hazard { .. } => {
                 if definition.delay > 0.0 {
                     // Every zone starts its own clock now, drawn from this moment.
@@ -582,6 +614,138 @@ impl Simulation {
                 }
                 None
             }
+        }
+    }
+
+    /// One step of an Undertow: drags every hostile in reach towards the caster, and opens the
+    /// pools that are due. Returns how many pools have now been opened.
+    ///
+    /// The drag is a collided slide, the same displacement a Blink or a charge makes, so a
+    /// pillar between a player and the Abbess stops them at the pillar. Nobody is pulled
+    /// closer than arm's length: the slam when it ends is what punishes arriving.
+    fn tick_undertow(&mut self, entity: EntityId, cast: &EnemyCast, scale: f32, step: f32) -> u8 {
+        let definition = cast.ability.definition();
+        let EnemyEffect::Undertow {
+            interval,
+            pull_speed,
+            pull_range,
+            pool_radius,
+            pool_damage_per_second,
+            pool_duration,
+            pool_near,
+            pool_far,
+        } = definition.effect
+        else {
+            return cast.ticks;
+        };
+        let Some(centre) = self.world.position(entity) else {
+            return cast.ticks;
+        };
+        let caster_radius = self.world.radius(entity);
+
+        // The drag. Collected first: a slide mutates the world the scan is reading.
+        let mut dragged: Vec<(EntityId, Vec3)> = Vec::new();
+        for candidate in self.world.entities() {
+            if !self.is_hostile_combatant(entity, candidate) {
+                continue;
+            }
+            let Some(position) = self.world.position(candidate) else {
+                continue;
+            };
+            let distance = horizontal_distance(centre, position);
+            let hold = caster_radius + self.world.radius(candidate) + UNDERTOW_HOLD;
+            if distance > pull_range || distance <= hold {
+                continue;
+            }
+            let travel = (pull_speed * step).min(distance - hold);
+            let direction =
+                Vec3::new(centre.x - position.x, 0.0, centre.z - position.z) * (1.0 / distance);
+            dragged.push((candidate, direction * travel));
+        }
+        for (victim, offset) in dragged {
+            self.slide_body(victim, offset);
+        }
+
+        // The pools, one per interval, at a seeded angle and distance.
+        let due = crate::enemy::channel_ticks(cast.elapsed, interval);
+        let mut done = usize::from(cast.ticks);
+        while done < due.min(usize::from(u8::MAX)) {
+            let angle = self.enemy_random() * std::f32::consts::TAU;
+            let reach = pool_near + (pool_far - pool_near) * self.enemy_random();
+            let at = Vec3::new(
+                centre.x + angle.sin() * reach,
+                centre.y,
+                centre.z + angle.cos() * reach,
+            );
+            self.light_hazard(
+                entity,
+                cast.ability,
+                at,
+                pool_radius,
+                pool_duration,
+                pool_damage_per_second * scale,
+            );
+            done += 1;
+        }
+        done.min(usize::from(u8::MAX)) as u8
+    }
+
+    /// A hymn that was allowed to finish: the caster recovers, and its allies are spurred on.
+    fn complete_hymn(
+        &mut self,
+        entity: EntityId,
+        ability: EnemyAbility,
+        heal_fraction: f32,
+        haste: f32,
+        duration: f32,
+    ) {
+        let maximum = self.world.health(entity).map_or(0.0, |health| health.max());
+        self.heal_entity(
+            entity,
+            entity,
+            maximum * heal_fraction,
+            AbilityId::from_enemy(ability),
+        );
+        // The allies' brains are in the table the AI loop has out; they are told afterwards.
+        self.pending_hymns.push((entity, duration, haste));
+    }
+
+    /// Spurs on the allies of every hymn that finished this step.
+    fn apply_hymns(&mut self) {
+        if self.pending_hymns.is_empty() {
+            return;
+        }
+        let hymns = std::mem::take(&mut self.pending_hymns);
+        for (singer, duration, haste) in hymns {
+            let Some(faction) = self.world.faction(singer) else {
+                continue;
+            };
+            for (slot, runtime) in self.enemies.iter_mut().enumerate() {
+                let Some(runtime) = runtime.as_mut() else {
+                    continue;
+                };
+                let Some(ally) = self.world.id_at(slot) else {
+                    continue;
+                };
+                if ally == singer
+                    || !self.world.is_alive(ally)
+                    || self.world.faction(ally) != Some(faction)
+                {
+                    continue;
+                }
+                runtime.brain.frenzy(duration, haste);
+            }
+        }
+    }
+
+    /// Calls the allies a boss's new phase asks for.
+    fn spawn_phase_summons(&mut self) {
+        if self.pending_summons.is_empty() {
+            return;
+        }
+        let summons = std::mem::take(&mut self.pending_summons);
+        for (boss, summon) in summons {
+            self.summon_for(boss, summon.kind, usize::from(summon.count));
         }
     }
 
@@ -1527,6 +1691,17 @@ impl Simulation {
                     0.0,
                 )
                 .with_magnitude(fraction);
+                self.apply_status(victim, status, duration);
+            }
+            EnemyRider::Afflict {
+                kind,
+                duration,
+                max_stacks,
+            } => {
+                let status =
+                    Status::new(kind, source, AbilityId::from_enemy(ability), duration, 0.0)
+                        .stacking_to(max_stacks)
+                        .with_stacks(1);
                 self.apply_status(victim, status, duration);
             }
         }

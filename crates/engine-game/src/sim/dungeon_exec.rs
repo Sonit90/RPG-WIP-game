@@ -468,6 +468,78 @@ impl Simulation {
         }
     }
 
+    /// Calls `count` of `kind` into the fight of `boss`, as its phase asks.
+    ///
+    /// They stand where the dungeon says its adds do (or beside the boss when it says nothing),
+    /// share the boss's scaling, start on its target and belong to its encounter - so a wipe,
+    /// an abandoned fight and a reset take them away with it. They are worth no completion.
+    pub(super) fn summon_for(&mut self, boss: EntityId, kind: EnemyKind, count: usize) {
+        if !self.world.is_alive(boss) {
+            return;
+        }
+        let boss_position = self.world.position(boss).unwrap_or(Vec3::ZERO);
+        let target = self.brain(boss).and_then(|brain| brain.target());
+        let spawns: Vec<(Vec3, f32)> = self
+            .dungeon
+            .as_ref()
+            .map(|run| run.rules().add_spawns.clone())
+            .unwrap_or_default();
+        let index = self
+            .encounters
+            .iter()
+            .position(|encounter| encounter.contains(boss));
+        let (health_scale, damage_scale) = self
+            .enemies
+            .get(boss.index())
+            .and_then(|slot| slot.as_ref())
+            .map_or((1.0, 1.0), |runtime| {
+                let designed = runtime.brain.archetype().max_health;
+                let actual = self
+                    .world
+                    .health(boss)
+                    .map_or(designed, |health| health.max());
+                (actual / designed.max(1.0), runtime.damage_scale)
+            });
+        for slot in 0..count {
+            let (position, yaw) = spawns
+                .get(slot % spawns.len().max(1))
+                .copied()
+                .unwrap_or_else(|| {
+                    let side = if slot % 2 == 0 { -1.0 } else { 1.0 };
+                    (boss_position + Vec3::new(side * 6.0, 0.0, 2.0), 0.0)
+                });
+            let add = self.spawn_enemy_with(
+                kind,
+                position,
+                yaw,
+                &EnemySpawnOptions {
+                    health_scale,
+                    damage_scale,
+                    completion: Some(0.0),
+                    ..EnemySpawnOptions::default()
+                },
+            );
+            if let Some(target) = target
+                && let Some(Some(runtime)) = self.enemies.get_mut(add.index())
+            {
+                runtime.brain.provoke(target);
+            }
+            if let Some(index) = index
+                && let Some(encounter) = self.encounters.get_mut(index)
+            {
+                encounter.add_summon(add);
+            }
+            let tick = self.tick;
+            self.events.push(CombatEvent::AddSummoned {
+                boss,
+                add,
+                position,
+                tick,
+            });
+            log::info!("boss called {}", kind.name());
+        }
+    }
+
     /// Ends an abandoned boss fight: adds gone, boss whole, encounter ready to pull again.
     fn abandon_boss_fight(&mut self, index: usize) {
         let adds = self
