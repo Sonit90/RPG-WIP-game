@@ -1136,4 +1136,31 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn every_shipped_tail_is_non_decreasing_in_the_key_level() {
+        let drops = rules().sharpening.clone();
+        let tail = |weights: &[f32], from: usize| {
+            let total: f64 = weights.iter().map(|w| f64::from(*w)).sum();
+            weights[from..].iter().map(|w| f64::from(*w)).sum::<f64>() / total
+        };
+        for source in DropSource::ALL {
+            let levels = drops.weights_at(source, "graveyard_crypt", 1).len();
+            let mut before: Vec<f64> = (1..levels)
+                .map(|k| tail(&drops.weights_at(source, "graveyard_crypt", 1), k))
+                .collect();
+            for key in 1..=99 {
+                let weights = drops.weights_at(source, "graveyard_crypt", key);
+                assert!(
+                    weights.windows(2).all(|pair| pair[1] < pair[0]),
+                    "{source:?} key {key} is strictly decreasing"
+                );
+                for (k, held) in before.iter_mut().enumerate() {
+                    let now = tail(&weights, k + 1);
+                    assert!(now >= *held - 1e-12, "{source:?} key {key} P(>=+{})", k + 1);
+                    *held = now;
+                }
+            }
+        }
+    }
 }

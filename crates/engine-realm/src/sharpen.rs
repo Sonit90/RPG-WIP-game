@@ -134,7 +134,7 @@ pub struct SharpenPreview {
     pub price: Vec<(String, u64)>,
 }
 
-/// An sharpenable item's props and where it is stored.
+/// A sharpenable item's props and where it is stored.
 enum Place {
     Worn(usize),
     Bag(usize),

@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn an_items_quality_sharpening_and_total_are_printed() {
+    fn an_items_quality_sharpening_and_effective_quality_are_printed() {
         let def = loot_item();
         let stack = ItemStack::with_props(def.id, ItemProps::new(106, 7, false));
         let model = tooltip_of(stack);

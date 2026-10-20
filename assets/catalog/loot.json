@@ -512,7 +512,7 @@
     "boss_amount": 50
   },
   "sharpening_drops": {
-    "_comment": "Pre-sharpened drops. After an item and its base quality are rolled, its sharpening level is a separate draw from a curve of weights (index = level, +0 first). Every curve must be strictly decreasing and at most economy sharpening.max_level + 1 long. A drop uses the most specific matching curve: one naming its dungeon, then the highest min_key_level, then the source-only curve, then default. key_shift: at key level k, level i's weight is multiplied by min((1 + per_level x (k - 1))^i, max), capped so the curve stays strictly decreasing. highlight_from: the level from which an item is marked as highly sharpened. Roughly: a mob drop is +0 78% of the time and almost never above +3; boss and chest drops reach +9 with a tiny tail (+8 is about 0.1% per item at key 1).",
+    "_comment": "Pre-sharpened drops. After an item and its base quality are rolled, its sharpening level is a separate draw from a curve of weights (index = level, +0 first). Every curve must be strictly decreasing and at most economy sharpening.max_level + 1 long. A drop uses the most specific matching curve: one naming its dungeon, then the highest min_key_level, then the source-only curve, then default. key_shift: at key level k, level i's weight is multiplied by step^i with step = min(1 + per_level x (k - 1), max, the largest step that keeps the curve strictly decreasing); the step only grows with the key, so every tail P(>= +n) is non-decreasing in the key level and plateaus once max is reached. highlight_from: the level from which an item is marked as highly sharpened. Roughly: a mob drop is +0 78% of the time and almost never above +3; boss and chest drops reach +9 with a tiny tail (+8 is about 0.1% per item at key 1).",
     "highlight_from": 5,
     "default": { "weights": [1000, 220, 45, 8, 1.2] },
     "curves": [
@@ -522,6 +522,6 @@
       { "source": "chest", "weights": [1000, 420, 180, 78, 34, 14, 6, 2.4, 0.9, 0.25] },
       { "source": "special", "weights": [1000, 480, 240, 120, 58, 28, 13, 6, 2.6, 1.0, 0.3] }
     ],
-    "key_shift": { "per_level": 0.03, "max": 8 }
+    "key_shift": { "per_level": 0.02, "max": 1.4 }
   }
 }

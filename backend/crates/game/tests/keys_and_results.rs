@@ -573,7 +573,7 @@ async fn loot_with_props_is_delivered_once_to_the_bag_or_the_mail() {
 
 #[tokio::test]
 #[ignore]
-async fn an_sharpening_pays_and_persists_under_the_row_lock() {
+async fn a_sharpening_pays_and_persists_under_the_row_lock() {
     use engine_realm::sharpen::SharpenOutcome;
     use engine_realm::loadout::SlotRef;
     let pool = pool().await;

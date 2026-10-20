@@ -58,9 +58,9 @@ impl DropSource {
     }
 }
 
-/// The ratio a key-shifted curve is capped at between neighbours, so it stays strictly
-/// decreasing whatever the key level.
-const MAX_SHIFTED_RATIO: f64 = 0.97;
+/// How close to flat a key-shifted curve may get: no weight may exceed this share of the one
+/// before it, so the curve stays strictly decreasing whatever the key level.
+const MAX_SHIFTED_RATIO: f64 = 0.98;
 
 /// One curve override: applies to `source`, optionally one `dungeon`, from `min_key_level` up.
 #[derive(Debug, Clone, PartialEq)]
@@ -86,7 +86,7 @@ pub struct SharpeningDrops {
     pub curves: Vec<SharpenCurve>,
     /// Per key level above the first, how much the upward shift grows.
     pub key_shift_per_level: f32,
-    /// The most any one level's weight is multiplied by.
+    /// The largest per-level multiplier the shift may reach.
     pub key_shift_max: f32,
 }
 
@@ -118,27 +118,36 @@ pub fn validate_weights(weights: &[f32], max_len: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// `weights` shifted upward for `key_level`: weight `i` is multiplied by
-/// `min((1 + per_level x (key_level - 1))^i, max)`, then capped so that each weight stays
-/// strictly below the one before. Key level 1 (or 0) is the curve unchanged.
+/// `weights` shifted upward for `key_level`: weight `i` is multiplied by `step^i`, where
+/// `step = min(1 + per_level x (key_level - 1), max_step, flat_limit)` and `flat_limit` is the
+/// largest step that keeps the curve strictly decreasing.
+///
+/// The step only ever grows with the key level, and a bigger step moves mass to higher levels
+/// without moving any back, so **every tail `P(>= +k)` is non-decreasing in the key level**
+/// while the curve stays strictly decreasing. Key level 1 (or 0) is the curve unchanged.
 #[must_use]
-pub fn key_shifted(weights: &[f32], per_level: f32, max: f32, key_level: u32) -> Vec<f32> {
+pub fn key_shifted(weights: &[f32], per_level: f32, max_step: f32, key_level: u32) -> Vec<f32> {
     let steps = f64::from(key_level.saturating_sub(1));
-    let base = 1.0 + f64::from(per_level.max(0.0)) * steps;
-    let cap = f64::from(max.max(1.0));
-    let mut shifted: Vec<f64> = Vec::with_capacity(weights.len());
-    for (level, weight) in weights.iter().enumerate() {
-        let factor = base.powi(i32::try_from(level).unwrap_or(i32::MAX)).min(cap);
-        let mut value = f64::from(*weight) * factor;
-        // Only a shifted curve is capped: the unshifted one is the file's, validated at load.
-        if factor > 1.0
-            && let Some(previous) = shifted.last()
-        {
-            value = value.min(previous * MAX_SHIFTED_RATIO);
-        }
-        shifted.push(value);
-    }
-    shifted.into_iter().map(|w| w as f32).collect()
+    let wanted = (1.0 + f64::from(per_level.max(0.0)) * steps).min(f64::from(max_step.max(1.0)));
+    let worst_ratio = weights
+        .windows(2)
+        .map(|pair| f64::from(pair[1]) / f64::from(pair[0]))
+        .fold(0.0_f64, f64::max);
+    // Never below 1: a curve already flatter than the limit is left as the file wrote it.
+    let flat_limit = if worst_ratio > 0.0 {
+        (MAX_SHIFTED_RATIO / worst_ratio).max(1.0)
+    } else {
+        f64::INFINITY
+    };
+    let step = wanted.min(flat_limit);
+    weights
+        .iter()
+        .enumerate()
+        .map(|(level, weight)| {
+            let factor = step.powi(i32::try_from(level).unwrap_or(i32::MAX));
+            (f64::from(*weight) * factor) as f32
+        })
+        .collect()
 }
 
 impl SharpeningDrops {
@@ -277,6 +286,33 @@ mod tests {
         let shifted = key_shifted(&base, 0.05, 6.0, 20);
         assert_eq!(shifted[0], 100.0);
         assert!(shifted[3] / shifted[0] > base[3] / base[0]);
+    }
+
+    fn tail(weights: &[f32], from: usize) -> f64 {
+        let total: f64 = weights.iter().map(|w| f64::from(*w)).sum();
+        weights[from..].iter().map(|w| f64::from(*w)).sum::<f64>() / total
+    }
+
+    #[test]
+    fn every_tail_is_non_decreasing_in_the_key_level() {
+        let curves: [&[f32]; 3] = [
+            &[100.0, 30.0, 9.0, 2.0],
+            &[1000.0, 450.0, 210.0, 100.0, 48.0, 22.0, 10.0, 4.5, 1.8, 0.5],
+            &[10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5],
+        ];
+        for weights in curves {
+            for (per_level, max) in [(0.02, 1.4), (0.2, 50.0), (1.0, 1000.0)] {
+                let mut previous: Vec<f64> = (1..weights.len()).map(|k| tail(weights, k)).collect();
+                for key in 1..=99 {
+                    let shifted = key_shifted(weights, per_level, max, key);
+                    for (k, before) in previous.iter_mut().enumerate() {
+                        let now = tail(&shifted, k + 1);
+                        assert!(now >= *before - 1e-12, "key {key} tail +{}", k + 1);
+                        *before = now;
+                    }
+                }
+            }
+        }
     }
 
     #[test]
