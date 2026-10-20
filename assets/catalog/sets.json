@@ -7,7 +7,7 @@
       "name": "Emberwake Regalia",
       "pieces": ["emberwake_hood", "emberwake_mantle", "emberwake_shroud", "emberwake_cuffs", "emberwake_gauntlets"],
       "bonuses": [
-        { "count": 2, "stats": { "critical_strike": 6, "haste": 4 } },
+        { "count": 2, "stats": { "critical_strike": 6, "haste": 4, "stamina": 8 } },
         { "count": 4, "stats": { "haste": 6 }, "effects": [
           { "kind": "damage_pct", "ability": "firebolt", "value": 0.12 },
           { "kind": "damage_pct", "ability": "flame_lance", "value": 0.12 }
@@ -26,13 +26,13 @@
       "bonuses": [
         { "count": 2, "stats": { "stamina": 10, "armor": 15 } },
         { "count": 4, "stats": { "stamina": 8 }, "effects": [
-          { "kind": "damage_pct", "ability": "colossus_strike", "value": 0.12 },
-          { "kind": "cooldown_pct", "ability": "colossus_strike", "value": 0.15 }
+          { "kind": "damage_pct", "ability": "colossus_strike", "value": 0.10 },
+          { "kind": "cooldown_pct", "ability": "colossus_strike", "value": 0.10 }
         ] },
         { "count": 5, "effects": [
-          { "kind": "damage_pct", "ability": "war_stomp", "value": 0.15 },
-          { "kind": "damage_pct", "ability": "shield_charge", "value": 0.15 },
-          { "kind": "cooldown_pct", "ability": "shield_charge", "value": 0.15 }
+          { "kind": "damage_pct", "ability": "war_stomp", "value": 0.10 },
+          { "kind": "damage_pct", "ability": "shield_charge", "value": 0.10 },
+          { "kind": "cooldown_pct", "ability": "shield_charge", "value": 0.10 }
         ] }
       ]
     },

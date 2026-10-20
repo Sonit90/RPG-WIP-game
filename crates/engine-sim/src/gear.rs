@@ -24,6 +24,7 @@
 //! | `medium` | epic in every other slot, rare elsewhere | 85      | +3          |
 //! | `high`   | best *epic* in every slot that has one   | 100     | +6          |
 //! | `p2_max` | the same pieces as `high`                | 110     | +10         |
+//! | `p2_set` | `p2_max` with the full major set on      | 110     | +10         |
 //!
 //! `high` is the best the game currently lets a character reach short of a jackpot roll;
 //! `p2_max` is the ceiling P2 is designed against (maximum quality, a heavily sharpened set).
@@ -50,8 +51,8 @@
 use std::sync::OnceLock;
 
 use engine_game::character::{
-    CharacterSheet, EquipSlot, ItemDef, ItemProps, ItemQuality, QUALITY_MAX, QUALITY_MIN, Stat,
-    StatBlock, item_by_key,
+    CharacterSheet, EquipSlot, ItemDef, ItemProps, ItemQuality, QUALITY_MAX, QUALITY_MIN, SetDef,
+    Stat, StatBlock, item_by_key, registered_sets,
 };
 use engine_game::hero::Hero;
 use engine_realm::loadout::{EquippedItem, Loadout as StoredLoadout, sheet_of};
@@ -97,11 +98,20 @@ pub enum GearTier {
     High,
     /// Epic pieces at the quality ceiling, enhanced to +10: what P2 is designed against.
     P2Max,
+    /// `P2Max` with the class's full major set swapped in: what a set bonus is worth.
+    P2Set,
 }
 
 impl GearTier {
     /// Every tier, lowest first.
-    pub const ALL: [Self; 5] = [Self::None, Self::Low, Self::Medium, Self::High, Self::P2Max];
+    pub const ALL: [Self; 6] = [
+        Self::None,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::P2Max,
+        Self::P2Set,
+    ];
 
     /// The written name the command line takes.
     #[must_use]
@@ -112,6 +122,7 @@ impl GearTier {
             Self::Medium => "medium",
             Self::High => "high",
             Self::P2Max => "p2_max",
+            Self::P2Set => "p2_set",
         }
     }
 
@@ -136,6 +147,8 @@ pub enum Pick {
     Mixed,
     /// The best epic piece in every slot that has one, the best rare elsewhere.
     Epic,
+    /// [`Pick::Epic`], with the hero's full major set worn over the slots it covers.
+    MajorSet,
 }
 
 /// One way of dressing a character.
@@ -154,7 +167,7 @@ pub struct GearProfile {
 }
 
 /// **Every gear profile the simulator knows, in one table.** Adding one is adding a row.
-pub const PROFILES: [GearProfile; 5] = [
+pub const PROFILES: [GearProfile; 6] = [
     GearProfile {
         tier: GearTier::None,
         variant: "none",
@@ -187,6 +200,13 @@ pub const PROFILES: [GearProfile; 5] = [
         tier: GearTier::P2Max,
         variant: "p2_max",
         pick: Pick::Epic,
+        quality: QUALITY_MAX,
+        enhancement: 10,
+    },
+    GearProfile {
+        tier: GearTier::P2Set,
+        variant: "p2_set",
+        pick: Pick::MajorSet,
         quality: QUALITY_MAX,
         enhancement: 10,
     },
@@ -234,13 +254,34 @@ impl GearProfile {
                 Pick::Nothing => break,
                 Pick::Rare => false,
                 Pick::Mixed => index % 2 == 0,
-                Pick::Epic => true,
+                Pick::Epic | Pick::MajorSet => true,
             };
             let Some(def) = best_in_slot(hero, slot, epic, &taken) else {
                 continue;
             };
             taken.push(def.key);
             loadout.push((slot, def.key.to_owned(), props));
+        }
+        if self.pick == Pick::MajorSet
+            && let Some(set) = major_set_for(hero)
+        {
+            // The set's pieces replace whatever was worn in the slots they fit, one slot per
+            // piece, so the measured change is the set: its stats and its bonuses.
+            let mut used: Vec<EquipSlot> = Vec::new();
+            for key in &set.pieces {
+                let Some(def) = item_by_key(key) else {
+                    continue;
+                };
+                let Some(slot) = def.family.slots().find(|slot| !used.contains(slot)) else {
+                    continue;
+                };
+                used.push(slot);
+                let entry = (slot, def.key.to_owned(), props);
+                match loadout.iter_mut().find(|(worn, _, _)| *worn == slot) {
+                    Some(existing) => *existing = entry,
+                    None => loadout.push(entry),
+                }
+            }
         }
         loadout
     }
@@ -311,6 +352,22 @@ pub fn sheet_of_items(hero: Hero, loadout: &[(EquipSlot, String, ItemProps)]) ->
     sheet_of(hero, &stored)
 }
 
+/// The major set `hero` plays: the registered set of four or more pieces with a bonus that
+/// changes one of the hero's own abilities. `None` if the catalog has none.
+#[must_use]
+pub fn major_set_for(hero: Hero) -> Option<&'static SetDef> {
+    ensure_items_registered();
+    registered_sets().iter().find(|set| {
+        set.pieces.len() >= 4
+            && set
+                .bonuses
+                .iter()
+                .flat_map(|bonus| &bonus.effects)
+                .filter_map(|effect| effect.ability())
+                .any(|ability| ability.hero() == hero)
+    })
+}
+
 /// The catalog's rows, in file order.
 fn catalog_rows() -> &'static [LootItem] {
     static ROWS: OnceLock<Vec<LootItem>> = OnceLock::new();
@@ -361,7 +418,9 @@ fn best_in_slot(
     let fitting: Vec<&'static ItemDef> = catalog_rows()
         .iter()
         .filter_map(|row| item_by_key(&row.id))
-        .filter(|def| def.fits(slot))
+        // Set pieces are worn on purpose (the `p2_set` tier), never picked as best in slot:
+        // otherwise a plain tier would quietly earn a bonus.
+        .filter(|def| def.fits(slot) && def.set.is_none())
         .collect();
     // Preference order: the wanted quality not yet worn, then a rare not yet worn, then (only
     // if the catalog has too few pieces) a repeat of either.
@@ -458,6 +517,26 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn only_the_set_tier_wears_a_set_and_it_wears_the_whole_major_one() {
+        use engine_game::character::active_sets;
+        for hero in [Hero::Warrior, Hero::Druid, Hero::FireMage] {
+            let major = major_set_for(hero).expect("a major set per class");
+            for profile in PROFILES {
+                let sheet = profile.sheet(hero);
+                let worn = active_sets(sheet.equipment());
+                if profile.tier == GearTier::P2Set {
+                    let active = worn.get(&major.id).expect("the major set is worn");
+                    assert_eq!(usize::from(active.equipped), major.pieces.len());
+                    assert_eq!(active.tiers_active(), major.bonuses.len());
+                    assert_eq!(sheet.equipment().count(), EquipSlot::ALL.len());
+                } else {
+                    assert!(worn.is_empty(), "{} wears a set", profile.label());
+                }
+            }
+        }
+    }
     #[test]
     fn selection_is_deterministic_and_wears_no_item_twice() {
         for profile in &PROFILES[1..] {
