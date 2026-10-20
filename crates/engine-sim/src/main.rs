@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! engine-sim                                  the full matrix, compact
-//! engine-sim --class mage --gear top          one class, one gear tier
+//! engine-sim --class mage --gear high         one class, one gear tier
 //! engine-sim --iterations 20 --seed 7 --out docs/balance/sim-report.md
 //! engine-sim --search [--budget N]            the FireMage talent combination search
 //! ```
@@ -13,12 +13,13 @@
 //! produce. A fight is a seeded, headless run, so the same seed prints the same report.
 //!
 //! ```text
-//! class.rs    the three classes          gear.rs     gear profiles, one table
+//! class.rs    the three classes          gear.rs     gear: real catalog loadouts
 //! build.rs    builds, one table          ai/         one rotation per class
 //! scenario.rs one fight                  metrics.rs  what a fight is measured by
 //! matrix.rs   every combination          report.rs   markdown
 //! study.rs    the FireMage talent search (--search)
-//! validation.rs  is any talent mandatory or worthless (the report's last table)
+//! validation.rs  is any talent mandatory or worthless (the report's section 6)
+//! scaling.rs  does each gear tier beat the one below it (section 7)
 //! ```
 
 mod ai;
@@ -29,6 +30,7 @@ mod gear;
 mod matrix;
 mod metrics;
 mod report;
+mod scaling;
 mod scenario;
 mod study;
 #[cfg(test)]
@@ -131,7 +133,13 @@ validation {done}/{total} cells"
             eprintln!();
             validation
         });
-        balance::matrix_report(&matrix, &options, validation.as_ref())
+        let scaling = scaling::measure(&matrix, &options, &|done, total| {
+            if done == total || done % 10 == 0 {
+                eprint!("\rscaling {done}/{total} cells");
+            }
+        });
+        eprintln!();
+        balance::matrix_report(&matrix, &options, validation.as_ref(), Some(&scaling))
     };
 
     print!("{text}");
@@ -184,13 +192,13 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
                     GearTier::ALL.to_vec()
                 } else {
                     vec![GearTier::parse(&text).ok_or_else(|| {
-                        format!("unknown gear {text}; expected none, medium, top or all")
+                        format!("unknown gear {text}; expected none, low, medium, high, p2_max (alias top) or all")
                     })?]
                 };
             }
             "--help" | "-h" => {
                 println!(
-                    "engine-sim [--class warrior|druid|mage|all] [--gear none|medium|top|all]\n\
+                    "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|all]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH] [--no-validation]\n\
                      engine-sim --search [--budget N] [--sweep-iterations N] [--finalists N]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH]"

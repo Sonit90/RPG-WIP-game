@@ -8,6 +8,7 @@
 //! 4. Rotations             the priority list each AI plays
 //! 5. Gear profiles         what each profile is and how it was derived
 //! 6. Talent validation     is any talent mandatory or worthless (`validation.rs`)
+//! 7. Gear scaling          does each gear tier beat the one below it (`scaling.rs`)
 //! ```
 
 use std::fmt::Write as _;
@@ -19,9 +20,10 @@ use engine_game::status::StatusKind;
 use crate::Options;
 use crate::build::ClassBuild;
 use crate::class::Class;
-use crate::gear::{GearProfile, GearTier, PROFILES, TOP_QUALITY};
+use crate::gear::{GearProfile, GearTier, PROFILES};
 use crate::matrix::{AOE3, AOE8, Cell, Matrix, SCENARIOS, ST60, ST180, TARGET_HEALTH};
 use crate::metrics::{AURA_COUNT, Metrics, aura_name};
+use crate::scaling::{self, Scaling};
 use crate::validation::{self, Validation};
 
 /// Auras below this uptime are left out of a detail table.
@@ -33,6 +35,7 @@ pub fn matrix_report(
     matrix: &Matrix,
     options: &Options,
     validation: Option<&Validation>,
+    scaling: Option<&Scaling>,
 ) -> String {
     let mut out = String::with_capacity(96 * 1024);
     header(&mut out, matrix, options);
@@ -43,6 +46,9 @@ pub fn matrix_report(
     gear_profiles(&mut out);
     if let Some(validation) = validation {
         validation::write_section(&mut out, validation);
+    }
+    if let Some(scaling) = scaling {
+        scaling::write_section(&mut out, scaling);
     }
     caveats(&mut out);
     out
@@ -226,7 +232,7 @@ fn detail(out: &mut String, matrix: &Matrix) {
                 profile.describe(class.hero())
             );
             cell_detail(out, cell, class);
-            if tier == GearTier::Top
+            if tier == GearTier::High
                 && let Some(aoe) = matrix.find(class, build.name(), profile.variant, AOE8)
             {
                 let _ = writeln!(
@@ -513,49 +519,33 @@ fn gear_profiles(out: &mut String) {
     let _ = writeln!(out, "## 5. Gear profiles\n");
     let _ = writeln!(
         out,
-        "Gear is a stat block in the game's own rating units, applied through the same path \
-         equipment takes, so the rating curve (`x / (x + 100)`) and the main-stat bridge are \
-         the game's. It is derived from the item catalog: 13 equipment slots, and at the \
-         current cap one source of stats - the boss-loot pool, Uncommon pieces of item level \
-         5 granting +2 rating on each of two stats. A piece is therefore two *stat slots*; the \
-         profile says how many pieces are worn and how their 2 x pieces slots are spent. Top \
-         gear fills all 13 slots with best-available stats at a x{TOP_QUALITY:.2} quality \
-         ceiling (the game has no quality scaling yet, so this is the assumed headroom of a \
-         best-rolled piece); medium fills 7 slots at catalog quality, four ways.\n"
+        "Gear is real: each profile names items from `assets/catalog/loot.json` (best in slot \
+         for the hero's main stat, chosen deterministically) and the quality and enhancement \
+         they are worn at. The simulator builds the character sheet with the realm's own \
+         `sheet_of` and lets the game compute the stats (`gear_stats`, the rating curve \
+         `x / (x + 100)`, the main-stat bridge), exactly as a realm fight does. `low` wears the \
+         best rare in every slot; `medium` an epic in every other slot and rares between; \
+         `high` the best epic in each slot that has one (the catalog has epics for head, chest, \
+         necklace, one ring and the trinkets, so the rest are rares); `p2_max` the same pieces \
+         at the quality ceiling with a heavy enhancement. `--gear top` is an alias of `high`.\n"
     );
     let _ = writeln!(
         out,
-        "| Profile | Pieces | Quality | Main slots | Haste slots | Crit slots | Warrior | Mage / Druid |"
+        "| Profile | Quality | Enhancement | Warrior | Mage / Druid |"
     );
-    let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---|---|");
+    let _ = writeln!(out, "|---|---:|---:|---|---|");
     for profile in PROFILES {
         let _ = writeln!(
             out,
-            "| {} | {} | x{:.2} | {} | {} | {} | {} | {} |",
+            "| {} | {} | +{} | {} | {} |",
             profile.label(),
-            profile.pieces,
             profile.quality,
-            profile.slots.main,
-            profile.slots.haste,
-            profile.slots.crit,
-            short_stats(&profile, Class::Warrior),
-            short_stats(&profile, Class::Mage),
+            profile.enhancement,
+            profile.describe(Class::Warrior.hero()),
+            profile.describe(Class::Mage.hero()),
         );
     }
     let _ = writeln!(out);
-}
-
-/// `+12.0 STR / 8.0 haste / 8.0 crit` for a profile and class.
-fn short_stats(profile: &GearProfile, class: Class) -> String {
-    use engine_game::character::stat::Stat;
-    let stats = profile.stat_block(class.hero());
-    format!(
-        "+{:.1} {} / {:.1} Haste / {:.1} Crit",
-        stats.get(class.hero().main_stat()),
-        class.primary_stat(),
-        stats.get(Stat::Haste),
-        stats.get(Stat::CriticalStrike)
-    )
 }
 
 fn caveats(out: &mut String) {
@@ -565,7 +555,7 @@ fn caveats(out: &mut String) {
         "* These are *damage* rotations. The Warrior is a tank and the Druid a healer; their \
          defensive and healing kits are not exercised: the dummies never attack, so Block, \
          Parry and Dodge never fire, and the Warrior's Valor comes only from its own casts.\n\
-         * Versatility and Spirit are not part of any gear profile.\n\
+         * Gear is whatever the catalog's pieces grant, so Versatility, Spirit, Stamina and Armor ride along with the main stat, Haste and Critical Strike; Versatility and Spirit are not chosen for.\n\
          * Every class has `Default` (no talents), `Build A` and `Build B`, which buy \
          talents from `assets/catalog/talents.json` within the 20-point budget.\n\
          * Colossus Strike's bleed lands on at most three targets (the selected one, then \
