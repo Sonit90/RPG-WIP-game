@@ -295,7 +295,11 @@ fn the_bone_foundry_loads_on_the_realm_path_and_can_be_cleared() {
     let (scene, barriers, players) = dungeon_party("bone_foundry");
     let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
     let monsters = fight.monster_states();
-    assert_eq!(monsters.len(), scene.monsters.len(), "no unknown ids dropped");
+    assert_eq!(
+        monsters.len(),
+        scene.monsters.len(),
+        "no unknown ids dropped"
+    );
     fight.open_start_barrier();
     let mage = fight
         .resolve(&EntityRef::Player("dps".into()))

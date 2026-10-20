@@ -666,10 +666,17 @@ mod tests {
             assert_eq!(def.quality, ItemQuality::Epic);
             assert_eq!(def.item_level, 13);
             assert!(stat_total(def.id) >= 19.0, "{key}");
-            assert!(table.entries.iter().any(|entry| entry.item == def.id), "{key}");
+            assert!(
+                table.entries.iter().any(|entry| entry.item == def.id),
+                "{key}"
+            );
         }
         // Not stronger than the best of the crypt's epics by more than an item level's worth.
-        let best_crypt = stat_total(item_by_key("stewards_funerary_raiment").expect("registered").id);
+        let best_crypt = stat_total(
+            item_by_key("stewards_funerary_raiment")
+                .expect("registered")
+                .id,
+        );
         for key in ["furnace_wardens_cuirass", "overseers_ironclad_helm"] {
             let def = item_by_key(key).expect("registered");
             assert!(stat_total(def.id) <= best_crypt * 1.2, "{key}");

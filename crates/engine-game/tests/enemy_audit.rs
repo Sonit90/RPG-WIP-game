@@ -275,20 +275,36 @@ fn every_row_is_internally_consistent() {
                 duration,
             } => {
                 assert!(radius > 0.0 && duration > 0.0, "{name}");
-                assert!(d.is_cast() && d.interruptible, "{name}: a bestowal is the kick");
+                assert!(
+                    d.is_cast() && d.interruptible,
+                    "{name}: a bestowal is the kick"
+                );
                 assert!(d.effect.is_self() && d.damage == 0.0, "{name}");
                 // A monster-side buff a player can read on the nameplate.
                 assert!(!kind.is_harmful(), "{name}: bestows a buff");
             }
             EnemyEffect::Detonate => {
-                assert!(d.is_cast() && d.damage > 0.0, "{name}: the fuse is the cast");
-                assert!(!d.interruptible, "{name}: defused by killing it, not by a kick");
+                assert!(
+                    d.is_cast() && d.damage > 0.0,
+                    "{name}: the fuse is the cast"
+                );
+                assert!(
+                    !d.interruptible,
+                    "{name}: defused by killing it, not by a kick"
+                );
                 assert!(d.shape.is_area(), "{name}: the blast needs a footprint");
-                assert_eq!(d.aim, EnemyAim::Caster, "{name}: it blows up where it stands");
+                assert_eq!(
+                    d.aim,
+                    EnemyAim::Caster,
+                    "{name}: it blows up where it stands"
+                );
             }
             EnemyEffect::Soak { overflow } => {
                 assert!(overflow > 0.0 && d.damage > 0.0, "{name}");
-                assert!(d.delay > 0.0 && d.shape.is_area(), "{name}: a soak is a delayed circle");
+                assert!(
+                    d.delay > 0.0 && d.shape.is_area(),
+                    "{name}: a soak is a delayed circle"
+                );
                 assert!(d.shape.reach() >= 4.0, "{name}: room for a party to stack");
             }
             EnemyEffect::Conveyor {
@@ -1049,8 +1065,16 @@ fn no_ability_is_used_again_before_its_cooldown_is_up() {
             // Per caster: three called bombers each have their own cooldown.
             let mut sources: Vec<EntityId> = Vec::new();
             for event in &events {
-                if let CombatEvent::CastStarted { source, ability: used, .. }
-                | CombatEvent::AbilityUsed { source, ability: used, .. } = event
+                if let CombatEvent::CastStarted {
+                    source,
+                    ability: used,
+                    ..
+                }
+                | CombatEvent::AbilityUsed {
+                    source,
+                    ability: used,
+                    ..
+                } = event
                     && used.enemy() == Some(ability)
                     && !sources.contains(source)
                 {

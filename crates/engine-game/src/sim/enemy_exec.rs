@@ -821,9 +821,8 @@ impl Simulation {
             tick: self.tick,
         });
         for ally in allies {
-            let status =
-                Status::new(kind, entity, AbilityId::from_enemy(ability), duration, 0.0)
-                    .with_stacks(1);
+            let status = Status::new(kind, entity, AbilityId::from_enemy(ability), duration, 0.0)
+                .with_stacks(1);
             self.apply_status(ally, status, duration);
         }
     }

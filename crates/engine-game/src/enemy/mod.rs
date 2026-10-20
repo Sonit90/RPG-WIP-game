@@ -309,9 +309,9 @@ pub enum EnemyEffect {
     /// itself included.
     ///
     /// The registry row says what the status does and for how long, so the same effect is a
-    /// shielder's ward (less damage taken) and a foreman's rally (more damage dealt). Bosses
-    /// are never bestowed upon: a ward on the thing the party came to kill would only be a
-    /// second health bar. The cast bar is the warning and a kick is the answer.
+    /// shielder's ward (less damage taken) and a foreman's rally (more damage dealt). The
+    /// dungeon's boss is never bestowed upon: a ward on the thing the party came to kill would
+    /// only be a second health bar. The cast bar is the warning and a kick is the answer.
     Bestow {
         /// Which status.
         kind: StatusKind,
@@ -398,10 +398,7 @@ impl EnemyEffect {
     pub const fn is_self(self) -> bool {
         matches!(
             self,
-            Self::Frenzy { .. }
-                | Self::Hymn { .. }
-                | Self::Undertow { .. }
-                | Self::Bestow { .. }
+            Self::Frenzy { .. } | Self::Hymn { .. } | Self::Undertow { .. } | Self::Bestow { .. }
         )
     }
 }
@@ -3872,7 +3869,6 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         },
         ..EnemyArchetype::BASE
     },
-
     // ======================================================================================
     // The Bone Foundry. Existing bodies again, washed in forge colours: iron grey, ember orange.
     // ======================================================================================

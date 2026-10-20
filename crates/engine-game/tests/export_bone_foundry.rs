@@ -36,9 +36,9 @@ use std::collections::HashMap;
 
 use engine_core::math::Vec3;
 use engine_environment::asset::{
-    BANNER, BONE_PILE, BRAZIER, CRYPT_FLOOR, CRYPT_WALL, EnvironmentAsset, GROUND_PLAIN, IRON_FENCE,
-    MAUSOLEUM, PILLAR, ROCK_MEDIUM, ROCK_SMALL, ROCK_SPIRE, SARCOPHAGUS, SKY_DOME, SUPPLY_CRATE,
-    WALL_PIER,
+    BANNER, BONE_PILE, BRAZIER, CRYPT_FLOOR, CRYPT_WALL, EnvironmentAsset, GROUND_PLAIN,
+    IRON_FENCE, MAUSOLEUM, PILLAR, ROCK_MEDIUM, ROCK_SMALL, ROCK_SPIRE, SARCOPHAGUS, SKY_DOME,
+    SUPPLY_CRATE, WALL_PIER,
 };
 use engine_environment::object::default_collision;
 use engine_environment::{
@@ -457,7 +457,12 @@ impl Builder {
 
     fn casting_hall(&mut self) {
         let hall = CASTING_HALL();
-        for (x, z) in [(-14.0, -156.0), (14.0, -156.0), (-14.0, -172.0), (14.0, -172.0)] {
+        for (x, z) in [
+            (-14.0, -156.0),
+            (14.0, -156.0),
+            (-14.0, -172.0),
+            (14.0, -172.0),
+        ] {
             self.pillar(x, z, 1.0);
         }
         self.channel((-18.0, -154.0), (-18.0, -174.0), 5.0, 9.0);
@@ -487,11 +492,20 @@ impl Builder {
         }
         self.place(MAUSOLEUM, 0.0, -229.4, 0.0, 1.4);
         // The conveyor bridge: rails down both sides of the middle, soft so they never catch.
-        self.rail((-10.0, -190.0), (-10.0, -226.0), std::f32::consts::FRAC_PI_2);
+        self.rail(
+            (-10.0, -190.0),
+            (-10.0, -226.0),
+            std::f32::consts::FRAC_PI_2,
+        );
         self.rail((10.0, -190.0), (10.0, -226.0), std::f32::consts::FRAC_PI_2);
         self.channel((-26.0, -188.0), (-26.0, -228.0), 5.0, 10.0);
         self.channel((26.0, -188.0), (26.0, -228.0), 5.0, 10.0);
-        for (x, z) in [(-26.0, -186.0), (26.0, -186.0), (-26.0, -230.0), (26.0, -230.0)] {
+        for (x, z) in [
+            (-26.0, -186.0),
+            (26.0, -186.0),
+            (-26.0, -230.0),
+            (26.0, -230.0),
+        ] {
             self.brazier(x, z, true);
         }
         self.scatter(ROCK_SMALL, floor, 8, 4.0, 71);
@@ -714,7 +728,10 @@ fn the_drawing_is_rectangular_and_the_rooms_are_where_the_rects_say() {
     // The ring is a ring: the furnace in its middle is solid, and every arm is floor.
     for col in 7..=13 {
         for row in 10..=15 {
-            assert!(!is_floor(col, row), "the furnace island is solid ({col}, {row})");
+            assert!(
+                !is_floor(col, row),
+                "the furnace island is solid ({col}, {row})"
+            );
         }
     }
     for col in 5..=15 {
@@ -790,8 +807,14 @@ fn either_yard_is_enough_and_neither_is_not() {
     let total: f32 = PACKS[..PACKS.len() - 1].iter().map(completion_of).sum();
     let required = required_completion();
     let (west, east) = (yard_total(&WEST), yard_total(&EAST));
-    assert!(total - west >= required, "skipping the west yard falls short");
-    assert!(total - east >= required, "skipping the east yard falls short");
+    assert!(
+        total - west >= required,
+        "skipping the west yard falls short"
+    );
+    assert!(
+        total - east >= required,
+        "skipping the east yard falls short"
+    );
     assert!(total - west - east < required, "skipping both is enough");
     assert!(required > 0.0 && required < total);
 }
