@@ -914,3 +914,164 @@ fn the_undertow_cannot_be_interrupted_and_the_hymn_can() {
     assert!(!simulation.is_interruptible(abbess));
     assert!(!simulation.interrupt(abbess));
 }
+
+// ------------------------------------------------------------------------------------------
+// The dungeon, built from its level file
+// ------------------------------------------------------------------------------------------
+
+use engine_game::dungeon::{DungeonScaling, build_level_file, populate_from_scene};
+
+fn scene_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/scenes/drowned_catacombs.json")
+}
+
+fn catacombs() -> Simulation {
+    let mut simulation = build_level_file(scene_path(), DungeonScaling::default())
+        .expect("the level file builds")
+        .0;
+    let player = simulation.player().entity;
+    simulation.world_mut().set_max_health(player, 1_000_000.0);
+    simulation.world_mut().restore(player);
+    simulation.step_once();
+    simulation
+}
+
+fn pack(simulation: &Simulation, name: &str) -> Vec<EntityId> {
+    simulation
+        .encounters()
+        .iter()
+        .find(|encounter| encounter.name() == name)
+        .unwrap_or_else(|| panic!("no pack {name}"))
+        .members()
+        .to_vec()
+}
+
+#[test]
+fn the_level_loads_with_no_unknown_ids_and_a_boss_pack() {
+    let scene = engine_environment::scene_file::load(scene_path()).expect("loads");
+    let mut simulation = Simulation::new(engine_game::sim::SimConfig::default());
+    let report = populate_from_scene(&mut simulation, &scene, DungeonScaling::default());
+    assert!(report.unknown.is_empty(), "{:?}", report.unknown);
+    assert_eq!(report.packs, 9, "eight packs and the boss");
+    assert_eq!(report.monsters, scene.monsters.len());
+    let boss = report.boss_encounter.expect("a boss encounter");
+    assert_eq!(
+        simulation.encounters()[boss].name(),
+        "THE DROWNED ABBESS"
+    );
+    let required = scene.dungeon.as_ref().expect("a dungeon").required_completion;
+    assert!(report.total_completion >= required, "the dungeon cannot be completed");
+    // Every asset is one the library or the starter kit knows.
+    let known: Vec<&str> = engine_environment::LIBRARY.iter().map(|a| a.name()).collect();
+    for object in &scene.objects {
+        assert!(known.contains(&object.asset.name()), "{}", object.asset.name());
+    }
+    assert!(scene.objects.len() > 500);
+    assert!(!scene.water.is_empty());
+    // The lurkers patrol.
+    assert_eq!(
+        scene.monsters.iter().filter(|m| !m.patrol.is_empty()).count(),
+        2
+    );
+}
+
+#[test]
+fn the_boss_is_sealed_and_the_route_to_every_pack_is_walkable() {
+    let mut simulation = catacombs();
+    assert!(simulation.gate_is_closed());
+    let abbess = pack(&simulation, "THE DROWNED ABBESS")[0];
+    assert_eq!(
+        simulation.brain(abbess).expect("a boss").kind(),
+        EnemyKind::DrownedAbbess
+    );
+    simulation.unlock_dungeon();
+    // Hop along both routes; every hop must be walkable.
+    let west = [
+        (0.0, -8.0),
+        (0.0, -28.0),
+        (0.0, -44.0),
+        (0.0, -60.0),
+        (0.0, -76.0),
+        (-38.0, -76.0),
+        (-56.0, -76.0),
+        (-56.0, -98.0),
+        (-56.0, -116.0),
+        (-30.0, -116.0),
+        (0.0, -116.0),
+        (0.0, -132.0),
+        (0.0, -150.0),
+        (0.0, -160.0),
+    ];
+    let mut east: Vec<(f32, f32)> = west.iter().map(|(x, z)| (-x, *z)).collect();
+    east[0] = (0.0, -8.0);
+    for route in [west.to_vec(), east] {
+        let mut navigator = engine_game::nav::Navigator::new(engine_game::nav::NavConfig::default());
+        let mut path = Vec::new();
+        for hop in route.windows(2) {
+            let from = Vec3::new(hop[0].0, 0.0, hop[0].1);
+            let to = Vec3::new(hop[1].0, 0.0, hop[1].1);
+            assert!(
+                navigator.find_path(simulation.collision_world(), from, to, &mut path),
+                "no way from {from:?} to {to:?}"
+            );
+        }
+    }
+    // And every monster is somewhere a body can stand and walk to from the room's own middle.
+    for encounter in simulation.encounters() {
+        assert!(!encounter.members().is_empty());
+    }
+}
+
+#[test]
+fn skipping_either_wing_still_reaches_one_hundred_but_skipping_both_does_not() {
+    let clear = |names: &[&str]| {
+        let mut simulation = catacombs();
+        for name in names {
+            for member in pack(&simulation, name) {
+                simulation.slay(member);
+            }
+        }
+        simulation.step_once();
+        simulation.dungeon_run().expect("a run").percent()
+    };
+    let main = [
+        "FLOODED PICKETS",
+        "SLUICE KEEPERS",
+        "OSSUARY WATCH",
+        "BONE CHAPTER",
+    ];
+    let west = ["WEST GALLERY LURKER", "SUNKEN CLOISTER"];
+    let east = ["EAST GALLERY LURKER", "BILGE BATTERY"];
+    assert_eq!(clear(&[&main[..], &west[..]].concat()), 100);
+    assert_eq!(clear(&[&main[..], &east[..]].concat()), 100);
+    assert!(clear(&main) < 100);
+}
+
+#[test]
+fn the_whole_dungeon_can_be_cleared_and_the_run_completes() {
+    let mut simulation = catacombs();
+    let names: Vec<String> = simulation
+        .encounters()
+        .iter()
+        .map(|encounter| encounter.name().to_owned())
+        .collect();
+    for name in names.iter().filter(|name| *name != "THE DROWNED ABBESS") {
+        for member in pack(&simulation, name) {
+            simulation.slay(member);
+        }
+    }
+    simulation.step_once();
+    assert_eq!(simulation.dungeon_run().expect("a run").percent(), 100);
+    assert!(!simulation.gate_is_closed());
+    // Pulled, as a real fight is, then killed with whatever she called.
+    let abbess = pack(&simulation, "THE DROWNED ABBESS")[0];
+    let at = simulation.world().position(abbess).expect("a boss");
+    put_player(&mut simulation, at + Vec3::new(0.0, 0.0, 8.0));
+    run(&mut simulation, 90);
+    for member in pack(&simulation, "THE DROWNED ABBESS") {
+        simulation.slay(member);
+    }
+    run(&mut simulation, 10);
+    assert!(simulation.dungeon_run().expect("a run").is_completed());
+}

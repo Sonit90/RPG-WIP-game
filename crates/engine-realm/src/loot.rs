@@ -589,7 +589,7 @@ mod tests {
         let loot = catalog.loot();
         assert!(loot.items.len() >= 20, "only {} items", loot.items.len());
         let epics = loot.items.iter().filter(|row| row.rarity == "epic").count();
-        assert!((4..=7).contains(&epics), "{epics} epics");
+        assert!((4..=14).contains(&epics), "{epics} epics");
         for (index, row) in loot.items.iter().enumerate() {
             let def = item_by_key(&row.id).expect("registered");
             assert_eq!(
@@ -605,6 +605,34 @@ mod tests {
         let families: std::collections::HashSet<_> =
             loot.items.iter().map(|row| row.slot.as_str()).collect();
         assert!(families.len() >= 10, "{families:?}");
+    }
+
+    #[test]
+    fn the_abbess_drops_the_epics_for_the_slots_the_crypt_leaves_bare() {
+        let rules = rules();
+        let table = rules.boss_table("drowned_abbess").expect("the Abbess has a table");
+        let slots: std::collections::HashSet<_> = table
+            .entries
+            .iter()
+            .filter_map(|entry| item(entry.item))
+            .filter(|def| def.quality == ItemQuality::Epic)
+            .map(|def| def.family)
+            .collect();
+        // Head, chest, necklace, ring and trinkets were already covered; these are new.
+        assert!(slots.len() >= 6, "{slots:?}");
+        for key in [
+            "abbess_tidewrap_mantle",
+            "drowned_pilgrims_greaves",
+            "gloves_of_the_salt_psalm",
+            "tideworn_sabatons",
+            "abbess_signet_of_the_deep",
+        ] {
+            let def = item_by_key(key).expect("registered");
+            assert_eq!(def.quality, ItemQuality::Epic);
+            assert_eq!(def.item_level, 12);
+            assert!(stat_total(def.id) >= 19.0, "{key}");
+            assert!(table.entries.iter().any(|entry| entry.item == def.id), "{key}");
+        }
     }
 
     #[test]
