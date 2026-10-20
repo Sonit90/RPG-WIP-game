@@ -269,6 +269,61 @@ fn every_row_is_internally_consistent() {
                 assert!(pool_near < pool_far && pull_speed > 0.0, "{name}");
                 assert!(d.shape.is_area(), "{name}: the slam needs a footprint");
             }
+            EnemyEffect::Bestow {
+                kind,
+                radius,
+                duration,
+            } => {
+                assert!(radius > 0.0 && duration > 0.0, "{name}");
+                assert!(
+                    d.is_cast() && d.interruptible,
+                    "{name}: a bestowal is the kick"
+                );
+                assert!(d.effect.is_self() && d.damage == 0.0, "{name}");
+                // A monster-side buff a player can read on the nameplate.
+                assert!(!kind.is_harmful(), "{name}: bestows a buff");
+            }
+            EnemyEffect::Detonate => {
+                assert!(
+                    d.is_cast() && d.damage > 0.0,
+                    "{name}: the fuse is the cast"
+                );
+                assert!(
+                    !d.interruptible,
+                    "{name}: defused by killing it, not by a kick"
+                );
+                assert!(d.shape.is_area(), "{name}: the blast needs a footprint");
+                assert_eq!(
+                    d.aim,
+                    EnemyAim::Caster,
+                    "{name}: it blows up where it stands"
+                );
+            }
+            EnemyEffect::Soak { overflow } => {
+                assert!(overflow > 0.0 && d.damage > 0.0, "{name}");
+                assert!(
+                    d.delay > 0.0 && d.shape.is_area(),
+                    "{name}: a soak is a delayed circle"
+                );
+                assert!(d.shape.reach() >= 4.0, "{name}: room for a party to stack");
+            }
+            EnemyEffect::Conveyor {
+                push_speed,
+                interval,
+                pool_near,
+                pool_far,
+                ..
+            } => {
+                assert!(d.is_cast() && interval > 0.0, "{name}");
+                assert!(!d.interruptible, "{name}: the lane is walked out of");
+                assert!(pool_near < pool_far && push_speed > 0.0, "{name}");
+                // Slower than a walk, or standing aside would not be an answer.
+                assert!(push_speed < 6.0, "{name}");
+                let TelegraphShape::Line { length, .. } = d.shape else {
+                    panic!("{name}: a lane is a line");
+                };
+                assert!(pool_far <= length, "{name}: pools inside the lane");
+            }
         }
         // Selecting somebody other than the tank only makes sense for something that reaches
         // past them.
@@ -1007,33 +1062,61 @@ fn no_ability_is_used_again_before_its_cooldown_is_up() {
             let counted_as_instant = !definition.is_cast()
                 && !definition.effect.is_charge()
                 && matches!(definition.shape, TelegraphShape::Single);
-            let mut starts: Vec<u64> = events
-                .iter()
-                .filter_map(|event| match event {
-                    CombatEvent::CastStarted {
-                        ability: used,
-                        tick,
-                        ..
-                    } if used.enemy() == Some(ability) => Some(*tick),
-                    CombatEvent::AbilityUsed {
-                        ability: used,
-                        tick,
-                        ..
-                    } if counted_as_instant && used.enemy() == Some(ability) => Some(*tick),
-                    _ => None,
-                })
-                .collect();
-            starts.dedup();
-            // The fastest an ability can come back: the phase's cooldown scale, divided by
-            // the strongest frenzy in the roster.
-            let scale = kinds[0].archetype().phase_cooldown_scale(phase);
-            let fastest = definition.cooldown * scale / 1.6;
-            for pair in starts.windows(2) {
-                let gap = (pair[1] - pair[0]) as f32 / 60.0;
-                assert!(
-                    gap >= fastest - 0.05,
-                    "{ability:?} came back after {gap:.2}s, cooldown {fastest:.2}s"
-                );
+            // Per caster: three called bombers each have their own cooldown.
+            let mut sources: Vec<EntityId> = Vec::new();
+            for event in &events {
+                if let CombatEvent::CastStarted {
+                    source,
+                    ability: used,
+                    ..
+                }
+                | CombatEvent::AbilityUsed {
+                    source,
+                    ability: used,
+                    ..
+                } = event
+                    && used.enemy() == Some(ability)
+                    && !sources.contains(source)
+                {
+                    sources.push(*source);
+                }
+            }
+            for caster in sources {
+                let mut starts: Vec<u64> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        CombatEvent::CastStarted {
+                            source,
+                            ability: used,
+                            tick,
+                            ..
+                        } if *source == caster && used.enemy() == Some(ability) => Some(*tick),
+                        CombatEvent::AbilityUsed {
+                            source,
+                            ability: used,
+                            tick,
+                            ..
+                        } if counted_as_instant
+                            && *source == caster
+                            && used.enemy() == Some(ability) =>
+                        {
+                            Some(*tick)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                starts.dedup();
+                // The fastest an ability can come back: the phase's cooldown scale, divided by
+                // the strongest frenzy in the roster.
+                let scale = kinds[0].archetype().phase_cooldown_scale(phase);
+                let fastest = definition.cooldown * scale / 1.6;
+                for pair in starts.windows(2) {
+                    let gap = (pair[1] - pair[0]) as f32 / 60.0;
+                    assert!(
+                        gap >= fastest - 0.05,
+                        "{ability:?} came back after {gap:.2}s, cooldown {fastest:.2}s"
+                    );
+                }
             }
         }
     }

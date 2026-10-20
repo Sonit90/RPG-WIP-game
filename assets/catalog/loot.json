@@ -342,6 +342,51 @@
       "item_level": 12,
       "icon": "ring",
       "stats": { "stamina": 5, "main_stat": 6, "versatility": 8 }
+    },
+    {
+      "id": "foundry_cinder_cloak",
+      "name": "Cloak of Banked Cinders",
+      "slot": "back",
+      "rarity": "epic",
+      "item_level": 13,
+      "icon": "back",
+      "stats": { "stamina": 7, "main_stat": 7, "haste": 5, "versatility": 4 }
+    },
+    {
+      "id": "slagproof_bracers",
+      "name": "Slagproof Bracers",
+      "slot": "wrist",
+      "rarity": "epic",
+      "item_level": 13,
+      "icon": "wrist",
+      "stats": { "stamina": 6, "main_stat": 6, "critical_strike": 6, "spirit": 3 }
+    },
+    {
+      "id": "overseers_ironclad_helm",
+      "name": "Overseer's Ironclad Helm",
+      "slot": "head",
+      "rarity": "epic",
+      "item_level": 13,
+      "icon": "head",
+      "stats": { "stamina": 9, "armor": 12, "main_stat": 5, "versatility": 3 }
+    },
+    {
+      "id": "furnace_wardens_cuirass",
+      "name": "Furnace Warden's Cuirass",
+      "slot": "chest",
+      "rarity": "epic",
+      "item_level": 13,
+      "icon": "chest",
+      "stats": { "stamina": 11, "armor": 14, "main_stat": 6, "haste": 3 }
+    },
+    {
+      "id": "emberlink_chain",
+      "name": "Emberlink Chain",
+      "slot": "necklace",
+      "rarity": "epic",
+      "item_level": 13,
+      "icon": "necklace",
+      "stats": { "stamina": 5, "main_stat": 7, "critical_strike": 6, "versatility": 6 }
     }
   ],
   "boss_tables": {
@@ -454,6 +499,32 @@
       { "item": "gloves_of_the_salt_psalm", "weight": 12 },
       { "item": "tideworn_sabatons", "weight": 12 },
       { "item": "abbess_signet_of_the_deep", "weight": 12 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 }
+    ],
+    "foundry_overseer": [
+      { "item": "gravewardens_cowl", "weight": 10 },
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "mourners_pauldrons", "weight": 10 },
+      { "item": "ossuary_vestment", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "shroud_of_quiet_vigil", "weight": 10 },
+      { "item": "gravediggers_grips", "weight": 10 },
+      { "item": "crypt_stitched_leggings", "weight": 10 },
+      { "item": "treads_of_the_still_hour", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "band_of_faded_vows", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "hollow_lantern_charm", "weight": 10 },
+      { "item": "ossified_heart", "weight": 10 },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "foundry_cinder_cloak", "weight": 12 },
+      { "item": "slagproof_bracers", "weight": 12 },
+      { "item": "overseers_ironclad_helm", "weight": 12 },
+      { "item": "furnace_wardens_cuirass", "weight": 12 },
+      { "item": "emberlink_chain", "weight": 12 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
       { "item": "aegis_of_the_last_vigil", "weight": 7 }
     ]

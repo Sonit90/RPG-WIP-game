@@ -998,6 +998,49 @@ pub fn ability_effects(def: &EnemyAbilityDef, damage_scale: f32) -> Vec<String> 
                 seconds(pool_duration)
             ));
         }
+        EnemyEffect::Bestow {
+            kind,
+            radius,
+            duration,
+        } => lines.push(format!(
+            "If it finishes, every ally within {} gets {} for {}: {}",
+            metres(radius),
+            kind.display_name(),
+            seconds(duration),
+            kind.definition().description
+        )),
+        EnemyEffect::Detonate => {
+            lines.push("Explodes when the fuse ends, and is destroyed by it".to_owned());
+            lines.push("Killing it first defuses the blast".to_owned());
+        }
+        EnemyEffect::Soak { overflow } => {
+            lines.push(format!(
+                "Its damage is split between every player standing in it ({} total)",
+                thousands(def.damage * damage_scale)
+            ));
+            lines.push(format!(
+                "If nobody stands in it, every player takes {}% of the total",
+                (overflow * 100.0).round() as i32
+            ));
+        }
+        EnemyEffect::Conveyor {
+            push_speed,
+            pool_radius,
+            pool_damage_per_second,
+            pool_duration,
+            ..
+        } => {
+            lines.push(format!(
+                "Carries every player in the lane away at {} a second",
+                metres(push_speed)
+            ));
+            lines.push(format!(
+                "Opens {} pools at the far end dealing {} a second for {}",
+                metres(pool_radius),
+                thousands(pool_damage_per_second * damage_scale),
+                seconds(pool_duration)
+            ));
+        }
         _ => {}
     }
     match def.rider {

@@ -721,7 +721,7 @@ mod tests {
         let loot = catalog.loot();
         assert!(loot.items.len() >= 20, "only {} items", loot.items.len());
         let epics = loot.items.iter().filter(|row| row.rarity == "epic").count();
-        assert!((4..=14).contains(&epics), "{epics} epics");
+        assert!((4..=24).contains(&epics), "{epics} epics");
         for (index, row) in loot.items.iter().enumerate() {
             let def = item_by_key(&row.id).expect("registered");
             assert_eq!(
@@ -769,6 +769,49 @@ mod tests {
                 table.entries.iter().any(|entry| entry.item == def.id),
                 "{key}"
             );
+        }
+    }
+
+    #[test]
+    fn the_overseer_drops_the_epics_for_the_slots_nobody_else_covers() {
+        let rules = rules();
+        let table = rules
+            .boss_table("foundry_overseer")
+            .expect("the Overseer has a table");
+        // Back and wrist had no epic before this dungeon; two armoured pieces serve tanks.
+        let slots: std::collections::HashSet<_> = table
+            .entries
+            .iter()
+            .filter_map(|entry| item(entry.item))
+            .filter(|def| def.quality == ItemQuality::Epic)
+            .map(|def| def.family)
+            .collect();
+        assert!(slots.len() >= 5, "{slots:?}");
+        for key in [
+            "foundry_cinder_cloak",
+            "slagproof_bracers",
+            "overseers_ironclad_helm",
+            "furnace_wardens_cuirass",
+            "emberlink_chain",
+        ] {
+            let def = item_by_key(key).expect("registered");
+            assert_eq!(def.quality, ItemQuality::Epic);
+            assert_eq!(def.item_level, 13);
+            assert!(stat_total(def.id) >= 19.0, "{key}");
+            assert!(
+                table.entries.iter().any(|entry| entry.item == def.id),
+                "{key}"
+            );
+        }
+        // Not stronger than the best of the crypt's epics by more than an item level's worth.
+        let best_crypt = stat_total(
+            item_by_key("stewards_funerary_raiment")
+                .expect("registered")
+                .id,
+        );
+        for key in ["furnace_wardens_cuirass", "overseers_ironclad_helm"] {
+            let def = item_by_key(key).expect("registered");
+            assert!(stat_total(def.id) <= best_crypt * 1.2, "{key}");
         }
     }
 

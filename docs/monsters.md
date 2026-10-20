@@ -189,6 +189,19 @@ Five more archetypes, drawn with existing models and a teal tint (see
 | `bilge_archer` | `crypt_archer` | Ranged: Bilge Volley (delayed circles on three players) |
 | `drowned_abbess` | `grave_acolyte` | Boss: Undertow, Drowning Hymn, healers at 50 % |
 
+## The Bone Foundry roster
+
+Five more archetypes, drawn with existing models and forge colours (see
+[`dungeon/BONE_FOUNDRY.md`](dungeon/BONE_FOUNDRY.md)):
+
+| Id | Drawn as | Role |
+|---|---|---|
+| `slag_ironclad` | `grave_brute` | Melee shielder: interruptible Slag Bulwark wards its pack (Warded, 40 % less damage) |
+| `cinder_bomber` | `crypt_ghoul` | Melee suicide: Cinder Blast, a drawn fuse and circle, then it dies |
+| `slag_thrower` | `skeleton_bonecaster` | Ranged: Slag Lob (delayed circles on two players that leave burning slag) |
+| `foundry_foreman` | `grave_acolyte` | Elite: interruptible Stoke the Furnace (Stoked, 30 % more damage), Chain Lash |
+| `foundry_overseer` | `grave_brute` | Boss: Slag Brand (spread), Molten Ladle (soak), Conveyor Surge (lane), Overheat |
+
 ## Cost
 
 Measured in the Graveyard Crypt, release build, hidden 1920×1080, 6,000 frames, with all 37

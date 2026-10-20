@@ -102,6 +102,40 @@
         "center": [0.0, 2.5, -24.0],
         "half_extents": [4.0, 2.5, 0.6]
       }
+    },
+    {
+      "id": "bone_foundry",
+      "name": "Bone Foundry",
+      "description": "A furnace ring where the dead are smelted into soldiers. Work round the slag channels, answer the foremen's rallies and the bombers' fuses, and stand in the right place when the Foundry Overseer pours the ladle.",
+      "scene": "scenes/bone_foundry.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 50,
+      "rewards": ["Experience", "Slag-forged gear", "Overseer's Cinders"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 260,
+        "experience_per_level": 65,
+        "resources": [{ "id": "crypt_dust", "amount": 7, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 1800,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -24.0],
+        "half_extents": [4.0, 2.5, 0.6]
+      }
     }
   ]
 }

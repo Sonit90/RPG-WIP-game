@@ -305,6 +305,61 @@ pub enum EnemyEffect {
         /// The furthest a pool opens from the caster, in metres.
         pool_far: f32,
     },
+    /// A cast that, **if it completes**, puts a status on every living ally near the caster:
+    /// itself included.
+    ///
+    /// The registry row says what the status does and for how long, so the same effect is a
+    /// shielder's ward (less damage taken) and a foreman's rally (more damage dealt). The
+    /// dungeon's boss is never bestowed upon: a ward on the thing the party came to kill would
+    /// only be a second health bar. The cast bar is the warning and a kick is the answer.
+    Bestow {
+        /// Which status.
+        kind: StatusKind,
+        /// How far from the caster an ally is still reached, in metres.
+        radius: f32,
+        /// Seconds the status lasts.
+        duration: f32,
+    },
+    /// A blast around the caster that costs it its life: the damage hits the ability's own
+    /// [`EnemyAbilityDef::shape`], and then the caster dies.
+    ///
+    /// The cast is the fuse, drawn on the floor for its whole length. Killing the caster before
+    /// it ends, or walking out of the circle, defuses it. A detonation counts as the caster's
+    /// death for completion, like any other kill.
+    Detonate,
+    /// A delayed zone whose damage is **shared** between everyone standing in it when it lands.
+    ///
+    /// One player alone takes all of it, a full group takes a fraction each, and if nobody
+    /// stands in it the party takes `overflow` of the total *each* - so the answer is to stack
+    /// on the marked ground, the opposite of every spread mechanic. The ability's
+    /// [`EnemyAbilityDef::damage`] is the total.
+    Soak {
+        /// The share of the total every player takes when nobody soaked it, as a fraction.
+        overflow: f32,
+    },
+    /// A channel that pushes everyone inside the ability's [`TelegraphShape::Line`] along it,
+    /// away from the caster, while slag pools open at its far end; whoever is still in the lane
+    /// when it ends takes the ability's own damage.
+    ///
+    /// The push is a collided slide (the same displacement an Undertow or a charge makes), slower
+    /// than a walk, so stepping out of the lane to the side beats it by a wide margin and
+    /// standing in it carries you into the pools. Uninterruptible: the answer is movement.
+    Conveyor {
+        /// How fast the lane carries, in metres a second.
+        push_speed: f32,
+        /// Seconds between the pools it opens.
+        interval: f32,
+        /// Radius of each pool, in metres.
+        pool_radius: f32,
+        /// Damage a second to anything standing in a pool.
+        pool_damage_per_second: f32,
+        /// Seconds a pool lasts.
+        pool_duration: f32,
+        /// The nearest a pool opens along the lane, in metres from the caster.
+        pool_near: f32,
+        /// The furthest a pool opens along the lane, in metres from the caster.
+        pool_far: f32,
+    },
 }
 
 impl EnemyEffect {
@@ -326,6 +381,12 @@ impl EnemyEffect {
         matches!(self, Self::Undertow { .. })
     }
 
+    /// Whether this is the pushing channel.
+    #[must_use]
+    pub const fn is_conveyor(self) -> bool {
+        matches!(self, Self::Conveyor { .. })
+    }
+
     /// Whether the caster runs at its target when this lands.
     #[must_use]
     pub const fn is_charge(self) -> bool {
@@ -337,7 +398,7 @@ impl EnemyEffect {
     pub const fn is_self(self) -> bool {
         matches!(
             self,
-            Self::Frenzy { .. } | Self::Hymn { .. } | Self::Undertow { .. }
+            Self::Frenzy { .. } | Self::Hymn { .. } | Self::Undertow { .. } | Self::Bestow { .. }
         )
     }
 }
@@ -559,10 +620,42 @@ pub enum EnemyAbility {
     Undertow,
     /// The Drowned Abbess: a long cast that heals her and spurs her allies if it completes.
     DrowningHymn,
+
+    // ---------------------------------------------------------------- the Bone Foundry
+    /// Slag Ironclad: wards every ally around it against a share of all damage.
+    SlagBulwark,
+    /// Slag Ironclad: a wide frontal cone.
+    ShieldSweep,
+    /// Slag Ironclad: the heavy filler.
+    SlagBash,
+    /// Cinder Bomber: a fuse, a circle and a death.
+    CinderBlast,
+    /// Slag Thrower: marked circles on two players that leave burning slag.
+    SlagLob,
+    /// Slag Thrower: the filler bolt.
+    EmberFlick,
+    /// Foundry Foreman: stokes every ally around it to hit harder.
+    StokeTheFurnace,
+    /// Foundry Foreman: a line through its victim.
+    ChainLash,
+    /// Foundry Foreman: the filler.
+    ForemansClub,
+    /// The Foundry Overseer: a circle around himself.
+    FoundrySlam,
+    /// The Foundry Overseer: marks on three players that chain through anyone caught.
+    SlagBrand,
+    /// The Foundry Overseer: the hammer filler.
+    OverseerHammer,
+    /// The Foundry Overseer: a shared-damage circle on one player's ground.
+    MoltenLadle,
+    /// The Foundry Overseer: a conveyor lane that carries the party into slag.
+    ConveyorSurge,
+    /// The Foundry Overseer, red-hot: attacks much faster until he dies.
+    Overheat,
 }
 
 /// How many enemy abilities exist.
-pub const ENEMY_ABILITY_COUNT: usize = 68;
+pub const ENEMY_ABILITY_COUNT: usize = 83;
 
 impl EnemyAbility {
     /// Every ability, in table order.
@@ -635,6 +728,21 @@ impl EnemyAbility {
         Self::TidalSlam,
         Self::Undertow,
         Self::DrowningHymn,
+        Self::SlagBulwark,
+        Self::ShieldSweep,
+        Self::SlagBash,
+        Self::CinderBlast,
+        Self::SlagLob,
+        Self::EmberFlick,
+        Self::StokeTheFurnace,
+        Self::ChainLash,
+        Self::ForemansClub,
+        Self::FoundrySlam,
+        Self::SlagBrand,
+        Self::OverseerHammer,
+        Self::MoltenLadle,
+        Self::ConveyorSurge,
+        Self::Overheat,
     ];
 
     /// Its index into [`ENEMY_ABILITIES`].
@@ -815,7 +923,10 @@ impl EnemyAbilityDef {
             EnemyEffect::Charge {
                 shockwave_radius, ..
             } if shockwave_radius > 0.0 => self.damage * (1.0 + SHOCKWAVE_SHARE),
-            EnemyEffect::Heal { .. } | EnemyEffect::Frenzy { .. } | EnemyEffect::Hymn { .. } => 0.0,
+            EnemyEffect::Heal { .. }
+            | EnemyEffect::Frenzy { .. }
+            | EnemyEffect::Hymn { .. }
+            | EnemyEffect::Bestow { .. } => 0.0,
             _ => self.damage,
         };
         let bleed = match self.rider {
@@ -2123,6 +2234,279 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         cue: EnemyCue::Heavy,
         ..EnemyAbilityDef::BASE
     },
+    // ======================================================================================
+    // The Bone Foundry. The questions this dungeon adds: who do I kick (a ward, a rally), what
+    // do I kill before it arrives (a fused bomber), where do I stand (a shared soak, a lane
+    // that carries). See `docs/dungeon/BONE_FOUNDRY.md`.
+    // ======================================================================================
+
+    // ---------------------------------------------------------------- Slag Ironclad
+    // Forty per cent off everything its pack takes, for eight seconds in every sixteen, if
+    // the cast is allowed to finish: a kick is worth more here than a heal's worth of damage.
+    EnemyAbilityDef {
+        name: "SLAG BULWARK",
+        description: "Wards every ally around it, itself included, against a share of all damage.",
+        counter: "Interrupt it; the ward fades after a few seconds",
+        range: 12.0,
+        cast_time: 1.8,
+        cooldown: 16.0,
+        damage_type: DamageType::Fire,
+        effect: EnemyEffect::Bestow {
+            kind: StatusKind::Warded,
+            radius: 14.0,
+            duration: 8.0,
+        },
+        interruptible: true,
+        recovery: 0.8,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "SHIELD SWEEP",
+        description: "A wide frontal cone, drawn on the floor for the whole cast.",
+        counter: "Tank faces it away from the party; step out of the cone",
+        range: 5.0,
+        cast_time: 1.5,
+        cooldown: 9.0,
+        damage: 70.0,
+        shape: TelegraphShape::Cone {
+            yaw: 0.0,
+            range: 6.5,
+            half_angle: WIDE_CONE_HALF_ANGLE,
+        },
+        aim: EnemyAim::Caster,
+        recovery: 0.9,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "SLAG BASH",
+        description: "The heavy filler.",
+        range: 3.5,
+        cooldown: 2.6,
+        damage: 46.0,
+        recovery: 0.6,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Cinder Bomber
+    // A fuse of a second and a half, drawn as the circle it will burn. It dies when it goes off,
+    // so there is no second one to dodge; it can be killed before then, and walked away from.
+    EnemyAbilityDef {
+        name: "CINDER BLAST",
+        description: "A fuse, a circle around itself, and then the bomber is gone.",
+        counter: "Kill it before the fuse ends, or run out of the circle",
+        range: 3.0,
+        cast_time: 1.5,
+        cooldown: 5.0,
+        damage: 120.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 4.5 },
+        aim: EnemyAim::Caster,
+        effect: EnemyEffect::Detonate,
+        recovery: 0.2,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Slag Thrower
+    // Two players, one circle each, drawn for 1.7 s after the cast and then left as ground that
+    // burns for ten: the landing is dodged by moving, the pool by not standing back in it.
+    EnemyAbilityDef {
+        name: "SLAG LOB",
+        description: "Marked circles under two players that land after a delay and leave burning slag.",
+        counter: "Move out of the circle, then stay out of the pool; interrupt the cast",
+        range: 32.0,
+        cast_time: 1.6,
+        cooldown: 9.0,
+        damage: 45.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 3.2 },
+        select: EnemyTarget::Random,
+        targets: 2,
+        delay: 1.7,
+        effect: EnemyEffect::Hazard {
+            duration: 10.0,
+            damage_per_second: 38.0,
+            grow_to: 0.0,
+            radius: 0.0,
+        },
+        interruptible: true,
+        recovery: 0.6,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "EMBER FLICK",
+        description: "The filler bolt.",
+        range: 28.0,
+        cast_time: 1.2,
+        cooldown: 2.4,
+        damage: 26.0,
+        damage_type: DamageType::Fire,
+        interruptible: true,
+        recovery: 0.3,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Foundry Foreman
+    // Thirty per cent more of everything its pack deals, for ten seconds in every eighteen. The
+    // cast is long enough to be seen and short enough that the foreman has to be reached first.
+    EnemyAbilityDef {
+        name: "STOKE THE FURNACE",
+        description: "Rallies every ally around it, itself included, to hit harder.",
+        counter: "Interrupt it, or kill the foreman first",
+        range: 20.0,
+        cast_time: 2.2,
+        cooldown: 18.0,
+        damage_type: DamageType::Fire,
+        effect: EnemyEffect::Bestow {
+            kind: StatusKind::Stoked,
+            radius: 16.0,
+            duration: 10.0,
+        },
+        interruptible: true,
+        recovery: 0.8,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "CHAIN LASH",
+        description: "A line through its victim, drawn on the floor for the whole cast.",
+        counter: "Step out of the line",
+        range: 14.0,
+        cast_time: 1.4,
+        cooldown: 7.0,
+        damage: 80.0,
+        shape: TelegraphShape::Line {
+            yaw: 0.0,
+            length: 14.0,
+            width: 2.4,
+        },
+        aim: EnemyAim::Caster,
+        recovery: 0.8,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "FOREMANS CLUB",
+        description: "The foreman's filler.",
+        range: 3.5,
+        cooldown: 2.2,
+        damage: 52.0,
+        recovery: 0.6,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- The Foundry Overseer
+    EnemyAbilityDef {
+        name: "FOUNDRY SLAM",
+        description: "A circle around the Overseer.",
+        counter: "Everyone out, including the tank",
+        range: 8.0,
+        cast_time: 1.8,
+        cooldown: 12.0,
+        damage: 90.0,
+        shape: TelegraphShape::Circle { radius: 7.5 },
+        aim: EnemyAim::Caster,
+        recovery: 1.0,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    // The spread: three marks that follow their players, and a detonation marks whoever else
+    // it catches, so one clump is two hits and then a second round of them.
+    EnemyAbilityDef {
+        name: "SLAG BRAND",
+        description: "Marks on three players that follow them; a detonation marks whoever it catches.",
+        counter: "Spread out: stay out of each other's circles",
+        range: 36.0,
+        cast_time: 1.2,
+        cooldown: 16.0,
+        damage: 85.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 4.5 },
+        select: EnemyTarget::Random,
+        targets: 3,
+        delay: 4.0,
+        follow: true,
+        chain: true,
+        recovery: 0.6,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "OVERSEER HAMMER",
+        description: "The hammer filler.",
+        range: 4.0,
+        cooldown: 1.8,
+        damage: 60.0,
+        recovery: 0.4,
+        ..EnemyAbilityDef::BASE
+    },
+    // The soak: a third of a thousand damage in one circle on somebody's feet, split between
+    // whoever stands in it. Alone it hurts; together it is a bruise; unattended it spills over
+    // the whole party. The opposite of the brand, and the two share a phase on purpose.
+    EnemyAbilityDef {
+        name: "MOLTEN LADLE",
+        description: "A big circle on one player's ground; its damage is shared between everyone standing in it.",
+        counter: "Stack in the circle together; nobody in it means the whole party is burned",
+        range: 40.0,
+        cast_time: 1.5,
+        cooldown: 22.0,
+        damage: 330.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 5.5 },
+        select: EnemyTarget::Random,
+        delay: 5.5,
+        effect: EnemyEffect::Soak { overflow: 1.25 },
+        recovery: 0.8,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    // Five seconds of lane. The push is 3.4 m/s against a player's 7: stepping aside takes a
+    // second and is always enough; riding it carries you sixteen metres, into the slag that
+    // opens at the far end, and then the lane's own hit.
+    EnemyAbilityDef {
+        name: "CONVEYOR SURGE",
+        description: "A lane across the foundry floor carries everyone in it away from the Overseer into pools of slag.",
+        counter: "Step out of the lane sideways; never ride it to the end",
+        range: 40.0,
+        cast_time: 5.0,
+        cooldown: 26.0,
+        damage: 120.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Line {
+            yaw: 0.0,
+            length: 34.0,
+            width: 10.0,
+        },
+        aim: EnemyAim::Caster,
+        select: EnemyTarget::Random,
+        effect: EnemyEffect::Conveyor {
+            push_speed: 3.4,
+            interval: 0.9,
+            pool_radius: 3.0,
+            pool_damage_per_second: 40.0,
+            pool_duration: 8.0,
+            pool_near: 20.0,
+            pool_far: 33.0,
+        },
+        recovery: 1.2,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    // The soft enrage: once, for the rest of the fight. Everything he does comes a third faster.
+    EnemyAbilityDef {
+        name: "OVERHEAT",
+        description: "The furnace goes red-hot: attacks much faster until he dies.",
+        counter: "Burst him down",
+        range: 40.0,
+        cooldown: 30.0,
+        effect: EnemyEffect::Frenzy {
+            duration: 1200.0,
+            haste: 0.35,
+        },
+        recovery: 0.2,
+        once_per_phase: true,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
 ];
 
 /// How many abilities one enemy may own in one phase.
@@ -2227,10 +2611,22 @@ pub enum EnemyKind {
     BilgeArcher,
     /// The Drowned Catacombs' boss: the Drowned Abbess.
     DrownedAbbess,
+
+    // ---------------------------------------------------------------- the Bone Foundry
+    /// Shielder: wards its allies against damage; kick the ward, or go through it.
+    SlagIronclad,
+    /// Suicide runner: a fused circle at the party's feet, defused by killing it.
+    CinderBomber,
+    /// Ranged: slag lobbed onto the ground under two players.
+    SlagThrower,
+    /// Elite buffer: stokes its allies to hit harder; kick the rally.
+    FoundryForeman,
+    /// The Bone Foundry's boss: the Foundry Overseer.
+    FoundryOverseer,
 }
 
 /// How many enemy kinds there are.
-pub const ENEMY_KIND_COUNT: usize = 25;
+pub const ENEMY_KIND_COUNT: usize = 30;
 
 /// The six monsters the Graveyard Crypt is built from, in the order they are documented.
 ///
@@ -2273,6 +2669,11 @@ impl EnemyKind {
         Self::CatacombLurker,
         Self::BilgeArcher,
         Self::DrownedAbbess,
+        Self::SlagIronclad,
+        Self::CinderBomber,
+        Self::SlagThrower,
+        Self::FoundryForeman,
+        Self::FoundryOverseer,
     ];
 
     /// Whether this kind is a boss, for the boss frame and the encounter readout.
@@ -3467,6 +3868,227 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
             model: "grave_acolyte",
         },
         ..EnemyArchetype::BASE
+    },
+    // ======================================================================================
+    // The Bone Foundry. Existing bodies again, washed in forge colours: iron grey, ember orange.
+    // ======================================================================================
+    // Not a damage dealer. The question it asks is "do we kick the ward or go through it": a
+    // pack under Slag Bulwark takes forty per cent less for eight seconds in sixteen.
+    EnemyArchetype {
+        name: "SLAG IRONCLAD",
+        max_health: 3000.0,
+        radius: 0.9,
+        height: 2.6,
+        speed: 5.6,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 2.6,
+        range_slack: 0.6,
+        alert_time: 0.6,
+        abilities: [
+            Some(EnemyAbility::SlagBulwark),
+            Some(EnemyAbility::ShieldSweep),
+            Some(EnemyAbility::SlagBash),
+            None,
+            None,
+            None,
+        ],
+        id: "slag_ironclad",
+        role: MonsterRole::Melee,
+        summary: "Wards its pack against a share of all damage: kick the ward, turn the sweep.",
+        completion: 6.0,
+        look: MonsterLook {
+            tint: [0.50, 0.50, 0.56],
+            glow: 0.0,
+            model: "grave_brute",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // Faster than a walk and not much faster than a run: it arrives, and it is the first thing
+    // anyone sees, because it is the only monster that will not stop for the tank.
+    EnemyArchetype {
+        name: "CINDER BOMBER",
+        max_health: 700.0,
+        radius: 0.5,
+        height: 1.6,
+        speed: 6.6,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 1.2,
+        range_slack: 0.4,
+        alert_time: 0.35,
+        abilities: [
+            Some(EnemyAbility::CinderBlast),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        id: "cinder_bomber",
+        role: MonsterRole::Melee,
+        summary: "Runs in, lights a fuse and blows up: kill it first, or leave the circle.",
+        completion: 3.0,
+        look: MonsterLook {
+            tint: [1.0, 0.52, 0.22],
+            glow: 0.6,
+            model: "crypt_ghoul",
+        },
+        ..EnemyArchetype::BASE
+    },
+    EnemyArchetype {
+        name: "SLAG THROWER",
+        max_health: 950.0,
+        radius: 0.5,
+        height: 1.9,
+        speed: 5.4,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 22.0,
+        range_slack: 3.0,
+        alert_time: 0.5,
+        abilities: [
+            Some(EnemyAbility::SlagLob),
+            Some(EnemyAbility::EmberFlick),
+            None,
+            None,
+            None,
+            None,
+        ],
+        id: "slag_thrower",
+        role: MonsterRole::Ranged,
+        summary: "Lobs slag under two players at a time: leave the circle, then the pool.",
+        retreat_below: 8.0,
+        completion: 4.0,
+        look: MonsterLook {
+            tint: [0.95, 0.60, 0.30],
+            glow: 0.3,
+            model: "skeleton_bonecaster",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // Walks its rounds in one place and calls the pack to arms in another; reach it before the
+    // rally lands, or take the pack's next ten seconds at thirty per cent more.
+    EnemyArchetype {
+        name: "FOUNDRY FOREMAN",
+        max_health: 3800.0,
+        radius: 0.85,
+        height: 2.5,
+        speed: 6.0,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 2.4,
+        range_slack: 0.6,
+        alert_time: 0.6,
+        abilities: [
+            Some(EnemyAbility::StokeTheFurnace),
+            Some(EnemyAbility::ChainLash),
+            Some(EnemyAbility::ForemansClub),
+            None,
+            None,
+            None,
+        ],
+        id: "foundry_foreman",
+        role: MonsterRole::Elite,
+        summary: "Rallies its pack to hit harder: interrupt the rally, step out of the lash.",
+        completion: 10.0,
+        look: MonsterLook {
+            tint: [0.92, 0.46, 0.20],
+            glow: 0.15,
+            model: "grave_acolyte",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // ---------------------------------------------------------------- the Foundry Overseer
+    EnemyArchetype {
+        name: "THE FOUNDRY OVERSEER",
+        max_health: 19000.0,
+        radius: 1.2,
+        height: 3.3,
+        // Slower than a player in every phase, overheated included: the lane is walked out of.
+        speed: 6.0,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 70.0,
+        preferred_range: 2.8,
+        range_slack: 0.8,
+        alert_time: 0.8,
+        abilities: [
+            Some(EnemyAbility::FoundrySlam),
+            Some(EnemyAbility::SlagBrand),
+            Some(EnemyAbility::OverseerHammer),
+            None,
+            None,
+            None,
+        ],
+        phases: &OVERSEER_PHASES,
+        id: "foundry_overseer",
+        role: MonsterRole::Boss,
+        tier: MonsterTier::Boss,
+        summary: "Spread for the brands, stack for the ladle, leave the lane, burn him before he overheats.",
+        look: MonsterLook {
+            tint: [0.95, 0.42, 0.16],
+            glow: 0.5,
+            model: "grave_brute",
+        },
+        ..EnemyArchetype::BASE
+    },
+];
+
+/// The Foundry Overseer. Each phase adds one idea to the last: the ladle at seventy, the lane and
+/// the bombers at fifty, the overheat and the throwers at twenty-five. The brand and the ladle
+/// are opposites (spread, stack) and the lane is movement; the soft enrage is that he never
+/// slows down once he is red-hot.
+static OVERSEER_PHASES: [EnemyPhaseDef; 3] = [
+    EnemyPhaseDef {
+        name: "THE LADLE",
+        at_or_below: 0.70,
+        abilities: [
+            Some(EnemyAbility::MoltenLadle),
+            Some(EnemyAbility::FoundrySlam),
+            Some(EnemyAbility::SlagBrand),
+            Some(EnemyAbility::OverseerHammer),
+            None,
+            None,
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.95,
+        summon: None,
+    },
+    EnemyPhaseDef {
+        name: "THE CONVEYOR",
+        at_or_below: 0.50,
+        abilities: [
+            Some(EnemyAbility::ConveyorSurge),
+            Some(EnemyAbility::MoltenLadle),
+            Some(EnemyAbility::FoundrySlam),
+            Some(EnemyAbility::SlagBrand),
+            Some(EnemyAbility::OverseerHammer),
+            None,
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.9,
+        summon: Some(PhaseSummon {
+            kind: EnemyKind::CinderBomber,
+            count: 3,
+        }),
+    },
+    EnemyPhaseDef {
+        name: "OVERHEAT",
+        at_or_below: 0.25,
+        abilities: [
+            Some(EnemyAbility::Overheat),
+            Some(EnemyAbility::ConveyorSurge),
+            Some(EnemyAbility::MoltenLadle),
+            Some(EnemyAbility::SlagBrand),
+            Some(EnemyAbility::FoundrySlam),
+            Some(EnemyAbility::OverseerHammer),
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.85,
+        summon: Some(PhaseSummon {
+            kind: EnemyKind::SlagThrower,
+            count: 2,
+        }),
     },
 ];
 

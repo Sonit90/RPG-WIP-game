@@ -107,6 +107,8 @@ impl AuraKind {
                 StatusKind::TrinketWard => UiIcon::TrinketWard,
                 StatusKind::TrinketAbsorb => UiIcon::TrinketAbsorb,
                 StatusKind::Spiteful | StatusKind::Waterlogged => UiIcon::AuraMagicVulnerability,
+                StatusKind::Warded => UiIcon::TrinketWard,
+                StatusKind::Stoked => UiIcon::AuraFrenzy,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,
