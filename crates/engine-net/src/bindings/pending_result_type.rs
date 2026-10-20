@@ -27,6 +27,10 @@ pub struct PendingResult {
     pub participant_key_bump: bool,
     pub own_key_level: u32,
     pub run_uid: String,
+    pub outcome: String,
+    pub timer_us: i64,
+    pub party: String,
+    pub modifiers: String,
 }
 
 impl __sdk::InModule for PendingResult {
@@ -57,6 +61,10 @@ pub struct PendingResultCols {
     pub participant_key_bump: __sdk::__query_builder::Col<PendingResult, bool>,
     pub own_key_level: __sdk::__query_builder::Col<PendingResult, u32>,
     pub run_uid: __sdk::__query_builder::Col<PendingResult, String>,
+    pub outcome: __sdk::__query_builder::Col<PendingResult, String>,
+    pub timer_us: __sdk::__query_builder::Col<PendingResult, i64>,
+    pub party: __sdk::__query_builder::Col<PendingResult, String>,
+    pub modifiers: __sdk::__query_builder::Col<PendingResult, String>,
 }
 
 impl __sdk::__query_builder::HasCols for PendingResult {
@@ -86,6 +94,10 @@ impl __sdk::__query_builder::HasCols for PendingResult {
             ),
             own_key_level: __sdk::__query_builder::Col::new(table_name, "own_key_level"),
             run_uid: __sdk::__query_builder::Col::new(table_name, "run_uid"),
+            outcome: __sdk::__query_builder::Col::new(table_name, "outcome"),
+            timer_us: __sdk::__query_builder::Col::new(table_name, "timer_us"),
+            party: __sdk::__query_builder::Col::new(table_name, "party"),
+            modifiers: __sdk::__query_builder::Col::new(table_name, "modifiers"),
         }
     }
 }

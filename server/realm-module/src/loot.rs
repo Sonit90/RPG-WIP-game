@@ -342,6 +342,12 @@ pub fn close_run(ctx: &ReducerContext, instance: &DungeonInstance) {
                 participant_key_bump: false,
                 own_key_level: 0,
                 run_uid: uid_hex(instance.uid),
+                outcome: engine_realm::outcome::RunOutcome::Abandoned
+                    .key()
+                    .to_owned(),
+                timer_us: 0,
+                party: String::new(),
+                modifiers: instance.modifiers.clone(),
             });
         }
         ctx.db.run_loot().key().delete(&row.key);

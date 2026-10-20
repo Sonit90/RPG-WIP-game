@@ -392,6 +392,8 @@ pub struct OnlineSession {
     sharpen_mode: bool,
     /// The item selected in the sharpen panel.
     sharpen_target: Option<SharpenTarget>,
+    /// The History and Leaderboards pages' fetched data and selections.
+    records: crate::online_records::Records,
     /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
     /// reveal plays when the counter grows past it.
     seen_reroll: Option<(u64, u32)>,
@@ -494,6 +496,7 @@ impl OnlineSession {
             loot_watch: None,
             sharpen_mode: false,
             sharpen_target: None,
+            records: crate::online_records::Records::default(),
             seen_reroll: None,
             sounds: crate::online_audio::NetSoundWatch::default(),
         })
@@ -1258,6 +1261,24 @@ impl OnlineSession {
                 self.clear_busy(BusyKind::Workshop);
                 self.check_saving();
             }
+            NetEvent::History { before, page } => self.records.history_arrived(before, *page),
+            NetEvent::Leaderboard(page) => self.records.board_arrived(*page),
+            // A run opened on its own is not used by the pages (the history rows carry it).
+            NetEvent::Run(_) => {}
+            NetEvent::Failed {
+                action: Action::History,
+                error,
+            } => {
+                self.records.history_failed();
+                self.error = Some(error.message);
+            }
+            NetEvent::Failed {
+                action: Action::Leaderboard,
+                error,
+            } => {
+                self.records.board_failed();
+                self.error = Some(error.message);
+            }
             NetEvent::QueueAccepted => self.clear_busy(BusyKind::JoinQueue),
             NetEvent::Realm(update) => self.mirror.apply(update),
             NetEvent::Clock(clock) => self.clock = clock,
@@ -1423,6 +1444,48 @@ impl OnlineSession {
                     self.client.send(NetCommand::FetchEconomy);
                 }
             }
+            FrontEndAction::OpenHistory => {
+                if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
+                    self.stage = Screen::History;
+                    self.error = None;
+                    let command = self.records.open_history(&id);
+                    self.client.send(command);
+                }
+            }
+            FrontEndAction::OpenLeaderboards => {
+                self.stage = Screen::Leaderboards;
+                self.error = None;
+                if let Some(command) = self.records.open_board(&self.catalog) {
+                    self.client.send(command);
+                }
+            }
+            FrontEndAction::HistorySelect(index) => self.records.select(index),
+            FrontEndAction::HistoryOlder => {
+                if let Some(command) = self.records.older() {
+                    self.client.send(command);
+                }
+            }
+            FrontEndAction::HistoryNewest => self.records.newest(),
+            FrontEndAction::BoardDungeon(step) => {
+                if let Some(command) = self.records.step_dungeon(step, &self.catalog) {
+                    self.client.send(command);
+                }
+            }
+            FrontEndAction::BoardKey(step) => {
+                if let Some(command) = self.records.step_key(step, &self.catalog) {
+                    self.client.send(command);
+                }
+            }
+            FrontEndAction::BoardKind(fastest) => {
+                if let Some(command) = self.records.set_kind(fastest, &self.catalog) {
+                    self.client.send(command);
+                }
+            }
+            FrontEndAction::BoardPage(step) => {
+                if let Some(command) = self.records.step_page(step, &self.catalog) {
+                    self.client.send(command);
+                }
+            }
             FrontEndAction::SelectDungeon(index) => self.selected_dungeon = Some(index),
             FrontEndAction::ConfirmDungeon => {
                 self.stage = Screen::Roles;
@@ -1460,7 +1523,10 @@ impl OnlineSession {
                 self.salvage_tray.clear();
                 self.stage = match self.stage {
                     Screen::Roles => Screen::Dungeons,
-                    Screen::Dungeons | Screen::Workshop => Screen::Hub,
+                    Screen::Dungeons
+                    | Screen::Workshop
+                    | Screen::History
+                    | Screen::Leaderboards => Screen::Hub,
                     other => other,
                 };
             }
@@ -1862,6 +1928,28 @@ impl OnlineSession {
         if let Ok(index) = u8::try_from(index) {
             self.client.send(NetCommand::RerollModifier(index));
         }
+    }
+
+    /// The dungeon timer while a run is under way: the time left on the dungeon's clock, or the
+    /// time over it. Counted from the instance row's `countdown_ends_at` (the barrier lifting,
+    /// which is also when the server starts the run's clock) against the server's clock
+    /// estimate, so every client shows the same figure and nothing is fetched. `None` outside
+    /// an active run, or for a dungeon without a timer.
+    #[must_use]
+    pub fn run_timer(&self) -> Option<engine_presentation::ui::run_timer::RunTimerView> {
+        let instance = self.mirror.instance.as_ref()?;
+        if instance.state != InstanceState::Active {
+            return None;
+        }
+        let started = instance.countdown_ends_at?;
+        let timer = engine_realm::outcome::timer_us(self.catalog.dungeon(&instance.dungeon_id)?)?;
+        let elapsed = (self.server_now() - started).max(0);
+        let remaining = engine_realm::outcome::remaining_us(timer, elapsed);
+        Some(engine_presentation::ui::run_timer::RunTimerView {
+            text: engine_realm::outcome::format_timer(remaining),
+            overtime: remaining < 0,
+            urgent: (0..60 * engine_realm::SECOND).contains(&remaining),
+        })
     }
 
     /// Whether the local player is inside an instance (the Modifier panel's cue).
@@ -2389,6 +2477,9 @@ impl OnlineSession {
             intro: self.intro.clone(),
             hub: (screen == Screen::Hub).then(|| self.hub_card()).flatten(),
             workshop: (screen == Screen::Workshop).then(|| self.workshop_card()),
+            history: (screen == Screen::History).then(|| self.records.history_card(&self.catalog)),
+            board: (screen == Screen::Leaderboards)
+                .then(|| self.records.board_card(&self.catalog)),
             completion,
             dungeons,
             selected_dungeon: self.selected_dungeon,
@@ -3323,7 +3414,14 @@ fn route(signed_in: bool, stage: Screen, mirror: &RealmMirror) -> Screen {
     }
     // A ticket is the hub with the queue panel; the pages opened from the hub stay.
     if mirror.ticket.is_some()
-        && !matches!(stage, Screen::Dungeons | Screen::Roles | Screen::Workshop)
+        && !matches!(
+            stage,
+            Screen::Dungeons
+                | Screen::Roles
+                | Screen::Workshop
+                | Screen::History
+                | Screen::Leaderboards
+        )
     {
         return Screen::Hub;
     }
@@ -3342,6 +3440,8 @@ fn hub_screen(screen: Screen) -> bool {
             | Screen::Dungeons
             | Screen::Roles
             | Screen::Workshop
+            | Screen::History
+            | Screen::Leaderboards
             | Screen::ReadyCheck
             | Screen::KeySelect
             | Screen::Party

@@ -138,6 +138,28 @@ pub enum NetCommand {
     },
     /// Load the economy catalog.
     FetchEconomy,
+    /// Load a page of a character's run history (fetched when the screen opens or pages).
+    FetchHistory {
+        /// Which character.
+        character_id: String,
+        /// The previous page's cursor; `None` for the newest.
+        before: Option<i64>,
+        /// Runs per page (the API clamps it to its maximum).
+        limit: u32,
+    },
+    /// Load one run the player took part in.
+    FetchRun(String),
+    /// Load a leaderboard page.
+    FetchLeaderboard {
+        /// `fastest` or `highest`.
+        board: String,
+        /// The dungeon.
+        dungeon_id: String,
+        /// The key level (`fastest`).
+        key_level: Option<u32>,
+        /// From 0.
+        page: u32,
+    },
     /// Load the account's synced settings.
     FetchSettings,
     /// Save the account's synced settings.
@@ -220,6 +242,10 @@ pub enum Action {
     Sharpen,
     /// Loading the economy catalog.
     Economy,
+    /// Loading run history or a run.
+    History,
+    /// Loading a leaderboard.
+    Leaderboard,
     /// Loading or saving settings.
     Settings,
     /// Joining the queue.
@@ -301,6 +327,17 @@ pub enum NetEvent {
     Sharpened(Box<engine_realm::api::SharpenResponse>),
     /// The economy catalog.
     Economy(Box<EconomyInfo>),
+    /// A page of run history; `before` echoes the request (`None`: the first page).
+    History {
+        /// The cursor the page was asked with.
+        before: Option<i64>,
+        /// The page.
+        page: Box<engine_realm::api::HistoryPage>,
+    },
+    /// One run.
+    Run(Box<engine_realm::api::RunDetail>),
+    /// A leaderboard page.
+    Leaderboard(Box<engine_realm::api::LeaderboardPage>),
     /// The account's synced settings.
     Settings(SettingsDocument),
     /// Settings were saved; this is the new version.
@@ -714,6 +751,42 @@ impl Worker {
                 match self.api.economy(&token) {
                     Ok(economy) => self.emit(NetEvent::Economy(Box::new(economy))),
                     Err(error) => self.fail(Action::Economy, error),
+                }
+            }
+            NetCommand::FetchHistory {
+                character_id,
+                before,
+                limit,
+            } => {
+                let Some(token) = self.access() else { return };
+                match self.api.history(&token, &character_id, before, limit) {
+                    Ok(page) => self.emit(NetEvent::History {
+                        before,
+                        page: Box::new(page),
+                    }),
+                    Err(error) => self.fail(Action::History, error),
+                }
+            }
+            NetCommand::FetchRun(run_uid) => {
+                let Some(token) = self.access() else { return };
+                match self.api.run(&token, &run_uid) {
+                    Ok(run) => self.emit(NetEvent::Run(Box::new(run))),
+                    Err(error) => self.fail(Action::History, error),
+                }
+            }
+            NetCommand::FetchLeaderboard {
+                board,
+                dungeon_id,
+                key_level,
+                page,
+            } => {
+                let Some(token) = self.access() else { return };
+                match self
+                    .api
+                    .leaderboard(&token, &board, &dungeon_id, key_level, page)
+                {
+                    Ok(page) => self.emit(NetEvent::Leaderboard(Box::new(page))),
+                    Err(error) => self.fail(Action::Leaderboard, error),
                 }
             }
             NetCommand::FetchSettings => {

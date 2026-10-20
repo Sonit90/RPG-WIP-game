@@ -2047,3 +2047,180 @@ pub fn modifiers(endpoints: &RealmEndpoints) -> Outcome {
     });
     Ok(())
 }
+
+/// Run history and leaderboards: a completed run appears once in every member's history with
+/// the party and the realm's outcome, in the leaderboards, and as a run only its members may
+/// open.
+pub fn history(endpoints: &RealmEndpoints) -> Outcome {
+    log::info!("scenario: history");
+    let tag = run_tag();
+    let mut bots = trio(&tag, "history", endpoints, false, true)?;
+    check(
+        drive(&mut bots, Duration::from_secs(45), all_active),
+        "the run became active",
+    )?;
+    let instance = bots[0]
+        .mirror
+        .instance
+        .as_ref()
+        .map(|i| i.id)
+        .ok_or("no instance")?;
+    let key_level = key_level_of(&bots[0]);
+    finish_instance(endpoints, instance, true)?;
+    check(
+        drive(&mut bots, Duration::from_secs(5), |bots| {
+            bots.iter().all(|b| b.mirror.run_summary.is_some())
+        }),
+        "every client received its run summary",
+    )?;
+
+    // The bridge persists within a few seconds; ask every member for their history until it
+    // holds the run.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        for bot in bots.iter_mut() {
+            bot.history = None;
+            if let Some(character) = bot.character().map(|c| c.id.clone()) {
+                bot.send(NetCommand::FetchHistory {
+                    character_id: character,
+                    before: None,
+                    limit: 10,
+                });
+            }
+        }
+        drive(&mut bots, Duration::from_millis(900), |_| false);
+        if bots
+            .iter()
+            .all(|b| b.history.as_ref().is_some_and(|h| !h.runs.is_empty()))
+        {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("FAILED: the run never reached the history".into());
+        }
+    }
+    let entries: Vec<_> = bots
+        .iter()
+        .filter_map(|b| b.history.as_ref().and_then(|h| h.runs.first().cloned()))
+        .collect();
+    check(
+        bots.iter()
+            .all(|b| b.history.as_ref().is_some_and(|h| h.runs.len() == 1)),
+        "each member's history lists the run once",
+    )?;
+    let uid = entries[0].run_uid.clone();
+    check(
+        uid.len() == 32 && entries.iter().all(|e| e.run_uid == uid),
+        "all three members share the run's uid",
+    )?;
+    check(
+        entries.iter().all(|e| {
+            e.outcome == engine_realm::outcome::RunOutcome::Timed
+                && e.key_level == key_level
+                && e.dungeon_id == "graveyard_crypt"
+                && e.party.len() == 3
+        }),
+        "the entry is timed, at the key used, in the crypt, with the whole party",
+    )?;
+    let mut roles: Vec<String> = entries[0].party.iter().map(|m| m.role.clone()).collect();
+    roles.sort();
+    check(
+        roles == ["dps", "healer", "tank"],
+        "the party lists a tank, a healer and a DPS",
+    )?;
+
+    // The run, for a member; and nothing for a stranger.
+    bots[0].send(NetCommand::FetchRun(uid.clone()));
+    drive(&mut bots, Duration::from_secs(3), |bots| bots[0].run.is_some());
+    check(
+        bots[0]
+            .run
+            .as_ref()
+            .is_some_and(|run| run.run_uid == uid && run.party.len() == 3 && run.you.is_some()),
+        "a member can open the run",
+    )?;
+    let mut stranger = Bot::start(
+        BotConfig {
+            name: "history-stranger".into(),
+            email: format!("history-stranger-{tag}@bots.mygame.test"),
+            queue: false,
+            insert_key: false,
+            start_if_leader: false,
+            ..bots[0].config.clone()
+        },
+        endpoints,
+    )
+    .map_err(|e| e.message)?;
+    check(
+        drive(std::slice::from_mut(&mut stranger), Duration::from_secs(20), |b| {
+            b[0].character().is_some()
+        }),
+        "the stranger signed in",
+    )?;
+    let token = stranger
+        .acquire_probe_token(endpoints)
+        .map_err(|e| e.message)?;
+    check(
+        call_api(
+            endpoints,
+            &token,
+            "GET",
+            &format!("/api/v1/runs/{uid}"),
+            &serde_json::Value::Null,
+        ) == 404,
+        "a stranger cannot open the run",
+    )?;
+    let other = bots[0].character().map(|c| c.id.clone()).unwrap_or_default();
+    check(
+        call_api(
+            endpoints,
+            &token,
+            "GET",
+            &format!("/api/v1/characters/{other}/history"),
+            &serde_json::Value::Null,
+        ) == 404,
+        "a stranger cannot read another character's history",
+    )?;
+
+    // Leaderboards: any signed-in player sees the run on both boards.
+    stranger.send(NetCommand::FetchLeaderboard {
+        board: "highest".into(),
+        dungeon_id: "graveyard_crypt".into(),
+        key_level: None,
+        page: 0,
+    });
+    drive(std::slice::from_mut(&mut stranger), Duration::from_secs(5), |b| {
+        b[0].board.is_some()
+    });
+    check(
+        stranger
+            .board
+            .as_ref()
+            .is_some_and(|board| board.rows.iter().any(|row| row.run_uid == uid)),
+        "the highest board lists the run (one row for the three players)",
+    )?;
+    stranger.board = None;
+    stranger.send(NetCommand::FetchLeaderboard {
+        board: "fastest".into(),
+        dungeon_id: "graveyard_crypt".into(),
+        key_level: Some(key_level),
+        page: 0,
+    });
+    drive(std::slice::from_mut(&mut stranger), Duration::from_secs(5), |b| {
+        b[0].board.is_some()
+    });
+    check(
+        stranger.board.as_ref().is_some_and(|board| {
+            board.rows.iter().filter(|row| row.run_uid == uid).count() == 1
+        }),
+        "the fastest board lists the run exactly once",
+    )?;
+    drop(stranger);
+    for bot in &bots {
+        bot.send(NetCommand::LeaveParty);
+    }
+    drive(&mut bots, Duration::from_secs(2), |bots| {
+        bots.iter().all(|b| b.mirror.party.is_none())
+    });
+    Ok(())
+}

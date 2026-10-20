@@ -55,6 +55,15 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::OpenDungeonFinder
         | A::OpenEquipment
         | A::OpenWorkshop
+        | A::OpenHistory
+        | A::OpenLeaderboards
+        | A::HistorySelect(_)
+        | A::HistoryOlder
+        | A::HistoryNewest
+        | A::BoardDungeon(_)
+        | A::BoardKey(_)
+        | A::BoardKind(_)
+        | A::BoardPage(_)
         | A::ReturnToHub
         | A::StageSalvage(_)
         | A::WorkshopMode(_)

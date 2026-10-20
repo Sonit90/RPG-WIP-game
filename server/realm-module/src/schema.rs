@@ -619,6 +619,15 @@ pub struct PendingResult {
     /// The instance's uid as hex (`engine_realm::instance::uid_hex`): groups the results of
     /// one run.
     pub run_uid: String,
+    /// How the run ended for this player (`engine_realm::outcome::RunOutcome::key`).
+    pub outcome: String,
+    /// The dungeon's timer in microseconds; zero when it has none.
+    pub timer_us: i64,
+    /// Who played, as JSON text (`[engine_realm::api::RunMember]`): the whole party on a result
+    /// that may write the run's own row, empty on a leaver's.
+    pub party: String,
+    /// The key's modifiers as JSON text, rerolls included.
+    pub modifiers: String,
 }
 
 /// What a finished run paid one player, for their results screen. Kept until the instance is

@@ -23,6 +23,7 @@
 //! Layout is a pure function of the view, the viewport and the UI scale; `update` and `draw`
 //! both call it, so what is clicked is always what was drawn.
 
+pub mod records;
 pub mod text_field;
 
 use engine_game::character::equipment::{INVENTORY_COLUMNS, INVENTORY_SLOTS};
@@ -32,6 +33,9 @@ use engine_realm::instance::CountdownDisplay;
 use engine_render_data::font::UiFont;
 use engine_render_data::ui::{TextAlign, TextStyle, UiColor, UiDrawList, UiRect, UiScale};
 
+pub use records::{
+    BOARD_ROWS, BoardCard, BoardRow, HISTORY_ROWS, HistoryCard, HistoryDetail, HistoryRow, OutcomeTag,
+};
 pub use text_field::{FieldKeys, FieldOutcome, TextField};
 
 use crate::ui::kit::{self, Kit, tone};
@@ -56,6 +60,10 @@ pub enum Screen {
     Roles,
     /// Salvage bag items and exchange resources.
     Workshop,
+    /// The character's run history.
+    History,
+    /// The leaderboards.
+    Leaderboards,
     /// "Dungeon found": accept or decline.
     ReadyCheck,
     /// The party is choosing whose key to use.
@@ -507,6 +515,10 @@ pub struct FrontEndView {
     pub hub: Option<HubCard>,
     /// The salvage and exchange screen.
     pub workshop: Option<WorkshopCard>,
+    /// The run history screen.
+    pub history: Option<HistoryCard>,
+    /// The leaderboards screen.
+    pub board: Option<BoardCard>,
     /// The panel over the world once a run has ended.
     pub completion: Option<CompletionCard>,
     /// The dungeon catalog.
@@ -565,6 +577,24 @@ pub enum FrontEndAction {
     OpenEquipment,
     /// Open the salvage and exchange screen.
     OpenWorkshop,
+    /// Open the run history (fetches its first page).
+    OpenHistory,
+    /// Open the leaderboards (fetches the board shown).
+    OpenLeaderboards,
+    /// Open the detail of the history row.
+    HistorySelect(usize),
+    /// Fetch the next older page of the history.
+    HistoryOlder,
+    /// Back to the newest page of the history.
+    HistoryNewest,
+    /// Step the leaderboard's dungeon.
+    BoardDungeon(i32),
+    /// Step the leaderboard's key level.
+    BoardKey(i32),
+    /// Switch between the fastest (`true`) and highest (`false`) boards.
+    BoardKind(bool),
+    /// Step the leaderboard's page.
+    BoardPage(i32),
     /// Back to the character list.
     ChangeCharacter,
     /// Highlight a character.
@@ -663,6 +693,15 @@ enum Hit {
     DungeonFinder,
     Equipment,
     Workshop,
+    HistoryButton,
+    BoardsButton,
+    HistoryRow(usize),
+    HistoryOlder,
+    HistoryNewest,
+    BoardDungeon(i32),
+    BoardKey(i32),
+    BoardKind(bool),
+    BoardPage(i32),
     ChangeCharacter,
     Dungeon(usize),
     Role(Role),
@@ -1002,7 +1041,11 @@ impl FrontEndUi {
         // Escape closes the topmost thing: a pending confirmation, then a prompt, then the page.
         if input.escape {
             match view.screen {
-                Screen::Dungeons | Screen::Roles | Screen::Workshop => {
+                Screen::Dungeons
+                | Screen::Roles
+                | Screen::Workshop
+                | Screen::History
+                | Screen::Leaderboards => {
                     actions.push(FrontEndAction::Back);
                 }
                 Screen::Login if self.register => self.register = false,
@@ -1061,6 +1104,15 @@ impl FrontEndUi {
             Hit::DungeonFinder => actions.push(FrontEndAction::OpenDungeonFinder),
             Hit::Equipment => actions.push(FrontEndAction::OpenEquipment),
             Hit::Workshop => actions.push(FrontEndAction::OpenWorkshop),
+            Hit::HistoryButton => actions.push(FrontEndAction::OpenHistory),
+            Hit::BoardsButton => actions.push(FrontEndAction::OpenLeaderboards),
+            Hit::HistoryRow(index) => actions.push(FrontEndAction::HistorySelect(index)),
+            Hit::HistoryOlder => actions.push(FrontEndAction::HistoryOlder),
+            Hit::HistoryNewest => actions.push(FrontEndAction::HistoryNewest),
+            Hit::BoardDungeon(step) => actions.push(FrontEndAction::BoardDungeon(step)),
+            Hit::BoardKey(step) => actions.push(FrontEndAction::BoardKey(step)),
+            Hit::BoardKind(fastest) => actions.push(FrontEndAction::BoardKind(fastest)),
+            Hit::BoardPage(step) => actions.push(FrontEndAction::BoardPage(step)),
             Hit::ChangeCharacter => actions.push(FrontEndAction::ChangeCharacter),
             Hit::InsertKey => actions.push(FrontEndAction::InsertKey),
             Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
@@ -1206,6 +1258,8 @@ impl FrontEndUi {
                     }
                     layout.add(Hit::Equipment, rects.equipment);
                     layout.add(Hit::Workshop, rects.workshop);
+                    layout.add(Hit::HistoryButton, rects.history);
+                    layout.add(Hit::BoardsButton, rects.boards);
                     if hub.can_change_character {
                         layout.add(Hit::ChangeCharacter, rects.change);
                     }
@@ -1341,6 +1395,16 @@ impl FrontEndUi {
                 let (back, _) = footer_buttons(w, h, scale);
                 layout.add(Hit::Back, back);
             }
+            Screen::History => {
+                if let Some(card) = &view.history {
+                    records::history_hits(&mut layout, card, w, h, scale);
+                }
+            }
+            Screen::Leaderboards => {
+                if let Some(card) = &view.board {
+                    records::board_hits(&mut layout, card, w, h, scale);
+                }
+            }
             Screen::ReadyCheck => {
                 let panel = ready_panel(w, h, scale);
                 let answered = view.party.as_ref().is_some_and(|p| p.i_answered);
@@ -1461,6 +1525,20 @@ impl FrontEndUi {
             Screen::Dungeons => draw_dungeons(&mut ctx, view, w, h),
             Screen::Roles => draw_roles(&mut ctx, view, w, h),
             Screen::Workshop => draw_workshop(&mut ctx, view, w, h),
+            Screen::History => {
+                let empty = HistoryCard::default();
+                records::draw_history(
+                    &mut ctx,
+                    view.history.as_ref().unwrap_or(&empty),
+                    view.busy.is_some(),
+                    w,
+                    h,
+                );
+            }
+            Screen::Leaderboards => {
+                let empty = BoardCard::default();
+                records::draw_boards(&mut ctx, view.board.as_ref().unwrap_or(&empty), w, h);
+            }
             Screen::ReadyCheck => draw_ready_check(&mut ctx, view, w, h),
             Screen::KeySelect => draw_key_select(&mut ctx, view, w, h),
             Screen::Party => draw_party(&mut ctx, view, w, h),
@@ -2319,12 +2397,14 @@ fn party_buttons(panel: UiRect, scale: UiScale) -> PartyButtons {
     }
 }
 
-/// The hub panel and its five buttons.
+/// The hub panel and its six buttons (History and Boards share a row).
 struct HubRects {
     panel: UiRect,
     finder: UiRect,
     equipment: UiRect,
     workshop: UiRect,
+    history: UiRect,
+    boards: UiRect,
     change: UiRect,
     logout: UiRect,
 }
@@ -2339,7 +2419,7 @@ fn hub_rects(resource_lines: usize, status_line: bool, w: f32, h: f32, scale: Ui
     let x = w - width - px(20.0);
     let status = if status_line { px(22.0) } else { 0.0 };
     let to_buttons = px(112.0) + lines * px(19.0) + px(8.0) + status;
-    let height = to_buttons + px(38.0) * 5.0 - px(6.0) + px(14.0);
+    let height = to_buttons + px(38.0) * 6.0 - px(6.0) + px(14.0);
     let y = h - height - px(20.0);
     let button = |i: f32| {
         UiRect::new(
@@ -2349,13 +2429,26 @@ fn hub_rects(resource_lines: usize, status_line: bool, w: f32, h: f32, scale: Ui
             px(size::COMPACT_HEIGHT),
         )
     };
+    // History and Leaderboards share one row.
+    let half = |left: bool| {
+        let row = button(3.0);
+        let each = (row.width - px(8.0)) * 0.5;
+        UiRect::new(
+            if left { row.x } else { row.x + each + px(8.0) },
+            row.y,
+            each,
+            row.height,
+        )
+    };
     HubRects {
         panel: UiRect::new(x, y, width, height),
         finder: button(0.0),
         equipment: button(1.0),
         workshop: button(2.0),
-        change: button(3.0),
-        logout: button(4.0),
+        history: half(true),
+        boards: half(false),
+        change: button(4.0),
+        logout: button(5.0),
     }
 }
 
@@ -3265,6 +3358,20 @@ fn draw_hub(
             "Salvage & Exchange",
             ButtonKind::Secondary,
             &Hit::Workshop,
+            true,
+        );
+        ctx.button(
+            rects.history,
+            "History",
+            ButtonKind::Secondary,
+            &Hit::HistoryButton,
+            true,
+        );
+        ctx.button(
+            rects.boards,
+            "Boards",
+            ButtonKind::Secondary,
+            &Hit::BoardsButton,
             true,
         );
         ctx.button(
@@ -5744,6 +5851,126 @@ mod tests {
         assert!(!hits.iter().any(|(hit, _)| *hit == Hit::Role(Role::Healer)));
     }
 
+    fn crowded_history() -> HistoryCard {
+        let row = |outcome| HistoryRow {
+            dungeon: "The Very Long Name Of A Dungeon".into(),
+            key_level: 12,
+            outcome,
+            duration: "24:59".into(),
+            when: "2026-10-20 18:04".into(),
+        };
+        HistoryCard {
+            rows: [
+                OutcomeTag::Timed,
+                OutcomeTag::Overtime,
+                OutcomeTag::Failed,
+                OutcomeTag::Abandoned,
+                OutcomeTag::Timed,
+                OutcomeTag::Timed,
+            ]
+            .into_iter()
+            .map(row)
+            .collect(),
+            selected: Some(1),
+            detail: Some(HistoryDetail {
+                title: "The Very Long Name Of A Dungeon +12".into(),
+                outcome: OutcomeTag::Overtime,
+                stats: ["Time", "Deaths", "Damage taken", "Healing", "DPS"]
+                    .into_iter()
+                    .map(|label| (label.to_owned(), "123,456".to_owned()))
+                    .collect(),
+                party: (0..5).map(|i| format!("Hero number {i} (Fire Mage)")).collect(),
+                modifiers: vec!["Rotating Beams +17%".into(); 8],
+                loot: vec!["Ashgraves Seal 104% +3".into(); 9],
+            }),
+            loading: false,
+            can_older: true,
+            can_newer: true,
+        }
+    }
+
+    fn crowded_board() -> BoardCard {
+        BoardCard {
+            dungeon: "The Very Long Name Of A Dungeon".into(),
+            key_level: 20,
+            fastest: true,
+            season: "All time".into(),
+            rows: (1..=BOARD_ROWS as u32)
+                .map(|rank| BoardRow {
+                    rank,
+                    key_level: 20,
+                    outcome: OutcomeTag::Timed,
+                    time: "24:59".into(),
+                    party: "Ember, Mirelle the Long-Named, Thorn the Stout".into(),
+                })
+                .collect(),
+            loading: false,
+            page: 2,
+            can_prev: true,
+            can_next: true,
+        }
+    }
+
+    #[test]
+    fn the_record_pages_report_their_presses() {
+        let mut ui = FrontEndUi::new();
+        let none = || None;
+        let press = |ui: &mut FrontEndUi, view: &FrontEndView, hit: Hit| {
+            let rect = ui
+                .layout(view, VIEWPORT, scale())
+                .hits
+                .iter()
+                .find(|(h, _)| *h == hit)
+                .map(|(_, rect)| *rect);
+            rect.map(|rect| {
+                ui.update(
+                    &input((rect.x + 2.0, rect.y + 2.0), true, &[], &none),
+                    view,
+                    VIEWPORT,
+                    scale(),
+                    0.016,
+                )
+            })
+        };
+        let hub = hub_view();
+        assert_eq!(
+            press(&mut ui, &hub, Hit::HistoryButton),
+            Some(vec![FrontEndAction::OpenHistory])
+        );
+        assert_eq!(
+            press(&mut ui, &hub, Hit::BoardsButton),
+            Some(vec![FrontEndAction::OpenLeaderboards])
+        );
+        let mut history = crowded_view(Screen::History);
+        assert_eq!(
+            press(&mut ui, &history, Hit::HistoryRow(2)),
+            Some(vec![FrontEndAction::HistorySelect(2)])
+        );
+        assert_eq!(
+            press(&mut ui, &history, Hit::HistoryOlder),
+            Some(vec![FrontEndAction::HistoryOlder])
+        );
+        assert_eq!(
+            press(&mut ui, &history, Hit::HistoryNewest),
+            Some(vec![FrontEndAction::HistoryNewest])
+        );
+        // No older page: there is no button to press.
+        if let Some(card) = history.history.as_mut() {
+            card.can_older = false;
+        }
+        assert_eq!(press(&mut ui, &history, Hit::HistoryOlder), None);
+        let board = crowded_view(Screen::Leaderboards);
+        for (hit, action) in [
+            (Hit::BoardKey(-1), FrontEndAction::BoardKey(-1)),
+            (Hit::BoardKey(1), FrontEndAction::BoardKey(1)),
+            (Hit::BoardDungeon(1), FrontEndAction::BoardDungeon(1)),
+            (Hit::BoardKind(false), FrontEndAction::BoardKind(false)),
+            (Hit::BoardPage(1), FrontEndAction::BoardPage(1)),
+        ] {
+            assert_eq!(press(&mut ui, &board, hit.clone()), Some(vec![action]), "{hit:?}");
+        }
+    }
+
     #[test]
     fn every_screen_draws() {
         let ui = FrontEndUi::new();
@@ -5755,6 +5982,8 @@ mod tests {
             Screen::Dungeons,
             Screen::Roles,
             Screen::Workshop,
+            Screen::History,
+            Screen::Leaderboards,
             Screen::ReadyCheck,
             Screen::KeySelect,
             Screen::Party,
@@ -5789,6 +6018,8 @@ mod tests {
                 hub: hub_view().hub,
                 queue: Some(queue_card(false)),
                 workshop: Some(WorkshopCard::default()),
+                history: Some(crowded_history()),
+                board: Some(crowded_board()),
                 party: Some(party(
                     vec![
                         member(true, true, true, Some(2)),
@@ -6174,6 +6405,8 @@ mod tests {
             queue: Some(queue_card(false)),
             party: Some(crowded_party()),
             completion: (screen == Screen::InWorld).then_some(done),
+            history: Some(crowded_history()),
+            board: Some(crowded_board()),
             toasts: (0..4)
                 .map(|i| Toast {
                     level: StatusLevel::Warning,
@@ -6195,6 +6428,8 @@ mod tests {
                 Screen::Characters,
                 Screen::Hub,
                 Screen::Workshop,
+                Screen::History,
+                Screen::Leaderboards,
                 Screen::ReadyCheck,
                 Screen::KeySelect,
                 Screen::Party,

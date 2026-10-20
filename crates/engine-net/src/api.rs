@@ -364,6 +364,71 @@ impl ApiClient {
         )
     }
 
+    /// One page of a character's run history, newest first. `before` is the previous page's
+    /// `next_before`.
+    ///
+    /// # Errors
+    ///
+    /// Not the caller's character, or the server is unreachable.
+    pub fn history(
+        &self,
+        token: &str,
+        character_id: &str,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<engine_realm::api::HistoryPage, RealmError> {
+        let mut path = format!(
+            "/api/v1/characters/{}/history?limit={limit}",
+            path_segment(character_id)
+        );
+        if let Some(before) = before {
+            path.push_str(&format!("&before={before}"));
+        }
+        self.get(&self.persistence, &path, token, Category::Persistence)
+    }
+
+    /// One run the caller took part in.
+    ///
+    /// # Errors
+    ///
+    /// Not a run of the caller's, or the server is unreachable.
+    pub fn run(
+        &self,
+        token: &str,
+        run_uid: &str,
+    ) -> Result<engine_realm::api::RunDetail, RealmError> {
+        self.get(
+            &self.persistence,
+            &format!("/api/v1/runs/{}", path_segment(run_uid)),
+            token,
+            Category::Persistence,
+        )
+    }
+
+    /// One page of a leaderboard.
+    ///
+    /// # Errors
+    ///
+    /// The server is unreachable or refused the query.
+    pub fn leaderboard(
+        &self,
+        token: &str,
+        board: &str,
+        dungeon_id: &str,
+        key_level: Option<u32>,
+        page: u32,
+    ) -> Result<engine_realm::api::LeaderboardPage, RealmError> {
+        let mut path = format!(
+            "/api/v1/leaderboards?board={}&dungeon={}&page={page}",
+            path_segment(board),
+            path_segment(dungeon_id)
+        );
+        if let Some(key) = key_level {
+            path.push_str(&format!("&key={key}"));
+        }
+        self.get(&self.persistence, &path, token, Category::Persistence)
+    }
+
     /// The account's synced settings, if any were ever saved.
     ///
     /// # Errors

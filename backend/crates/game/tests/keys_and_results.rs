@@ -70,6 +70,10 @@ fn winning(account: Uuid, character: Uuid, key: &store::KeyRow, tag: &str) -> Du
         participant_key_bump: false,
         own_key_level: 0,
         run_uid: String::new(),
+        outcome: None,
+        timer_us: 0,
+        party: Vec::new(),
+        modifiers: Vec::new(),
     }
 }
 
@@ -312,6 +316,9 @@ fn report_for(account: Uuid) -> engine_realm::meter::DamageReport {
             damage: 12_345,
             casts: 50,
         }],
+        healing: 0,
+        damage_taken: 0,
+        deaths: 0,
     }
 }
 
@@ -777,6 +784,10 @@ async fn a_participants_key_rises_once_and_only_from_the_level_it_had() {
         participant_key_bump: true,
         own_key_level: own,
         run_uid: String::new(),
+        outcome: None,
+        timer_us: 0,
+        party: Vec::new(),
+        modifiers: Vec::new(),
     };
     // The realm snapshot said 2: the key rises to 3, rolled for its new level.
     let run = participant("bump", 2, 3);

@@ -1,67 +1,73 @@
-# P1 work state — handoff
+# P2 work state — handoff
 
-Updated 2026-10-15. Spec: the P1 brief (Core Gameplay, Progression & Production Readiness).
-Final report: `docs/P1_FINAL_REPORT.md` (read it first: status, verified items, known bugs, remaining work).
-Orchestration per CLAUDE.md: Opus main session designs/reviews/merges; `implementer` agents work in
-git worktrees; `runner` verifies; max 3 agents at once.
+Updated 2026-10-20. Spec: the P2 brief (Endgame Depth, Content Expansion & Community Systems).
+Design + audit: `docs/P2_DESIGN.md` (read first). P1 report: `docs/P1_FINAL_REPORT.md`.
+Orchestration per CLAUDE.md (max 3 agents; implementers in `../myGame-wt-<name>` worktrees off `p2-core`).
+**Token rule (user, 2026-10-20): never resume a finished agent with SendMessage for new scope — spawn a
+fresh agent with a self-contained brief.** Commits carry no Co-Authored-By trailer.
 
-## Branches
+## Decisions (user-confirmed or recorded in P2_DESIGN §0)
 
-- **`p1-core`** (main checkout `C:\Projects\myGame`) — integration branch, everything merged. Not pushed.
-  Commits carry no Co-Authored-By trailer (user rule).
-- `p1-enemies`, `p1-ui`, `p1-audio` merged (`3127156`, `36a6750`, `a20750b`); their worktrees and
-  branches are deleted. No P1 worktrees remain. (`.claude/worktrees/agent-a6dc99e9390f24845` is an
-  older, unrelated agent worktree — not touched.)
-- `dcd9e81` fix(realm): per-instance loot seed (every run used to roll the same chest).
+- No C/B/A/S tiers, no fusion. Sharpening = P1 enhancement renamed; wire/DB key stays `enhancement`.
+- Book gates use key level (character level has no gameplay effect).
+- Monsters/abilities/modifier kinds = approved Rust primitives; dungeons/maps compose them as data.
+- Community maps give no loot/currency/key progress; leaderboards only. Terrain/water refused for
+  community maps (open question to user), community scale ≤ 10.
 
-## Last verification (after `dcd9e81`)
+## Merged into p2-core
 
-clippy `-D warnings` clean (root + realm-module); workspace tests 4372 passed / 0 failed / 3 ignored;
-backend 111 passed + 18 DB tests (before the fix, backend unchanged); realm-bot `scenario all` 12/12.
-`realm-module` has no native `cargo test` (wasm-only link) — not a regression.
-Sim report regenerated (byte-identical).
+- `p2-sim`: engine-sim uses real catalog items via `sheet_of`; tiers none/low/medium/high/p2_max;
+  monotonic-DPS test. Finding: p2_max only +9–10 % DPS over high → gems/sets/books must carry endgame.
+  Catalog lacks epics for most slots.
+- `p2-content`: scene registry generated from dungeons.json (engine-realm build.rs); client loads scene
+  by instance dungeon_id; Ashen Reliquary as JSON; `timer_seconds`; patrols (`patrol` waypoints);
+  Eternal keys (`modifiers.json` rows 1–12 + `eternal` block, `ModifierCatalog::row_for`); modifiers
+  bolstering(5), raging(7), necrotic_pools(11, reuses plague VFX/sound), spiteful_casters(13).
+- `p2-mapcheck`: `engine-realm::mapcheck` community-map format + validator, `map_check` bin,
+  `docs/community-maps.md`.
+- `p2-infra`: instance `uid` (u128) → run ids + whole-fight seed (hidden from clients); `game.hub_requests`
+  + `store::HubTx` request-id idempotency on all hub writes; lock row → ensure_unlocked → write;
+  strict apply_result; versioned loadout + `migrate`; `game.seasons` (season-0). Migrations 0011, 0012.
+- `p2-history`: outcomes timed/overtime/failed/abandoned (`engine-realm/outcome.rs`, clock from barrier
+  lift); meter deaths/damage taken; `game.dungeon_runs` + result columns (0013); history API,
+  `/runs/{uid}`, `/leaderboards` (`leaderboards.json`, `ScoreKind`); History/Boards screens; timer HUD;
+  realm-bot `history` scenario. Live `scenario all` 13/13 passed.
 
-## §49 end-to-end with real clients (done 2026-10-15)
+Last full verification (before history merge): workspace 4438 pass, embedded-scenes 285, backend 114,
+all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 
-Verified: fresh accounts → characters → hub → queue → match → accept → key → start; `/admin/ops/realm`
-shows runs live; disconnect/reconnect of a client (presence restored, same instance); real combat
-damage persisted in damage reports with per-ability breakdown; Recount window in the client;
-completion + 2 chest items + talent point persisted; key progression (owner +1, lower-key participant +1,
-modifier rolled at key 3); return to hub and requeue. Details in the final report §8.
+## In flight
 
-Not verified with real clients (bots/tests only): modifiers active in a client run, talents/trinkets
-used in combat, players killing the boss, opening the chest/quality UI, enhancement from the client,
-restore during a boss fight. Needs a human play pass.
+- `p2-sharpen` (worktree `../myGame-wt-sharpen`, 3 commits + uncommitted rework): rename, pre-sharpened
+  drop curves (`loot.json` `sharpening_drops`, `engine-game/src/sharpen_drops.rs`), tooltip, `--loot-sim`
+  report. Rework needed: tail P(>=+k) non-decreasing in key 1..=99; fix mangled test names
+  (`an_sharpening_...`); merge p2-core (history's `loot_entry`/`apply_loot` read `props.enhancement` →
+  `sharpening`).
+- `p2-dungeon3` (worktree `../myGame-wt-dungeon3`): Drowned Catacombs, new archetypes drowned_tidecaller
+  (healer), drowned_cultist (caster, dispellable Waterlogged), catacomb_lurker (elite patrol),
+  bilge_archer; boss drowned_abbess (Undertow pull, interruptible Drowning Hymn 66/33, tidecaller adds 50 %);
+  new epics for empty slots.
+- Leftover dir `C:\Projects\myGame-wt-history` (locked file, worktree already pruned) — delete later.
 
-## Decisions made with the user
+## Remaining P2 work (order)
 
-- Valor stacks from War Stomp, Colossus Strike, Shield Charge; 5 → Battle Fervor (+10 % dmg, −3 % taken, 30 s, max 3).
-- Every participant whose key is lower than the used key gets +1 on success.
-- Enhancement: early levels safe; last six levels break 95/96/97/98/99/99.5 % (config in economy.json).
-- Work on branch `p1-core`, commit per milestone; local Docker/SpacetimeDB stack may be used.
-- A local admin account may be created for /admin checks.
+1. Sets (`sets.json`, `character/sets.rs`, effects via AbilityBook::adjust/TalentEffects) — P2_DESIGN §2.6.
+2. Gems (`gems.json`, `ItemProps.gems`, sockets, socket/unsocket/upgrade routes, ~100-run BIS) — §2.7.
+3. Books (talent-point + 3×3 enhancement books per class as hidden talent nodes) — §2.8.
+4. Reforge gamble (economy.json `reforge`, odds UI, idempotent) — §2.9.
+5. Dungeons 4 & 5 (Bone Foundry, Sanctum of Ash) using dungeon3's tooling/roster.
+6. Community publishing: Postgres tables, API, realm `community_map` table, `cm:<id>:<ver>` instances,
+   editor dungeon-block inspector, client map browser, community boards — §2.10.
+7. Economy sim, power-scaling sim with gems/sets/books, audio cues, UI polish, perf check.
+8. Final verification (brief §46) incl. live stack + real clients; `docs/P2_FINAL_REPORT.md`.
 
 ## Operational notes
 
-- **Hardware changed 2026-10-15: GPU is now NVIDIA RTX 5080 (was AMD RX 6700 XT).** All older perf
-  numbers in `docs/` are RX 6700 XT — re-baseline before comparing.
-- Stack: `tools\realm-dev.ps1 up|publish|down|status`. `up` can block the shell — start it detached.
-  `publish` regenerates bindings; run `cargo fmt -p engine-net` after. Schema changes clear realm data.
-- Local admin for ops: `ops@local.mygame.test` / `local-password-1` (local DB only; promoted to the
-  admin role and email-verified by SQL). Ops API: `GET /api/v1/admin/ops/{status,realm,anomalies,instances/<id>}`
-  with its bearer token; dashboard page at `http://127.0.0.1:8080/admin`.
-- Driving runs to completion without fighting: owner `spacetime call --server http://127.0.0.1:3000 realm admin_clear_instance <id>`
-  (kills everything, real chest path) or `admin_finish_instance <id> true`.
-- Real clients: `tools\run-3-clients.ps1 -Autoplay` (accounts tank/healer/dps@local.mygame.test).
-  Autoplay queues/accepts/starts and returns to hub but does not fight or open the chest.
-- Backend tests while the API runs: `--target-dir backend\target-verify` (exe lock), then delete it.
-  DB tests: `DATABASE_URL=postgres://realm:realm-dev-password@127.0.0.1:5434/realm cargo test -p realm-game -- --ignored` (from `backend\`).
-- realm-bot owner scenarios need `SPACETIME_CLI=%LOCALAPPDATA%\SpacetimeDB\spacetime.exe`.
-- Disk: each worktree target dir is ~10 GB. Delete worktrees after merging.
-- Migrations: 0006 damage reports, 0007 ops permission, 0008 talent points, 0010 key modifiers (0009 unused).
-
-## Known open items
-
-See `docs/P1_FINAL_REPORT.md` §10–11. Highlights: rest of the realm sim RNG still constant-seeded;
-chat overlaps party frames at 960×540; visual/audio checks not done in a running game; no player
-stun/silence; offline play cannot earn talent points.
+- Docker running (user started). Stack: `tools\realm-dev.ps1 up|publish|down|status` (start `up`
+  detached). Only ONE agent at a time may use/publish the realm. Postgres: 
+  `postgres://realm:realm-dev-password@127.0.0.1:5434/realm`; DB tests from backend\:
+  `cargo test -p realm-game -- --ignored`.
+- realm-bot: `SPACETIME_CLI=%LOCALAPPDATA%\SpacetimeDB\spacetime.exe`. Publishing changes the schema →
+  realm data wiped. Bindings: `spacetime generate`, then `cargo fmt -p engine-net`.
+- Don't `cargo fmt` whole backend files (not rustfmt-clean). Don't edit applied migration SQL (sqlx checksums).
+- GPU is RTX 5080; perf runs headless (`--hidden`).

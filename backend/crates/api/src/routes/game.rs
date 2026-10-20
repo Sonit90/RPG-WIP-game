@@ -17,6 +17,9 @@
 //! | `PUT  /characters/{id}/talents` | replace talents: keys, points and the engagement lock checked |
 //! | `GET  /player/settings` | the account's synced settings |
 //! | `PUT  /player/settings` | save them, with optimistic versioning |
+//! | `GET  /characters/{id}/history?before=&limit=` | the character's runs, newest first (owner only) |
+//! | `GET  /runs/{run_uid}` | one run the caller took part in |
+//! | `GET  /leaderboards?dungeon=&key=&season=&board=&page=` | ranked completed runs (any signed-in player) |
 //! | `POST /realm/queue` | queue a character: ownership, role and gear checked here |
 //!
 //! Talents, equipment (move, salvage, taking mail) and the key (downgrade, cleanse) are **locked
@@ -42,13 +45,13 @@
 
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post, put},
     Json, Router,
 };
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, EconomyInfo, SharpenOutcomeName, SharpenRequest,
+    CharacterDetail, CharacterSummary, HistoryPage, LeaderboardPage, RunDetail, EconomyInfo, SharpenOutcomeName, SharpenRequest,
     SharpenResponse, ExchangeInfo, ExchangeRequest, MoveItemRequest, QueueRequest, ResourceInfo,
     RequestIdBody, SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
 };
@@ -79,7 +82,124 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/key/cleanse", post(cleanse_key))
         .route("/characters/{id}/talents", put(save_talents))
         .route("/player/settings", get(get_settings).put(put_settings))
+        .route("/characters/{id}/history", get(character_history))
+        .route("/runs/{run_uid}", get(get_run))
+        .route("/leaderboards", get(get_leaderboard))
         .route("/realm/queue", post(queue))
+}
+
+fn read_limit(state: &AppState, user: &AuthUser) -> Result<(), ApiError> {
+    state
+        .limits
+        .check(
+            &format!("reads:{}", user.user_id),
+            rate_limit::READS_PER_ACCOUNT,
+        )
+        .map_err(ApiError)
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryQuery {
+    before: Option<i64>,
+    limit: Option<u32>,
+}
+
+/// The character's runs, newest first. Owner only: a character id that is not the caller's is
+/// a 404.
+async fn character_history(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Query(query): Query<HistoryQuery>,
+) -> ApiResult<Json<HistoryPage>> {
+    read_limit(&state, &user)?;
+    let row = owned(&state, &user, &id).await?;
+    let limit = query.limit.unwrap_or(engine_realm::api::HISTORY_MAX_LIMIT);
+    let page = realm_game::history::history(&state.db, row.id, query.before, limit)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(page))
+}
+
+/// One run, if the caller took part in it. Anyone else gets the same 404 as for a run that
+/// does not exist.
+async fn get_run(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(run_uid): Path<String>,
+) -> ApiResult<Json<RunDetail>> {
+    read_limit(&state, &user)?;
+    if run_uid.is_empty() || run_uid.len() > 64 || !run_uid.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(ApiError(AppError::NotFound));
+    }
+    realm_game::history::run_detail(&state.db, user.user_id, &run_uid.to_ascii_lowercase())
+        .await
+        .map_err(ApiError)?
+        .map(Json)
+        .ok_or(ApiError(AppError::NotFound))
+}
+
+#[derive(serde::Deserialize)]
+struct BoardParams {
+    dungeon: String,
+    key: Option<u32>,
+    season: Option<String>,
+    board: Option<String>,
+    page: Option<u32>,
+}
+
+/// A leaderboard page. Built only from `dungeon_runs`, which `apply_result` writes from the
+/// realm's results.
+async fn get_leaderboard(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(params): Query<BoardParams>,
+) -> ApiResult<Json<LeaderboardPage>> {
+    use engine_realm::leaderboard::Board;
+    read_limit(&state, &user)?;
+    let bad = |message: &str| ApiError(AppError::BadRequest(message.into()));
+    let config = realm_game::leaderboards();
+    let board = Board::from_key(params.board.as_deref().unwrap_or("highest"))
+        .filter(|board| config.offers(*board))
+        .ok_or_else(|| bad("Unknown leaderboard."))?;
+    if params.dungeon.is_empty() || params.dungeon.len() > 64 {
+        return Err(bad("A dungeon is required."));
+    }
+    if board == Board::Fastest && params.key.is_none() {
+        return Err(bad("The fastest board needs a key level."));
+    }
+    let page = params.page.unwrap_or(0);
+    if page > 10_000 {
+        return Err(bad("That page is out of range."));
+    }
+    let season = match params.season {
+        Some(season) => season,
+        None => store::active_season(&state.db)
+            .await
+            .map_err(ApiError)?
+            .map_or_else(|| realm_game::history::FALLBACK_SEASON.to_owned(), |s| s.id),
+    };
+    if !realm_game::history::season_exists(&state.db, &season)
+        .await
+        .map_err(ApiError)?
+    {
+        return Err(ApiError(AppError::NotFound));
+    }
+    let board_page = realm_game::history::leaderboard(
+        &state.db,
+        config,
+        &realm_game::history::BoardQuery {
+            board,
+            dungeon_id: &params.dungeon,
+            key_level: params.key,
+            season_id: &season,
+            page,
+        },
+    )
+    .await
+    .map_err(ApiError)?;
+    Ok(Json(board_page))
 }
 
 /// Refuses with 409 while the realm has the account queued, in a party or in an instance.

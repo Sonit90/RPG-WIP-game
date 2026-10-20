@@ -2,6 +2,7 @@
 //! a caller can never read or write a character that is not theirs — the WHERE clause, not a
 //! check after the fact, is the ownership rule.
 
+use crate::history;
 use engine_realm::api::{CharacterDetail, DungeonCompletion, DungeonResult, LootDelivery};
 use engine_realm::economy::{add_resources, debit_resources, spend_resource};
 use engine_realm::sharpen::{sharpen, SharpenError, SharpenOutcome};
@@ -43,7 +44,7 @@ pub struct KeyRow {
     pub modifiers_rolled: bool,
 }
 
-fn db(e: sqlx::Error) -> AppError {
+pub(crate) fn db(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
@@ -880,13 +881,16 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
     let account_id = Uuid::parse_str(&result.account_id)
         .map_err(|_| AppError::validation("result has a malformed account id"))?;
     let character_id = Uuid::parse_str(&result.character_id).ok();
+    let stats = history::run_stats(result);
     let mut tx = pool.begin().await.map_err(db)?;
     let recorded = sqlx::query(
         "INSERT INTO game.dungeon_results
             (result_id, account_id, character_id, dungeon_id, success, duration_us, experience,
              key_level, key_owner, key_level_after, resources, talent_points,
-             currency_spent, participant_key_bump, own_key_level)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             currency_spent, participant_key_bump, own_key_level,
+             run_uid, outcome, deaths, damage_taken, healing, dps)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18, $19, $20, $21)
          ON CONFLICT (result_id) DO NOTHING",
     )
     .bind(&result.result_id)
@@ -904,6 +908,12 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
     .bind(Json(&result.currency_spent))
     .bind(result.participant_key_bump)
     .bind(i32::try_from(result.own_key_level).unwrap_or(i32::MAX))
+    .bind((!result.run_uid.is_empty()).then_some(result.run_uid.as_str()))
+    .bind(result.outcome().key())
+    .bind(stats.deaths)
+    .bind(stats.damage_taken)
+    .bind(stats.healing)
+    .bind(stats.dps)
     .execute(&mut *tx)
     .await
     .map_err(db)?;
@@ -1038,6 +1048,47 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
         .await
         .map_err(db)?;
     }
+    // The run itself, once: the first of its results to arrive writes it (the others find it
+    // there). Loot delivered before this result was applied is listed on it now.
+    if let Some(run) = history::run_row(result) {
+        let season = active_season(&mut *tx)
+            .await?
+            .map_or_else(|| history::FALLBACK_SEASON.to_owned(), |season| season.id);
+        sqlx::query(
+            "INSERT INTO game.dungeon_runs
+                (run_uid, season_id, dungeon_id, key_level, modifiers, outcome, duration_us,
+                 timer_us, party)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (run_uid) DO NOTHING",
+        )
+        .bind(&run.run_uid)
+        .bind(&season)
+        .bind(&result.dungeon_id)
+        .bind(run.key_level)
+        .bind(Json(&run.modifiers))
+        .bind(run.outcome.key())
+        .bind(run.duration_us)
+        .bind(run.timer_us)
+        .bind(Json(&run.party))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    }
+    sqlx::query(
+        "UPDATE game.dungeon_results SET loot = COALESCE((
+             SELECT jsonb_agg(jsonb_build_object(
+                        'item', d.item, 'quality', d.quality,
+                        'sharpening', d.sharpening, 'broken', d.broken)
+                    ORDER BY length(d.loot_id), d.loot_id)
+             FROM game.loot_deliveries d
+             WHERE d.loot_id LIKE game.dungeon_results.result_id || ':%'
+               AND (d.outcome = 'bag' OR d.outcome LIKE 'mail%')), '[]'::jsonb)
+         WHERE result_id = $1",
+    )
+    .bind(&result.result_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
     tx.commit().await.map_err(db)?;
     tracing::info!(
         result_id = %result.result_id,
@@ -1069,8 +1120,10 @@ pub async fn apply_loot(pool: &PgPool, delivery: &LootDelivery) -> Result<bool, 
     };
     let mut tx = pool.begin().await.map_err(db)?;
     let recorded = sqlx::query(
-        "INSERT INTO game.loot_deliveries (loot_id, account_id, character_id, item, kind, reason, outcome)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+        "INSERT INTO game.loot_deliveries
+            (loot_id, account_id, character_id, item, kind, reason, outcome,
+             quality, sharpening, broken)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9)
          ON CONFLICT (loot_id) DO NOTHING",
     )
     .bind(&delivery.loot_id)
@@ -1079,6 +1132,9 @@ pub async fn apply_loot(pool: &PgPool, delivery: &LootDelivery) -> Result<bool, 
     .bind(&delivery.item)
     .bind(kind)
     .bind(&delivery.reason)
+    .bind(i32::from(delivery.props().quality))
+    .bind(i32::from(delivery.props().sharpening))
+    .bind(delivery.props().broken)
     .execute(&mut *tx)
     .await
     .map_err(db)?;
@@ -1145,6 +1201,20 @@ pub async fn apply_loot(pool: &PgPool, delivery: &LootDelivery) -> Result<bool, 
         .execute(&mut *tx)
         .await
         .map_err(db)?;
+    // The run's history lists what its player received; the result may not be applied yet, in
+    // which case `apply_result` picks the delivery up from the table above.
+    if outcome == "bag" || outcome.starts_with("mail") {
+        if let Some(result_id) = history::result_id_of_loot(&delivery.loot_id) {
+            sqlx::query(
+                "UPDATE game.dungeon_results SET loot = loot || $2::jsonb WHERE result_id = $1",
+            )
+            .bind(result_id)
+            .bind(Json(vec![history::loot_entry(delivery)]))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
+    }
     tx.commit().await.map_err(db)?;
     if outcome == "bag" || outcome.starts_with("mail") {
         tracing::info!(loot_id = %delivery.loot_id, item = %delivery.item, outcome, "dungeon loot delivered");
@@ -1179,6 +1249,10 @@ mod tests {
             participant_key_bump: false,
             own_key_level: 0,
             run_uid: String::new(),
+            outcome: None,
+            timer_us: 0,
+            party: Vec::new(),
+            modifiers: Vec::new(),
         }
     }
 
@@ -1214,6 +1288,9 @@ mod tests {
                 damage: 5000,
                 casts: 40,
             }],
+            healing: 0,
+            damage_taken: 0,
+            deaths: 0,
         }
     }
 
