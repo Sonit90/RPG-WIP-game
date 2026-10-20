@@ -229,6 +229,39 @@ pub fn should_clean_up(
         && finished_at.is_some_and(|at| now - at >= config.finished_linger)
 }
 
+/// An instance's uid as text: 32 lower-case hex digits. Persistence keys carry this, never the
+/// realm's auto-increment id, because realm data is wiped on a schema change and the ids
+/// restart; the uid is 128 random bits drawn when the instance is created.
+#[must_use]
+pub fn uid_hex(uid: u128) -> String {
+    format!("{uid:032x}")
+}
+
+/// The idempotency key of one player's result in one run: `"<uid>:<account id>"`.
+#[must_use]
+pub fn run_result_id(uid: u128, account_id: &str) -> String {
+    format!("{}:{account_id}", uid_hex(uid))
+}
+
+/// The seed the whole authoritative fight rolls from (crits, enemy decisions, loot), folded
+/// from the instance's uid. Fixed for the instance's lifetime, so a rebuilt fight rolls what
+/// the original would have; unpredictable before the instance exists, because the uid is.
+#[must_use]
+pub fn fight_seed(uid: u128) -> u64 {
+    // Both halves, through SplitMix64 finalisers, so neither alone decides the seed.
+    let mix = |mut z: u64| {
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the two halves are the point"
+    )]
+    let (high, low) = ((uid >> 64) as u64, uid as u64);
+    mix(mix(low).wrapping_add(high.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +388,20 @@ mod tests {
             config.finished_linger,
             &config
         ));
+    }
+
+    #[test]
+    fn a_uid_names_the_run_and_seeds_the_fight() {
+        let (a, b) = (0x1234_u128 << 64 | 7, 0x1234_u128 << 64 | 8);
+        assert_eq!(uid_hex(a), "00000000000012340000000000000007");
+        assert_eq!(
+            run_result_id(a, "acct"),
+            "00000000000012340000000000000007:acct"
+        );
+        assert_ne!(run_result_id(a, "acct"), run_result_id(b, "acct"));
+        assert_eq!(fight_seed(a), fight_seed(a), "stable for one instance");
+        assert_ne!(fight_seed(a), fight_seed(b), "different instances differ");
+        // Either half alone changes the seed.
+        assert_ne!(fight_seed(a), fight_seed(a ^ (1 << 100)));
     }
 }

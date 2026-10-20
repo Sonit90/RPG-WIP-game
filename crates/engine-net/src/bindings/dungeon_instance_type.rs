@@ -10,6 +10,7 @@ use super::instance_state_tag_type::InstanceStateTag;
 #[sats(crate = __lib)]
 pub struct DungeonInstance {
     pub id: u64,
+    pub uid: u128,
     pub party_id: u64,
     pub dungeon_id: String,
     pub key_level: u32,
@@ -35,6 +36,7 @@ impl __sdk::InModule for DungeonInstance {
 /// Provides typed access to columns for query building.
 pub struct DungeonInstanceCols {
     pub id: __sdk::__query_builder::Col<DungeonInstance, u64>,
+    pub uid: __sdk::__query_builder::Col<DungeonInstance, u128>,
     pub party_id: __sdk::__query_builder::Col<DungeonInstance, u64>,
     pub dungeon_id: __sdk::__query_builder::Col<DungeonInstance, String>,
     pub key_level: __sdk::__query_builder::Col<DungeonInstance, u32>,
@@ -56,6 +58,7 @@ impl __sdk::__query_builder::HasCols for DungeonInstance {
     fn cols(table_name: &'static str) -> Self::Cols {
         DungeonInstanceCols {
             id: __sdk::__query_builder::Col::new(table_name, "id"),
+            uid: __sdk::__query_builder::Col::new(table_name, "uid"),
             party_id: __sdk::__query_builder::Col::new(table_name, "party_id"),
             dungeon_id: __sdk::__query_builder::Col::new(table_name, "dungeon_id"),
             key_level: __sdk::__query_builder::Col::new(table_name, "key_level"),

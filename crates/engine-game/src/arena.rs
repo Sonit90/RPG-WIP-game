@@ -460,6 +460,18 @@ pub fn environment_arena_for_party(
     group_count: usize,
     scaling: crate::dungeon::DungeonScaling,
 ) -> Simulation {
+    environment_arena_for_party_seeded(scene, group_count, scaling, SimConfig::default().rng_seed)
+}
+
+/// [`environment_arena_for_party`] with the seed every chance in the fight rolls from: crits,
+/// enemy decisions and loot. A server gives each instance a seed of its own.
+#[must_use]
+pub fn environment_arena_for_party_seeded(
+    scene: &engine_environment::EnvironmentScene,
+    group_count: usize,
+    scaling: crate::dungeon::DungeonScaling,
+    rng_seed: u64,
+) -> Simulation {
     let group_count = if scene.dungeon.is_some() {
         0
     } else {
@@ -468,6 +480,7 @@ pub fn environment_arena_for_party(
     let config = ArenaConfig::from_environment(scene, group_count);
     let mut simulation = Simulation::new(SimConfig {
         movement: config.movement(),
+        rng_seed,
         ..SimConfig::default()
     });
     let arena = populate(simulation.world_mut(), &config);

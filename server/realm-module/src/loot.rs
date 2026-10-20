@@ -24,6 +24,7 @@
 use engine_game::character::ItemProps;
 use engine_realm::combat::{EntityRef, RolledItem, WireEvent};
 use engine_realm::haul::{self, Drop, RunTally};
+use engine_realm::instance::{run_result_id, uid_hex};
 use engine_realm::loadout::{MAIL_BAG_FULL, MAIL_DUNGEON_DROP, MAIL_UNCLAIMED};
 use spacetimedb::{ReducerContext, Table};
 
@@ -34,20 +35,38 @@ const ROLLED: &str = "rolled";
 const BAG: &str = "bag";
 const MAIL: &str = "mail";
 
+/// The key of a player's tally in one instance. Local to the realm's tables, never persisted.
 fn run_key(instance_id: u64, account_id: &str) -> String {
     format!("{instance_id}:{account_id}")
+}
+
+/// The uid of the instance `instance_id`, which names its loot in the persistence API. The
+/// instance outlives every call here; zero (logged) only if a row is somehow gone.
+fn uid_of(ctx: &ReducerContext, instance_id: u64) -> u128 {
+    ctx.db
+        .dungeon_instance()
+        .id()
+        .find(instance_id)
+        .map_or_else(
+            || {
+                log::error!("event=loot_instance_missing instance_id={instance_id}");
+                0
+            },
+            |instance| instance.uid,
+        )
 }
 
 /// Records a chest item, if the player does not already have a row for that roll.
 pub fn roll(
     ctx: &ReducerContext,
     instance_id: u64,
+    uid: u128,
     account_id: &str,
     character_id: &str,
     index: usize,
     item: &RolledItem,
 ) {
-    let loot_id = haul::chest_loot_id(instance_id, account_id, index);
+    let loot_id = haul::chest_loot_id(uid, account_id, index);
     if ctx.db.pending_loot().loot_id().find(&loot_id).is_some() {
         return;
     }
@@ -82,6 +101,7 @@ fn settle(ctx: &ReducerContext, loot_id: &str, state: &str, reason: &str) {
 
 /// Reads a tick's events for the chest's outcomes.
 pub fn on_events(ctx: &ReducerContext, instance_id: u64, events: &[WireEvent]) {
+    let uid = uid_of(ctx, instance_id);
     for event in events {
         match event {
             WireEvent::LootAwarded {
@@ -90,7 +110,7 @@ pub fn on_events(ctx: &ReducerContext, instance_id: u64, events: &[WireEvent]) {
                 ..
             } => settle(
                 ctx,
-                &haul::chest_loot_id(instance_id, account, usize::from(*index)),
+                &haul::chest_loot_id(uid, account, usize::from(*index)),
                 BAG,
                 "",
             ),
@@ -101,7 +121,7 @@ pub fn on_events(ctx: &ReducerContext, instance_id: u64, events: &[WireEvent]) {
                 ..
             } => settle(
                 ctx,
-                &haul::chest_loot_id(instance_id, account, usize::from(*index)),
+                &haul::chest_loot_id(uid, account, usize::from(*index)),
                 MAIL,
                 if *reason == 0 {
                     MAIL_BAG_FULL
@@ -201,7 +221,7 @@ fn drop_item(ctx: &ReducerContext, instance_id: u64, account: &str, item: &str, 
         return;
     };
     let mut tally = tally_of(&row);
-    let loot_id = haul::mob_loot_id(instance_id, account, tally.add_item());
+    let loot_id = haul::mob_loot_id(uid_of(ctx, instance_id), account, tally.add_item());
     ctx.db.pending_loot().insert(PendingLoot {
         loot_id: loot_id.clone(),
         account_id: account.to_owned(),
@@ -289,7 +309,7 @@ pub fn close_run(ctx: &ReducerContext, instance: &DungeonInstance) {
         .filter(instance.id)
         .collect();
     for row in rows {
-        let result_id = run_key(instance.id, &row.account_id);
+        let result_id = run_result_id(instance.uid, &row.account_id);
         let currencies = haul::decode_currencies(&row.currencies);
         if !row.settled
             && !currencies.is_empty()
@@ -321,6 +341,7 @@ pub fn close_run(ctx: &ReducerContext, instance: &DungeonInstance) {
                 currency_spent: "[]".to_owned(),
                 participant_key_bump: false,
                 own_key_level: 0,
+                run_uid: uid_hex(instance.uid),
             });
         }
         ctx.db.run_loot().key().delete(&row.key);

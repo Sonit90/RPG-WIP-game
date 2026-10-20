@@ -48,6 +48,9 @@ pub const SUMMONED_KEY_BASE: u64 = 1 << 32;
 /// friction): 200 ms.
 const IDLE_AFTER_TICKS: u32 = 12;
 
+/// The seed a fight is built from when none is given: the simulation's default.
+const DEFAULT_SEED: u64 = engine_core::tuning::simulation::RNG_SEED;
+
 /// One party member entering the fight.
 #[derive(Debug, Clone)]
 pub struct PlayerSpec {
@@ -396,11 +399,27 @@ impl CombatInstance {
         barriers: &[Barrier],
         key_scaling: (f32, f32),
     ) -> Self {
+        Self::new_seeded(scene, players, barriers, key_scaling, DEFAULT_SEED)
+    }
+
+    /// [`CombatInstance::new`], with every chance in the fight (crits, enemy decisions, loot)
+    /// rolled from `seed`. The same seed gives the same fight, so a rebuild of an instance's
+    /// fight rolls what the original would have; the realm derives it from the instance's uid
+    /// ([`crate::instance::fight_seed`]).
+    #[must_use]
+    pub fn new_seeded(
+        scene: &EnvironmentScene,
+        players: &[PlayerSpec],
+        barriers: &[Barrier],
+        key_scaling: (f32, f32),
+        seed: u64,
+    ) -> Self {
         let size = u8::try_from(players.len().max(1)).unwrap_or(u8::MAX);
-        let mut sim = engine_game::arena::environment_arena_for_party(
+        let mut sim = engine_game::arena::environment_arena_for_party_seeded(
             scene,
             0,
             DungeonScaling::for_party(size).with_key(key_scaling.0, key_scaling.1),
+            seed,
         );
         let mut members = Vec::with_capacity(players.len());
         for (index, spec) in players.iter().enumerate() {
@@ -566,7 +585,30 @@ impl CombatInstance {
         barrier_open: bool,
         state: &Restore,
     ) -> Self {
-        let mut instance = Self::new(scene, players, barriers, key_scaling);
+        Self::restore_seeded(
+            scene,
+            players,
+            barriers,
+            key_scaling,
+            barrier_open,
+            state,
+            DEFAULT_SEED,
+        )
+    }
+
+    /// [`CombatInstance::restore`] with the instance's own seed (see
+    /// [`CombatInstance::new_seeded`]).
+    #[must_use]
+    pub fn restore_seeded(
+        scene: &EnvironmentScene,
+        players: &[PlayerSpec],
+        barriers: &[Barrier],
+        key_scaling: (f32, f32),
+        barrier_open: bool,
+        state: &Restore,
+        seed: u64,
+    ) -> Self {
+        let mut instance = Self::new_seeded(scene, players, barriers, key_scaling, seed);
         instance.tick_base = state.tick;
         if barrier_open {
             instance.open_start_barrier();

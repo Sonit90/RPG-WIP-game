@@ -9,7 +9,8 @@ use engine_realm::RealmError;
 use engine_realm::combat::RolledItem;
 use engine_realm::haul::{self, SummaryItem};
 use engine_realm::instance::{
-    Countdown, InstanceState, MemberPresence, barrier_closed, should_clean_up,
+    Countdown, InstanceState, MemberPresence, barrier_closed, run_result_id, should_clean_up,
+    uid_hex,
 };
 use engine_realm::meter::ReportMember;
 use engine_realm::party::PartyState;
@@ -117,6 +118,8 @@ pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
         .dungeon_instance()
         .try_insert(DungeonInstance {
             id: 0,
+            // Drawn here, once: persisted ids and the fight's seed come from it.
+            uid: ctx.random::<u128>(),
             party_id: party.id,
             dungeon_id: party.dungeon_id.clone(),
             key_level: party.key_level,
@@ -418,7 +421,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
     crate::combat::write_meter(ctx, instance_id, meter_rows);
     for player in ctx.db.instance_player().instance_id().filter(instance_id) {
         let member = ctx.db.party_member().identity().find(player.identity);
-        let result_id = format!("{instance_id}:{}", player.account_id);
+        let result_id = run_result_id(instance.uid, &player.account_id);
         if ctx
             .db
             .pending_result()
@@ -441,6 +444,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 crate::loot::roll(
                     ctx,
                     instance_id,
+                    instance.uid,
                     &player.account_id,
                     &character,
                     index,
@@ -504,8 +508,10 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
             } else {
                 0
             },
+            run_uid: uid_hex(instance.uid),
         });
         ctx.db.run_summary().insert(RunSummary {
+            // The client reads this row, so it carries the instance id, never the uid.
             result_id: format!("{instance_id}:{}", player.account_id),
             identity: player.identity,
             instance_id,
@@ -588,7 +594,7 @@ pub fn settle_spend(ctx: &ReducerContext, instance: &DungeonInstance, only: Opti
         .collect();
     for spend in rows {
         let spent = take_spend(ctx, instance.id, &spend.account_id);
-        let result_id = format!("{}:{}", instance.id, spend.account_id);
+        let result_id = run_result_id(instance.uid, &spend.account_id);
         if spent.is_empty() {
             continue;
         }
@@ -640,6 +646,7 @@ pub fn settle_spend(ctx: &ReducerContext, instance: &DungeonInstance, only: Opti
             currency_spent: serde_json::to_string(&spent).unwrap_or_else(|_| "[]".to_owned()),
             participant_key_bump: false,
             own_key_level: 0,
+            run_uid: uid_hex(instance.uid),
         });
         log::info!(
             "event=spend_settled instance_id={} account_id={}",
