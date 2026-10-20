@@ -11,6 +11,7 @@
 //! | `POST /characters/{id}/exchange` | trade resources at a catalog rate |
 //! | `POST /characters/{id}/sharpen` | one sharpening attempt: the server rolls, the locked row pays |
 //! | `POST /characters/{id}/enhance` | alias of `/sharpen` (P1 name), kept for one release |
+//! | `POST /characters/{id}/reforge` | re-roll an item's base quality from the published table: the server rolls, the locked row pays |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
 //! | `POST /characters/{id}/key/downgrade` | key one level lower, extra modifiers dropped (hub only) |
 //! | `POST /characters/{id}/key/cleanse` | strip a key's modifiers for gold (hub only) |
@@ -33,7 +34,7 @@
 //! character and enqueues, so a hub write and a queue join are serialised: whichever takes the
 //! row second sees the other's effect.
 //!
-//! **Request ids**: the progression-changing routes (sharpen, salvage, exchange, equipment move,
+//! **Request ids**: the progression-changing routes (sharpen, reforge, salvage, exchange, equipment move,
 //! taking mail, key downgrade and cleanse, talents) take an optional `request_id` (a UUID the
 //! client makes per user action and reuses on retry; in the body, which may be otherwise empty
 //! for the routes without one). The first request records its response in the transaction that
@@ -53,7 +54,7 @@ use axum::{
 use engine_realm::api::{
     CharacterDetail, CharacterSummary, HistoryPage, LeaderboardPage, RunDetail, EconomyInfo, SharpenOutcomeName, SharpenRequest,
     SharpenResponse, ExchangeInfo, ExchangeRequest, MoveItemRequest, QueueRequest, ResourceInfo,
-    RequestIdBody, SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
+    ReforgeRequest, ReforgeResponse, RequestIdBody, SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
 };
 use generic_auth_core::AppError;
 use realm_game::bridge::{BridgeError, Snapshot};
@@ -77,6 +78,7 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/sharpen", post(sharpen))
         // P1 name, kept as an alias for one release.
         .route("/characters/{id}/enhance", post(sharpen))
+        .route("/characters/{id}/reforge", post(reforge))
         .route("/economy", get(get_economy))
         .route("/characters/{id}/key/downgrade", post(downgrade_key))
         .route("/characters/{id}/key/cleanse", post(cleanse_key))
@@ -549,6 +551,48 @@ async fn sharpen_with(
     Ok(Json(response))
 }
 
+/// One reforge: pay gold, re-roll the item's base quality from the published table.
+///
+/// Rate limited like every character mutation. The request id is required (a gamble must never
+/// be repeated by a retry). Everything else - the row lock, the engagement question (409 while
+/// the character is queued, in a party or in a dungeon), the price, the roll from the
+/// operating system's random source, the write and the recorded response - happens in
+/// [`store::reforge_character`], in that order, in one transaction.
+async fn reforge(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<ReforgeRequest>,
+) -> ApiResult<Json<ReforgeResponse>> {
+    use rand::RngCore;
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let character = character_id(&id)?;
+    let request_id = request_id_of(Some(&body.request_id))?.ok_or_else(|| {
+        ApiError(AppError::BadRequest("A reforge needs a request id.".into()))
+    })?;
+    // The only source of a reforge's fate. Never derived from the request.
+    let mut draw = || rand::rngs::OsRng.next_u64();
+    let response = store::reforge_character(
+        &state.db,
+        user.user_id,
+        character,
+        request_id,
+        &body.slot,
+        &mut draw,
+        || async { ensure_unlocked(&state, &user).await.map_err(|e| e.0) },
+    )
+    .await
+    .map_err(ApiError)?
+    .ok_or(ApiError(AppError::NotFound))?;
+    Ok(Json(response))
+}
+
 /// A refused salvage or exchange as the HTTP error: the request was wrong (400) or the state
 /// it needs is not there (409); the message is the player-facing sentence.
 fn economy_error(error: engine_realm::economy::EconomyError) -> AppError {
@@ -906,6 +950,27 @@ mod tests {
                 "{open} is a resources/flags change and stays open"
             );
         }
+    }
+
+    /// The reforge route hands the whole transaction to `store::reforge_character`, which asks
+    /// the realm (with the row locked) before it writes, and feeds it the operating system's
+    /// random source - nothing from the request.
+    #[test]
+    fn reforge_asks_the_realm_inside_the_store_and_rolls_from_the_os() {
+        let text = handler("reforge");
+        assert!(text.contains("store::reforge_character("));
+        assert!(text.contains("ensure_unlocked(&state, &user)"));
+        assert!(text.contains("OsRng"));
+        assert!(!text.contains("body.roll") && !text.contains("seed"));
+        let source = include_str!("../../../game/src/store.rs");
+        let start = source
+            .find("pub async fn reforge_character")
+            .expect("the store function");
+        let body = &source[start..];
+        let begin = body.find("HubTx::begin(").expect("takes the row lock");
+        let ask = body.find("ensure_unlocked()").expect("asks the realm");
+        let write = body.find("hub.save_loadout").expect("writes");
+        assert!(begin < ask && ask < write, "lock, ask, then write");
     }
 
     /// [`handler`] without whitespace, so a call matches however rustfmt wrapped it.

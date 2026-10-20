@@ -673,6 +673,34 @@ pub struct SharpenResponse {
     pub character: CharacterDetail,
 }
 
+/// `POST /api/v1/characters/{id}/reforge`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReforgeRequest {
+    /// The worn slot or bag cell holding the item. There is no roll in it: the server rolls.
+    pub slot: SlotRef,
+    /// Idempotency key (a UUID): the client's id for this one user action, reused if it
+    /// retries. Required, because a gamble must never be repeated by a retry: a replay returns
+    /// the first answer and changes nothing, re-rolls nothing, charges nothing.
+    pub request_id: String,
+}
+
+/// What `POST /api/v1/characters/{id}/reforge` answers with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReforgeResponse {
+    /// The reforged item's stable key.
+    pub item: String,
+    /// Its base quality before, per cent.
+    pub old_quality: u8,
+    /// Its base quality now (it replaced the old one, better or worse).
+    pub new_quality: u8,
+    /// The gold paid.
+    pub cost: u64,
+    /// The gold the character holds afterwards.
+    pub gold_left: u64,
+    /// The character in full, as every other change answers.
+    pub character: CharacterDetail,
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test code asserts on known-good values")]
 mod tests {
