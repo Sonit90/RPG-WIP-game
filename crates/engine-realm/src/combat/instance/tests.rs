@@ -291,6 +291,46 @@ fn the_drowned_catacombs_load_on_the_realm_path_and_can_be_cleared() {
 }
 
 #[test]
+fn the_bone_foundry_loads_on_the_realm_path_and_can_be_cleared() {
+    let (scene, barriers, players) = dungeon_party("bone_foundry");
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let monsters = fight.monster_states();
+    assert_eq!(monsters.len(), scene.monsters.len(), "no unknown ids dropped");
+    fight.open_start_barrier();
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let mut saw_unlock = false;
+    for _ in 0..400 {
+        let living: Vec<EntityId> = fight
+            .sim
+            .enemies()
+            .map(|(entity, _)| entity)
+            .filter(|entity| fight.sim.world().is_alive(*entity))
+            .collect();
+        for entity in living {
+            fight.sim.apply_damage(
+                mage,
+                entity,
+                1.0e7,
+                AbilityId::from_fire(FireAbility::Firebolt),
+                DamageType::Fire,
+            );
+        }
+        let _ = fight.advance(30);
+        saw_unlock |= fight.unlocked();
+        if fight.completed().is_some() {
+            break;
+        }
+    }
+    assert!(saw_unlock, "the gate opened");
+    assert!(
+        fight.completed().is_some(),
+        "the Overseer died and the run completed"
+    );
+}
+
+#[test]
 fn a_rebuilt_fight_keeps_keys_the_dead_and_the_bodies() {
     let (scene, barriers, players) = crypt();
     let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
