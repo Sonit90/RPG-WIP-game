@@ -199,9 +199,23 @@ pub const MAIL_SENDER_DUNGEON: &str = "Dungeon";
 /// Who housekeeping mail is from.
 pub const MAIL_SENDER_SYSTEM: &str = "System";
 
+/// The version [`Loadout`] is written with. Reading accepts every older one through [`migrate`].
+///
+/// 0 and 1 are the P1 shape (rows that never said); 2 is the same shape stamped, the starting
+/// point for the field additions that follow (sharpening, gems): each bumps this and adds an
+/// arm to [`migrate`], with a test over a captured row of the version before.
+pub const CURRENT_VERSION: u32 = 2;
+
 /// Everything a character wears and carries, in stored form.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Reading goes through [`migrate`] (every deserialization of a `Loadout` does), so an old
+/// row comes out as the current shape; writing always stamps [`CURRENT_VERSION`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "serde_json::Value")]
 pub struct Loadout {
+    /// The stored shape's version; see [`CURRENT_VERSION`]. Rows saved before versioning say 0.
+    #[serde(default)]
+    pub version: u32,
     /// What is worn.
     pub equipment: Vec<EquippedItem>,
     /// What is carried.
@@ -212,6 +226,92 @@ pub struct Loadout {
     /// Reagents held, by resource id (see the economy catalog). Absent in older rows.
     #[serde(default)]
     pub resources: BTreeMap<String, u64>,
+}
+
+impl Default for Loadout {
+    fn default() -> Self {
+        Self {
+            version: CURRENT_VERSION,
+            equipment: Vec::new(),
+            inventory: Vec::new(),
+            mail: Vec::new(),
+            resources: BTreeMap::new(),
+        }
+    }
+}
+
+/// A stored loadout of any version known so far, before [`migrate`] lifts it.
+#[derive(Deserialize)]
+struct StoredLoadout {
+    #[serde(default)]
+    equipment: Vec<EquippedItem>,
+    #[serde(default)]
+    inventory: Vec<BagItem>,
+    #[serde(default)]
+    mail: Vec<MailItem>,
+    #[serde(default)]
+    resources: BTreeMap<String, u64>,
+}
+
+/// Why a stored loadout could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadoutError {
+    /// Written by a newer build than this one: reading it would silently drop what it added.
+    NewerThanKnown(u64),
+    /// Not a loadout.
+    Malformed(String),
+}
+
+impl std::fmt::Display for LoadoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NewerThanKnown(version) => write!(
+                f,
+                "loadout version {version} is newer than this build reads ({CURRENT_VERSION})"
+            ),
+            Self::Malformed(reason) => write!(f, "malformed loadout: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for LoadoutError {}
+
+impl TryFrom<serde_json::Value> for Loadout {
+    type Error = LoadoutError;
+
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+        migrate(value)
+    }
+}
+
+/// Reads a stored loadout of any version and returns it in the current shape.
+///
+/// Versions 0 and 1 are the P1 shape and differ from the current one only in the stamp. A
+/// version this build does not know is refused rather than read with fields dropped.
+///
+/// # Errors
+///
+/// The value is not a loadout, or carries a version newer than [`CURRENT_VERSION`].
+pub fn migrate(value: serde_json::Value) -> Result<Loadout, LoadoutError> {
+    let version = match value.get("version") {
+        None | Some(serde_json::Value::Null) => 0,
+        Some(found) => found
+            .as_u64()
+            .ok_or_else(|| LoadoutError::Malformed("version is not a number".into()))?,
+    };
+    if version > u64::from(CURRENT_VERSION) {
+        return Err(LoadoutError::NewerThanKnown(version));
+    }
+    // 0 and 1: the P1 shape. Later versions add an arm here that lifts the one before.
+    let stored: StoredLoadout =
+        serde_json::from_value(value).map_err(|e| LoadoutError::Malformed(e.to_string()))?;
+    Ok(Loadout {
+        version: CURRENT_VERSION,
+        equipment: stored.equipment,
+        inventory: stored.inventory,
+        mail: stored.mail,
+        resources: stored.resources,
+    })
 }
 
 /// Where an item is, in stored form: a slot key or a bag cell.
@@ -680,6 +780,84 @@ mod tests {
                 .push(EquippedItem::new(slot.key(), def.key));
         }
         loadout
+    }
+
+    /// A P1 row as the database holds it: no `version`, qualities and enhancements on worn,
+    /// carried and mailed items (defaults omitted), mail, resources. Captured, not generated.
+    const P1_LOADOUT: &str = r#"{
+        "equipment": [
+            {"slot": "ring1", "item": "ashgraves_seal", "quality": 106, "enhancement": 3},
+            {"slot": "chest", "item": "ashgraves_seal", "broken": true}
+        ],
+        "inventory": [
+            {"index": 0, "item": "ashgraves_seal", "quantity": 1, "quality": 92},
+            {"index": 4, "item": "ashgraves_seal", "quantity": 2}
+        ],
+        "mail": [
+            {"id": 7, "item": "ashgraves_seal", "quality": 110, "enhancement": 1,
+             "sender": "System", "subject": "Dungeon drop", "reason": "dungeon_drop",
+             "received_at": 1760000000, "read": false}
+        ],
+        "resources": {"gold": 120, "crypt_dust": 35}
+    }"#;
+
+    #[test]
+    fn a_p1_row_loads_unchanged_and_is_stamped_current() {
+        let value: serde_json::Value = serde_json::from_str(P1_LOADOUT).expect("json");
+        let loadout = migrate(value).expect("a P1 row");
+        assert_eq!(loadout.version, CURRENT_VERSION);
+        assert_eq!(loadout.equipment.len(), 2);
+        assert_eq!(loadout.equipment[0].slot, "ring1");
+        assert_eq!(
+            (
+                loadout.equipment[0].quality,
+                loadout.equipment[0].enhancement
+            ),
+            (106, 3)
+        );
+        assert!(loadout.equipment[1].broken);
+        assert_eq!(loadout.equipment[1].quality, QUALITY_DEFAULT);
+        assert_eq!(loadout.inventory[0].quality, 92);
+        assert_eq!(loadout.inventory[1].quantity, 2);
+        assert_eq!(loadout.mail[0].id, 7);
+        assert_eq!(
+            (loadout.mail[0].quality, loadout.mail[0].enhancement),
+            (110, 1)
+        );
+        assert_eq!(loadout.resources.get("gold"), Some(&120));
+        assert_eq!(loadout.resources.get("crypt_dust"), Some(&35));
+        // Deserializing a `Loadout` directly is the same path.
+        let direct: Loadout = serde_json::from_str(P1_LOADOUT).expect("direct");
+        assert_eq!(direct, loadout);
+    }
+
+    #[test]
+    fn versions_zero_and_one_read_alike_and_a_write_says_current() {
+        let mut one: serde_json::Value = serde_json::from_str(P1_LOADOUT).expect("json");
+        let zero = migrate(one.clone()).expect("v0");
+        one["version"] = 1.into();
+        assert_eq!(migrate(one).expect("v1"), zero);
+        let written = serde_json::to_value(&zero).expect("serializes");
+        assert_eq!(written["version"], CURRENT_VERSION);
+        // And what was written reads back identical.
+        assert_eq!(migrate(written).expect("current"), zero);
+    }
+
+    #[test]
+    fn a_newer_or_broken_row_is_refused_not_trimmed() {
+        let newer = serde_json::json!({"version": CURRENT_VERSION + 1, "equipment": []});
+        assert_eq!(
+            migrate(newer),
+            Err(LoadoutError::NewerThanKnown(u64::from(CURRENT_VERSION) + 1))
+        );
+        assert!(matches!(
+            migrate(serde_json::json!({"version": "two"})),
+            Err(LoadoutError::Malformed(_))
+        ));
+        assert!(matches!(
+            migrate(serde_json::json!({"equipment": "head"})),
+            Err(LoadoutError::Malformed(_))
+        ));
     }
 
     #[test]
