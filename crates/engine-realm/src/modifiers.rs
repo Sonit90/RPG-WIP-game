@@ -39,7 +39,8 @@
 //! key level has a row and none is stored.
 
 use engine_game::modifier::{
-    ActiveModifier, BeamParams, ModifierKind, ModifierParams, PlagueParams,
+    ActiveModifier, BeamParams, BolsteringParams, ModifierKind, ModifierParams, NecroticParams,
+    PlagueParams, RagingParams, SpitefulParams,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -839,6 +840,52 @@ fn parse_params(kind: ModifierKind, mut map: Map<String, Value>) -> Result<Modif
                 max_hit_pct: number("max_hit_pct", d.max_hit_pct)?,
             })
         }
+        ModifierKind::Bolstering => {
+            let d = BolsteringParams::default();
+            let max_stacks = number("max_stacks", f32::from(d.max_stacks))?;
+            if !(1.0..=20.0).contains(&max_stacks) {
+                return Err("param \"max_stacks\" must be 1 to 20".into());
+            }
+            ModifierParams::Bolstering(BolsteringParams {
+                radius: number("radius", d.radius)?,
+                health_pct: number("health_pct", d.health_pct)?,
+                damage_pct: number("damage_pct", d.damage_pct)?,
+                max_stacks: max_stacks as u8,
+            })
+        }
+        ModifierKind::NecroticPools => {
+            let d = NecroticParams::default();
+            let radius = number("radius", d.radius)?;
+            if radius <= 0.0 {
+                return Err("param \"radius\" must be above zero".into());
+            }
+            ModifierParams::NecroticPools(NecroticParams {
+                warning: number("warning", d.warning)?,
+                radius,
+                duration: number("duration", d.duration)?,
+                pct_max_hp_per_sec: number("pct_max_hp_per_sec", d.pct_max_hp_per_sec)?,
+                max_hit_pct: number("max_hit_pct", d.max_hit_pct)?,
+            })
+        }
+        ModifierKind::Raging => {
+            let d = RagingParams::default();
+            let threshold = number("threshold", d.threshold)?;
+            if !(threshold > 0.0 && threshold < 1.0) {
+                return Err("param \"threshold\" must be between 0 and 1".into());
+            }
+            ModifierParams::Raging(RagingParams {
+                threshold,
+                damage_pct: number("damage_pct", d.damage_pct)?,
+            })
+        }
+        ModifierKind::SpitefulCasters => {
+            let d = SpitefulParams::default();
+            ModifierParams::SpitefulCasters(SpitefulParams {
+                cast_speed_pct: number("cast_speed_pct", d.cast_speed_pct)?,
+                debuff_duration: number("debuff_duration", d.debuff_duration)?,
+                heal_reduction: number("heal_reduction", d.heal_reduction)?.min(1.0),
+            })
+        }
     };
     if let Some(unknown) = map.keys().next() {
         return Err(format!("has an unknown param {unknown:?}"));
@@ -990,7 +1037,23 @@ mod tests {
     #[test]
     fn the_shipped_modifiers_read() {
         let catalog = catalog();
-        assert!(catalog.modifiers().len() >= 2);
+        assert_eq!(catalog.modifiers().len(), 6);
+        for (id, introduced) in [
+            ("rotating_beams", 3),
+            ("plague_explosion", 3),
+            ("bolstering", 5),
+            ("raging", 7),
+            ("necrotic_pools", 11),
+            ("spiteful_casters", 13),
+        ] {
+            let definition = catalog.modifier(id).expect("a shipped modifier");
+            assert_eq!(definition.introduced_at_level, introduced, "{id}");
+            assert_eq!(definition.kind.id(), id);
+            assert!(
+                definition.scaling_per_level > 0.0,
+                "{id} scales with the key"
+            );
+        }
         let beams = beams(&catalog);
         assert_eq!(beams.kind, ModifierKind::RotatingBeams);
         assert_eq!(beams.reroll.min_pct, 10);
@@ -1196,9 +1259,25 @@ mod tests {
     }
 
     #[test]
+    fn every_shipped_modifier_resolves_to_its_own_kind_and_numbers() {
+        let catalog = catalog();
+        for definition in catalog.modifiers() {
+            let level = definition.introduced_at_level + 2;
+            let active = catalog.resolve(level, &[KeyModifier::base(&definition.id)]);
+            assert_eq!(active.len(), 1, "{}", definition.id);
+            assert_eq!(active[0].kind, definition.kind);
+            assert_eq!(active[0].params, definition.params);
+            // Two levels above its introduction it is stronger than at its base.
+            assert!(active[0].magnitude > 1.0, "{}", definition.id);
+        }
+    }
+
+    #[test]
     fn a_roll_respects_when_a_modifier_is_introduced() {
         let mut catalog = catalog();
-        catalog.modifiers[1].introduced_at_level = 7;
+        for definition in catalog.modifiers.iter_mut().skip(1) {
+            definition.introduced_at_level = 7;
+        }
         for seed in 0..200 {
             let rolled = catalog.roll_key_modifiers(5, seed);
             assert_eq!(rolled, vec![KeyModifier::base("rotating_beams")]);

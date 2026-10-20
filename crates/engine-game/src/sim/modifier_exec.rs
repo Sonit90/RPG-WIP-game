@@ -6,7 +6,10 @@
 //!                 ├─ shared 0.5 s clock ──────────▶ players in a live beam ──▶ deal_damage
 //!                 └─ PlagueField::advance ────────▶ burst ──▶ players inside ──▶ deal_damage
 //!                                                   cloud ticks ──▶ deal_damage + Plagued
-//! modifier_on_death ──▶ PlagueArmed (the one hook inside the damage path)
+//! modifier_on_death ──▶ PlagueArmed (the one hook inside the damage path), a bolstering of the
+//!                       dead one's neighbours, and a necrotic pool's warning
+//! tick_modifiers ─────▶ necrotic pools (the plague's events, the plague's discs), and the
+//!                       damage multiplier Raging and Bolstering give each monster
 //! ```
 //!
 //! The pure state and geometry are in [`crate::modifier`]; this file is the glue, in the
@@ -24,13 +27,15 @@
 use engine_core::math::Vec3;
 
 use crate::ability::AbilityId;
-use crate::combat::DamageType;
-use crate::enemy::brain::AiState;
+use crate::combat::{DamageType, Faction};
+use crate::enemy::brain::{AiState, EnemyCast};
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
+use crate::modifier::plague::PlagueStep;
 use crate::modifier::{
-    ActiveModifier, BeamEmitter, BeamParams, EndedModifier, MODIFIER_TICK_INTERVAL,
-    ModifierRuntime, PlagueCloud, PlagueFuse, PlagueParams,
+    ActiveModifier, BeamEmitter, BeamParams, BolsteringParams, EndedModifier,
+    MODIFIER_TICK_INTERVAL, ModifierRuntime, NecroticParams, PlagueCloud, PlagueFuse, PlagueParams,
+    bolstering, necrotic, raging, spiteful,
 };
 use crate::status::{Status, StatusKind};
 use crate::world::EntityKind;
@@ -99,6 +104,16 @@ impl Simulation {
         slain as u32
     }
 
+    /// What a dungeon modifier (Raging, Bolstering) currently multiplies `entity`'s damage by.
+    /// One for anything they do not touch. For the developer overlay and tests.
+    #[must_use]
+    pub fn enemy_modifier_damage(&self, entity: EntityId) -> f32 {
+        self.enemies
+            .get(entity.index())
+            .and_then(|runtime| runtime.as_ref())
+            .map_or(1.0, |runtime| runtime.modifier_damage)
+    }
+
     /// Whether `entity` is the dungeon's boss, or any boss-tier monster.
     fn is_boss_entity(&self, entity: EntityId) -> bool {
         // The enemy table is out during the AI's own step, so the dungeon's rules answer
@@ -127,6 +142,9 @@ impl Simulation {
             if !self.modifiers.beams().is_empty()
                 || !self.modifiers.fuses().is_empty()
                 || !self.modifiers.clouds().is_empty()
+                || !self.modifiers.pool_warnings().is_empty()
+                || !self.modifiers.pools().is_empty()
+                || !self.modifiers.bolstered().is_empty()
             {
                 self.clear_modifier_ground();
             }
@@ -139,11 +157,18 @@ impl Simulation {
         if let Some((params, magnitude)) = self.modifiers.plague_rules() {
             self.tick_plague(step, &params, magnitude);
         }
+        if let Some((params, magnitude)) = self.modifiers.necrotic_rules() {
+            self.tick_pools(step, &params, magnitude);
+        }
+        if self.modifiers.bolstering_rules().is_some() || self.modifiers.raging_rules().is_some() {
+            self.sync_enemy_damage();
+        }
     }
 
     /// Puts every modifier's ground out and announces it. What a reset, a wipe, a new
     /// modifier set and a finished dungeon run.
     pub(super) fn clear_modifier_ground(&mut self) {
+        self.unbolster_all();
         let mut ended = Vec::new();
         self.modifiers.clear_into(&mut ended);
         let tick = self.tick;
@@ -313,16 +338,31 @@ impl Simulation {
 
     // ------------------------------------------------------------------------- the plague
 
-    /// Arms the plague on a monster that has just died. The one hook inside the damage path.
+    /// What a monster that has just died leaves behind: a festering corpse (Plague Explosion),
+    /// a stronger neighbourhood (Bolstering) and a pool in waiting (Necrotic Pools). The one
+    /// hook inside the damage path.
     ///
-    /// Players do not fester, and neither does the boss: its death ends the dungeon.
+    /// Players do not leave anything, and neither does the boss: its death ends the dungeon.
     pub(super) fn modifier_on_death(&mut self, entity: EntityId, position: Vec3) {
-        let Some((params, _)) = self.modifiers.plague_rules() else {
+        if self.modifiers.is_empty() {
             return;
-        };
+        }
         if self.world.kind(entity) != Some(EntityKind::Enemy) || self.is_boss_entity(entity) {
             return;
         }
+        if let Some((params, _)) = self.modifiers.plague_rules() {
+            self.arm_plague(position, &params);
+        }
+        if let Some((params, magnitude)) = self.modifiers.bolstering_rules() {
+            self.bolster_neighbours(entity, position, &params, magnitude);
+        }
+        if let Some((params, _)) = self.modifiers.necrotic_rules() {
+            self.arm_pool(position, &params);
+        }
+    }
+
+    /// Lights the fuse of a corpse at `position`.
+    fn arm_plague(&mut self, position: Vec3, params: &PlagueParams) {
         let now = self.time;
         let id = self.modifiers.fresh_id();
         let fuse = PlagueFuse {
@@ -478,6 +518,243 @@ impl Simulation {
         )
         .with_magnitude(params.heal_reduction);
         self.apply_status(target, status, linger);
+    }
+
+    // ------------------------------------------------------------------------- bolstering
+
+    /// Gives every living non-boss enemy within the radius of the one that died at `position`
+    /// a stack: more maximum health now (and as much more current health, so the stack is
+    /// not a wound), more damage via [`Simulation::sync_enemy_damage`].
+    fn bolster_neighbours(
+        &mut self,
+        dead: EntityId,
+        position: Vec3,
+        params: &BolsteringParams,
+        magnitude: f32,
+    ) {
+        let near: Vec<EntityId> = self
+            .world
+            .entities()
+            .filter(|other| {
+                *other != dead
+                    && self.world.kind(*other) == Some(EntityKind::Enemy)
+                    && self.world.is_alive(*other)
+                    && !self.is_boss_entity(*other)
+                    && self.world.position(*other).is_some_and(|at| {
+                        crate::world::horizontal_distance(at, position) <= params.radius
+                    })
+            })
+            .collect();
+        let health_pct = params.health_pct * magnitude;
+        for other in near {
+            let Some(current_max) = self.world.health(other).map(|health| health.max()) else {
+                continue;
+            };
+            let Some(entry) =
+                self.modifiers
+                    .bolster_field()
+                    .add_stack(other, current_max, params.max_stacks)
+            else {
+                continue;
+            };
+            let new_max = entry.base_max * bolstering::factor(entry.stacks, health_pct);
+            if let Some(health) = self.world.health_mut(other) {
+                let gained = (new_max - health.max()).max(0.0);
+                let current = health.current();
+                health.set_max_keeping_current(new_max);
+                health.set_current(current + gained);
+            }
+        }
+    }
+
+    /// Writes every enemy's modifier damage multiplier: its bolstering stacks and, if it is a
+    /// wounded non-boss, its rage. Recomputed whole each tick from health and stacks, so
+    /// nothing has to remember to take either off.
+    fn sync_enemy_damage(&mut self) {
+        let bolstering = self.modifiers.bolstering_rules();
+        let raging = self.modifiers.raging_rules();
+        for slot in 0..self.enemies.len() {
+            let Some(entity) = self.world.id_at(slot) else {
+                continue;
+            };
+            let mut factor = 1.0;
+            if let Some((params, magnitude)) = bolstering {
+                let stacks = self.modifiers.bolster_stacks(entity);
+                factor *= bolstering::factor(stacks, params.damage_pct * magnitude);
+            }
+            if let Some((params, magnitude)) = raging
+                && self.world.is_alive(entity)
+                && !self.is_boss_entity(entity)
+                && let Some(health) = self.world.health(entity)
+            {
+                factor *= raging::damage_factor(
+                    health.fraction(),
+                    params.threshold,
+                    params.damage_pct * magnitude,
+                );
+            }
+            if let Some(Some(runtime)) = self.enemies.get_mut(slot) {
+                runtime.modifier_damage = factor;
+            }
+        }
+    }
+
+    /// Puts one enemy's modifier changes back: its maximum health and its damage. What a
+    /// restore (a reset, a wipe) runs before it refills the monster.
+    pub(super) fn modifier_restore_enemy(&mut self, entity: EntityId) {
+        if let Some(entry) = self.modifiers.bolster_field().remove(entity)
+            && let Some(health) = self.world.health_mut(entity)
+        {
+            health.set_max_keeping_current(entry.base_max);
+        }
+        if let Some(Some(runtime)) = self.enemies.get_mut(entity.index()) {
+            runtime.modifier_damage = 1.0;
+        }
+    }
+
+    /// Takes all bolstering off, and every enemy's modifier damage multiplier.
+    fn unbolster_all(&mut self) {
+        for entry in self.modifiers.bolster_field().drain() {
+            if let Some(health) = self.world.health_mut(entry.entity) {
+                health.set_max_keeping_current(entry.base_max);
+            }
+        }
+        for runtime in self.enemies.iter_mut().flatten() {
+            runtime.modifier_damage = 1.0;
+        }
+    }
+
+    // ------------------------------------------------------------------------- the pools
+
+    /// Marks the ground where a monster died: a warning now, a pool when it ends.
+    fn arm_pool(&mut self, position: Vec3, params: &NecroticParams) {
+        let now = self.time;
+        let id = self.modifiers.fresh_id();
+        let fuse = PlagueFuse {
+            id,
+            position,
+            radius: params.radius,
+            armed_time: now,
+            explode_time: now + f64::from(params.warning.max(0.0)),
+        };
+        let tick = self.tick;
+        if let Some(dropped) = self.modifiers.pool_field().insert_fuse(fuse) {
+            self.events
+                .push(CombatEvent::PlagueCloudEnded { id: dropped, tick });
+        }
+        // The plague's own event: a client draws the warning disc exactly as it draws a fuse.
+        self.events.push(CombatEvent::PlagueArmed {
+            id,
+            position,
+            radius: fuse.radius,
+            armed_time: fuse.armed_time,
+            explode_time: fuse.explode_time,
+            tick,
+        });
+    }
+
+    /// Forms the pools whose warning has run out, thins the old ones, and hurts whoever stands
+    /// in one, once every interval.
+    fn tick_pools(&mut self, step: f32, params: &NecroticParams, magnitude: f32) {
+        let now = self.time;
+        let tick = self.tick;
+        let mut advanced = PlagueStep::default();
+        self.modifiers.pool_field().advance(now, &mut advanced);
+        for id in advanced.ended.drain(..) {
+            self.events.push(CombatEvent::PlagueCloudEnded { id, tick });
+        }
+        for fuse in advanced.burst.drain(..) {
+            // The plague's burst event is what starts a cloud on a client; here it starts a pool.
+            self.events.push(CombatEvent::PlagueExploded {
+                id: fuse.id,
+                position: fuse.position,
+                radius: fuse.radius,
+                tick,
+            });
+            let pool = PlagueCloud {
+                id: fuse.id,
+                position: fuse.position,
+                radius: fuse.radius,
+                end_time: now + f64::from(params.duration.max(0.0)),
+            };
+            if let Some(dropped) = self.modifiers.pool_field().insert_cloud(pool) {
+                self.events
+                    .push(CombatEvent::PlagueCloudEnded { id: dropped, tick });
+            }
+        }
+        if self.modifiers.pools().is_empty() || !self.modifiers.pool_tick_due(step) {
+            return;
+        }
+        let pct = necrotic::tick_pct(
+            params.pct_max_hp_per_sec,
+            MODIFIER_TICK_INTERVAL,
+            magnitude,
+            params.max_hit_pct,
+        );
+        for player in self.player_entities() {
+            if !self.world.is_alive(player) {
+                continue;
+            }
+            let Some(position) = self.world.position(player) else {
+                continue;
+            };
+            let radius = self.world.radius(player);
+            let inside = self.modifiers.pools().iter().any(|pool| {
+                crate::modifier::plague::inside(pool.position, pool.radius, position, radius)
+            });
+            if inside {
+                self.modifier_hit(
+                    player,
+                    pct,
+                    1.0,
+                    params.max_hit_pct,
+                    DamageType::Nature,
+                    true,
+                );
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------- the spite
+
+    /// Hastens a cast that has just begun, if Spiteful Casters is in force and the cast can be
+    /// interrupted (the speed-up is the price of the interrupt, so an uninterruptible cast is
+    /// left alone).
+    pub(super) fn spiteful_haste(&self, cast: &mut EnemyCast) {
+        let Some((params, magnitude)) = self.modifiers.spiteful_rules() else {
+            return;
+        };
+        if cast.interruptible {
+            cast.duration = spiteful::sped_up(cast.duration, params.cast_speed_pct * magnitude);
+        }
+    }
+
+    /// Curses everyone an interruptible cast landed on. Called only for a cast that completed:
+    /// an interrupt, a stun or a lost target never gets here, which is the reward for each.
+    pub(super) fn spiteful_curse(&mut self, cast: &EnemyCast) {
+        let Some((params, magnitude)) = self.modifiers.spiteful_rules() else {
+            return;
+        };
+        if !cast.interruptible {
+            return;
+        }
+        let duration = params.debuff_duration.max(MODIFIER_TICK_INTERVAL);
+        let reduction =
+            (params.heal_reduction * magnitude).clamp(0.0, spiteful::MAX_HEAL_REDUCTION);
+        for target in cast.targets.iter().flatten().copied() {
+            if self.world.faction(target) != Some(Faction::Player) {
+                continue;
+            }
+            let status = Status::new(
+                StatusKind::Spiteful,
+                EntityId::INVALID,
+                AbilityId::NONE,
+                duration,
+                0.0,
+            )
+            .with_magnitude(reduction);
+            self.apply_status(target, status, duration);
+        }
     }
 
     // ------------------------------------------------------------------------- the damage

@@ -152,6 +152,10 @@ pub enum StatusKind {
     /// `crate::trinket::TrinketState`); this is what the frames and the aura row show while it
     /// stands, and it goes when the pool is spent.
     TrinketAbsorb,
+    /// The Spiteful Casters modifier's curse: less healing received, for whoever one of its
+    /// casters' spells landed on. A Magic debuff, so a dispel takes it off.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Spiteful,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -354,7 +358,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 32;
+pub const STATUS_KIND_COUNT: usize = 33;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -391,6 +395,7 @@ impl StatusKind {
         Self::Barkskin,
         Self::TrinketWard,
         Self::TrinketAbsorb,
+        Self::Spiteful,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -947,6 +952,17 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         // The pool is the player's (`TrinketState::absorb`); this only says it stands.
         generic: GenericApplication::new(10.0, 0.0, 0.20),
         ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Spiteful,
+        id: "spiteful",
+        overlay_name: "SPITE",
+        name: "Spite",
+        description: "Healing received is reduced by a caster's spite. Dispel it.",
+        dispel: Some(DispelSchool::Magic),
+        modifiers: &[EffectModifier::HealingReduced],
+        generic: GenericApplication::new(10.0, 0.0, 0.3),
+        ..DEBUFF
     },
 ];
 

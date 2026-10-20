@@ -54,6 +54,76 @@
       "amplifiable": true,
       "reducible": true,
       "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "bolstering",
+      "name": "Bolstering",
+      "description": "When a monster dies, every living monster nearby grows stronger: more health and more damage, stacking. Kill packs down together, not one at a time.",
+      "icon": "bolstering",
+      "kind": "bolstering",
+      "introduced_at_level": 5,
+      "params": {
+        "radius": 30.0,
+        "health_pct": 10.0,
+        "damage_pct": 10.0,
+        "max_stacks": 5
+      },
+      "scaling_per_level": 0.04,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "raging",
+      "name": "Raging",
+      "description": "Monsters below 30% health fly into a rage and hit much harder. Finish them quickly or hold your cooldowns.",
+      "icon": "raging",
+      "kind": "raging",
+      "introduced_at_level": 7,
+      "params": {
+        "threshold": 0.30,
+        "damage_pct": 50.0
+      },
+      "scaling_per_level": 0.04,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "necrotic_pools",
+      "name": "Necrotic Pools",
+      "description": "Slain monsters leave a pool of rot after a moment's warning. Standing in one burns. Fight where the dead will not fall at your feet.",
+      "icon": "necrotic_pools",
+      "kind": "necrotic_pools",
+      "introduced_at_level": 11,
+      "params": {
+        "warning": 1.5,
+        "radius": 3.0,
+        "duration": 8.0,
+        "pct_max_hp_per_sec": 4.0,
+        "max_hit_pct": 12.0
+      },
+      "scaling_per_level": 0.05,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "spiteful_casters",
+      "name": "Spiteful Casters",
+      "description": "Casters cast faster. A cast that lands leaves a curse that cuts the healing you receive; interrupt the cast or dispel the curse.",
+      "icon": "spiteful_casters",
+      "kind": "spiteful_casters",
+      "introduced_at_level": 13,
+      "params": {
+        "cast_speed_pct": 30.0,
+        "debuff_duration": 10.0,
+        "heal_reduction": 0.30
+      },
+      "scaling_per_level": 0.04,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
     }
   ],
   "progression": [

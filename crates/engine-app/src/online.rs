@@ -3367,7 +3367,13 @@ fn modifier_icon(kind: engine_game::modifier::ModifierKind) -> UiIcon {
     use engine_game::modifier::ModifierKind;
     match kind {
         ModifierKind::RotatingBeams => UiIcon::ModifierRotatingBeams,
-        ModifierKind::PlagueExplosion => UiIcon::ModifierPlagueExplosion,
+        ModifierKind::PlagueExplosion | ModifierKind::NecroticPools => {
+            UiIcon::ModifierPlagueExplosion
+        }
+        // No art of their own yet: the beams' icon stands in for the monster-side modifiers.
+        ModifierKind::Bolstering | ModifierKind::Raging | ModifierKind::SpitefulCasters => {
+            UiIcon::ModifierRotatingBeams
+        }
     }
 }
 

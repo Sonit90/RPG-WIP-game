@@ -97,6 +97,9 @@ pub struct EnemyRuntime {
     /// What its damage is multiplied by: its level, and the party size the level was built
     /// for.
     pub damage_scale: f32,
+    /// What its damage is further multiplied by while a dungeon modifier is at it (Raging,
+    /// Bolstering). One otherwise. Written whole by the modifier each tick, never accumulated.
+    pub modifier_damage: f32,
     /// What killing it is worth towards dungeon completion.
     pub completion: f32,
     /// Whether its completion has already been counted, so a corpse is credited once.
@@ -118,6 +121,7 @@ impl EnemyRuntime {
             telegraphs: None,
             dash: None,
             damage_scale: 1.0,
+            modifier_damage: 1.0,
             completion: kind.archetype().completion,
             credited: false,
             display_name: None,
@@ -193,7 +197,7 @@ impl Simulation {
                 && self.world.is_alive(entity)
             {
                 runtime.brain.hold(step);
-                let scale = runtime.damage_scale;
+                let scale = runtime.damage_scale * runtime.modifier_damage;
                 runtime.dash = self.advance_dash(entity, dash, step, scale);
                 runtime.intent = MoveIntent {
                     direction: Vec3::ZERO,
@@ -254,7 +258,7 @@ impl Simulation {
             let telegraphs = runtime.telegraphs;
             let request = decision.request;
             let brain_state = runtime.brain.state();
-            let scale = runtime.damage_scale;
+            let scale = runtime.damage_scale * runtime.modifier_damage;
 
             if let Some(phase) = decision.phase {
                 self.announce_phase(entity, phase, runtime.brain.phase_name());
@@ -285,6 +289,9 @@ impl Simulation {
                         body.velocity.z = 0.0;
                     }
                     if let Some(cast) = runtime.brain.cast_mut() {
+                        // Before the cast is announced and its telegraph drawn, so the player
+                        // sees the shorter cast and not the table's.
+                        self.spiteful_haste(cast);
                         self.plan_cast(entity, cast, &percept);
                     }
                     if let Some(cast) = runtime.brain.cast() {
@@ -320,6 +327,9 @@ impl Simulation {
                         runtime.telegraphs = None;
                     }
                     self.announce_cast_end(entity, ability, CastEnd::Completed);
+                    if let Some(cast) = running {
+                        self.spiteful_curse(&cast);
+                    }
                     match running {
                         Some(cast) => {
                             if let Some(dash) = self.resolve_cast(entity, &cast, &percept, scale) {
