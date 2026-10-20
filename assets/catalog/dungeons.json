@@ -14,7 +14,7 @@
       "rewards": ["Experience", "Crypt-forged gear", "Steward's Reliquary"],
       "keys": {
         "min_level": 1,
-        "max_level": 20,
+        "max_level": 99,
         "health_per_level": 0.10,
         "damage_per_level": 0.05
       },
@@ -24,6 +24,7 @@
         "resources": [{ "id": "crypt_dust", "amount": 5, "per_level": 2 }]
       },
       "countdown_seconds": 5,
+      "timer_seconds": 1500,
       "spawn_points": [
         { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
         { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
@@ -31,6 +32,40 @@
       ],
       "start_barrier": {
         "center": [0.0, 2.5, -32.0],
+        "half_extents": [8.0, 2.5, 0.6]
+      }
+    },
+    {
+      "id": "ashen_reliquary",
+      "name": "Ashen Reliquary",
+      "description": "Five halls of cold braziers under a burnt chapel. Each room asks one more question of the party than the last, and the Warden of the Ashen Gate asks them all at once.",
+      "scene": "scenes/ashen_reliquary.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 40,
+      "rewards": ["Experience", "Ash-forged gear", "Warden's Cinders"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 220,
+        "experience_per_level": 55,
+        "resources": [{ "id": "crypt_dust", "amount": 6, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 1200,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -30.0],
         "half_extents": [8.0, 2.5, 0.6]
       }
     }

@@ -1,0 +1,4754 @@
+{
+  "version": 1,
+  "name": "ashen_reliquary",
+  "half_extent": 320.0,
+  "ground_height": 0.0,
+  "spawns": {
+    "player": [
+      0.0,
+      0.0,
+      -8.0
+    ],
+    "featured_dummy": [
+      0.0,
+      0.0,
+      -22.0
+    ],
+    "group_center": [
+      0.0,
+      0.0,
+      -22.0
+    ],
+    "group_spacing": 3.0
+  },
+  "lighting": {
+    "sun_direction": [
+      -0.62,
+      -0.55,
+      -0.56
+    ],
+    "sun_color": [
+      1.0,
+      0.91,
+      0.75
+    ],
+    "sun_intensity": 1.25,
+    "ambient_color": [
+      0.46,
+      0.58,
+      0.8
+    ],
+    "ambient_intensity": 0.34,
+    "sky_zenith": [
+      0.16,
+      0.31,
+      0.6
+    ],
+    "sky_horizon": [
+      0.74,
+      0.66,
+      0.56
+    ]
+  },
+  "objects": [
+    {
+      "asset": "sky_dome",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "ground_plain",
+      "position": [
+        0.0,
+        0.0,
+        -145.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        640.0,
+        1.0,
+        640.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -2.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -2.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -26.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -26.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -26.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -22.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -14.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -6.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -22.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -14.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -6.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -12.0,
+        0.0,
+        -26.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -12.0,
+        0.0,
+        -2.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        12.0,
+        0.0,
+        -26.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        12.0,
+        0.0,
+        -2.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -26.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -26.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -38.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -30.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -38.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -30.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -42.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -42.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -42.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -74.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -74.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -74.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -70.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -62.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -54.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -46.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -70.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -62.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -54.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -46.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -74.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -42.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -74.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -42.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -42.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -42.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -74.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -74.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -86.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -78.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -86.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -78.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -90.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -90.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -90.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -122.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -122.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -122.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -118.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -110.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -102.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -94.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -118.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -110.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -102.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -94.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -122.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -90.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -122.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -90.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -90.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -90.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -122.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -122.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -134.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -126.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -134.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -126.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -138.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -138.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -138.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -170.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -170.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -170.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -166.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -158.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -150.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -142.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -166.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -158.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -150.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -142.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -170.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -138.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -170.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -138.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -138.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -138.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -170.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -170.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -182.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -174.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -182.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -174.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -186.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -186.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -186.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -218.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -218.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -218.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -214.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -206.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -198.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -16.0,
+        0.0,
+        -190.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -214.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -206.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -198.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        16.0,
+        0.0,
+        -190.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -218.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -16.0,
+        0.0,
+        -186.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -218.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        16.0,
+        0.0,
+        -186.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -186.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -186.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -218.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -218.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -238.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -230.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -8.0,
+        0.0,
+        -222.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -238.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -230.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        8.0,
+        0.0,
+        -222.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -20.0,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        20.0,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -20.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -12.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -4.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        4.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        12.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        20.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "arch",
+      "position": [
+        0.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -24.0,
+        0.0,
+        -286.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -24.0,
+        0.0,
+        -278.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -24.0,
+        0.0,
+        -270.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -24.0,
+        0.0,
+        -262.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -24.0,
+        0.0,
+        -254.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        -24.0,
+        0.0,
+        -246.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        24.0,
+        0.0,
+        -286.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        24.0,
+        0.0,
+        -278.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        24.0,
+        0.0,
+        -270.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        24.0,
+        0.0,
+        -262.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        24.0,
+        0.0,
+        -254.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "wall_segment",
+      "position": [
+        24.0,
+        0.0,
+        -246.0
+      ],
+      "yaw": 1.5707963,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          1.2,
+          0.0
+        ],
+        "half_extents": [
+          4.0,
+          1.2,
+          0.45
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -24.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -24.0,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        24.0,
+        0.0,
+        -290.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        24.0,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        -9.5,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "brazier",
+      "position": [
+        9.5,
+        0.0,
+        -242.0
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "none"
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -9.192388,
+        0.0,
+        -275.19238
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        -9.192388,
+        0.0,
+        -256.80762
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        9.192388,
+        0.0,
+        -275.19238
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    },
+    {
+      "asset": "pillar",
+      "position": [
+        9.192388,
+        0.0,
+        -256.80762
+      ],
+      "yaw": 0.0,
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision": {
+        "kind": "box",
+        "center": [
+          0.0,
+          2.3,
+          0.0
+        ],
+        "half_extents": [
+          0.62,
+          2.3,
+          0.62
+        ]
+      }
+    }
+  ],
+  "spawn_points": [
+    {
+      "position": [
+        0.0,
+        0.0,
+        -8.0
+      ],
+      "yaw": 0.0
+    }
+  ],
+  "lights": [
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -26.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -26.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -42.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -42.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -74.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -74.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -90.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -90.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -122.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -122.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -138.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -138.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -170.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -170.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -186.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -186.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -218.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -218.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        -9.5,
+        1.45,
+        -242.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    },
+    {
+      "position": [
+        9.5,
+        1.45,
+        -242.0
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.28
+      ],
+      "intensity": 3.0,
+      "range": 12.0,
+      "casts_shadow": true,
+      "priority": 2
+    }
+  ],
+  "monsters": [
+    {
+      "monster": "brute",
+      "position": [
+        -11.0,
+        0.0,
+        -48.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "GATEHOUSE WATCH"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        -6.0,
+        0.0,
+        -46.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "GATEHOUSE WATCH"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        10.0,
+        0.0,
+        -66.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "GATE CROSSFIRE"
+    },
+    {
+      "monster": "ember_adept",
+      "position": [
+        4.0,
+        0.0,
+        -70.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "GATE CROSSFIRE"
+    },
+    {
+      "monster": "ember_adept",
+      "position": [
+        13.0,
+        0.0,
+        -70.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "GATE CROSSFIRE"
+    },
+    {
+      "monster": "bone_ritualist",
+      "position": [
+        -12.0,
+        0.0,
+        -93.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "BONE CHOIR"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        -13.0,
+        0.0,
+        -98.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "BONE CHOIR"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        -7.0,
+        0.0,
+        -97.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "BONE CHOIR"
+    },
+    {
+      "monster": "crypt_warden",
+      "position": [
+        12.0,
+        0.0,
+        -119.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "WARDENS CIRCLE"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        8.0,
+        0.0,
+        -113.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "WARDENS CIRCLE"
+    },
+    {
+      "monster": "ember_adept",
+      "position": [
+        13.0,
+        0.0,
+        -114.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "WARDENS CIRCLE"
+    },
+    {
+      "monster": "cinder_weaver",
+      "position": [
+        -13.0,
+        0.0,
+        -143.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "CINDER LOOM"
+    },
+    {
+      "monster": "cinder_weaver",
+      "position": [
+        -6.0,
+        0.0,
+        -142.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "CINDER LOOM"
+    },
+    {
+      "monster": "cinder_weaver",
+      "position": [
+        12.0,
+        0.0,
+        -167.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "WEAVE AND WORD"
+    },
+    {
+      "monster": "bone_ritualist",
+      "position": [
+        6.0,
+        0.0,
+        -167.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "WEAVE AND WORD"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        10.0,
+        0.0,
+        -161.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "WEAVE AND WORD"
+    },
+    {
+      "monster": "ash_revenant",
+      "position": [
+        -11.0,
+        0.0,
+        -191.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "VAULT SENTINEL"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        -6.0,
+        0.0,
+        -189.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "VAULT SENTINEL"
+    },
+    {
+      "monster": "crypt_warden",
+      "position": [
+        13.0,
+        0.0,
+        -215.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "LAST RITE"
+    },
+    {
+      "monster": "bone_ritualist",
+      "position": [
+        6.0,
+        0.0,
+        -215.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "LAST RITE"
+    },
+    {
+      "monster": "cinder_weaver",
+      "position": [
+        13.0,
+        0.0,
+        -209.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "LAST RITE"
+    },
+    {
+      "monster": "brute",
+      "position": [
+        8.0,
+        0.0,
+        -209.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "LAST RITE"
+    },
+    {
+      "monster": "warden_of_the_ashen_gate",
+      "position": [
+        0.0,
+        0.0,
+        -266.0
+      ],
+      "yaw": 3.1415927,
+      "pack": "WARDEN OF THE ASHEN GATE"
+    }
+  ],
+  "dungeon": {
+    "name": "THE ASHEN RELIQUARY",
+    "required_completion": 87.0,
+    "boss_pack": "WARDEN OF THE ASHEN GATE",
+    "boss_gate": {
+      "center": [
+        0.0,
+        0.0,
+        -230.0
+      ],
+      "half_extents": [
+        8.0,
+        3.0,
+        0.6
+      ],
+      "yaw": 0.0
+    },
+    "add_count": 0,
+    "allow_duplicate_adds": false
+  }
+}
