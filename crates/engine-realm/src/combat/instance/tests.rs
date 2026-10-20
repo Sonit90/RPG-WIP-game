@@ -7,8 +7,12 @@ use engine_game::ability::AbilityId;
 use engine_game::combat::DamageType;
 
 fn crypt() -> (EnvironmentScene, Vec<Barrier>, Vec<PlayerSpec>) {
+    dungeon_party("graveyard_crypt")
+}
+
+fn dungeon_party(id: &str) -> (EnvironmentScene, Vec<Barrier>, Vec<PlayerSpec>) {
     let catalog = Catalog::builtin().expect("catalog");
-    let dungeon = catalog.dungeon("graveyard_crypt").expect("crypt").clone();
+    let dungeon = catalog.dungeon(id).expect("dungeon").clone();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets")
         .join(&dungeon.scene);
@@ -239,6 +243,50 @@ fn the_whole_crypt_can_be_cleared_and_the_run_completes() {
     assert!(
         fight.completed().is_some(),
         "the last boss died and the run completed"
+    );
+}
+
+#[test]
+fn the_drowned_catacombs_load_on_the_realm_path_and_can_be_cleared() {
+    let (scene, barriers, players) = dungeon_party("drowned_catacombs");
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let monsters = fight.monster_states();
+    assert_eq!(
+        monsters.len(),
+        scene.monsters.len(),
+        "no unknown ids dropped"
+    );
+    fight.open_start_barrier();
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let mut saw_unlock = false;
+    for _ in 0..400 {
+        let living: Vec<EntityId> = fight
+            .sim
+            .enemies()
+            .map(|(entity, _)| entity)
+            .filter(|entity| fight.sim.world().is_alive(*entity))
+            .collect();
+        for entity in living {
+            fight.sim.apply_damage(
+                mage,
+                entity,
+                1.0e7,
+                AbilityId::from_fire(FireAbility::Firebolt),
+                DamageType::Fire,
+            );
+        }
+        let _ = fight.advance(30);
+        saw_unlock |= fight.unlocked();
+        if fight.completed().is_some() {
+            break;
+        }
+    }
+    assert!(saw_unlock, "the gate opened");
+    assert!(
+        fight.completed().is_some(),
+        "the Abbess died and the run completed"
     );
 }
 

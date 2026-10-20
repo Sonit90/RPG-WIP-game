@@ -297,6 +297,51 @@
       "icon": "trinket_absorb",
       "stats": { "stamina": 8, "versatility": 5 },
       "active": { "effect": "group_absorb", "cooldown_s": 120, "radius_m": 30, "duration_s": 10, "magnitude": 0.20 }
+    },
+    {
+      "id": "abbess_tidewrap_mantle",
+      "name": "Tidewrap Mantle of the Abbess",
+      "slot": "shoulder",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "shoulder",
+      "stats": { "stamina": 8, "main_stat": 7, "haste": 6, "versatility": 3 }
+    },
+    {
+      "id": "drowned_pilgrims_greaves",
+      "name": "Drowned Pilgrim's Greaves",
+      "slot": "legs",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "legs",
+      "stats": { "stamina": 10, "main_stat": 8, "critical_strike": 6, "spirit": 3 }
+    },
+    {
+      "id": "gloves_of_the_salt_psalm",
+      "name": "Gloves of the Salt Psalm",
+      "slot": "hands",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "hands",
+      "stats": { "main_stat": 8, "critical_strike": 7, "versatility": 4 }
+    },
+    {
+      "id": "tideworn_sabatons",
+      "name": "Tideworn Sabatons",
+      "slot": "feet",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "feet",
+      "stats": { "stamina": 7, "main_stat": 5, "haste": 7 }
+    },
+    {
+      "id": "abbess_signet_of_the_deep",
+      "name": "Signet of the Deep",
+      "slot": "ring",
+      "rarity": "epic",
+      "item_level": 12,
+      "icon": "ring",
+      "stats": { "stamina": 5, "main_stat": 6, "versatility": 8 }
     }
   ],
   "boss_tables": {
@@ -383,6 +428,32 @@
       },
       { "item": "wardens_rallying_bell", "weight": 7 },
       { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 }
+    ],
+    "drowned_abbess": [
+      { "item": "gravewardens_cowl", "weight": 10 },
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "mourners_pauldrons", "weight": 10 },
+      { "item": "ossuary_vestment", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "shroud_of_quiet_vigil", "weight": 10 },
+      { "item": "gravediggers_grips", "weight": 10 },
+      { "item": "crypt_stitched_leggings", "weight": 10 },
+      { "item": "treads_of_the_still_hour", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "band_of_faded_vows", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "hollow_lantern_charm", "weight": 10 },
+      { "item": "ossified_heart", "weight": 10 },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "abbess_tidewrap_mantle", "weight": 12 },
+      { "item": "drowned_pilgrims_greaves", "weight": 12 },
+      { "item": "gloves_of_the_salt_psalm", "weight": 12 },
+      { "item": "tideworn_sabatons", "weight": 12 },
+      { "item": "abbess_signet_of_the_deep", "weight": 12 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
       { "item": "aegis_of_the_last_vigil", "weight": 7 }
     ]

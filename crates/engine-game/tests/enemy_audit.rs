@@ -16,8 +16,8 @@ use engine_game::arena::{self, ArenaConfig};
 use engine_game::encounter::{Encounter, EnemySpawn};
 use engine_game::enemy::brain::{AiState, MAX_TARGETS, MAX_ZONES};
 use engine_game::enemy::{
-    ENEMY_ABILITIES, EnemyAbility, EnemyAim, EnemyEffect, EnemyKind, EnemyRider, EnemyTarget,
-    TelegraphShape,
+    ENEMY_ABILITIES, ENEMY_ABILITY_COUNT, EnemyAbility, EnemyAim, EnemyEffect, EnemyKind,
+    EnemyRider, EnemyTarget, TelegraphShape,
 };
 use engine_game::entity::EntityId;
 use engine_game::event::CombatEvent;
@@ -111,9 +111,9 @@ fn total_by(events: &[CombatEvent], ability: EnemyAbility) -> f32 {
 // ------------------------------------------------------------------------------------------
 
 #[test]
-fn there_are_fifty_eight_abilities_and_each_is_where_its_index_says() {
-    assert_eq!(EnemyAbility::ALL.len(), 58);
-    assert_eq!(ENEMY_ABILITIES.len(), 58);
+fn every_ability_is_where_its_index_says() {
+    assert_eq!(EnemyAbility::ALL.len(), ENEMY_ABILITY_COUNT);
+    assert_eq!(ENEMY_ABILITIES.len(), ENEMY_ABILITY_COUNT);
     for (index, ability) in EnemyAbility::ALL.iter().enumerate() {
         assert_eq!(ability.index(), index, "{ability:?} is out of table order");
         assert!(!ability.name().is_empty());
@@ -122,7 +122,7 @@ fn there_are_fifty_eight_abilities_and_each_is_where_its_index_says() {
 
 #[test]
 fn every_ability_is_owned_by_some_monster() {
-    let mut owned = [false; 58];
+    let mut owned = [false; ENEMY_ABILITY_COUNT];
     for kind in EnemyKind::ALL {
         let archetype = kind.archetype();
         for ability in archetype.abilities.iter().flatten() {
@@ -244,6 +244,30 @@ fn every_row_is_internally_consistent() {
             EnemyEffect::Frenzy { duration, haste } => {
                 assert!(duration > 0.0 && haste > 0.0, "{name}");
                 assert_eq!(d.damage, 0.0, "{name}");
+            }
+            EnemyEffect::Hymn {
+                heal_fraction,
+                haste,
+                duration,
+            } => {
+                assert!(
+                    heal_fraction > 0.0 && haste > 0.0 && duration > 0.0,
+                    "{name}"
+                );
+                assert!(d.is_cast() && d.interruptible, "{name}: a hymn is the kick");
+                assert!(d.effect.is_self(), "{name}");
+            }
+            EnemyEffect::Undertow {
+                interval,
+                pull_speed,
+                pool_near,
+                pool_far,
+                ..
+            } => {
+                assert!(d.is_cast() && interval > 0.0, "{name}");
+                assert!(!d.interruptible, "{name}: the current is walked out of");
+                assert!(pool_near < pool_far && pull_speed > 0.0, "{name}");
+                assert!(d.shape.is_area(), "{name}: the slam needs a footprint");
             }
         }
         // Selecting somebody other than the tank only makes sense for something that reaches
@@ -394,7 +418,7 @@ fn fired(events: &[CombatEvent], ability: EnemyAbility) -> bool {
 
 #[test]
 fn every_ability_fires_in_some_fight() {
-    let mut seen = [false; 58];
+    let mut seen = [false; ENEMY_ABILITY_COUNT];
     for (kinds, phase) in scenarios() {
         let (_, events) = play(&kinds, phase, 1.0, 60 * 70);
         for ability in EnemyAbility::ALL {
@@ -416,7 +440,7 @@ fn damage_scales_once_on_every_path() {
     // Doubling a monster's damage scale must double what each of its abilities does: hits,
     // channel ticks, marks, shockwaves, trails, pools and bleeds alike. An ability that
     // ignored the scale would stay put; one that applied it twice would quadruple.
-    let mut checked = [false; 58];
+    let mut checked = [false; ENEMY_ABILITY_COUNT];
     for (kinds, phase) in scenarios() {
         let (_, one) = play(&kinds, phase, 1.0, 60 * 40);
         let (_, two) = play(&kinds, phase, 2.0, 60 * 40);
@@ -1116,6 +1140,11 @@ fn what_enemies_put_on_a_player_is_classified_for_the_dispel() {
         match definition.rider {
             EnemyRider::Bleed { .. } => kinds_applied.push(StatusKind::Rended),
             EnemyRider::Slow { .. } => kinds_applied.push(StatusKind::Crippled),
+            EnemyRider::Afflict { kind, .. } => {
+                kinds_applied.push(kind);
+                // Whatever an enemy afflicts is a harmful effect a player can see.
+                assert!(kind.is_harmful(), "{kind:?}");
+            }
             EnemyRider::None => {}
         }
         if definition.effect.is_charge() {

@@ -106,7 +106,7 @@ impl AuraKind {
                 StatusKind::Barkskin => UiIcon::WildRush,
                 StatusKind::TrinketWard => UiIcon::TrinketWard,
                 StatusKind::TrinketAbsorb => UiIcon::TrinketAbsorb,
-                StatusKind::Spiteful => UiIcon::AuraMagicVulnerability,
+                StatusKind::Spiteful | StatusKind::Waterlogged => UiIcon::AuraMagicVulnerability,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,

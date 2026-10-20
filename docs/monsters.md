@@ -176,6 +176,19 @@ mygame --scene playground --spawn all
 `--spawn` chooses monsters by table id and spawns them through the playground, passive unless
 `--spawn-hostile` is given.
 
+## The Drowned Catacombs roster
+
+Five more archetypes, drawn with existing models and a teal tint (see
+[`dungeon/DROWNED_CATACOMBS.md`](dungeon/DROWNED_CATACOMBS.md)):
+
+| Id | Drawn as | Role |
+|---|---|---|
+| `drowned_tidecaller` | `skeleton_bonecaster` | Support: interruptible Tidal Mend on the most wounded ally |
+| `drowned_cultist` | `grave_acolyte` | Ranged: Brine Bolt leaves the dispellable Waterlogged |
+| `catacomb_lurker` | `grave_brute` | Elite: patrols; Tidal Cleave (wide cone) |
+| `bilge_archer` | `crypt_archer` | Ranged: Bilge Volley (delayed circles on three players) |
+| `drowned_abbess` | `grave_acolyte` | Boss: Undertow, Drowning Hymn, healers at 50 % |
+
 ## Cost
 
 Measured in the Graveyard Crypt, release build, hidden 1920×1080, 6,000 frames, with all 37

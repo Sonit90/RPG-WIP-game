@@ -747,8 +747,10 @@ pub fn ability_tags(def: &EnemyAbilityDef) -> Vec<AbilityTag> {
     if def.shape.is_area() {
         tags.push(AbilityTag::Area);
     }
-    let control = matches!(def.rider, EnemyRider::Slow { .. })
-        || matches!(def.effect, EnemyEffect::Charge { slow, .. } if slow > 0.0);
+    let control = matches!(
+        def.rider,
+        EnemyRider::Slow { .. } | EnemyRider::Afflict { .. }
+    ) || matches!(def.effect, EnemyEffect::Charge { slow, .. } if slow > 0.0);
     if control {
         tags.push(AbilityTag::Control);
     }
@@ -963,6 +965,39 @@ pub fn ability_effects(def: &EnemyAbilityDef, damage_scale: f32) -> Vec<String> 
             (haste * 100.0).round() as i32,
             seconds(duration)
         )),
+        EnemyEffect::Hymn {
+            heal_fraction,
+            haste,
+            duration,
+        } => {
+            lines.push(format!(
+                "If it finishes, heals itself for {}% of its health",
+                (heal_fraction * 100.0).round() as i32
+            ));
+            lines.push(format!(
+                "And every ally attacks {}% faster for {}",
+                (haste * 100.0).round() as i32,
+                seconds(duration)
+            ));
+        }
+        EnemyEffect::Undertow {
+            pull_speed,
+            pool_radius,
+            pool_damage_per_second,
+            pool_duration,
+            ..
+        } => {
+            lines.push(format!(
+                "Drags every player towards itself at {} a second",
+                metres(pull_speed)
+            ));
+            lines.push(format!(
+                "Opens {} pools dealing {} a second for {}",
+                metres(pool_radius),
+                thousands(pool_damage_per_second * damage_scale),
+                seconds(pool_duration)
+            ));
+        }
         _ => {}
     }
     match def.rider {
@@ -981,6 +1016,20 @@ pub fn ability_effects(def: &EnemyAbilityDef, damage_scale: f32) -> Vec<String> 
             "Slows its victim {}% for {}",
             (fraction * 100.0).round() as i32,
             seconds(duration)
+        )),
+        EnemyRider::Afflict {
+            kind,
+            duration,
+            max_stacks,
+        } => lines.push(format!(
+            "Leaves {} on its victim for {}, stacking up to {max_stacks}{}",
+            kind.display_name(),
+            seconds(duration),
+            if kind.is_dispellable() {
+                " (dispellable)"
+            } else {
+                ""
+            }
         )),
         EnemyRider::None => {}
     }

@@ -156,6 +156,10 @@ pub enum StatusKind {
     /// casters' spells landed on. A Magic debuff, so a dispel takes it off.
     /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
     Spiteful,
+    /// The Drowned Catacombs' brine: slower, and every blow lands harder. A Magic debuff the
+    /// Drowned Cultist's Brine Bolt stacks, so a dispel (or killing the cultist) is the answer.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Waterlogged,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -358,7 +362,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 33;
+pub const STATUS_KIND_COUNT: usize = 34;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -396,6 +400,7 @@ impl StatusKind {
         Self::TrinketWard,
         Self::TrinketAbsorb,
         Self::Spiteful,
+        Self::Waterlogged,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -962,6 +967,25 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         dispel: Some(DispelSchool::Magic),
         modifiers: &[EffectModifier::HealingReduced],
         generic: GenericApplication::new(10.0, 0.0, 0.3),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Waterlogged,
+        id: "waterlogged",
+        overlay_name: "WATERLOGGED",
+        name: "Waterlogged",
+        description: "Moving 15% slower and taking 8% more damage per stack. Dispel it.",
+        // A drowning spell, not a wound: a dispel takes every stack at once.
+        dispel: Some(DispelSchool::Magic),
+        max_stacks: 3,
+        modifiers: &[
+            EffectModifier::MoveSpeed { per_stack: -0.15 },
+            EffectModifier::DamageTaken {
+                schools: Schools::ALL,
+                per_stack: 0.08,
+            },
+        ],
+        generic: GenericApplication::new(12.0, 0.0, 0.0),
         ..DEBUFF
     },
 ];

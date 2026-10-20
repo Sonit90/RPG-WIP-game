@@ -68,6 +68,40 @@
         "center": [0.0, 2.5, -30.0],
         "half_extents": [8.0, 2.5, 0.6]
       }
+    },
+    {
+      "id": "drowned_catacombs",
+      "name": "Drowned Catacombs",
+      "description": "A flooded catacomb where the tide never went out. Choose a wing - the Sunken Cloister's casters or the Bilge Cisterns' archers - cross the sluice, and face the Drowned Abbess before her hymn finishes.",
+      "scene": "scenes/drowned_catacombs.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 45,
+      "rewards": ["Experience", "Tide-worn gear", "Abbess's Vestments"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 240,
+        "experience_per_level": 60,
+        "resources": [{ "id": "crypt_dust", "amount": 6, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 1500,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -24.0],
+        "half_extents": [4.0, 2.5, 0.6]
+      }
     }
   ]
 }
