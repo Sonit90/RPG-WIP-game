@@ -43,10 +43,10 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
   report. Rework needed: tail P(>=+k) non-decreasing in key 1..=99; fix mangled test names
   (`an_sharpening_...`); merge p2-core (history's `loot_entry`/`apply_loot` read `props.enhancement` →
   `sharpening`).
-- `p2-dungeon3` (worktree `../myGame-wt-dungeon3`): Drowned Catacombs, new archetypes drowned_tidecaller
-  (healer), drowned_cultist (caster, dispellable Waterlogged), catacomb_lurker (elite patrol),
-  bilge_archer; boss drowned_abbess (Undertow pull, interruptible Drowning Hymn 66/33, tidecaller adds 50 %);
-  new epics for empty slots.
+- `p2-sets` (worktree `../myGame-wt-sets`): sets.json, active_sets, tooltip/panel UI, sim.
+- MERGED `p2-dungeon3`: Drowned Catacombs (generator test `export_drowned_catacombs`), roster
+  tidecaller/cultist(Waterlogged)/lurker/bilge_archer, boss drowned_abbess (Undertow, Hymn, adds);
+  5 epics ilvl 12. Not visually checked in 3D; Undertow online rubber-band untested.
 - Leftover dir `C:\Projects\myGame-wt-history` (locked file, worktree already pruned) — delete later.
 
 ## Remaining P2 work (order)
