@@ -41,7 +41,10 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 - MERGED `p2-sharpen`: rename, drop curves (`loot.json` `sharpening_drops`, key_shift per_level 0.02
   max 1.4 clamped to keep curves decreasing; tails monotone in key, tested), tooltip, `--loot-sim` →
   `docs/balance/loot-sharpening.md`. Boss P(>=+8) 0.11 % key1 → 1.3 % key20.
-- `p2-dungeon4` (worktree `../myGame-wt-dungeon4`): Bone Foundry. Next after sets/sharpen: Gems.
+- `p2-dungeon4` (worktree `../myGame-wt-dungeon4`): Bone Foundry.
+- `p2-reforge` (worktree `../myGame-wt-reforge`): reforge gamble. Gems start after sets merges (both touch gear_stats).
+- p2-core verified after sharpen+dungeon3 merges: workspace 4457, embedded 312, backend 120, DB 30, clippy clean.
+  `engine-renderer` `instanced_scene_equivalence` crashed once (0xc0000005), not reproducible — flaky GPU test.
 - `p2-sets` (worktree `../myGame-wt-sets`): sets.json, active_sets, tooltip/panel UI, sim.
 - MERGED `p2-dungeon3`: Drowned Catacombs (generator test `export_drowned_catacombs`), roster
   tidecaller/cultist(Waterlogged)/lurker/bilge_archer, boss drowned_abbess (Undertow, Hymn, adds);
@@ -64,8 +67,8 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 
 - Docker running (user started). Stack: `tools\realm-dev.ps1 up|publish|down|status` (start `up`
   detached). Only ONE agent at a time may use/publish the realm. Postgres: 
-  `postgres://realm:realm-dev-password@127.0.0.1:5434/realm`; DB tests from backend\:
-  `cargo test -p realm-game -- --ignored`.
+  `postgres://realm:realm-dev-password@127.0.0.1:5434/realm`; DB tests from backend\
+  with env `DATABASE_URL` set to that URL: `cargo test -p realm-game -- --ignored`.
 - realm-bot: `SPACETIME_CLI=%LOCALAPPDATA%\SpacetimeDB\spacetime.exe`. Publishing changes the schema →
   realm data wiped. Bindings: `spacetime generate`, then `cargo fmt -p engine-net`.
 - Don't `cargo fmt` whole backend files (not rustfmt-clean). Don't edit applied migration SQL (sqlx checksums).
