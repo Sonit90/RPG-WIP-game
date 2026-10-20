@@ -28,6 +28,7 @@
 //! | [`loadout`] | what a character wears, and its gear score |
 //! | [`economy`] | resources, salvage and exchanges |
 //! | [`sharpen`] | sharpening equipment: cost, success and breakage |
+//! | [`reforge`] | the reforge gamble: re-roll an item's base quality from a published table |
 //! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
 //! | [`mapcheck`] | validation of community maps and official scenes, one shared rule set |
 //! | [`haul`] | monster drops and the loot lines of a run summary |
@@ -70,6 +71,7 @@ pub mod outcome;
 pub mod party;
 pub mod progression;
 pub mod rate_limit;
+pub mod reforge;
 pub mod reconnect;
 pub mod rewards;
 pub mod role;

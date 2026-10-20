@@ -51,6 +51,21 @@
     ],
     "break_chance_by_level": [0, 0, 0, 0, 0.95, 0.96, 0.97, 0.98, 0.99, 0.995]
   },
+  "reforge": {
+    "_comment": "Hub gamble: pay gold to re-roll an owned item's base quality (50-110) from this published table. The new roll REPLACES the old one - there is no keep-best - and sharpening is never touched. A drop rolls 72.8 on average at key 1 (loot.json quality buckets); this table's mean is 71.5, deliberately a little lower, so reforging an average item is a slightly losing bet and only pays off for a low roll (below about 70) or as a lottery ticket: 5.0% to land 100-110, 0.1% for the 110 jackpot, 50% to land below 70. Chances sum to 1; bands lie inside 50..=110 and do not overlap. Cost is a gold sink that scales with the item: gold + per_item_level x item level + per_sharpening_level x the item's sharpening level (a loot item, level 5, unsharpened: 100 gold, about one dungeon run's gold income; a +10 epic of level 12: 270). eligible.allow_broken: a broken item keeps its penalty whatever it rolls, so it is refused.",
+    "cost": { "gold": 50, "per_item_level": 10, "per_sharpening_level": 10 },
+    "eligible": { "allow_broken": false },
+    "bands": [
+      { "min": 50, "max": 59, "chance": 0.25 },
+      { "min": 60, "max": 69, "chance": 0.25 },
+      { "min": 70, "max": 79, "chance": 0.22 },
+      { "min": 80, "max": 89, "chance": 0.15 },
+      { "min": 90, "max": 99, "chance": 0.08 },
+      { "min": 100, "max": 104, "chance": 0.04 },
+      { "min": 105, "max": 109, "chance": 0.009 },
+      { "min": 110, "max": 110, "chance": 0.001 }
+    ]
+  },
   "exchanges": [
     {
       "id": "dust_to_ember",
