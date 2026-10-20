@@ -26,6 +26,7 @@ pub struct PendingResult {
     pub currency_spent: String,
     pub participant_key_bump: bool,
     pub own_key_level: u32,
+    pub run_uid: String,
 }
 
 impl __sdk::InModule for PendingResult {
@@ -55,6 +56,7 @@ pub struct PendingResultCols {
     pub currency_spent: __sdk::__query_builder::Col<PendingResult, String>,
     pub participant_key_bump: __sdk::__query_builder::Col<PendingResult, bool>,
     pub own_key_level: __sdk::__query_builder::Col<PendingResult, u32>,
+    pub run_uid: __sdk::__query_builder::Col<PendingResult, String>,
 }
 
 impl __sdk::__query_builder::HasCols for PendingResult {
@@ -83,6 +85,7 @@ impl __sdk::__query_builder::HasCols for PendingResult {
                 "participant_key_bump",
             ),
             own_key_level: __sdk::__query_builder::Col::new(table_name, "own_key_level"),
+            run_uid: __sdk::__query_builder::Col::new(table_name, "run_uid"),
         }
     }
 }

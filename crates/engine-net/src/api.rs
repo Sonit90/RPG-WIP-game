@@ -9,7 +9,7 @@ use std::time::Duration;
 use engine_realm::api::{
     CharacterDetail, CharacterSummary, EconomyInfo, EnhanceRequest, EnhanceResponse, ErrorBody,
     ExchangeRequest, LoginRequest, MoveItemRequest, QueueRequest, RefreshRequest, RegisterRequest,
-    SalvageRequest, SettingsDocument, TokenPair, UserProfile,
+    RequestIdBody, SalvageRequest, SettingsDocument, TokenPair, UserProfile,
 };
 use engine_realm::loadout::SlotRef;
 use engine_realm::{ErrorCategory, RealmError};
@@ -186,6 +186,7 @@ impl ApiClient {
         token: &str,
         id: &str,
         talents: &[String],
+        request_id: &str,
     ) -> Result<CharacterDetail, RealmError> {
         self.send(
             "PUT",
@@ -194,6 +195,7 @@ impl ApiClient {
             Some(token),
             &engine_realm::api::TalentsRequest {
                 talents: talents.to_vec(),
+                request_id: Some(request_id.to_owned()),
             },
             Category::Persistence,
         )
@@ -211,6 +213,7 @@ impl ApiClient {
         id: &str,
         mail_id: u64,
         take: bool,
+        request_id: &str,
     ) -> Result<CharacterDetail, RealmError> {
         self.post(
             &self.persistence,
@@ -220,7 +223,7 @@ impl ApiClient {
                 if take { "take" } else { "read" }
             ),
             Some(token),
-            &serde_json::json!({}),
+            &request_id_body(request_id),
             Category::Persistence,
         )
     }
@@ -236,6 +239,7 @@ impl ApiClient {
         token: &str,
         id: &str,
         indices: &[u32],
+        request_id: &str,
     ) -> Result<CharacterDetail, RealmError> {
         self.post(
             &self.persistence,
@@ -243,6 +247,7 @@ impl ApiClient {
             Some(token),
             &SalvageRequest {
                 indices: indices.to_vec(),
+                request_id: Some(request_id.to_owned()),
             },
             Category::Persistence,
         )
@@ -260,6 +265,7 @@ impl ApiClient {
         id: &str,
         exchange_id: &str,
         times: u32,
+        request_id: &str,
     ) -> Result<CharacterDetail, RealmError> {
         self.post(
             &self.persistence,
@@ -268,6 +274,7 @@ impl ApiClient {
             &ExchangeRequest {
                 exchange_id: exchange_id.to_owned(),
                 times,
+                request_id: Some(request_id.to_owned()),
             },
             Category::Persistence,
         )
@@ -286,12 +293,16 @@ impl ApiClient {
         token: &str,
         id: &str,
         slot: &SlotRef,
+        request_id: &str,
     ) -> Result<EnhanceResponse, RealmError> {
         self.post(
             &self.persistence,
             &format!("/api/v1/characters/{}/enhance", path_segment(id)),
             Some(token),
-            &EnhanceRequest { slot: slot.clone() },
+            &EnhanceRequest {
+                slot: slot.clone(),
+                request_id: Some(request_id.to_owned()),
+            },
             Category::Persistence,
         )
     }
@@ -303,12 +314,17 @@ impl ApiClient {
     ///
     /// The key is already at its lowest level, the character is engaged (queued, in a party or
     /// a dungeon), is not the caller's, or the server is unreachable.
-    pub fn downgrade_key(&self, token: &str, id: &str) -> Result<CharacterDetail, RealmError> {
+    pub fn downgrade_key(
+        &self,
+        token: &str,
+        id: &str,
+        request_id: &str,
+    ) -> Result<CharacterDetail, RealmError> {
         self.post(
             &self.persistence,
             &format!("/api/v1/characters/{}/key/downgrade", path_segment(id)),
             Some(token),
-            &serde_json::json!({}),
+            &request_id_body(request_id),
             Category::Persistence,
         )
     }
@@ -319,12 +335,17 @@ impl ApiClient {
     ///
     /// The key has no modifiers, there is too little gold, the character is engaged, is not the
     /// caller's, or the server is unreachable.
-    pub fn cleanse_key(&self, token: &str, id: &str) -> Result<CharacterDetail, RealmError> {
+    pub fn cleanse_key(
+        &self,
+        token: &str,
+        id: &str,
+        request_id: &str,
+    ) -> Result<CharacterDetail, RealmError> {
         self.post(
             &self.persistence,
             &format!("/api/v1/characters/{}/key/cleanse", path_segment(id)),
             Some(token),
-            &serde_json::json!({}),
+            &request_id_body(request_id),
             Category::Persistence,
         )
     }
@@ -438,6 +459,13 @@ impl ApiClient {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
         read(request.send_json(body), category)
+    }
+}
+
+/// The body of the hub routes that carry nothing but the idempotency key.
+fn request_id_body(request_id: &str) -> RequestIdBody {
+    RequestIdBody {
+        request_id: Some(request_id.to_owned()),
     }
 }
 

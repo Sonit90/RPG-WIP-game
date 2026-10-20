@@ -99,17 +99,20 @@ pub fn add_currency(tally: &mut Vec<(String, u32)>, resource: &str, amount: u32)
     }
 }
 
-/// The id of a boss-chest item: the player's `index`th roll of the instance. The delivery key
-/// the persistence API deduplicates on.
+/// The id of a boss-chest item: the player's `index`th roll of the instance with `uid`. The
+/// delivery key the persistence API deduplicates on.
 #[must_use]
-pub fn chest_loot_id(instance_id: u64, account_id: &str, index: usize) -> String {
-    format!("{instance_id}:{account_id}:loot:{index}")
+pub fn chest_loot_id(uid: u128, account_id: &str, index: usize) -> String {
+    format!(
+        "{}:{account_id}:loot:{index}",
+        crate::instance::uid_hex(uid)
+    )
 }
 
 /// The id of a monster's drop: the player's `n`th (counting from zero) of the instance.
 #[must_use]
-pub fn mob_loot_id(instance_id: u64, account_id: &str, n: u32) -> String {
-    format!("{instance_id}:{account_id}:mob:{n}")
+pub fn mob_loot_id(uid: u128, account_id: &str, n: u32) -> String {
+    format!("{}:{account_id}:mob:{n}", crate::instance::uid_hex(uid))
 }
 
 /// What one player has taken from monsters in one run, as the realm keeps it between ticks.
@@ -305,9 +308,12 @@ mod tests {
 
     #[test]
     fn ids_are_distinct_per_item_and_a_tally_pays_its_currency_once() {
-        assert_eq!(chest_loot_id(7, "a", 1), "7:a:loot:1");
+        let hex = "00000000000000000000000000000007";
+        assert_eq!(chest_loot_id(7, "a", 1), format!("{hex}:a:loot:1"));
         assert_ne!(chest_loot_id(7, "a", 0), chest_loot_id(7, "a", 1));
-        assert_eq!(mob_loot_id(7, "a", 3), "7:a:mob:3");
+        assert_eq!(mob_loot_id(7, "a", 3), format!("{hex}:a:mob:3"));
+        // A wiped realm restarts its instance ids, never its uids.
+        assert_ne!(chest_loot_id(7, "a", 1), chest_loot_id(8, "a", 1));
         let mut tally = RunTally::default();
         assert_eq!(
             (tally.add_item(), tally.add_item(), tally.add_item()),

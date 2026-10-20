@@ -69,6 +69,7 @@ fn winning(account: Uuid, character: Uuid, key: &store::KeyRow, tag: &str) -> Du
         currency_spent: vec![],
         participant_key_bump: false,
         own_key_level: 0,
+        run_uid: String::new(),
     }
 }
 
@@ -775,6 +776,7 @@ async fn a_participants_key_rises_once_and_only_from_the_level_it_had() {
         currency_spent: vec![],
         participant_key_bump: true,
         own_key_level: own,
+        run_uid: String::new(),
     };
     // The realm snapshot said 2: the key rises to 3, rolled for its new level.
     let run = participant("bump", 2, 3);
@@ -821,5 +823,228 @@ async fn a_participants_key_rises_once_and_only_from_the_level_it_had() {
             .level,
         3
     );
+    drop_account(&pool, account).await;
+}
+
+/// One 10-gold purchase the way a hub route does it: lock, spend, answer, commit under the
+/// request id. A replay answers with what the first attempt stored.
+async fn pay_ten(
+    pool: &PgPool,
+    account: Uuid,
+    character: Uuid,
+    request_id: Uuid,
+    kind: &'static str,
+) -> Result<serde_json::Value, generic_auth_core::AppError> {
+    match store::HubTx::begin(pool, account, character, Some(request_id), kind).await? {
+        store::HubStart::Locked(mut hub) => {
+            let mut loadout = hub.row.loadout.0.clone();
+            engine_realm::economy::spend_resource(&mut loadout, "gold", 10, "gold")
+                .map_err(|e| generic_auth_core::AppError::Conflict(e.to_string()))?;
+            hub.save_loadout(&loadout).await?;
+            let detail = hub.detail().await?;
+            hub.commit(&detail).await?;
+            Ok(serde_json::to_value(&detail).expect("serializes"))
+        }
+        store::HubStart::Replay(response) => Ok(response),
+        store::HubStart::Missing => panic!("the character is the account's"),
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_same_request_id_twice_is_one_debit_and_the_same_answer() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    give(&pool, account, row.id, "gold", 100).await;
+
+    let request = Uuid::new_v4();
+    let first = pay_ten(&pool, account, row.id, request, "exchange")
+        .await
+        .expect("first");
+    let again = pay_ten(&pool, account, row.id, request, "exchange")
+        .await
+        .expect("replay");
+    assert_eq!(first, again, "the replay returns the first response");
+    assert_eq!(held(&pool, account, row.id, "gold").await, 90, "one debit");
+
+    // A new user action (new id) is a new attempt.
+    pay_ten(&pool, account, row.id, Uuid::new_v4(), "exchange")
+        .await
+        .expect("another action");
+    assert_eq!(held(&pool, account, row.id, "gold").await, 80);
+
+    // Two copies in flight at once: the row lock makes the second a replay.
+    let racing = Uuid::new_v4();
+    let (a, b) = tokio::join!(
+        pay_ten(&pool, account, row.id, racing, "exchange"),
+        pay_ten(&pool, account, row.id, racing, "exchange"),
+    );
+    assert_eq!(a.expect("a"), b.expect("b"));
+    assert_eq!(held(&pool, account, row.id, "gold").await, 70);
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_request_id_is_not_shared_across_accounts_characters_or_actions() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let other = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    let (theirs, _) = first_character(&pool, other).await;
+    give(&pool, account, row.id, "gold", 100).await;
+    give(&pool, other, theirs.id, "gold", 100).await;
+
+    let request = Uuid::new_v4();
+    pay_ten(&pool, account, row.id, request, "exchange")
+        .await
+        .expect("first");
+
+    // Another account presenting the id gets a conflict, never the stored response, and pays
+    // nothing.
+    let stolen = pay_ten(&pool, other, theirs.id, request, "exchange").await;
+    assert!(matches!(
+        stolen,
+        Err(generic_auth_core::AppError::Conflict(_))
+    ));
+    assert_eq!(held(&pool, other, theirs.id, "gold").await, 100);
+    // The same id for another kind of action is refused too.
+    let wrong_kind = pay_ten(&pool, account, row.id, request, "salvage").await;
+    assert!(matches!(
+        wrong_kind,
+        Err(generic_auth_core::AppError::Conflict(_))
+    ));
+    assert_eq!(held(&pool, account, row.id, "gold").await, 90);
+    drop_account(&pool, other).await;
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_refused_write_records_nothing_so_the_retry_can_succeed() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+
+    // No gold yet: the attempt fails inside the transaction and is rolled back.
+    let request = Uuid::new_v4();
+    let first = pay_ten(&pool, account, row.id, request, "exchange").await;
+    assert!(first.is_err(), "no gold to spend");
+    let recorded: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM game.hub_requests WHERE request_id = $1")
+            .bind(request)
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+    assert_eq!(recorded, 0);
+
+    give(&pool, account, row.id, "gold", 10).await;
+    pay_ten(&pool, account, row.id, request, "exchange")
+        .await
+        .expect("the retry under the same id goes through");
+    assert_eq!(held(&pool, account, row.id, "gold").await, 0);
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_result_for_a_character_the_account_does_not_have_is_refused_not_recorded() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let other = new_account(&pool).await;
+    let (row, key) = first_character(&pool, account).await;
+
+    let recorded = |id: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM game.dungeon_results WHERE result_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("count")
+        }
+    };
+
+    // A character that never existed, an unreadable id, and someone else's character.
+    let ghost = winning(account, Uuid::new_v4(), &key, "ghost");
+    let blank = DungeonResult {
+        character_id: String::new(),
+        ..winning(account, row.id, &key, "blank")
+    };
+    let stolen = winning(other, row.id, &key, "stolen");
+    for run in [&ghost, &blank, &stolen] {
+        assert!(
+            store::apply_result(&pool, run).await.is_err(),
+            "{} must not be acknowledged",
+            run.result_id
+        );
+        assert_eq!(recorded(run.result_id.clone()).await, 0, "nothing recorded");
+    }
+    assert_eq!(stored(&pool, account, row.id).await.0, 0, "nothing granted");
+
+    // Once the character is named correctly the same result applies: it was not poisoned.
+    let fixed = DungeonResult {
+        character_id: row.id.to_string(),
+        ..ghost
+    };
+    assert!(store::apply_result(&pool, &fixed).await.expect("applies"));
+    drop_account(&pool, other).await;
+    drop_account(&pool, account).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_seeded_all_time_season_is_active() {
+    let pool = pool().await;
+    let season = store::active_season(&pool)
+        .await
+        .expect("query")
+        .expect("season-0 is seeded");
+    assert_eq!(season.id, "season-0");
+    assert!(season.ends_at.is_none());
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_p1_loadout_row_without_a_version_reads_and_is_written_current() {
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let (row, _) = first_character(&pool, account).await;
+    // The shape P1 stored: no `version`, mail and resources present, an item with props.
+    sqlx::query("UPDATE game.characters SET loadout = $2 WHERE id = $1")
+        .bind(row.id)
+        .bind(sqlx::types::Json(serde_json::json!({
+            "equipment": [{"slot": "ring1", "item": "ashgraves_seal", "quality": 106, "enhancement": 3}],
+            "inventory": [],
+            "mail": [],
+            "resources": {"gold": 7}
+        })))
+        .execute(&pool)
+        .await
+        .expect("legacy row");
+    let read = store::get(&pool, account, row.id)
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(read.loadout.0.version, engine_realm::loadout::CURRENT_VERSION);
+    assert_eq!(read.loadout.0.equipment[0].enhancement, 3);
+    assert_eq!(read.loadout.0.resources.get("gold"), Some(&7));
+
+    // Any write stamps the current version.
+    give(&pool, account, row.id, "gold", 1).await;
+    let stamped: serde_json::Value =
+        sqlx::query_scalar::<_, sqlx::types::Json<serde_json::Value>>(
+            "SELECT loadout FROM game.characters WHERE id = $1",
+        )
+        .bind(row.id)
+        .fetch_one(&pool)
+        .await
+        .expect("raw")
+        .0;
+    assert_eq!(stamped["version"], engine_realm::loadout::CURRENT_VERSION);
+    assert_eq!(stamped["resources"]["gold"], 8);
     drop_account(&pool, account).await;
 }

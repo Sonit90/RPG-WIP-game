@@ -40,7 +40,12 @@ fn my_party_members(ctx: &ViewContext) -> Vec<PartyMember> {
 #[view(accessor = my_instance, public)]
 fn my_instance(ctx: &ViewContext) -> Option<DungeonInstance> {
     let me = ctx.db.instance_player().identity().find(ctx.sender())?;
-    ctx.db.dungeon_instance().id().find(me.instance_id)
+    // The uid seeds the fight: it never leaves the server.
+    ctx.db
+        .dungeon_instance()
+        .id()
+        .find(me.instance_id)
+        .map(|instance| DungeonInstance { uid: 0, ..instance })
 }
 
 /// What the caller may spend this run (the key reroll's currency) and has spent.

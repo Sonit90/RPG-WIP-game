@@ -23,7 +23,7 @@ use engine_realm::combat::{
     AbilityRef, ActionError, ActionKind, CastState, CombatAction, CombatInstance, EntityRef,
     MonsterRecord, MonsterState, PlayerRecord, PlayerSpec, Restore, StatusState,
 };
-use engine_realm::instance::InstanceState;
+use engine_realm::instance::{InstanceState, fight_seed};
 use engine_realm::loadout::Loadout;
 use engine_realm::movement::barriers_of;
 use engine_realm::rate_limit::Operation;
@@ -204,6 +204,8 @@ pub fn reward_bonus(_ctx: &ReducerContext, instance: &DungeonInstance) -> u32 {
 }
 
 /// Gives a freshly built (or rebuilt) fight the loot rules, the key level and the reward bonus.
+/// (Its chances - crits, enemy decisions, loot - were seeded from the instance's uid when it
+/// was built: see [`fight_seed`].)
 fn arm(ctx: &ReducerContext, instance: &DungeonInstance, fight: &mut CombatInstance) {
     match engine_realm::loot::builtin_rules() {
         Some(rules) => fight.set_loot(
@@ -216,25 +218,6 @@ fn arm(ctx: &ReducerContext, instance: &DungeonInstance, fight: &mut CombatInsta
             instance.id
         ),
     }
-    fight.seed_loot(loot_seed(instance));
-}
-
-/// The seed an instance's loot is rolled from: its own, so no two runs roll the same chest,
-/// and fixed for its lifetime, so a rebuilt fight rolls what the original would have.
-fn loot_seed(instance: &DungeonInstance) -> u64 {
-    // SplitMix64 over the instance id and the moment it was created.
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "only the bits matter: the timestamp is mixed, not compared"
-    )]
-    let created = instance.created_at.to_micros_since_unix_epoch() as u64;
-    let mut z = instance
-        .id
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(created);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
 }
 
 /// Builds an instance's fight and writes its first rows. Called once, when the instance
@@ -243,11 +226,12 @@ pub fn start(ctx: &ReducerContext, instance: &DungeonInstance) -> Result<(), Rea
     let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
     let players = specs(ctx, instance, &dungeon);
     let barriers = barriers_of(&dungeon.scene, &dungeon.definition);
-    let mut fight = CombatInstance::new(
+    let mut fight = CombatInstance::new_seeded(
         &dungeon.scene,
         &players,
         &barriers,
         key_scaling(instance, &dungeon),
+        fight_seed(instance.uid),
     );
     arm(ctx, instance, &mut fight);
     apply_run_rules(instance, &mut fight);
@@ -375,13 +359,14 @@ fn rebuild(
             })
             .collect(),
     };
-    let mut fight = CombatInstance::restore(
+    let mut fight = CombatInstance::restore_seeded(
         &dungeon.scene,
         &players,
         &barriers,
         key_scaling(instance, &dungeon),
         instance.barrier_open,
         &state,
+        fight_seed(instance.uid),
     );
     arm(ctx, instance, &mut fight);
     apply_run_rules(instance, &mut fight);

@@ -340,6 +340,11 @@ pub struct DungeonInstance {
     #[primary_key]
     #[auto_inc]
     pub id: u64,
+    /// 128 random bits drawn when it was created. Names the run in everything persisted
+    /// (`engine_realm::instance::run_result_id`, the loot ids) and seeds its fight, because
+    /// `id` restarts whenever the realm's data is wiped. Secret: knowing it predicts the fight,
+    /// so `my_instance` (which clients read) blanks it.
+    pub uid: u128,
     /// Its party.
     #[unique]
     pub party_id: u64,
@@ -563,12 +568,12 @@ pub struct ChatMessage {
 /// The bridge decodes rows by position (`backend/crates/game/src/bridge.rs`): a field added
 /// here is appended after the last one and added there, at the same position
 /// (`key_level`, `key_owner`, `key_level_after`, `resources`, `damage_report`, `talent_points`,
-/// `currency_spent`, `participant_key_bump`, `own_key_level` follow
+/// `currency_spent`, `participant_key_bump`, `own_key_level`, `run_uid` follow
 /// `created_at`).
 #[spacetimedb::table(accessor = pending_result)]
 #[derive(Debug, Clone)]
 pub struct PendingResult {
-    /// Idempotency key: `"<instance id>:<account id>"`. The API ignores a key it has seen.
+    /// Idempotency key: `"<instance uid>:<account id>"`. The API ignores a key it has seen.
     #[primary_key]
     pub result_id: String,
     /// Whose.
@@ -611,6 +616,9 @@ pub struct PendingResult {
     pub participant_key_bump: bool,
     /// The level of the player's own key when they queued: the bump's compare-and-set guard.
     pub own_key_level: u32,
+    /// The instance's uid as hex (`engine_realm::instance::uid_hex`): groups the results of
+    /// one run.
+    pub run_uid: String,
 }
 
 /// What a finished run paid one player, for their results screen. Kept until the instance is
@@ -618,7 +626,7 @@ pub struct PendingResult {
 #[spacetimedb::table(accessor = run_summary)]
 #[derive(Debug, Clone)]
 pub struct RunSummary {
-    /// `"<instance id>:<account id>"`.
+    /// `"<instance id>:<account id>"`. Not the uid: clients read this row.
     #[primary_key]
     pub result_id: String,
     /// Whose.

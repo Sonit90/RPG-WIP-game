@@ -2,7 +2,7 @@
 //! a caller can never read or write a character that is not theirs — the WHERE clause, not a
 //! check after the fact, is the ownership rule.
 
-use engine_realm::api::{DungeonCompletion, DungeonResult, LootDelivery};
+use engine_realm::api::{CharacterDetail, DungeonCompletion, DungeonResult, LootDelivery};
 use engine_realm::economy::{add_resources, debit_resources, spend_resource};
 use engine_realm::enhance::{enhance, EnhanceError, EnhanceOutcome};
 use engine_realm::loadout::{
@@ -255,48 +255,14 @@ pub async fn downgrade_key(
     account_id: Uuid,
     character_id: Uuid,
 ) -> Result<Option<KeyRow>, AppError> {
-    let mut tx = pool.begin().await.map_err(db)?;
-    let row: Option<KeyColumns> = sqlx::query_as(&format!(
-        "SELECT {KEY_COLUMNS} FROM game.dungeon_keys
-         WHERE character_id = $1 AND account_id = $2 FOR UPDATE"
-    ))
-    .bind(character_id)
-    .bind(account_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(db)?;
-    let Some(row) = row else {
+    let HubStart::Locked(mut hub) =
+        HubTx::begin(pool, account_id, character_id, None, "key_downgrade").await?
+    else {
         return Ok(None);
     };
-    let mut key = key_row(row);
-    let min_level = crate::catalog()
-        .dungeon(&key.dungeon_id)
-        .map_or(1, |dungeon| dungeon.keys.min_level);
-    // A key never rolled would have been rolled when the player looked at it: roll it first, so
-    // the downgrade keeps the modifiers they saw.
-    let current = if key.modifiers_rolled {
-        key.modifiers.clone()
-    } else {
-        roll_modifiers(key.level)
-    };
-    let (level, kept) = plan_downgrade(min_level, key.level, &current)?;
-    sqlx::query(
-        "UPDATE game.dungeon_keys SET level = $3, modifiers = $4, modifiers_rolled = true,
-            updated_at = now() WHERE character_id = $1 AND account_id = $2",
-    )
-    .bind(character_id)
-    .bind(account_id)
-    .bind(i32::try_from(level).unwrap_or(i32::MAX))
-    .bind(Json(&kept))
-    .execute(&mut *tx)
-    .await
-    .map_err(db)?;
-    tx.commit().await.map_err(db)?;
-    tracing::info!(account_id = %account_id, character_id = %character_id, from = key.level, to = level, "key downgraded");
-    key.level = level;
-    key.modifiers = kept;
-    key.modifiers_rolled = true;
-    Ok(Some(key))
+    let key = hub.downgrade_key().await?;
+    hub.release().await?;
+    Ok(key)
 }
 
 /// Strips every modifier from a character's key for gold: all or nothing, in one transaction
@@ -311,69 +277,14 @@ pub async fn cleanse_key(
     account_id: Uuid,
     character_id: Uuid,
 ) -> Result<Option<KeyRow>, AppError> {
-    let mut tx = pool.begin().await.map_err(db)?;
-    // The character first, then its key: the order `apply_result` locks them in.
-    let stored: Option<Json<Loadout>> = sqlx::query_scalar(
-        "SELECT loadout FROM game.characters WHERE id = $1 AND account_id = $2 FOR UPDATE",
-    )
-    .bind(character_id)
-    .bind(account_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(db)?;
-    let Some(Json(mut loadout)) = stored else {
+    let HubStart::Locked(mut hub) =
+        HubTx::begin(pool, account_id, character_id, None, "key_cleanse").await?
+    else {
         return Ok(None);
     };
-    let row: Option<KeyColumns> = sqlx::query_as(&format!(
-        "SELECT {KEY_COLUMNS} FROM game.dungeon_keys
-         WHERE character_id = $1 AND account_id = $2 FOR UPDATE"
-    ))
-    .bind(character_id)
-    .bind(account_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(db)?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let mut key = key_row(row);
-    let current = if key.modifiers_rolled {
-        key.modifiers.clone()
-    } else {
-        roll_modifiers(key.level)
-    };
-    let rules = crate::catalog().modifiers();
-    let gold = loadout.resources.get(GOLD).copied().unwrap_or(0);
-    rules
-        .check_cleanse(&current, gold)
-        .map_err(|e| AppError::Conflict(e.message))?;
-    spend_resource(
-        &mut loadout,
-        GOLD,
-        u64::from(rules.config().cleanse_gold_cost),
-        "gold",
-    )
-    .map_err(|e| AppError::Conflict(e.to_string()))?;
-    sqlx::query("UPDATE game.characters SET loadout = $2, updated_at = now() WHERE id = $1")
-        .bind(character_id)
-        .bind(Json(&loadout))
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
-    sqlx::query(
-        "UPDATE game.dungeon_keys SET modifiers = '[]'::jsonb, modifiers_rolled = true,
-            updated_at = now() WHERE character_id = $1 AND account_id = $2",
-    )
-    .bind(character_id)
-    .bind(account_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(db)?;
-    tx.commit().await.map_err(db)?;
-    tracing::info!(account_id = %account_id, character_id = %character_id, cost = rules.config().cleanse_gold_cost, "key cleansed");
-    key.modifiers = engine_realm::modifiers::cleanse(&current);
-    key.modifiers_rolled = true;
-    Ok(Some(key))
+    let key = hub.cleanse_key().await?;
+    hub.release().await?;
+    Ok(key)
 }
 
 /// The resource a cleanse is paid in.
@@ -442,6 +353,264 @@ where
     Ok(Some(changed))
 }
 
+/// An open transaction.
+pub type Tx = sqlx::Transaction<'static, sqlx::Postgres>;
+
+/// What [`HubTx::begin`] found.
+pub enum HubStart {
+    /// The character does not exist or is not the account's.
+    Missing,
+    /// This request id was already served: the response it got, to be returned unchanged. Nothing
+    /// was changed and nothing is locked any more.
+    Replay(serde_json::Value),
+    /// The character row is locked; the write may go ahead.
+    Locked(Box<HubTx>),
+}
+
+/// One hub write: a transaction holding the character row's `FOR UPDATE` lock.
+///
+/// The order is fixed, and every hub route follows it: [`HubTx::begin`] takes the lock (and
+/// answers a replayed request id from what the first attempt stored), the route then asks the
+/// realm whether the character is engaged - with the lock held, so a queue join cannot slip in
+/// between the question and the write - then mutates, builds its response with
+/// [`HubTx::detail`], and [`HubTx::commit`]s, which records the response under the request id in
+/// the same transaction. Dropping a `HubTx` rolls everything back.
+pub struct HubTx {
+    tx: Tx,
+    account_id: Uuid,
+    /// The character as stored under the lock (a loadout saved with removed slots is rehomed),
+    /// kept current by the write methods. Validate against this, not a read from before the lock.
+    pub row: CharacterRow,
+    request: Option<(Uuid, &'static str)>,
+}
+
+impl HubTx {
+    /// Locks the character's row for the account, or answers a replayed `request_id`.
+    ///
+    /// `kind` names the action; a request id first seen for another account, character or kind
+    /// is a conflict, and the response stored under it is never shown to the other caller.
+    ///
+    /// # Errors
+    ///
+    /// A conflict for a request id that belongs to something else, or a database failure.
+    pub async fn begin(
+        pool: &PgPool,
+        account_id: Uuid,
+        character_id: Uuid,
+        request_id: Option<Uuid>,
+        kind: &'static str,
+    ) -> Result<HubStart, AppError> {
+        let mut tx = pool.begin().await.map_err(db)?;
+        let row = sqlx::query_as::<_, CharacterRow>(&format!(
+            "SELECT {COLUMNS} FROM game.characters WHERE id = $1 AND account_id = $2 FOR UPDATE"
+        ))
+        .bind(character_id)
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let Some(mut row) = row else {
+            return Ok(HubStart::Missing);
+        };
+        if let Some(request_id) = request_id {
+            let seen: Option<(Uuid, Uuid, String, Json<serde_json::Value>)> = sqlx::query_as(
+                "SELECT account_id, character_id, kind, response FROM game.hub_requests
+                 WHERE request_id = $1",
+            )
+            .bind(request_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+            if let Some((owner, character, seen_kind, Json(response))) = seen {
+                if owner != account_id || character != character_id || seen_kind != kind {
+                    tracing::warn!(account_id = %account_id, request_id = %request_id, kind, "request id reused for another action");
+                    return Err(AppError::Conflict(
+                        "That request id was already used for another action.".into(),
+                    ));
+                }
+                tracing::info!(account_id = %account_id, character_id = %character_id, request_id = %request_id, kind, "request replayed");
+                return Ok(HubStart::Replay(response));
+            }
+        }
+        // A character saved while there were four trinket slots: rehome those items first.
+        migrate_removed_slots(&mut row.loadout.0, unix_now());
+        Ok(HubStart::Locked(Box::new(Self {
+            tx,
+            account_id,
+            row,
+            request: request_id.map(|id| (id, kind)),
+        })))
+    }
+
+    /// Stores `loadout` as the character's.
+    pub async fn save_loadout(&mut self, loadout: &Loadout) -> Result<(), AppError> {
+        sqlx::query("UPDATE game.characters SET loadout = $2, updated_at = now() WHERE id = $1")
+            .bind(self.row.id)
+            .bind(Json(loadout))
+            .execute(&mut *self.tx)
+            .await
+            .map_err(db)?;
+        self.row.loadout = Json(loadout.clone());
+        Ok(())
+    }
+
+    /// Stores `talents` as the character's.
+    pub async fn save_talents(&mut self, talents: &[String]) -> Result<(), AppError> {
+        sqlx::query("UPDATE game.characters SET talents = $2, updated_at = now() WHERE id = $1")
+            .bind(self.row.id)
+            .bind(Json(talents))
+            .execute(&mut *self.tx)
+            .await
+            .map_err(db)?;
+        self.row.talents = Json(talents.to_vec());
+        Ok(())
+    }
+
+    /// The character's key as this transaction sees it (locked; one never rolled is rolled and
+    /// stored now). `None` if it has none.
+    pub async fn key(&mut self) -> Result<Option<KeyRow>, AppError> {
+        let row: Option<KeyColumns> = sqlx::query_as(&format!(
+            "SELECT {KEY_COLUMNS} FROM game.dungeon_keys
+             WHERE character_id = $1 AND account_id = $2 FOR UPDATE"
+        ))
+        .bind(self.row.id)
+        .bind(self.account_id)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(db)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut key = key_row(row);
+        if !key.modifiers_rolled {
+            key.modifiers = roll_modifiers(key.level);
+            key.modifiers_rolled = true;
+            self.store_key(&key).await?;
+        }
+        Ok(Some(key))
+    }
+
+    async fn store_key(&mut self, key: &KeyRow) -> Result<(), AppError> {
+        sqlx::query(
+            "UPDATE game.dungeon_keys SET level = $3, modifiers = $4, modifiers_rolled = true,
+                updated_at = now() WHERE character_id = $1 AND account_id = $2",
+        )
+        .bind(self.row.id)
+        .bind(self.account_id)
+        .bind(i32::try_from(key.level).unwrap_or(i32::MAX))
+        .bind(Json(&key.modifiers))
+        .execute(&mut *self.tx)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    /// The character in full as it stands inside this transaction: what a route answers with,
+    /// and what a replay of it will answer with.
+    pub async fn detail(&mut self) -> Result<CharacterDetail, AppError> {
+        let completions = completions(&mut *self.tx, self.row.id).await?;
+        let key = self.key().await?;
+        Ok(crate::characters::detail(
+            &self.row,
+            completions,
+            key.as_ref(),
+        ))
+    }
+
+    /// Lowers the key one level, dropping the modifiers the lower level has no slot for. Free.
+    /// `Ok(None)` if the character has no key.
+    ///
+    /// # Errors
+    ///
+    /// A conflict when the key is already at its dungeon's lowest level.
+    pub async fn downgrade_key(&mut self) -> Result<Option<KeyRow>, AppError> {
+        // A key never rolled is rolled by `key()` first, so the downgrade keeps the modifiers
+        // the player saw.
+        let Some(mut key) = self.key().await? else {
+            return Ok(None);
+        };
+        let min_level = crate::catalog()
+            .dungeon(&key.dungeon_id)
+            .map_or(1, |dungeon| dungeon.keys.min_level);
+        let (level, kept) = plan_downgrade(min_level, key.level, &key.modifiers)?;
+        let from = key.level;
+        key.level = level;
+        key.modifiers = kept;
+        self.store_key(&key).await?;
+        tracing::info!(account_id = %self.account_id, character_id = %self.row.id, from, to = level, "key downgraded");
+        Ok(Some(key))
+    }
+
+    /// Strips every modifier from the key for gold: all or nothing. `Ok(None)` if the character
+    /// has no key.
+    ///
+    /// # Errors
+    ///
+    /// A conflict when the key has no modifiers (nothing is charged) or the character holds too
+    /// little gold.
+    pub async fn cleanse_key(&mut self) -> Result<Option<KeyRow>, AppError> {
+        let Some(mut key) = self.key().await? else {
+            return Ok(None);
+        };
+        let mut loadout = self.row.loadout.0.clone();
+        let rules = crate::catalog().modifiers();
+        let gold = loadout.resources.get(GOLD).copied().unwrap_or(0);
+        rules
+            .check_cleanse(&key.modifiers, gold)
+            .map_err(|e| AppError::Conflict(e.message))?;
+        spend_resource(
+            &mut loadout,
+            GOLD,
+            u64::from(rules.config().cleanse_gold_cost),
+            "gold",
+        )
+        .map_err(|e| AppError::Conflict(e.to_string()))?;
+        self.save_loadout(&loadout).await?;
+        key.modifiers = engine_realm::modifiers::cleanse(&key.modifiers);
+        self.store_key(&key).await?;
+        tracing::info!(account_id = %self.account_id, character_id = %self.row.id, cost = rules.config().cleanse_gold_cost, "key cleansed");
+        Ok(Some(key))
+    }
+
+    /// Commits, recording `response` under the request id (if the request had one) in the same
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// A conflict if another request recorded the same id first, or a database failure; nothing
+    /// is changed then.
+    pub async fn commit<R: serde::Serialize>(mut self, response: &R) -> Result<(), AppError> {
+        if let Some((request_id, kind)) = self.request {
+            let response = serde_json::to_value(response)
+                .map_err(|_| AppError::internal("The response could not be recorded."))?;
+            let recorded = sqlx::query(
+                "INSERT INTO game.hub_requests (request_id, account_id, character_id, kind, response)
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (request_id) DO NOTHING",
+            )
+            .bind(request_id)
+            .bind(self.account_id)
+            .bind(self.row.id)
+            .bind(kind)
+            .bind(Json(&response))
+            .execute(&mut *self.tx)
+            .await
+            .map_err(db)?;
+            if recorded.rows_affected() == 0 {
+                return Err(AppError::Conflict(
+                    "That request id was already used for another action.".into(),
+                ));
+            }
+        }
+        self.tx.commit().await.map_err(db)
+    }
+
+    /// Commits a write that has no response to remember (the queue join holds the row only to
+    /// serialise with the hub writes).
+    pub async fn release(self) -> Result<(), AppError> {
+        self.tx.commit().await.map_err(db)
+    }
+}
+
 /// A refused enhancement as the HTTP error: the request named nothing enhanceable (400), or
 /// the item or purse is not in a state that allows it (409). The message is the sentence the
 /// player reads.
@@ -488,52 +657,72 @@ pub async fn enhance_character(
     slot: &SlotRef,
     roll: f64,
 ) -> Result<Option<EnhanceOutcome>, AppError> {
-    // A mutex rather than a cell: the future holding the closure must be `Send`.
-    let outcome = std::sync::Mutex::new(None);
-    let saved = update_loadout(pool, account_id, id, |stored| {
-        let (changed, done) = enhance_loadout(stored, slot, roll)?;
-        if let Ok(mut place) = outcome.lock() {
-            *place = Some(done);
-        }
-        Ok(changed)
-    })
-    .await?;
-    let done = outcome.lock().ok().and_then(|place| *place);
-    Ok(saved.and(done))
+    let HubStart::Locked(mut hub) = HubTx::begin(pool, account_id, id, None, "enhance").await?
+    else {
+        return Ok(None);
+    };
+    let (changed, outcome) = enhance_loadout(&hub.row.loadout.0, slot, roll)?;
+    hub.save_loadout(&changed).await?;
+    hub.release().await?;
+    Ok(Some(outcome))
 }
 
-/// Replaces a character's talents. `false` if it is not the account's.
+/// Replaces a character's talents under the character's row lock. `false` if it is not the
+/// account's.
 ///
 /// The caller has validated the set against the character's points (see
-/// [`engine_realm::talents::validate`]).
+/// [`engine_realm::talents::validate`]); a route that must validate against the stored row
+/// does it on [`HubTx::row`] instead.
 pub async fn save_talents(
     pool: &PgPool,
     account_id: Uuid,
     id: Uuid,
     talents: &[String],
 ) -> Result<bool, AppError> {
-    let done = sqlx::query(
-        "UPDATE game.characters SET talents = $3, updated_at = now() WHERE id = $1 AND account_id = $2",
+    let HubStart::Locked(mut hub) = HubTx::begin(pool, account_id, id, None, "talents").await?
+    else {
+        return Ok(false);
+    };
+    hub.save_talents(talents).await?;
+    hub.release().await?;
+    Ok(true)
+}
+
+/// A season: the period leaderboards and history are cut by.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Season {
+    pub id: String,
+    pub name: String,
+    pub starts_at: time::OffsetDateTime,
+    /// `None` for a season that never ends (`season-0`, "all time").
+    pub ends_at: Option<time::OffsetDateTime>,
+}
+
+/// The active season: the latest one that has started and not ended. `None` only if the table
+/// was emptied (the migration seeds `season-0`).
+pub async fn active_season<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+) -> Result<Option<Season>, AppError> {
+    sqlx::query_as::<_, Season>(
+        "SELECT id, name, starts_at, ends_at FROM game.seasons
+         WHERE starts_at <= now() AND (ends_at IS NULL OR ends_at > now())
+         ORDER BY starts_at DESC, id LIMIT 1",
     )
-    .bind(id)
-    .bind(account_id)
-    .bind(Json(talents))
-    .execute(pool)
+    .fetch_optional(executor)
     .await
-    .map_err(db)?;
-    Ok(done.rows_affected() == 1)
+    .map_err(db)
 }
 
 /// How often a character finished each dungeon.
-pub async fn completions(
-    pool: &PgPool,
+pub async fn completions<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     character_id: Uuid,
 ) -> Result<Vec<DungeonCompletion>, AppError> {
     let rows: Vec<(String, i32)> = sqlx::query_as(
         "SELECT dungeon_id, count FROM game.dungeon_completions WHERE character_id = $1 ORDER BY dungeon_id",
     )
     .bind(character_id)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(db)?;
     Ok(rows
@@ -722,93 +911,105 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
         tx.commit().await.map_err(db)?;
         return Ok(false);
     }
-    if let Some(character_id) = character_id {
-        let row: Option<(i32, i64, Json<Loadout>)> = sqlx::query_as(
+    // The grants need a character. Without one (never existed, deleted, or someone else's) the
+    // result must not be recorded or acknowledged: the transaction is dropped, so the realm keeps
+    // the result and delivers it again, and support can see why it is stuck.
+    let row: Option<(i32, i64, Json<Loadout>)> = match character_id {
+        Some(character_id) => sqlx::query_as(
             "SELECT level, experience, loadout FROM game.characters WHERE id = $1 AND account_id = $2 FOR UPDATE",
         )
         .bind(character_id)
         .bind(account_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(db)?;
-        if let Some((level, experience, Json(mut loadout))) = row {
-            let gains: Vec<(String, u64)> = result
-                .resources
-                .iter()
-                .map(|(id, amount)| (id.clone(), u64::from(*amount)))
-                .collect();
-            // What the run cost the character (key rerolls) comes off first, whether or not the
-            // run succeeded, and never takes the balance below zero.
-            debit_resources(&mut loadout, &result.debits());
-            // A failed run pays nothing, whatever the row carries.
-            if result.success {
-                add_resources(&mut loadout, &gains);
-            }
-            // What was picked up from monsters was looted whether or not the boss fell.
-            add_resources(&mut loadout, &granted_looted(result));
-            let (level, experience) = engine_realm::progression::gain(
-                u32::try_from(level).unwrap_or(1),
-                u64::try_from(experience).unwrap_or(0),
-                u64::from(result.experience),
-            );
-            // Granted with the result, in the same transaction that recorded its id, so a
-            // re-delivered result cannot grant twice.
+        .map_err(db)?,
+        None => None,
+    };
+    let (Some(character_id), Some((level, experience, Json(mut loadout)))) = (character_id, row)
+    else {
+        tracing::error!(
+            result_id = %result.result_id,
+            account_id = %result.account_id,
+            character_id = %result.character_id,
+            "dungeon result names no character of the account; not recorded, not acknowledged"
+        );
+        return Err(AppError::NotFound);
+    };
+    let gains: Vec<(String, u64)> = result
+        .resources
+        .iter()
+        .map(|(id, amount)| (id.clone(), u64::from(*amount)))
+        .collect();
+    // What the run cost the character (key rerolls) comes off first, whether or not the
+    // run succeeded, and never takes the balance below zero.
+    debit_resources(&mut loadout, &result.debits());
+    // A failed run pays nothing, whatever the row carries.
+    if result.success {
+        add_resources(&mut loadout, &gains);
+    }
+    // What was picked up from monsters was looted whether or not the boss fell.
+    add_resources(&mut loadout, &granted_looted(result));
+    let (level, experience) = engine_realm::progression::gain(
+        u32::try_from(level).unwrap_or(1),
+        u64::try_from(experience).unwrap_or(0),
+        u64::from(result.experience),
+    );
+    // Granted with the result, in the same transaction that recorded its id, so a
+    // re-delivered result cannot grant twice.
+    sqlx::query(
+        "UPDATE game.characters SET level = $2, experience = $3, loadout = $4,
+            talent_points_earned = LEAST(talent_points_earned + $5, 1000000),
+            updated_at = now() WHERE id = $1",
+    )
+    .bind(character_id)
+    .bind(i32::try_from(level).unwrap_or(1))
+    .bind(i64::try_from(experience).unwrap_or(0))
+    .bind(Json(&loadout))
+    .bind(i32::try_from(granted_talent_points(result)).unwrap_or(0))
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+    // The owner's key rises from the level the run used, a participant's from the level
+    // their own key had; the key moves only if it still has that level, so it can
+    // never rise twice for one run. A key whose level changes is rolled afresh.
+    if let Some(update) = result.key_update() {
+        let max_level = crate::catalog()
+            .dungeon(&result.dungeon_id)
+            .map_or(u32::MAX, |dungeon| dungeon.keys.max_level);
+        let new_level = update.new_level.min(max_level);
+        if new_level > update.expected_level {
             sqlx::query(
-                "UPDATE game.characters SET level = $2, experience = $3, loadout = $4,
-                    talent_points_earned = LEAST(talent_points_earned + $5, 1000000),
-                    updated_at = now() WHERE id = $1",
+                "UPDATE game.dungeon_keys SET level = $3, modifiers = $4,
+                    modifiers_rolled = true, updated_at = now()
+                 WHERE character_id = $1 AND account_id = $2 AND level = $5
+                    AND dungeon_id = $6",
             )
             .bind(character_id)
-            .bind(i32::try_from(level).unwrap_or(1))
-            .bind(i64::try_from(experience).unwrap_or(0))
-            .bind(Json(&loadout))
-            .bind(i32::try_from(granted_talent_points(result)).unwrap_or(0))
+            .bind(account_id)
+            .bind(i32::try_from(new_level).unwrap_or(i32::MAX))
+            .bind(Json(roll_modifiers(new_level)))
+            .bind(i32::try_from(update.expected_level).unwrap_or(i32::MAX))
+            .bind(&result.dungeon_id)
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-            // The owner's key rises from the level the run used, a participant's from the level
-            // their own key had; the key moves only if it still has that level, so it can
-            // never rise twice for one run. A key whose level changes is rolled afresh.
-            if let Some(update) = result.key_update() {
-                let max_level = crate::catalog()
-                    .dungeon(&result.dungeon_id)
-                    .map_or(u32::MAX, |dungeon| dungeon.keys.max_level);
-                let new_level = update.new_level.min(max_level);
-                if new_level > update.expected_level {
-                    sqlx::query(
-                        "UPDATE game.dungeon_keys SET level = $3, modifiers = $4,
-                            modifiers_rolled = true, updated_at = now()
-                         WHERE character_id = $1 AND account_id = $2 AND level = $5
-                            AND dungeon_id = $6",
-                    )
-                    .bind(character_id)
-                    .bind(account_id)
-                    .bind(i32::try_from(new_level).unwrap_or(i32::MAX))
-                    .bind(Json(roll_modifiers(new_level)))
-                    .bind(i32::try_from(update.expected_level).unwrap_or(i32::MAX))
-                    .bind(&result.dungeon_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(db)?;
-                }
-            }
-            if result.success {
-                sqlx::query(
-                    "INSERT INTO game.dungeon_completions (character_id, dungeon_id, count, best_duration_us, last_completed)
-                     VALUES ($1, $2, 1, $3, now())
-                     ON CONFLICT (character_id, dungeon_id) DO UPDATE SET
-                        count = game.dungeon_completions.count + 1,
-                        best_duration_us = LEAST(game.dungeon_completions.best_duration_us, EXCLUDED.best_duration_us),
-                        last_completed = now()",
-                )
-                .bind(character_id)
-                .bind(&result.dungeon_id)
-                .bind(result.duration_us)
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
-            }
         }
+    }
+    if result.success {
+        sqlx::query(
+            "INSERT INTO game.dungeon_completions (character_id, dungeon_id, count, best_duration_us, last_completed)
+             VALUES ($1, $2, 1, $3, now())
+             ON CONFLICT (character_id, dungeon_id) DO UPDATE SET
+                count = game.dungeon_completions.count + 1,
+                best_duration_us = LEAST(game.dungeon_completions.best_duration_us, EXCLUDED.best_duration_us),
+                last_completed = now()",
+        )
+        .bind(character_id)
+        .bind(&result.dungeon_id)
+        .bind(result.duration_us)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     }
     // The player's damage report, in the same transaction: it exists exactly when its result
     // was new, so a re-delivery cannot write it twice (the table also keys it by result id).
@@ -977,6 +1178,7 @@ mod tests {
             currency_spent: Vec::new(),
             participant_key_bump: false,
             own_key_level: 0,
+            run_uid: String::new(),
         }
     }
 

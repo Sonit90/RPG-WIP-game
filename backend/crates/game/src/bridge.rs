@@ -97,6 +97,9 @@ struct PendingRow {
     currency_spent: String,
     participant_key_bump: bool,
     own_key_level: u32,
+    /// The run's uid (hex). Absent from a module older than the uid.
+    #[serde(default)]
+    run_uid: String,
 }
 
 /// What a realm answer means for a change to a character's talents or equipment.
@@ -284,6 +287,7 @@ impl RealmBridge {
                 talent_points: row.talent_points,
                 participant_key_bump: row.participant_key_bump,
                 own_key_level: row.own_key_level,
+                run_uid: row.run_uid,
             })
             .collect())
     }
@@ -357,9 +361,10 @@ mod tests {
 
     #[test]
     fn pending_rows_read_positionally() {
-        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]","",2,"[[\"gold\",12],[\"aether_shard\",1]]","[[\"aether_shard\",1]]",false,0]]"#;
+        let body = r#"[["12:acct","acct","char","graveyard_crypt",12,true,5000000,250,[1791124476846797],3,true,4,"[[\"crypt_dust\",9]]","",2,"[[\"gold\",12],[\"aether_shard\",1]]","[[\"aether_shard\",1]]",false,0,"0000000000000000000000000000000c"]]"#;
         let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
         assert_eq!(rows[0].result_id, "12:acct");
+        assert_eq!(rows[0].run_uid, "0000000000000000000000000000000c");
         assert!(rows[0].success);
         assert_eq!(rows[0].experience, 250);
         assert_eq!(rows[0].key_level, 3);
@@ -380,6 +385,13 @@ mod tests {
         );
         assert!(!rows[0].participant_key_bump);
         assert_eq!(rows[0].own_key_level, 0);
+    }
+
+    #[test]
+    fn a_row_from_a_module_without_the_uid_still_reads() {
+        let body = r#"[["12:b","acct","char","graveyard_crypt",12,false,5000000,0,[1],0,false,0,"[]","",0,"[]","[]",true,2]]"#;
+        let rows: Vec<PendingRow> = serde_json::from_str(body).unwrap();
+        assert_eq!(rows[0].run_uid, "");
     }
 
     #[test]

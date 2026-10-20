@@ -735,6 +735,7 @@ dependencies = [
  "serde_json",
  "spacetimedb-sdk",
  "ureq",
+ "uuid",
 ]
 
 [[package]]
