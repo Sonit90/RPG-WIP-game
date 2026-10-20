@@ -510,6 +510,30 @@ impl OnlineSession {
         }
     }
 
+    /// The dungeon the player's instance runs, while there is one.
+    #[must_use]
+    pub fn wanted_dungeon(&self) -> Option<&str> {
+        self.mirror
+            .instance
+            .as_ref()
+            .map(|instance| instance.dungeon_id.as_str())
+    }
+
+    /// The level file a dungeon plays in: the catalog's `scene` for `dungeon_id`, or the
+    /// Graveyard Crypt's when the realm names a dungeon this build does not know.
+    #[must_use]
+    pub fn dungeon_scene_file(&self, dungeon_id: &str) -> String {
+        match self.catalog.dungeon(dungeon_id) {
+            Some(dungeon) => dungeon.scene.clone(),
+            None => {
+                log::warn!(
+                    "online: dungeon '{dungeon_id}' is not in the catalog; playing the crypt's level"
+                );
+                engine_game::dungeon::GRAVEYARD_CRYPT_FILE.to_owned()
+            }
+        }
+    }
+
     /// Tells the session where the hub scene puts the player and the dummies. Once set, the
     /// hub is built there and has no barrier of its own: the scene's boundary bounds it.
     pub fn set_hub_spawns(&mut self, spawns: HubSpawns) {
@@ -3673,6 +3697,23 @@ mod tests {
         assert_eq!(
             parse_hub_scene(r#"{ "scene": " scenes/x.json " }"#).as_deref(),
             Some("scenes/x.json")
+        );
+    }
+
+    #[test]
+    fn a_dungeon_plays_in_its_catalog_scene_and_an_unknown_one_in_the_crypt() {
+        let session = session();
+        assert_eq!(
+            session.dungeon_scene_file("ashen_reliquary"),
+            "scenes/ashen_reliquary.json"
+        );
+        assert_eq!(
+            session.dungeon_scene_file("graveyard_crypt"),
+            engine_game::dungeon::GRAVEYARD_CRYPT_FILE
+        );
+        assert_eq!(
+            session.dungeon_scene_file("not_a_dungeon"),
+            engine_game::dungeon::GRAVEYARD_CRYPT_FILE
         );
     }
 

@@ -359,6 +359,9 @@ pub struct App {
     /// while the hub is. `None` offline, and
     /// online when the hub scene could not be read, which leaves the hub in the dungeon.
     parked_level: Option<ParkedLevel>,
+    /// The dungeon whose level file the dungeon slot holds (loaded or parked). The crypt until
+    /// an instance names another.
+    dungeon_level_id: String,
     /// The hub's Equipment button was pressed: the character sheet opens next frame, so the
     /// press that asked for it is not also read by the sheet.
     open_sheet_next_frame: bool,
@@ -1335,6 +1338,7 @@ impl App {
             online: None,
             online_level: crate::online::OnlineLevel::Dungeon,
             parked_level: None,
+            dungeon_level_id: "graveyard_crypt".to_owned(),
             open_sheet_next_frame: false,
             settings_offered_at: None,
             menu: MenuSystem::new(game_settings.settings(), env!("CARGO_PKG_VERSION")),
@@ -4918,6 +4922,14 @@ impl App {
             return;
         };
         let wanted = online.wanted_level();
+        // The instance names its dungeon; the level in the dungeon slot is that dungeon's file.
+        let wanted_dungeon = (wanted == crate::online::OnlineLevel::Dungeon)
+            .then(|| online.wanted_dungeon().map(str::to_owned))
+            .flatten()
+            .filter(|id| *id != self.dungeon_level_id);
+        if let Some(id) = wanted_dungeon {
+            self.install_dungeon_level(&id);
+        }
         if wanted == self.online_level {
             return;
         }
@@ -4941,6 +4953,47 @@ impl App {
         }
         if let Some(online) = self.online.as_mut() {
             online.level_rebuilt();
+        }
+    }
+
+    /// Puts the level file of dungeon `id` into the dungeon slot: loaded now if the dungeon
+    /// level is the one up, parked if the hub is. A file that cannot be read keeps the level
+    /// that was there, reported once.
+    fn install_dungeon_level(&mut self, id: &str) {
+        let Some(online) = self.online.as_ref() else {
+            return;
+        };
+        let file = online.dungeon_scene_file(id);
+        // Asked for once whether or not it loads: a missing file is not retried every frame.
+        self.dungeon_level_id = id.to_owned();
+        let path = scene_asset_path(&file);
+        let scene = match engine_environment::scene_file::load(&path) {
+            Ok(scene) => scene,
+            Err(error) => {
+                log::error!(
+                    "online: dungeon level {} not loaded: {error}",
+                    path.display()
+                );
+                return;
+            }
+        };
+        log::info!(
+            "online: dungeon '{id}' plays in '{}' from {}",
+            scene.name,
+            path.display()
+        );
+        if self.online_level == crate::online::OnlineLevel::Dungeon {
+            if let Err(error) = self.load_level(scene, Some(path)) {
+                log::error!("online: could not load the dungeon level: {error}");
+            }
+            if let Some(online) = self.online.as_mut() {
+                online.level_rebuilt();
+            }
+        } else {
+            self.parked_level = Some(ParkedLevel {
+                scene,
+                source: Some(path),
+            });
         }
     }
 
@@ -7396,17 +7449,23 @@ fn bindings_with_map_key(name: &str) -> Bindings {
 /// saved. When no root has it, the first root's path is returned, and loading it reports the
 /// file as missing by name.
 fn graveyard_path() -> std::path::PathBuf {
+    scene_asset_path(engine_game::dungeon::GRAVEYARD_CRYPT_FILE)
+}
+
+/// Where a level file (`scenes/x.json`, as `dungeons.json` spells it) is: the first asset root
+/// that has it, or the first root's path so loading reports it missing by name.
+fn scene_asset_path(file: &str) -> std::path::PathBuf {
     let roots = engine_assets::disk::asset_roots();
     roots
         .iter()
-        .map(|root| root.join(engine_game::dungeon::GRAVEYARD_CRYPT_FILE))
+        .map(|root| root.join(file))
         .find(|path| path.is_file())
         .unwrap_or_else(|| {
             roots
                 .first()
                 .cloned()
                 .unwrap_or_else(|| std::path::PathBuf::from("assets"))
-                .join(engine_game::dungeon::GRAVEYARD_CRYPT_FILE)
+                .join(file)
         })
 }
 
