@@ -38,11 +38,10 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 
 ## In flight
 
-- `p2-sharpen` (worktree `../myGame-wt-sharpen`, 3 commits + uncommitted rework): rename, pre-sharpened
-  drop curves (`loot.json` `sharpening_drops`, `engine-game/src/sharpen_drops.rs`), tooltip, `--loot-sim`
-  report. Rework needed: tail P(>=+k) non-decreasing in key 1..=99; fix mangled test names
-  (`an_sharpening_...`); merge p2-core (history's `loot_entry`/`apply_loot` read `props.enhancement` →
-  `sharpening`).
+- MERGED `p2-sharpen`: rename, drop curves (`loot.json` `sharpening_drops`, key_shift per_level 0.02
+  max 1.4 clamped to keep curves decreasing; tails monotone in key, tested), tooltip, `--loot-sim` →
+  `docs/balance/loot-sharpening.md`. Boss P(>=+8) 0.11 % key1 → 1.3 % key20.
+- `p2-dungeon4` (worktree `../myGame-wt-dungeon4`): Bone Foundry. Next after sets/sharpen: Gems.
 - `p2-sets` (worktree `../myGame-wt-sets`): sets.json, active_sets, tooltip/panel UI, sim.
 - MERGED `p2-dungeon3`: Drowned Catacombs (generator test `export_drowned_catacombs`), roster
   tidecaller/cultist(Waterlogged)/lurker/bilge_archer, boss drowned_abbess (Undertow, Hymn, adds);
