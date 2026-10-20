@@ -49,10 +49,11 @@ pub use equipment::{
     Equipment, INVENTORY_COLUMNS, INVENTORY_SLOTS, Inventory, ItemSlot, MoveError,
 };
 pub use item::{
-    BROKEN_PENALTY, CATALOG_ID_BASE, CatalogItem, ENHANCE_STEP_PCT, ENHANCEMENT_CEILING, EquipSlot,
-    ITEMS, ItemDef, ItemFamily, ItemIcon, ItemId, ItemProps, ItemQuality, ItemStack,
-    QUALITY_DEFAULT, QUALITY_MAX, QUALITY_MIN, catalog_items, item, item_by_key, loot_pool,
-    register_catalog_items, starting_item,
+    BROKEN_PENALTY, CATALOG_ID_BASE, CatalogItem, EquipSlot, ITEMS, ItemDef, ItemFamily, ItemIcon,
+    ItemId, ItemProps, ItemQuality, ItemStack, QUALITY_DEFAULT, QUALITY_MAX, QUALITY_MIN,
+    SHARPEN_HIGHLIGHT_DEFAULT, SHARPEN_STEP_PCT, SHARPENING_CEILING, catalog_items, item,
+    item_by_key, loot_pool, register_catalog_items, set_sharpen_highlight_from,
+    sharpen_highlight_from, starting_item,
 };
 pub use mail::{MAIL_SOFT_CAP, MailItem, MailReason, MailSender, Mailbox, TakeMailError};
 pub use spirit::{

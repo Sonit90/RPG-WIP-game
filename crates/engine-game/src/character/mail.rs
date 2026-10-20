@@ -87,7 +87,7 @@ pub struct MailItem {
     pub id: u64,
     /// The attachment.
     pub item: ItemId,
-    /// The attachment's quality, enhancement and broken state.
+    /// The attachment's quality, sharpening and broken state.
     pub props: ItemProps,
     /// Who sent it.
     pub sender: MailSender,

@@ -7,7 +7,7 @@
 //! ```
 //!
 //! Gear is **not** a stat block made up for the simulator. A profile names real items from
-//! `assets/catalog/loot.json` and the [`ItemProps`] (quality, enhancement) each is worn at,
+//! `assets/catalog/loot.json` and the [`ItemProps`] (quality, sharpening) each is worn at,
 //! and the stats are whatever the game computes from that: [`engine_realm::loadout::sheet_of`]
 //! builds the sheet exactly as a realm fight does, `CharacterSheet::gear_stats` sums the
 //! worn stacks scaled by [`ItemProps::multiplier`], and
@@ -17,7 +17,7 @@
 //!
 //! # The tiers
 //!
-//! | tier     | items                                    | quality | enhancement |
+//! | tier     | items                                    | quality | sharpening |
 //! |----------|------------------------------------------|---------|-------------|
 //! | `none`   | nothing worn: base stats only            | -       | -           |
 //! | `low`    | best *rare* piece in every slot          | 70      | +0          |
@@ -91,11 +91,11 @@ pub enum GearTier {
     None,
     /// Rare pieces at low quality.
     Low,
-    /// A rare and epic mix at good quality, lightly enhanced.
+    /// A rare and epic mix at good quality, lightly sharpened.
     Medium,
-    /// Epic pieces at catalog quality, enhanced to +6.
+    /// Epic pieces at catalog quality, sharpened to +6.
     High,
-    /// Epic pieces at the quality ceiling, enhanced to +10: what P2 is designed against.
+    /// Epic pieces at the quality ceiling, sharpened to +10: what P2 is designed against.
     P2Max,
 }
 
@@ -149,8 +149,8 @@ pub struct GearProfile {
     pub pick: Pick,
     /// The quality every piece is worn at, per cent of its base stats.
     pub quality: u8,
-    /// The enhancement level of every piece.
-    pub enhancement: u8,
+    /// The sharpening level of every piece.
+    pub sharpening: u8,
 }
 
 /// **Every gear profile the simulator knows, in one table.** Adding one is adding a row.
@@ -160,35 +160,35 @@ pub const PROFILES: [GearProfile; 5] = [
         variant: "none",
         pick: Pick::Nothing,
         quality: 100,
-        enhancement: 0,
+        sharpening: 0,
     },
     GearProfile {
         tier: GearTier::Low,
         variant: "low",
         pick: Pick::Rare,
         quality: 70,
-        enhancement: 0,
+        sharpening: 0,
     },
     GearProfile {
         tier: GearTier::Medium,
         variant: "medium",
         pick: Pick::Mixed,
         quality: 85,
-        enhancement: 3,
+        sharpening: 3,
     },
     GearProfile {
         tier: GearTier::High,
         variant: "high",
         pick: Pick::Epic,
         quality: 100,
-        enhancement: 6,
+        sharpening: 6,
     },
     GearProfile {
         tier: GearTier::P2Max,
         variant: "p2_max",
         pick: Pick::Epic,
         quality: QUALITY_MAX,
-        enhancement: 10,
+        sharpening: 10,
     },
 ];
 
@@ -218,7 +218,7 @@ impl GearProfile {
     pub fn props(&self) -> ItemProps {
         ItemProps::new(
             self.quality.clamp(QUALITY_MIN, QUALITY_MAX),
-            self.enhancement,
+            self.sharpening,
             false,
         )
     }
@@ -276,7 +276,7 @@ impl GearProfile {
         format!(
             "{worn} pieces at quality {} +{}: +{:.1} {}, {:.1} Haste ({:.1}%), {:.1} Crit ({:.1}%), {:.1} Stamina",
             self.quality,
-            self.enhancement,
+            self.sharpening,
             stats.get(hero.main_stat()),
             hero.main_stat().name(),
             stats.get(Stat::Haste),
@@ -302,7 +302,7 @@ pub fn sheet_of_items(hero: Hero, loadout: &[(EquipSlot, String, ItemProps)]) ->
                 slot: slot.key().to_owned(),
                 item: key.clone(),
                 quality: props.quality,
-                enhancement: props.enhancement,
+                sharpening: props.sharpening,
                 broken: props.broken,
             })
             .collect(),

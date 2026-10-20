@@ -4,7 +4,7 @@
 
 use engine_realm::api::{CharacterDetail, DungeonCompletion, DungeonResult, LootDelivery};
 use engine_realm::economy::{add_resources, debit_resources, spend_resource};
-use engine_realm::enhance::{enhance, EnhanceError, EnhanceOutcome};
+use engine_realm::sharpen::{sharpen, SharpenError, SharpenOutcome};
 use engine_realm::loadout::{
     add_stack_to_bag, add_stack_to_mail, migrate_removed_slots, starting_loadout, BagError,
     Loadout, SlotRef, MAIL_BAG_FULL, MAIL_DUNGEON_DROP, MAIL_UNCLAIMED,
@@ -611,57 +611,57 @@ impl HubTx {
     }
 }
 
-/// A refused enhancement as the HTTP error: the request named nothing enhanceable (400), or
+/// A refused sharpening as the HTTP error: the request named nothing sharpenable (400), or
 /// the item or purse is not in a state that allows it (409). The message is the sentence the
 /// player reads.
 #[must_use]
-pub fn enhance_error(error: EnhanceError) -> AppError {
+pub fn sharpen_error(error: SharpenError) -> AppError {
     let message = error.to_string();
     match error {
-        EnhanceError::EmptySlot | EnhanceError::NotEquipment => AppError::BadRequest(message),
-        EnhanceError::CannotEnhanceBroken
-        | EnhanceError::MaxLevel
-        | EnhanceError::Insufficient(_)
-        | EnhanceError::Overflow => AppError::Conflict(message),
+        SharpenError::EmptySlot | SharpenError::NotEquipment => AppError::BadRequest(message),
+        SharpenError::CannotSharpenBroken
+        | SharpenError::MaxLevel
+        | SharpenError::Insufficient(_)
+        | SharpenError::Overflow => AppError::Conflict(message),
         // The server drew a roll outside `[0, 1)`: its own bug, not the player's request.
-        EnhanceError::InvalidRoll => AppError::internal("The enhancement could not be rolled."),
+        SharpenError::InvalidRoll => AppError::internal("The sharpening could not be rolled."),
     }
 }
 
-/// One enhancement attempt on `loadout`, with the server's `roll` in `[0, 1)`.
+/// One sharpening attempt on `loadout`, with the server's `roll` in `[0, 1)`.
 ///
 /// # Errors
 ///
-/// The refusals of [`engine_realm::enhance::enhance`] as [`enhance_error`] maps them; the
+/// The refusals of [`engine_realm::sharpen::sharpen`] as [`sharpen_error`] maps them; the
 /// loadout is unchanged then.
-pub fn enhance_loadout(
+pub fn sharpen_loadout(
     loadout: &Loadout,
     slot: &SlotRef,
     roll: f64,
-) -> Result<(Loadout, EnhanceOutcome), AppError> {
+) -> Result<(Loadout, SharpenOutcome), AppError> {
     let mut changed = loadout.clone();
-    let outcome = enhance(&mut changed, slot, roll, crate::catalog().economy())
-        .map_err(enhance_error)?;
+    let outcome = sharpen(&mut changed, slot, roll, crate::catalog().economy())
+        .map_err(sharpen_error)?;
     Ok((changed, outcome))
 }
 
-/// Enhances the item in `slot` of one of the account's characters: the price, the roll's
+/// Sharpens the item in `slot` of one of the account's characters: the price, the roll's
 /// consequence and the new item state are written in one locked read-modify-write of the
-/// character row, so two requests can neither both pay from the same purse nor both enhance
+/// character row, so two requests can neither both pay from the same purse nor both sharpen
 /// the same item. `roll` comes from the server's own random source, never from the request.
 /// `Ok(None)` if the character is not the account's.
-pub async fn enhance_character(
+pub async fn sharpen_character(
     pool: &PgPool,
     account_id: Uuid,
     id: Uuid,
     slot: &SlotRef,
     roll: f64,
-) -> Result<Option<EnhanceOutcome>, AppError> {
-    let HubStart::Locked(mut hub) = HubTx::begin(pool, account_id, id, None, "enhance").await?
+) -> Result<Option<SharpenOutcome>, AppError> {
+    let HubStart::Locked(mut hub) = HubTx::begin(pool, account_id, id, None, "sharpen").await?
     else {
         return Ok(None);
     };
-    let (changed, outcome) = enhance_loadout(&hub.row.loadout.0, slot, roll)?;
+    let (changed, outcome) = sharpen_loadout(&hub.row.loadout.0, slot, roll)?;
     hub.save_loadout(&changed).await?;
     hub.release().await?;
     Ok(Some(outcome))
@@ -1318,7 +1318,7 @@ mod tests {
         assert_eq!(loadout.resources.get("gold"), Some(&40));
     }
 
-    mod enhancing {
+    mod sharpening {
         use super::*;
         use engine_game::character::ItemProps;
 
@@ -1334,8 +1334,8 @@ mod tests {
             engine_realm::loot::ensure_items_registered();
             let mut loadout = Loadout::default();
             let mut entry = engine_realm::loadout::EquippedItem::new("ring1", RING);
-            (entry.quality, entry.enhancement, entry.broken) =
-                (props.quality, props.enhancement, props.broken);
+            (entry.quality, entry.sharpening, entry.broken) =
+                (props.quality, props.sharpening, props.broken);
             loadout.equipment.push(entry);
             add_resources(
                 &mut loadout,
@@ -1351,10 +1351,10 @@ mod tests {
         #[test]
         fn a_safe_level_succeeds_and_pays_the_price_whatever_the_roll() {
             let (after, outcome) =
-                enhance_loadout(&loadout(ItemProps::rolled(100), 50, 0), &slot(), 0.0)
+                sharpen_loadout(&loadout(ItemProps::rolled(100), 50, 0), &slot(), 0.0)
                     .expect("allowed");
-            assert_eq!(outcome, EnhanceOutcome::Success { new_level: 1 });
-            assert_eq!(props_of(&after).enhancement, 1);
+            assert_eq!(outcome, SharpenOutcome::Success { new_level: 1 });
+            assert_eq!(props_of(&after).sharpening, 1);
             assert_eq!(after.resources.get("crypt_dust"), Some(&40), "10 dust paid");
         }
 
@@ -1362,13 +1362,13 @@ mod tests {
         fn a_risky_level_breaks_on_a_low_roll_and_holds_on_a_high_one() {
             let at_four = ItemProps::new(100, 4, false);
             let rich = loadout(at_four, 1_000, 5);
-            let (broken, outcome) = enhance_loadout(&rich, &slot(), 0.1).expect("allowed");
-            assert_eq!(outcome, EnhanceOutcome::Broken);
+            let (broken, outcome) = sharpen_loadout(&rich, &slot(), 0.1).expect("allowed");
+            assert_eq!(outcome, SharpenOutcome::Broken);
             assert!(props_of(&broken).broken);
-            assert_eq!(props_of(&broken).enhancement, 0);
-            let (held, outcome) = enhance_loadout(&rich, &slot(), 0.99).expect("allowed");
-            assert_eq!(outcome, EnhanceOutcome::Success { new_level: 5 });
-            assert_eq!(props_of(&held).enhancement, 5);
+            assert_eq!(props_of(&broken).sharpening, 0);
+            let (held, outcome) = sharpen_loadout(&rich, &slot(), 0.99).expect("allowed");
+            assert_eq!(outcome, SharpenOutcome::Success { new_level: 5 });
+            assert_eq!(props_of(&held).sharpening, 5);
         }
 
         #[test]
@@ -1376,24 +1376,24 @@ mod tests {
             let conflict = |error: AppError| matches!(error, AppError::Conflict(_));
             // Broken.
             let broken = loadout(ItemProps::new(100, 0, true), 1_000, 5);
-            assert!(conflict(enhance_loadout(&broken, &slot(), 0.5).expect_err("broken")));
+            assert!(conflict(sharpen_loadout(&broken, &slot(), 0.5).expect_err("broken")));
             // At the maximum (10).
             let maxed = loadout(ItemProps::new(100, 10, false), 10_000, 50);
-            assert!(conflict(enhance_loadout(&maxed, &slot(), 0.5).expect_err("max")));
+            assert!(conflict(sharpen_loadout(&maxed, &slot(), 0.5).expect_err("max")));
             // Too poor.
             let poor = loadout(ItemProps::rolled(100), 5, 0);
-            assert!(conflict(enhance_loadout(&poor, &slot(), 0.5).expect_err("poor")));
+            assert!(conflict(sharpen_loadout(&poor, &slot(), 0.5).expect_err("poor")));
             // Nothing there.
             let empty = SlotRef::Equipment {
                 slot: "head".into(),
             };
             let rich = loadout(ItemProps::rolled(100), 1_000, 5);
             assert!(matches!(
-                enhance_loadout(&rich, &empty, 0.5),
+                sharpen_loadout(&rich, &empty, 0.5),
                 Err(AppError::BadRequest(_))
             ));
             // A roll outside [0, 1) is the server's bug, not a conflict.
-            assert!(!conflict(enhance_loadout(&rich, &slot(), 1.0).expect_err("roll")));
+            assert!(!conflict(sharpen_loadout(&rich, &slot(), 1.0).expect_err("roll")));
         }
     }
 }

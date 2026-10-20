@@ -315,7 +315,7 @@ fn pick_weighted(entries: &[WeightedItem], rng: &mut Rng) -> Option<ItemId> {
 }
 
 /// **One equipment roll from `table`**: epic or not by [`roll_epic`], an item of that rarity by
-/// weight, then a quality by [`roll_quality`]. The item comes back un-enhanced and unbroken.
+/// weight, then a quality by [`roll_quality`]. The item comes back un-sharpened and unbroken.
 ///
 /// Draws exactly four numbers from `rng` (epic, pick, quality band, quality offset) whatever
 /// the outcome, so a roll's position in the sequence never depends on its result. `None` only
@@ -586,7 +586,7 @@ pub(crate) mod tests {
                 roll_equipment(table, &rules, 1, &mut rng).expect("a non-empty table");
             assert!([rare_ring, rare_helm, epic_ring, epic_helm].contains(&id));
             assert!((QUALITY_MIN..=QUALITY_MAX).contains(&props.quality));
-            assert_eq!((props.enhancement, props.broken), (0, false));
+            assert_eq!((props.sharpening, props.broken), (0, false));
             epics += u32::from(item(id).expect("known").quality == ItemQuality::Epic);
         }
         let rate = epics as f32 / n as f32;

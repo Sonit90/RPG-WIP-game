@@ -268,7 +268,7 @@ async fn character_key_and_loot_survive_a_refetch() {
         kind: "bag".into(),
         reason: String::new(),
         quality: 100,
-        enhancement: 0,
+        sharpening: 0,
         broken: false,
     };
     assert!(store::apply_loot(&pool, &delivery).await.expect("loot"));
@@ -544,7 +544,7 @@ async fn loot_with_props_is_delivered_once_to_the_bag_or_the_mail() {
         kind: "bag".into(),
         reason: String::new(),
         quality: 106,
-        enhancement: 0,
+        sharpening: 0,
         broken: false,
     };
     let drop = LootDelivery {
@@ -573,8 +573,8 @@ async fn loot_with_props_is_delivered_once_to_the_bag_or_the_mail() {
 
 #[tokio::test]
 #[ignore]
-async fn an_enhancement_pays_and_persists_under_the_row_lock() {
-    use engine_realm::enhance::EnhanceOutcome;
+async fn an_sharpening_pays_and_persists_under_the_row_lock() {
+    use engine_realm::sharpen::SharpenOutcome;
     use engine_realm::loadout::SlotRef;
     let pool = pool().await;
     let account = new_account(&pool).await;
@@ -595,18 +595,18 @@ async fn an_enhancement_pays_and_persists_under_the_row_lock() {
     let slot = SlotRef::Equipment {
         slot: "ring1".into(),
     };
-    let outcome = store::enhance_character(&pool, account, row.id, &slot, 0.5)
+    let outcome = store::sharpen_character(&pool, account, row.id, &slot, 0.5)
         .await
         .expect("allowed")
         .expect("owned");
-    assert_eq!(outcome, EnhanceOutcome::Success { new_level: 1 });
+    assert_eq!(outcome, SharpenOutcome::Success { new_level: 1 });
     let after = store::get(&pool, account, row.id).await.expect("get").expect("row");
     let ring = after.loadout.0.equipment.iter().find(|e| e.slot == "ring1").expect("ring");
-    assert_eq!(ring.enhancement, 1);
+    assert_eq!(ring.sharpening, 1);
     assert_eq!(after.loadout.0.resources.get("crypt_dust"), Some(&20));
     // Another account's character is not found, and nothing is paid.
     let other = new_account(&pool).await;
-    assert!(store::enhance_character(&pool, other, row.id, &slot, 0.5)
+    assert!(store::sharpen_character(&pool, other, row.id, &slot, 0.5)
         .await
         .expect("no error")
         .is_none());
@@ -619,7 +619,7 @@ async fn an_enhancement_pays_and_persists_under_the_row_lock() {
     .await
     .expect("break")
     .expect("owned");
-    assert!(store::enhance_character(&pool, account, row.id, &slot, 0.5)
+    assert!(store::sharpen_character(&pool, account, row.id, &slot, 0.5)
         .await
         .is_err());
     drop_account(&pool, other).await;
@@ -1030,7 +1030,7 @@ async fn a_p1_loadout_row_without_a_version_reads_and_is_written_current() {
         .expect("get")
         .expect("exists");
     assert_eq!(read.loadout.0.version, engine_realm::loadout::CURRENT_VERSION);
-    assert_eq!(read.loadout.0.equipment[0].enhancement, 3);
+    assert_eq!(read.loadout.0.equipment[0].sharpening, 3);
     assert_eq!(read.loadout.0.resources.get("gold"), Some(&7));
 
     // Any write stamps the current version.

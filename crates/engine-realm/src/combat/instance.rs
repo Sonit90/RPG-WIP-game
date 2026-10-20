@@ -345,7 +345,7 @@ struct Member {
 pub struct RolledItem {
     /// The item's stable key.
     pub key: &'static str,
-    /// Its quality, enhancement and broken state.
+    /// Its quality, sharpening and broken state.
     pub props: engine_game::character::ItemProps,
 }
 

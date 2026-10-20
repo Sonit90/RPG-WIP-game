@@ -57,9 +57,10 @@ pub struct EquippedItem {
         skip_serializing_if = "is_default_quality"
     )]
     pub quality: u8,
-    /// Enhancement level. Absent in older rows: 0.
+    /// Sharpening level. Absent in older rows: 0.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub enhancement: u8,
+    #[serde(rename = "enhancement", alias = "sharpening")]
+    pub sharpening: u8,
     /// Whether it broke. Absent in older rows: false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub broken: bool,
@@ -80,12 +81,12 @@ impl EquippedItem {
     /// Its instance properties, clamped into the legal ranges.
     #[must_use]
     pub fn props(&self) -> ItemProps {
-        ItemProps::new(self.quality, self.enhancement, self.broken)
+        ItemProps::new(self.quality, self.sharpening, self.broken)
     }
 
     fn set_props(&mut self, props: ItemProps) {
-        (self.quality, self.enhancement, self.broken) =
-            (props.quality, props.enhancement, props.broken);
+        (self.quality, self.sharpening, self.broken) =
+            (props.quality, props.sharpening, props.broken);
     }
 }
 
@@ -104,9 +105,10 @@ pub struct BagItem {
         skip_serializing_if = "is_default_quality"
     )]
     pub quality: u8,
-    /// Enhancement level. Absent in older rows: 0.
+    /// Sharpening level. Absent in older rows: 0.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub enhancement: u8,
+    #[serde(rename = "enhancement", alias = "sharpening")]
+    pub sharpening: u8,
     /// Whether it broke. Absent in older rows: false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub broken: bool,
@@ -128,12 +130,12 @@ impl BagItem {
     /// Its instance properties, clamped into the legal ranges.
     #[must_use]
     pub fn props(&self) -> ItemProps {
-        ItemProps::new(self.quality, self.enhancement, self.broken)
+        ItemProps::new(self.quality, self.sharpening, self.broken)
     }
 
     fn set_props(&mut self, props: ItemProps) {
-        (self.quality, self.enhancement, self.broken) =
-            (props.quality, props.enhancement, props.broken);
+        (self.quality, self.sharpening, self.broken) =
+            (props.quality, props.sharpening, props.broken);
     }
 }
 
@@ -153,9 +155,10 @@ pub struct MailItem {
         skip_serializing_if = "is_default_quality"
     )]
     pub quality: u8,
-    /// The attachment's enhancement level. Absent in older rows: 0.
+    /// The attachment's sharpening level. Absent in older rows: 0.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub enhancement: u8,
+    #[serde(rename = "enhancement", alias = "sharpening")]
+    pub sharpening: u8,
     /// Whether the attachment is broken. Absent in older rows: false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub broken: bool,
@@ -374,7 +377,7 @@ pub fn loadout_of(sheet: &CharacterSheet) -> Loadout {
             id: letter.id,
             item: def.key.to_owned(),
             quality: letter.props.quality,
-            enhancement: letter.props.enhancement,
+            sharpening: letter.props.sharpening,
             broken: letter.props.broken,
             sender: letter.sender.name().to_owned(),
             subject: match letter.reason {
@@ -458,7 +461,7 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
         sheet.mailbox_mut().restore(SimMail {
             id: letter.id,
             item: def.id,
-            props: ItemProps::new(letter.quality, letter.enhancement, letter.broken),
+            props: ItemProps::new(letter.quality, letter.sharpening, letter.broken),
             sender: match letter.sender.as_str() {
                 MAIL_SENDER_SYSTEM => MailSender::System,
                 MAIL_SENDER_DUNGEON => MailSender::Dungeon,
@@ -653,7 +656,7 @@ fn push_mail(
         id,
         item: key.to_owned(),
         quality: props.quality,
-        enhancement: props.enhancement,
+        sharpening: props.sharpening,
         broken: props.broken,
         sender: sender.to_owned(),
         subject,
@@ -724,7 +727,7 @@ pub fn take_mail(loadout: &mut Loadout, mail_id: u64) -> Result<u32, TakeMailErr
         .ok_or(TakeMailError::NotFound)?;
     let key = loadout.mail[index].item.clone();
     let letter = &loadout.mail[index];
-    let props = ItemProps::new(letter.quality, letter.enhancement, letter.broken);
+    let props = ItemProps::new(letter.quality, letter.sharpening, letter.broken);
     match add_stack_to_bag(loadout, &key, props) {
         Ok(cell) => {
             loadout.mail.remove(index);
@@ -782,7 +785,7 @@ mod tests {
         loadout
     }
 
-    /// A P1 row as the database holds it: no `version`, qualities and enhancements on worn,
+    /// A P1 row as the database holds it: no `version`, qualities and sharpenings on worn,
     /// carried and mailed items (defaults omitted), mail, resources. Captured, not generated.
     const P1_LOADOUT: &str = r#"{
         "equipment": [
@@ -811,7 +814,7 @@ mod tests {
         assert_eq!(
             (
                 loadout.equipment[0].quality,
-                loadout.equipment[0].enhancement
+                loadout.equipment[0].sharpening
             ),
             (106, 3)
         );
@@ -821,7 +824,7 @@ mod tests {
         assert_eq!(loadout.inventory[1].quantity, 2);
         assert_eq!(loadout.mail[0].id, 7);
         assert_eq!(
-            (loadout.mail[0].quality, loadout.mail[0].enhancement),
+            (loadout.mail[0].quality, loadout.mail[0].sharpening),
             (110, 1)
         );
         assert_eq!(loadout.resources.get("gold"), Some(&120));
@@ -1119,7 +1122,7 @@ mod tests {
         let hero = Hero::Warrior;
         let mut loadout = Loadout::default();
         let mut worn = EquippedItem::new("ring1", "reinforced_iron_band");
-        (worn.quality, worn.enhancement) = (107, 6);
+        (worn.quality, worn.sharpening) = (107, 6);
         loadout.equipment.push(worn);
         let mut carried = BagItem::new(2, engine_game::character::loot_pool()[0].key, 1);
         (carried.quality, carried.broken) = (93, true);
@@ -1167,7 +1170,7 @@ mod tests {
         let hero = Hero::Warrior;
         let mut loadout = Loadout::default();
         let mut worn = EquippedItem::new("ring1", "reinforced_iron_band");
-        (worn.quality, worn.enhancement) = (255, 250);
+        (worn.quality, worn.sharpening) = (255, 250);
         loadout.equipment.push(worn);
         let props = sheet_of(hero, &loadout)
             .equipment()
@@ -1175,7 +1178,7 @@ mod tests {
             .expect("worn")
             .props;
         assert_eq!(props.quality, engine_game::character::QUALITY_MAX);
-        assert!(props.enhancement <= engine_game::character::ENHANCEMENT_CEILING);
+        assert!(props.sharpening <= engine_game::character::SHARPENING_CEILING);
         // Item level 10 at the most the rules allow: 110 plus 20 per cent.
         assert!(gear_score(hero, &loadout) <= 130);
     }
@@ -1183,10 +1186,10 @@ mod tests {
     #[test]
     fn gear_score_follows_the_items_properties() {
         let hero = Hero::Warrior;
-        let plain = |quality, enhancement, broken| {
+        let plain = |quality, sharpening, broken| {
             let mut loadout = Loadout::default();
             let mut worn = EquippedItem::new("ring1", "reinforced_iron_band");
-            (worn.quality, worn.enhancement, worn.broken) = (quality, enhancement, broken);
+            (worn.quality, worn.sharpening, worn.broken) = (quality, sharpening, broken);
             loadout.equipment.push(worn);
             gear_score(hero, &loadout)
         };

@@ -436,9 +436,10 @@ pub struct LootDelivery {
     /// Rolled quality, per cent of the base stats.
     #[serde(default = "default_quality")]
     pub quality: u8,
-    /// Enhancement level (zero for anything just rolled).
+    /// Sharpening level (zero for anything just rolled).
     #[serde(default)]
-    pub enhancement: u8,
+    #[serde(rename = "enhancement", alias = "sharpening")]
+    pub sharpening: u8,
     /// Whether the item is broken.
     #[serde(default)]
     pub broken: bool,
@@ -453,13 +454,13 @@ impl LootDelivery {
     /// wrong but never stronger than the rules allow.
     #[must_use]
     pub fn props(&self) -> engine_game::character::ItemProps {
-        engine_game::character::ItemProps::new(self.quality, self.enhancement, self.broken)
+        engine_game::character::ItemProps::new(self.quality, self.sharpening, self.broken)
     }
 }
 
-/// `POST /api/v1/characters/{id}/enhance`.
+/// `POST /api/v1/characters/{id}/sharpen`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnhanceRequest {
+pub struct SharpenRequest {
     /// The worn slot or bag cell holding the item. There is no roll in it: the server rolls.
     pub slot: SlotRef,
     /// Idempotency key: the client's id for this one user action, reused if it retries. A
@@ -468,22 +469,22 @@ pub struct EnhanceRequest {
     pub request_id: Option<String>,
 }
 
-/// How an enhancement attempt ended.
+/// How a sharpening attempt ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EnhanceOutcomeName {
+pub enum SharpenOutcomeName {
     /// The item gained a level.
     Success,
     /// The item broke.
     Broken,
 }
 
-/// What `POST /api/v1/characters/{id}/enhance` answers with.
+/// What `POST /api/v1/characters/{id}/sharpen` answers with.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EnhanceResponse {
+pub struct SharpenResponse {
     /// `"success"` or `"broken"`.
-    pub outcome: EnhanceOutcomeName,
-    /// The item's enhancement level afterwards (zero when it broke).
+    pub outcome: SharpenOutcomeName,
+    /// The item's sharpening level afterwards (zero when it broke).
     pub new_level: u8,
     /// The character in full, as every other change answers.
     pub character: CharacterDetail,

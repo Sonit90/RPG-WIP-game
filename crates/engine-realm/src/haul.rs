@@ -56,7 +56,7 @@ pub fn drops_in(events: &[WireEvent]) -> Vec<Drop> {
                 player: EntityRef::Player(account),
                 item,
                 quality,
-                enhancement,
+                sharpening,
                 broken,
             } => {
                 let Some(def) = item_by_key(item) else {
@@ -65,7 +65,7 @@ pub fn drops_in(events: &[WireEvent]) -> Vec<Drop> {
                 drops.push(Drop::Item {
                     account: account.clone(),
                     item: def.key.to_owned(),
-                    props: ItemProps::new(*quality, *enhancement, *broken),
+                    props: ItemProps::new(*quality, *sharpening, *broken),
                 });
             }
             WireEvent::MobCurrency {
@@ -179,9 +179,10 @@ pub struct SummaryItem {
     pub item: String,
     /// Rolled quality, per cent of the base stats.
     pub quality: u8,
-    /// Enhancement level (zero for anything just dropped).
+    /// Sharpening level (zero for anything just dropped).
     #[serde(default)]
-    pub enhancement: u8,
+    #[serde(rename = "enhancement", alias = "sharpening")]
+    pub sharpening: u8,
     /// Whether it is broken.
     #[serde(default)]
     pub broken: bool,
@@ -194,7 +195,7 @@ impl SummaryItem {
         Self {
             item: item.to_owned(),
             quality: props.quality,
-            enhancement: props.enhancement,
+            sharpening: props.sharpening,
             broken: props.broken,
         }
     }
@@ -202,7 +203,7 @@ impl SummaryItem {
     /// The item's properties, clamped into the legal ranges.
     #[must_use]
     pub fn props(&self) -> ItemProps {
-        ItemProps::new(self.quality, self.enhancement, self.broken)
+        ItemProps::new(self.quality, self.sharpening, self.broken)
     }
 }
 
@@ -240,14 +241,14 @@ mod tests {
                 player: player("a"),
                 item: key.clone(),
                 quality: 88,
-                enhancement: 0,
+                sharpening: 0,
                 broken: false,
             },
             WireEvent::MobLoot {
                 player: player("a"),
                 item: "moon_cheese".into(),
                 quality: 88,
-                enhancement: 0,
+                sharpening: 0,
                 broken: false,
             },
             WireEvent::MobCurrency {

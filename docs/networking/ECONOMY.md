@@ -1,4 +1,4 @@
-# Economy: currencies, monster drops and enhancement
+# Economy: currencies, monster drops and sharpening
 
 Everything here is decided by the realm or the persistence API; the client only asks and shows.
 
@@ -27,30 +27,30 @@ function (`combat::reward_bonus`, zero until the key task fills it) and the summ
 ## Quality in the interface
 
 Every item tooltip (character sheet, bag, mailbox, loot toast) prints the stats of the actual copy
-(`ItemStack::stats`) and: `Base Quality: 106%`, `Enhancement: +7%`, `Total: 113%`, or for a broken
-item `BROKEN (-15%) - cannot be enhanced` in red. The Dungeon Finder card states the epic chance
+(`ItemStack::stats`) and: `Base Quality: 106%`, `Sharpening: +7%`, `Total: 113%`, or for a broken
+item `BROKEN (-15%) - cannot be sharpened` in red. The Dungeon Finder card states the epic chance
 and the chance of a 100%+ item at the character's key level, from the same functions the server
 rolls with (`epic_chance_at`, `quality_odds`).
 
-## Enhancement
+## Sharpening
 
-`POST /api/v1/characters/{id}/enhance` with `{ "slot": { "kind": "equipment", "slot": "ring1" } }`
+`POST /api/v1/characters/{id}/sharpen` with `{ "slot": { "kind": "equipment", "slot": "ring1" } }`
 (or `{ "kind": "inventory", "index": 3 }`) answers `{ "outcome": "success" | "broken",
 "new_level": n, "character": { ... } }`.
 
 * The server draws the roll from the operating system's secure source; the request carries no
   roll and cannot influence it.
-* One locked read-modify-write of the character row (`engine_realm::enhance::enhance`): the price
+* One locked read-modify-write of the character row (`engine_realm::sharpen::sharpen`): the price
   is paid on success and on a break, the item changes, the row is saved. Two requests cannot both
   spend the same purse.
 * Refused: an empty slot or an item that is not equipment (400); a broken item, an item at the
   maximum level, an unaffordable price (409); a character that is queued, grouped or in a dungeon
   (409, the same lock as equipment). Rate limited like other character writes.
 * Each success adds 1% of the base stats (up to `max_level`). The first levels cannot break; from
-  the fifth the break chance in `economy.json` applies. A break removes the enhancement and leaves
-  85% of the rolled quality; a broken item cannot be enhanced again.
+  the fifth the break chance in `economy.json` applies. A break removes the sharpening and leaves
+  85% of the rolled quality; a broken item cannot be sharpened again.
 
-The Workshop screen has an Enhance panel: worn items and bag items, the item's state, the next
+The Workshop screen has a Sharpen panel: worn items and bag items, the item's state, the next
 level, the price with what is owned, and the break chance (red whenever it is above zero), with an
-Enhance button; the result shows as a toast ("Success: +8" or "BROKEN") and the character is
+Sharpen button; the result shows as a toast ("Success: +8" or "BROKEN") and the character is
 refreshed from the answer.

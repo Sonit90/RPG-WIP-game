@@ -62,7 +62,7 @@ pub struct LootItem {
     /// The icon family; the slot's if absent.
     #[serde(default)]
     pub icon: Option<String>,
-    /// The button a trinket gives while worn. Quality and enhancement do not scale it.
+    /// The button a trinket gives while worn. Quality and sharpening do not scale it.
     #[serde(default)]
     pub active: Option<LootActive>,
 }

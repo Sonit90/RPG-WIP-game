@@ -167,7 +167,7 @@ fn equipping_ten_stamina_raises_the_maximum_health_by_a_hundred() {
 }
 
 #[test]
-fn an_items_quality_enhancement_and_breakage_reach_the_players_health() {
+fn an_items_quality_sharpening_and_breakage_reach_the_players_health() {
     let mut simulation = simulation();
     let ring = item_by_key("reinforced_iron_band").expect("the stamina ring");
     let cell = free_cell(&simulation);

@@ -1,20 +1,20 @@
-//! Enhancing equipment: pay a price, risk the item, gain a per cent of its stats.
+//! Sharpening equipment: pay a price, risk the item, gain a per cent of its stats.
 //!
 //! ```text
-//! enhance(loadout, slot, roll, economy)
+//! sharpen(loadout, slot, roll, economy)
 //!    refuse: empty / not equipment / broken / already at the maximum / cannot afford
 //!    pay the whole price                      (always, whatever follows)
-//!    roll < break_chance(target level) ─► Broken   quality kept, enhancement lost, -15 %
-//!    otherwise                         ─► Success  enhancement + 1  (+1 % of the base stats)
+//!    roll < break_chance(target level) ─► Broken   quality kept, sharpening lost, -15 %
+//!    otherwise                         ─► Success  sharpening + 1  (+1 % of the base stats)
 //! ```
 //!
-//! Pure rules over a [`Loadout`]: the persistence API runs [`enhance`] inside one locked
+//! Pure rules over a [`Loadout`]: the persistence API runs [`sharpen`] inside one locked
 //! read-modify-write of the character row, supplying the roll from the server's own random
 //! source, so a client can neither choose its roll nor skip the price. Nothing here reads a
 //! clock or a random source.
 //!
 //! The first levels are safe (their break chance is zero) and the last ones very nearly are
-//! not; the numbers are `economy.json`'s `enhancement` block. What a level is *worth* is not
+//! not; the numbers are `economy.json`'s `sharpening` block. What a level is *worth* is not
 //! decided here: `engine_game::character::ItemProps` scales the stats, and
 //! [`crate::catalog::Economy`] refuses to load unless its `step_pct` agrees with it.
 
@@ -29,26 +29,26 @@ use crate::loot::ensure_items_registered;
 
 /// What an attempt did to the item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnhanceOutcome {
-    /// The item is now this enhancement level.
+pub enum SharpenOutcome {
+    /// The item is now this sharpening level.
     Success {
         /// Its new level.
         new_level: u8,
     },
-    /// The item broke: its enhancement is gone and it grants 85 per cent of its quality.
+    /// The item broke: its sharpening is gone and it grants 85 per cent of its quality.
     Broken,
 }
 
 /// Why an attempt was refused. Nothing was paid or changed in any of these cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EnhanceError {
+pub enum SharpenError {
     /// The address names nothing: an unknown slot, or an empty one.
     EmptySlot,
-    /// The item is not equipment that can be enhanced: unknown, stackable, or granting no stats.
+    /// The item is not equipment that can be sharpened: unknown, stackable, or granting no stats.
     NotEquipment,
-    /// A broken item cannot be enhanced again.
-    CannotEnhanceBroken,
-    /// The item is already at the maximum level (or enhancement is switched off).
+    /// A broken item cannot be sharpened again.
+    CannotSharpenBroken,
+    /// The item is already at the maximum level (or sharpening is switched off).
     MaxLevel,
     /// The character cannot pay; carries the display name of the first resource short.
     Insufficient(String),
@@ -58,26 +58,26 @@ pub enum EnhanceError {
     Overflow,
 }
 
-impl fmt::Display for EnhanceError {
+impl fmt::Display for SharpenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptySlot => f.write_str("There is no item there to enhance."),
-            Self::NotEquipment => f.write_str("That item cannot be enhanced."),
-            Self::CannotEnhanceBroken => f.write_str("A broken item cannot be enhanced."),
-            Self::MaxLevel => f.write_str("That item is already fully enhanced."),
+            Self::EmptySlot => f.write_str("There is no item there to sharpen."),
+            Self::NotEquipment => f.write_str("That item cannot be sharpened."),
+            Self::CannotSharpenBroken => f.write_str("A broken item cannot be sharpened."),
+            Self::MaxLevel => f.write_str("That item is already fully sharpened."),
             Self::Insufficient(resource) => write!(f, "You do not have enough {resource}."),
-            Self::InvalidRoll => f.write_str("The enhancement could not be rolled."),
+            Self::InvalidRoll => f.write_str("The sharpening could not be rolled."),
             Self::Overflow => f.write_str("That is more than can be held."),
         }
     }
 }
 
-impl std::error::Error for EnhanceError {}
+impl std::error::Error for SharpenError {}
 
-impl From<EnhanceError> for RealmError {
-    fn from(error: EnhanceError) -> Self {
+impl From<SharpenError> for RealmError {
+    fn from(error: SharpenError) -> Self {
         match error {
-            EnhanceError::InvalidRoll => Self::protocol(error.to_string()),
+            SharpenError::InvalidRoll => Self::protocol(error.to_string()),
             _ => Self::persistence(error.to_string()),
         }
     }
@@ -88,44 +88,44 @@ impl From<EnhanceError> for RealmError {
 ///
 /// # Errors
 ///
-/// The refusals [`enhance`] would give for the item itself ([`EnhanceError::EmptySlot`],
-/// [`EnhanceError::NotEquipment`], [`EnhanceError::CannotEnhanceBroken`],
-/// [`EnhanceError::MaxLevel`]); affordability is not checked.
+/// The refusals [`sharpen`] would give for the item itself ([`SharpenError::EmptySlot`],
+/// [`SharpenError::NotEquipment`], [`SharpenError::CannotSharpenBroken`],
+/// [`SharpenError::MaxLevel`]); affordability is not checked.
 pub fn preview(
     loadout: &Loadout,
     slot: &SlotRef,
     economy: &Economy,
-) -> Result<EnhancePreview, EnhanceError> {
+) -> Result<SharpenPreview, SharpenError> {
     ensure_items_registered();
     let (props, _) = locate(loadout, slot)?;
     let target = target_level(props, economy)?;
     let price = economy
-        .enhancement
+        .sharpening
         .costs_for(target)
         .map(|cost| (cost.resource.clone(), cost.amount))
         .collect();
-    Ok(EnhancePreview {
+    Ok(SharpenPreview {
         target,
-        break_chance: economy.enhancement.break_chance(target),
+        break_chance: economy.sharpening.break_chance(target),
         price,
     })
 }
 
 /// The level an attempt on an item with `props` would aim for, if it may be attempted.
-fn target_level(props: ItemProps, economy: &Economy) -> Result<u8, EnhanceError> {
+fn target_level(props: ItemProps, economy: &Economy) -> Result<u8, SharpenError> {
     if props.broken {
-        return Err(EnhanceError::CannotEnhanceBroken);
+        return Err(SharpenError::CannotSharpenBroken);
     }
-    let target = props.enhancement.saturating_add(1);
-    if target > economy.enhancement.max_level {
-        return Err(EnhanceError::MaxLevel);
+    let target = props.sharpening.saturating_add(1);
+    if target > economy.sharpening.max_level {
+        return Err(SharpenError::MaxLevel);
     }
     Ok(target)
 }
 
 /// What one more level costs and risks.
 #[derive(Debug, Clone, PartialEq)]
-pub struct EnhancePreview {
+pub struct SharpenPreview {
     /// The level the attempt aims for.
     pub target: u8,
     /// The chance the attempt breaks the item, `0..=1`.
@@ -134,21 +134,21 @@ pub struct EnhancePreview {
     pub price: Vec<(String, u64)>,
 }
 
-/// An enhanceable item's props and where it is stored.
+/// An sharpenable item's props and where it is stored.
 enum Place {
     Worn(usize),
     Bag(usize),
 }
 
-/// Finds the item at `slot` and checks it is enhanceable equipment.
-fn locate(loadout: &Loadout, slot: &SlotRef) -> Result<(ItemProps, Place), EnhanceError> {
+/// Finds the item at `slot` and checks it is sharpenable equipment.
+fn locate(loadout: &Loadout, slot: &SlotRef) -> Result<(ItemProps, Place), SharpenError> {
     let (key, props, place) = match slot {
         SlotRef::Equipment { slot } => {
             let index = loadout
                 .equipment
                 .iter()
                 .position(|entry| entry.slot == *slot)
-                .ok_or(EnhanceError::EmptySlot)?;
+                .ok_or(SharpenError::EmptySlot)?;
             let entry: &EquippedItem = &loadout.equipment[index];
             (&entry.item, entry.props(), Place::Worn(index))
         }
@@ -157,22 +157,22 @@ fn locate(loadout: &Loadout, slot: &SlotRef) -> Result<(ItemProps, Place), Enhan
                 .inventory
                 .iter()
                 .position(|entry| entry.index == *index && entry.quantity > 0)
-                .ok_or(EnhanceError::EmptySlot)?;
+                .ok_or(SharpenError::EmptySlot)?;
             let entry: &BagItem = &loadout.inventory[position];
             if entry.quantity != 1 {
-                return Err(EnhanceError::NotEquipment);
+                return Err(SharpenError::NotEquipment);
             }
             (&entry.item, entry.props(), Place::Bag(position))
         }
     };
-    let def = item_by_key(key).ok_or(EnhanceError::NotEquipment)?;
+    let def = item_by_key(key).ok_or(SharpenError::NotEquipment)?;
     if def.max_stack > 1 || def.grants_nothing() {
-        return Err(EnhanceError::NotEquipment);
+        return Err(SharpenError::NotEquipment);
     }
     Ok((props, place))
 }
 
-/// **One enhancement attempt** on the item at `slot` (worn or in the bag).
+/// **One sharpening attempt** on the item at `slot` (worn or in the bag).
 ///
 /// `roll` is a number in `[0, 1)` the *caller* drew from a server-side random source; the
 /// attempt breaks the item when `roll < break_chance(target level)`, so a level with a break
@@ -181,28 +181,28 @@ fn locate(loadout: &Loadout, slot: &SlotRef) -> Result<(ItemProps, Place), Enhan
 ///
 /// # Errors
 ///
-/// [`EnhanceError::EmptySlot`], [`EnhanceError::NotEquipment`],
-/// [`EnhanceError::CannotEnhanceBroken`], [`EnhanceError::MaxLevel`],
-/// [`EnhanceError::Insufficient`] when any resource of the price is short (nothing is
-/// deducted), [`EnhanceError::InvalidRoll`]. The loadout is unchanged on every error.
-pub fn enhance(
+/// [`SharpenError::EmptySlot`], [`SharpenError::NotEquipment`],
+/// [`SharpenError::CannotSharpenBroken`], [`SharpenError::MaxLevel`],
+/// [`SharpenError::Insufficient`] when any resource of the price is short (nothing is
+/// deducted), [`SharpenError::InvalidRoll`]. The loadout is unchanged on every error.
+pub fn sharpen(
     loadout: &mut Loadout,
     slot: &SlotRef,
     roll: f64,
     economy: &Economy,
-) -> Result<EnhanceOutcome, EnhanceError> {
+) -> Result<SharpenOutcome, SharpenError> {
     ensure_items_registered();
     if !(0.0..1.0).contains(&roll) {
-        return Err(EnhanceError::InvalidRoll);
+        return Err(SharpenError::InvalidRoll);
     }
     let (props, place) = locate(loadout, slot)?;
     let target = target_level(props, economy)?;
 
     // All or nothing: check the whole price before taking any of it.
-    let price: Vec<_> = economy.enhancement.costs_for(target).collect();
+    let price: Vec<_> = economy.sharpening.costs_for(target).collect();
     for cost in &price {
         if loadout.resources.get(&cost.resource).copied().unwrap_or(0) < cost.amount {
-            return Err(EnhanceError::Insufficient(
+            return Err(SharpenError::Insufficient(
                 economy
                     .resource(&cost.resource)
                     .map_or_else(|| cost.resource.clone(), |resource| resource.name.clone()),
@@ -221,7 +221,7 @@ pub fn enhance(
         }
     }
 
-    let broke = roll < economy.enhancement.break_chance(target);
+    let broke = roll < economy.sharpening.break_chance(target);
     let after = if broke {
         ItemProps::new(props.quality, 0, true)
     } else {
@@ -232,20 +232,20 @@ pub fn enhance(
         Place::Bag(index) => set_bag(&mut loadout.inventory[index], after),
     }
     Ok(if broke {
-        EnhanceOutcome::Broken
+        SharpenOutcome::Broken
     } else {
-        EnhanceOutcome::Success { new_level: target }
+        SharpenOutcome::Success { new_level: target }
     })
 }
 
 fn set_worn(entry: &mut EquippedItem, props: ItemProps) {
-    (entry.quality, entry.enhancement, entry.broken) =
-        (props.quality, props.enhancement, props.broken);
+    (entry.quality, entry.sharpening, entry.broken) =
+        (props.quality, props.sharpening, props.broken);
 }
 
 fn set_bag(entry: &mut BagItem, props: ItemProps) {
-    (entry.quality, entry.enhancement, entry.broken) =
-        (props.quality, props.enhancement, props.broken);
+    (entry.quality, entry.sharpening, entry.broken) =
+        (props.quality, props.sharpening, props.broken);
 }
 
 #[cfg(test)]
@@ -309,9 +309,9 @@ mod tests {
         let mut loadout = rich();
         let before = main_stat_ratio(props_of(&loadout));
         // Roll just under one: the safe levels cannot break whatever it is.
-        let outcome = enhance(&mut loadout, &slot(), 0.999, &economy).expect("allowed");
-        assert_eq!(outcome, EnhanceOutcome::Success { new_level: 1 });
-        assert_eq!(props_of(&loadout).enhancement, 1);
+        let outcome = sharpen(&mut loadout, &slot(), 0.999, &economy).expect("allowed");
+        assert_eq!(outcome, SharpenOutcome::Success { new_level: 1 });
+        assert_eq!(props_of(&loadout).sharpening, 1);
         assert!((main_stat_ratio(props_of(&loadout)) - before - 0.01).abs() < 1e-5);
     }
 
@@ -332,51 +332,51 @@ mod tests {
                 );
             }
             assert_eq!(
-                enhance(&mut breaks, &slot(), chance - 1e-9, &economy),
-                Ok(EnhanceOutcome::Broken)
+                sharpen(&mut breaks, &slot(), chance - 1e-9, &economy),
+                Ok(SharpenOutcome::Broken)
             );
             assert_eq!(
-                enhance(&mut holds, &slot(), chance, &economy),
-                Ok(EnhanceOutcome::Success { new_level: target })
+                sharpen(&mut holds, &slot(), chance, &economy),
+                Ok(SharpenOutcome::Success { new_level: target })
             );
         }
         for target in 1..=4 {
             let mut loadout = worn(ItemProps::new(100, target - 1, false));
             add_resources(&mut loadout, &[("crypt_dust".into(), 10_000)]);
             assert_eq!(
-                enhance(&mut loadout, &slot(), 0.0, &economy),
-                Ok(EnhanceOutcome::Success { new_level: target }),
+                sharpen(&mut loadout, &slot(), 0.0, &economy),
+                Ok(SharpenOutcome::Success { new_level: target }),
                 "+{target} is safe even on the worst roll"
             );
         }
     }
 
     #[test]
-    fn a_break_costs_the_enhancement_and_leaves_eighty_five_per_cent_of_the_quality() {
+    fn a_break_costs_the_sharpening_and_leaves_eighty_five_per_cent_of_the_quality() {
         let economy = economy();
         let mut loadout = rich();
         loadout.equipment[0].quality = 110;
-        loadout.equipment[0].enhancement = 6;
+        loadout.equipment[0].sharpening = 6;
         assert_eq!(
-            enhance(&mut loadout, &slot(), 0.0, &economy),
-            Ok(EnhanceOutcome::Broken)
+            sharpen(&mut loadout, &slot(), 0.0, &economy),
+            Ok(SharpenOutcome::Broken)
         );
         let after = props_of(&loadout);
         assert_eq!(after, ItemProps::new(110, 0, true));
         assert!((after.total_pct() - 93.5).abs() < 1e-4);
-        // At quality 100 and no enhancement, a broken item is exactly 85 per cent.
+        // At quality 100 and no sharpening, a broken item is exactly 85 per cent.
         assert!((ItemProps::new(100, 0, true).multiplier() - 0.85).abs() < 1e-6);
     }
 
     #[test]
-    fn a_broken_item_cannot_be_enhanced_and_nothing_is_paid() {
+    fn a_broken_item_cannot_be_sharpened_and_nothing_is_paid() {
         let economy = economy();
         let mut loadout = rich();
         loadout.equipment[0].broken = true;
         let before = loadout.clone();
         assert_eq!(
-            enhance(&mut loadout, &slot(), 0.5, &economy),
-            Err(EnhanceError::CannotEnhanceBroken)
+            sharpen(&mut loadout, &slot(), 0.5, &economy),
+            Err(SharpenError::CannotSharpenBroken)
         );
         assert_eq!(loadout, before);
     }
@@ -385,11 +385,11 @@ mod tests {
     fn the_maximum_level_stops_further_attempts() {
         let economy = economy();
         let mut loadout = rich();
-        loadout.equipment[0].enhancement = economy.enhancement.max_level;
+        loadout.equipment[0].sharpening = economy.sharpening.max_level;
         let before = loadout.clone();
         assert_eq!(
-            enhance(&mut loadout, &slot(), 0.5, &economy),
-            Err(EnhanceError::MaxLevel)
+            sharpen(&mut loadout, &slot(), 0.5, &economy),
+            Err(SharpenError::MaxLevel)
         );
         assert_eq!(loadout, before);
     }
@@ -403,10 +403,10 @@ mod tests {
                 &mut loadout,
                 &[("crypt_dust".into(), 1_000), ("steward_ember".into(), 10)],
             );
-            let price: Vec<_> = economy.enhancement.costs_for(target).cloned().collect();
+            let price: Vec<_> = economy.sharpening.costs_for(target).cloned().collect();
             assert!(!price.is_empty());
             let before = loadout.resources.clone();
-            enhance(&mut loadout, &slot(), roll, &economy).expect("affordable");
+            sharpen(&mut loadout, &slot(), roll, &economy).expect("affordable");
             for cost in price {
                 assert_eq!(
                     loadout.resources.get(&cost.resource).copied().unwrap_or(0),
@@ -426,8 +426,8 @@ mod tests {
         add_resources(&mut loadout, &[("crypt_dust".into(), 5_000)]);
         let before = loadout.clone();
         assert_eq!(
-            enhance(&mut loadout, &slot(), 0.5, &economy),
-            Err(EnhanceError::Insufficient("Steward's Ember".into()))
+            sharpen(&mut loadout, &slot(), 0.5, &economy),
+            Err(SharpenError::Insufficient("Steward's Ember".into()))
         );
         assert_eq!(
             loadout, before,
@@ -436,13 +436,13 @@ mod tests {
         // And nothing at all in the purse.
         let mut empty = worn(ItemProps::default());
         assert_eq!(
-            enhance(&mut empty, &slot(), 0.5, &economy),
-            Err(EnhanceError::Insufficient("Crypt Dust".into()))
+            sharpen(&mut empty, &slot(), 0.5, &economy),
+            Err(SharpenError::Insufficient("Crypt Dust".into()))
         );
     }
 
     #[test]
-    fn only_enhanceable_equipment_can_be_enhanced() {
+    fn only_sharpenable_equipment_can_be_sharpened() {
         let economy = economy();
         let mut loadout = rich();
         // Nothing there; an unknown slot; a white piece that grants nothing; an unknown item.
@@ -450,40 +450,40 @@ mod tests {
             slot: "head".into(),
         };
         assert_eq!(
-            enhance(&mut loadout, &empty, 0.5, &economy),
-            Err(EnhanceError::EmptySlot)
+            sharpen(&mut loadout, &empty, 0.5, &economy),
+            Err(SharpenError::EmptySlot)
         );
         let cell = SlotRef::Inventory { index: 3 };
         assert_eq!(
-            enhance(&mut loadout, &cell, 0.5, &economy),
-            Err(EnhanceError::EmptySlot)
+            sharpen(&mut loadout, &cell, 0.5, &economy),
+            Err(SharpenError::EmptySlot)
         );
         loadout
             .inventory
             .push(BagItem::new(3, "simple_cloth_hood", 1));
         assert_eq!(
-            enhance(&mut loadout, &cell, 0.5, &economy),
-            Err(EnhanceError::NotEquipment)
+            sharpen(&mut loadout, &cell, 0.5, &economy),
+            Err(SharpenError::NotEquipment)
         );
         loadout.inventory[0].item = "no_such_item".into();
         assert_eq!(
-            enhance(&mut loadout, &cell, 0.5, &economy),
-            Err(EnhanceError::NotEquipment)
+            sharpen(&mut loadout, &cell, 0.5, &economy),
+            Err(SharpenError::NotEquipment)
         );
     }
 
     #[test]
-    fn a_bag_item_can_be_enhanced_too() {
+    fn a_bag_item_can_be_sharpened_too() {
         let economy = economy();
         let mut loadout = rich();
         loadout.inventory.push(BagItem::new(2, KEY, 1));
         let cell = SlotRef::Inventory { index: 2 };
         assert_eq!(
-            enhance(&mut loadout, &cell, 0.9, &economy),
-            Ok(EnhanceOutcome::Success { new_level: 1 })
+            sharpen(&mut loadout, &cell, 0.9, &economy),
+            Ok(SharpenOutcome::Success { new_level: 1 })
         );
-        assert_eq!(loadout.inventory[0].enhancement, 1);
-        assert_eq!(loadout.equipment[0].enhancement, 0);
+        assert_eq!(loadout.inventory[0].sharpening, 1);
+        assert_eq!(loadout.equipment[0].sharpening, 0);
     }
 
     #[test]
@@ -492,8 +492,8 @@ mod tests {
         let mut loadout = rich();
         for roll in [-0.1, 1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(
-                enhance(&mut loadout, &slot(), roll, &economy),
-                Err(EnhanceError::InvalidRoll)
+                sharpen(&mut loadout, &slot(), roll, &economy),
+                Err(SharpenError::InvalidRoll)
             );
         }
     }
@@ -516,10 +516,10 @@ mod tests {
 
     #[test]
     fn errors_read_as_sentences_and_convert() {
-        let error: RealmError = EnhanceError::Insufficient("Crypt Dust".into()).into();
+        let error: RealmError = SharpenError::Insufficient("Crypt Dust".into()).into();
         assert_eq!(error.message, "You do not have enough Crypt Dust.");
         assert_eq!(error.category, crate::ErrorCategory::Persistence);
-        let error: RealmError = EnhanceError::InvalidRoll.into();
+        let error: RealmError = SharpenError::InvalidRoll.into();
         assert_eq!(error.category, crate::ErrorCategory::Protocol);
     }
 }

@@ -9,7 +9,8 @@
 //! | `POST /characters/{id}/mail/{mail_id}/read` | mark mail read |
 //! | `POST /characters/{id}/salvage` | break bag items down into a resource |
 //! | `POST /characters/{id}/exchange` | trade resources at a catalog rate |
-//! | `POST /characters/{id}/enhance` | one enhancement attempt: the server rolls, the locked row pays |
+//! | `POST /characters/{id}/sharpen` | one sharpening attempt: the server rolls, the locked row pays |
+//! | `POST /characters/{id}/enhance` | alias of `/sharpen` (P1 name), kept for one release |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
 //! | `POST /characters/{id}/key/downgrade` | key one level lower, extra modifiers dropped (hub only) |
 //! | `POST /characters/{id}/key/cleanse` | strip a key's modifiers for gold (hub only) |
@@ -29,7 +30,7 @@
 //! character and enqueues, so a hub write and a queue join are serialised: whichever takes the
 //! row second sees the other's effect.
 //!
-//! **Request ids**: the progression-changing routes (enhance, salvage, exchange, equipment move,
+//! **Request ids**: the progression-changing routes (sharpen, salvage, exchange, equipment move,
 //! taking mail, key downgrade and cleanse, talents) take an optional `request_id` (a UUID the
 //! client makes per user action and reuses on retry; in the body, which may be otherwise empty
 //! for the routes without one). The first request records its response in the transaction that
@@ -47,8 +48,8 @@ use axum::{
     Json, Router,
 };
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, EconomyInfo, EnhanceOutcomeName, EnhanceRequest,
-    EnhanceResponse, ExchangeInfo, ExchangeRequest, MoveItemRequest, QueueRequest, ResourceInfo,
+    CharacterDetail, CharacterSummary, EconomyInfo, SharpenOutcomeName, SharpenRequest,
+    SharpenResponse, ExchangeInfo, ExchangeRequest, MoveItemRequest, QueueRequest, ResourceInfo,
     RequestIdBody, SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
 };
 use generic_auth_core::AppError;
@@ -70,7 +71,9 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/mail/{mail_id}/read", post(read_mail))
         .route("/characters/{id}/salvage", post(salvage))
         .route("/characters/{id}/exchange", post(exchange))
-        .route("/characters/{id}/enhance", post(enhance))
+        .route("/characters/{id}/sharpen", post(sharpen))
+        // P1 name, kept as an alias for one release.
+        .route("/characters/{id}/enhance", post(sharpen))
         .route("/economy", get(get_economy))
         .route("/characters/{id}/key/downgrade", post(downgrade_key))
         .route("/characters/{id}/key/cleanse", post(cleanse_key))
@@ -370,54 +373,54 @@ async fn exchange(
     Ok(detail)
 }
 
-/// A random number in `[0, 1)` from the operating system's secure source: the only place an
-/// enhancement's fate is decided. Never derived from the request.
+/// A random number in `[0, 1)` from the operating system's secure source: the only place a
+/// sharpening's fate is decided. Never derived from the request.
 fn secure_roll() -> f64 {
     use rand::Rng;
     rand::rngs::OsRng.gen_range(0.0..1.0)
 }
 
-async fn enhance(
+async fn sharpen(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<String>,
-    Json(body): Json<EnhanceRequest>,
-) -> ApiResult<Json<EnhanceResponse>> {
-    enhance_with(&state, &user, &id, &body, secure_roll()).await
+    Json(body): Json<SharpenRequest>,
+) -> ApiResult<Json<SharpenResponse>> {
+    sharpen_with(&state, &user, &id, &body, secure_roll()).await
 }
 
-/// One enhancement attempt with the server's `roll`. Rate limited like every character
+/// One sharpening attempt with the server's `roll`. Rate limited like every character
 /// mutation, refused (409) while the character is engaged, then priced, rolled and written in
-/// one locked read-modify-write of the character row. Split from [`enhance`] so a test can
+/// one locked read-modify-write of the character row. Split from [`sharpen`] so a test can
 /// inject the roll.
-async fn enhance_with(
+async fn sharpen_with(
     state: &AppState,
     user: &AuthUser,
     id: &str,
-    body: &EnhanceRequest,
+    body: &SharpenRequest,
     roll: f64,
-) -> ApiResult<Json<EnhanceResponse>> {
-    let mut hub = match hub_begin(state, user, id, body.request_id.as_deref(), "enhance").await? {
+) -> ApiResult<Json<SharpenResponse>> {
+    let mut hub = match hub_begin(state, user, id, body.request_id.as_deref(), "sharpen").await? {
         Hub::Replay(response) => return replayed(response),
         Hub::Go(hub) => hub,
     };
     ensure_unlocked(state, user).await?;
-    let (changed, outcome) = store::enhance_loadout(&hub.row.loadout.0, &body.slot, roll)?;
+    let (changed, outcome) = store::sharpen_loadout(&hub.row.loadout.0, &body.slot, roll)?;
     hub.save_loadout(&changed).await?;
     let (name, new_level) = match outcome {
-        engine_realm::enhance::EnhanceOutcome::Success { new_level } => {
-            (EnhanceOutcomeName::Success, new_level)
+        engine_realm::sharpen::SharpenOutcome::Success { new_level } => {
+            (SharpenOutcomeName::Success, new_level)
         }
-        engine_realm::enhance::EnhanceOutcome::Broken => (EnhanceOutcomeName::Broken, 0),
+        engine_realm::sharpen::SharpenOutcome::Broken => (SharpenOutcomeName::Broken, 0),
     };
     tracing::info!(
         account_id = %user.user_id,
         character_id = %hub.row.id,
         outcome = ?name,
         new_level,
-        "enhancement attempted"
+        "sharpening attempted"
     );
-    let response = EnhanceResponse {
+    let response = SharpenResponse {
         outcome: name,
         new_level,
         character: hub.detail().await?,
@@ -757,7 +760,7 @@ mod tests {
     fn every_route_that_changes_the_snapshot_checks_the_lock() {
         for direct in [
             "move_item",
-            "enhance_with",
+            "sharpen_with",
             "downgrade_key",
             "cleanse_key",
             "save_talents",
@@ -797,7 +800,7 @@ mod tests {
     fn hub_writes_lock_the_row_before_asking_the_realm_and_writing() {
         for route in [
             "move_item",
-            "enhance_with",
+            "sharpen_with",
             "downgrade_key",
             "cleanse_key",
             "save_talents",

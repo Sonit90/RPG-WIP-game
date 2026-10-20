@@ -603,7 +603,7 @@ pub enum CombatEvent {
         player: EntityId,
         /// What they received.
         item: crate::character::ItemId,
-        /// Its quality, enhancement and broken state.
+        /// Its quality, sharpening and broken state.
         props: crate::character::ItemProps,
         /// Which of the player's chest items this is, in roll order, starting at zero.
         index: u8,
@@ -617,7 +617,7 @@ pub enum CombatEvent {
         player: EntityId,
         /// What was mailed.
         item: crate::character::ItemId,
-        /// Its quality, enhancement and broken state.
+        /// Its quality, sharpening and broken state.
         props: crate::character::ItemProps,
         /// Which of the player's chest items this is, in roll order, starting at zero.
         index: u8,
@@ -634,7 +634,7 @@ pub enum CombatEvent {
         player: EntityId,
         /// What dropped.
         item: crate::character::ItemId,
-        /// Its quality, enhancement and broken state.
+        /// Its quality, sharpening and broken state.
         props: crate::character::ItemProps,
         /// The simulation tick it happened on.
         tick: u64,

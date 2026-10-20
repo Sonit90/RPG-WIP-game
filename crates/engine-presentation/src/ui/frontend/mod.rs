@@ -225,33 +225,33 @@ pub struct ExchangeRow {
     pub affordable: bool,
 }
 
-/// An item the enhance panel can act on, as the app addresses it.
+/// An item the sharpen panel can act on, as the app addresses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EnhanceTarget {
+pub enum SharpenTarget {
     /// A worn item, by its slot's key.
     Worn(String),
     /// A bag cell.
     Bag(u32),
 }
 
-/// One worn item in the enhance panel's row.
+/// One worn item in the sharpen panel's row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnhanceWorn {
+pub struct SharpenWorn {
     /// The slot's key (`ring1`).
     pub slot: String,
     /// The picture.
     pub icon: ItemIcon,
     /// The rank its edge is coloured by.
     pub quality: ItemQuality,
-    /// Its enhancement level (zero when broken).
+    /// Its sharpening level (zero when broken).
     pub level: u8,
     /// Whether it is broken.
     pub broken: bool,
 }
 
-/// One resource of an enhancement's price.
+/// One resource of a sharpening's price.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnhanceCost {
+pub struct SharpenCost {
     /// Display name.
     pub name: String,
     /// What one attempt takes.
@@ -260,34 +260,34 @@ pub struct EnhanceCost {
     pub owned: u64,
 }
 
-/// What enhancing the selected item would cost and risk.
+/// What sharpening the selected item would cost and risk.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnhanceDetail {
+pub struct SharpenDetail {
     /// The item's name.
     pub name: String,
     /// Its rank, for the name's colour.
     pub quality: ItemQuality,
-    /// Its current state: `Enhancement +7%  Total 113%`.
+    /// Its current state: `Sharpening +7%  Total 113%`.
     pub current: String,
-    /// Why it cannot be enhanced (broken, fully enhanced, not equipment), if it cannot.
+    /// Why it cannot be sharpened (broken, fully sharpened, not equipment), if it cannot.
     pub blocked: Option<String>,
     /// The next level and what it adds: `Next: +8 (+1% of base stats)`.
     pub next: String,
     /// The price of one attempt.
-    pub cost: Vec<EnhanceCost>,
+    pub cost: Vec<SharpenCost>,
     /// The chance the attempt breaks the item, as text (`95%`); `None` when it cannot.
     pub break_chance: Option<String>,
 }
 
-/// The enhance half of the workshop screen.
+/// The sharpen half of the workshop screen.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct EnhanceCard {
+pub struct SharpenCard {
     /// The worn items, in slot order.
-    pub worn: Vec<EnhanceWorn>,
+    pub worn: Vec<SharpenWorn>,
     /// The selected item, if one is.
-    pub selected: Option<EnhanceTarget>,
+    pub selected: Option<SharpenTarget>,
     /// Its price and risk.
-    pub detail: Option<EnhanceDetail>,
+    pub detail: Option<SharpenDetail>,
 }
 
 /// The salvage and exchange screen.
@@ -305,8 +305,8 @@ pub struct WorkshopCard {
     pub resources: Vec<(String, u64)>,
     /// Available exchanges.
     pub exchanges: Vec<ExchangeRow>,
-    /// The enhance panel, while it is the one showing (instead of the tray and exchanges).
-    pub enhance: Option<EnhanceCard>,
+    /// The sharpen panel, while it is the one showing (instead of the tray and exchanges).
+    pub sharpen: Option<SharpenCard>,
 }
 
 /// One chest item on the completion panel.
@@ -607,12 +607,12 @@ pub enum FrontEndAction {
     SalvageTray,
     /// Make this exchange once.
     Exchange(String),
-    /// Show the enhance panel (`true`) or the salvage tray and exchanges (`false`).
+    /// Show the sharpen panel (`true`) or the salvage tray and exchanges (`false`).
     WorkshopMode(bool),
-    /// Select an item to enhance.
-    SelectEnhance(EnhanceTarget),
-    /// Try to enhance the selected item one level.
-    Enhance,
+    /// Select an item to sharpen.
+    SelectSharpen(SharpenTarget),
+    /// Try to sharpen the selected item one level.
+    Sharpen,
     /// Lower the character's key one level (confirmed).
     DowngradeKey,
     /// Strip the character's key of its modifiers for gold (confirmed).
@@ -683,12 +683,12 @@ enum Hit {
     TrayCell(usize),
     SalvageTray,
     Exchange(String),
-    /// The workshop's switch between salvage and enhance.
-    EnhanceMode(bool),
-    /// A worn item in the enhance row, by position.
-    EnhanceWorn(usize),
-    /// The Enhance button.
-    EnhanceGo,
+    /// The workshop's switch between salvage and sharpen.
+    SharpenMode(bool),
+    /// A worn item in the sharpen row, by position.
+    SharpenWorn(usize),
+    /// The Sharpen button.
+    SharpenGo,
     /// The hub key panel's Downgrade button (asks to confirm).
     KeyDowngrade,
     /// The hub key panel's Cleanse button (asks to confirm).
@@ -1066,22 +1066,22 @@ impl FrontEndUi {
             Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
             Hit::ReturnToHub => actions.push(FrontEndAction::ReturnToHub),
             Hit::BagCell(index) => {
-                if view.workshop.as_ref().is_some_and(|w| w.enhance.is_some()) {
-                    actions.push(FrontEndAction::SelectEnhance(EnhanceTarget::Bag(index)));
+                if view.workshop.as_ref().is_some_and(|w| w.sharpen.is_some()) {
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Bag(index)));
                 } else {
                     actions.push(FrontEndAction::StageSalvage(index));
                 }
             }
-            Hit::EnhanceMode(on) => actions.push(FrontEndAction::WorkshopMode(on)),
-            Hit::EnhanceGo => actions.push(FrontEndAction::Enhance),
-            Hit::EnhanceWorn(position) => {
+            Hit::SharpenMode(on) => actions.push(FrontEndAction::WorkshopMode(on)),
+            Hit::SharpenGo => actions.push(FrontEndAction::Sharpen),
+            Hit::SharpenWorn(position) => {
                 if let Some(worn) = view
                     .workshop
                     .as_ref()
-                    .and_then(|w| w.enhance.as_ref())
+                    .and_then(|w| w.sharpen.as_ref())
                     .and_then(|e| e.worn.get(position))
                 {
-                    actions.push(FrontEndAction::SelectEnhance(EnhanceTarget::Worn(
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Worn(
                         worn.slot.clone(),
                     )));
                 }
@@ -1277,34 +1277,34 @@ impl FrontEndUi {
                 let panels = workshop_panels(w, h, scale);
                 let exchange = panels.exchange;
                 if let Some(workshop) = &view.workshop
-                    && let Some(enhance) = &workshop.enhance
+                    && let Some(sharpen) = &workshop.sharpen
                 {
                     let idle = view.busy.is_none();
-                    let panel = enhance_panel(&panels);
+                    let panel = sharpen_panel(&panels);
                     layout.add(Hit::Panel, panel);
-                    layout.add(Hit::EnhanceMode(false), mode_button(panel, scale));
+                    layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
                     for row in &workshop.bag {
                         layout.add(
                             Hit::BagCell(row.index),
                             bag_cell_rect(panels.bag, row.index as usize, scale),
                         );
                     }
-                    for position in 0..enhance.worn.len() {
+                    for position in 0..sharpen.worn.len() {
                         layout.add(
-                            Hit::EnhanceWorn(position),
-                            enhance_worn_rect(panel, position, scale),
+                            Hit::SharpenWorn(position),
+                            sharpen_worn_rect(panel, position, scale),
                         );
                     }
                     if idle
-                        && enhance.detail.as_ref().is_some_and(|d| {
+                        && sharpen.detail.as_ref().is_some_and(|d| {
                             d.blocked.is_none() && d.cost.iter().all(|c| c.owned >= c.needed)
                         })
                     {
-                        layout.add(Hit::EnhanceGo, enhance_button(panel, scale));
+                        layout.add(Hit::SharpenGo, sharpen_button(panel, scale));
                     }
                 } else if let Some(workshop) = &view.workshop {
                     let idle = view.busy.is_none();
-                    layout.add(Hit::EnhanceMode(true), mode_button(panels.salvage, scale));
+                    layout.add(Hit::SharpenMode(true), mode_button(panels.salvage, scale));
                     if idle {
                         for row in &workshop.bag {
                             if !workshop.tray.contains(&row.index) {
@@ -2447,8 +2447,8 @@ fn tray_cell_rect(salvage: UiRect, position: usize, scale: UiScale) -> UiRect {
     )
 }
 
-/// The enhance panel: the salvage tray's and the exchanges' space together.
-fn enhance_panel(panels: &WorkshopPanels) -> UiRect {
+/// The sharpen panel: the salvage tray's and the exchanges' space together.
+fn sharpen_panel(panels: &WorkshopPanels) -> UiRect {
     UiRect::new(
         panels.salvage.x,
         panels.salvage.y,
@@ -2457,7 +2457,7 @@ fn enhance_panel(panels: &WorkshopPanels) -> UiRect {
     )
 }
 
-/// The switch between the salvage and enhance halves, on a panel's title row.
+/// The switch between the salvage and sharpen halves, on a panel's title row.
 fn mode_button(panel: UiRect, scale: UiScale) -> UiRect {
     let px = |v: f32| scale.px(v);
     UiRect::new(
@@ -2468,8 +2468,8 @@ fn mode_button(panel: UiRect, scale: UiScale) -> UiRect {
     )
 }
 
-/// Worn item `position` in the enhance panel's row.
-fn enhance_worn_rect(panel: UiRect, position: usize, scale: UiScale) -> UiRect {
+/// Worn item `position` in the sharpen panel's row.
+fn sharpen_worn_rect(panel: UiRect, position: usize, scale: UiScale) -> UiRect {
     let origin = (panel.x + scale.px(20.0), panel.y + scale.px(46.0));
     item_cell(
         origin,
@@ -2479,8 +2479,8 @@ fn enhance_worn_rect(panel: UiRect, position: usize, scale: UiScale) -> UiRect {
     )
 }
 
-/// The Enhance button, at the bottom right of the enhance panel.
-fn enhance_button(panel: UiRect, scale: UiScale) -> UiRect {
+/// The Sharpen button, at the bottom right of the sharpen panel.
+fn sharpen_button(panel: UiRect, scale: UiScale) -> UiRect {
     let px = |v: f32| scale.px(v);
     UiRect::new(
         panel.right() - px(20.0) - px(150.0),
@@ -3624,10 +3624,10 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     ctx.heading("SALVAGE & EXCHANGE", &holding, w);
     let panels = workshop_panels(w, h, scale);
     let (bag, salvage, exchange) = (panels.bag, panels.salvage, panels.exchange);
-    let enhancing = workshop.enhance.is_some();
-    let big = enhance_panel(&panels);
-    let shown: Vec<(UiRect, &str)> = if enhancing {
-        vec![(bag, "BAG"), (big, "ENHANCE")]
+    let sharpening = workshop.sharpen.is_some();
+    let big = sharpen_panel(&panels);
+    let shown: Vec<(UiRect, &str)> = if sharpening {
+        vec![(bag, "BAG"), (big, "SHARPEN")]
     } else {
         vec![(bag, "BAG"), (salvage, "SALVAGE"), (exchange, "EXCHANGE")]
     };
@@ -3648,7 +3648,7 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     // but dimmed, so the player sees where it came from.
     for index in 0..INVENTORY_SLOTS {
         let row = find(u32::try_from(index).unwrap_or(u32::MAX));
-        let staged = !enhancing && row.is_some_and(|row| workshop.tray.contains(&row.index));
+        let staged = !sharpening && row.is_some_and(|row| workshop.tray.contains(&row.index));
         let hit = row.map(|row| Hit::BagCell(row.index));
         draw_item_cell(
             ctx,
@@ -3679,7 +3679,7 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             )
         }
         None if workshop.bag.is_empty() => "Your bag is empty.".to_owned(),
-        None if enhancing => "Click an item to enhance it.".to_owned(),
+        None if sharpening => "Click an item to sharpen it.".to_owned(),
         None => "Click an item to put it in the salvage tray.".to_owned(),
     };
     ctx.text(
@@ -3691,8 +3691,8 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         TextAlign::Left,
     );
 
-    if let Some(enhance) = &workshop.enhance {
-        draw_enhance(ctx, view, enhance, big);
+    if let Some(sharpen) = &workshop.sharpen {
+        draw_sharpen(ctx, view, sharpen, big);
         let (back, _) = footer_buttons(w, h, scale);
         ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
         if let Some(busy) = &view.busy {
@@ -3709,9 +3709,9 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     }
     ctx.button(
         mode_button(salvage, scale),
-        "Enhance items",
+        "Sharpen items",
         ButtonKind::Secondary,
-        &Hit::EnhanceMode(true),
+        &Hit::SharpenMode(true),
         true,
     );
 
@@ -3801,23 +3801,23 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     }
 }
 
-/// The enhance panel's contents: the worn items, then the selected item's state, price and
+/// The sharpen panel's contents: the worn items, then the selected item's state, price and
 /// risk, then the button. The break chance is red whenever it is above zero.
-fn draw_enhance(ctx: &mut Painter<'_>, view: &FrontEndView, enhance: &EnhanceCard, panel: UiRect) {
+fn draw_sharpen(ctx: &mut Painter<'_>, view: &FrontEndView, sharpen: &SharpenCard, panel: UiRect) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
     ctx.button(
         mode_button(panel, scale),
         "Salvage & Exchange",
         ButtonKind::Secondary,
-        &Hit::EnhanceMode(false),
+        &Hit::SharpenMode(false),
         true,
     );
-    let selected_slot = match &enhance.selected {
-        Some(EnhanceTarget::Worn(slot)) => Some(slot.as_str()),
+    let selected_slot = match &sharpen.selected {
+        Some(SharpenTarget::Worn(slot)) => Some(slot.as_str()),
         _ => None,
     };
-    for (position, worn) in enhance.worn.iter().enumerate() {
+    for (position, worn) in sharpen.worn.iter().enumerate() {
         let row = BagRow {
             index: 0,
             name: String::new(),
@@ -3827,8 +3827,8 @@ fn draw_enhance(ctx: &mut Painter<'_>, view: &FrontEndView, enhance: &EnhanceCar
             quality: worn.quality,
             yields: String::new(),
         };
-        let rect = enhance_worn_rect(panel, position, scale);
-        let hit = Hit::EnhanceWorn(position);
+        let rect = sharpen_worn_rect(panel, position, scale);
+        let hit = Hit::SharpenWorn(position);
         draw_item_cell(ctx, rect, Some(&row), false, Some(&hit));
         if selected_slot == Some(worn.slot.as_str()) {
             ctx.list
@@ -3850,14 +3850,14 @@ fn draw_enhance(ctx: &mut Painter<'_>, view: &FrontEndView, enhance: &EnhanceCar
             );
         }
     }
-    let rows = enhance.worn.len().div_ceil(INVENTORY_COLUMNS).max(1);
-    let mut y = enhance_worn_rect(panel, 0, scale).y
-        + (enhance_worn_rect(panel, INVENTORY_COLUMNS, scale).y
-            - enhance_worn_rect(panel, 0, scale).y)
+    let rows = sharpen.worn.len().div_ceil(INVENTORY_COLUMNS).max(1);
+    let mut y = sharpen_worn_rect(panel, 0, scale).y
+        + (sharpen_worn_rect(panel, INVENTORY_COLUMNS, scale).y
+            - sharpen_worn_rect(panel, 0, scale).y)
             * rows as f32
         + px(8.0);
     let x = panel.x + px(20.0);
-    let Some(detail) = &enhance.detail else {
+    let Some(detail) = &sharpen.detail else {
         ctx.text(
             (x, y),
             "Select a worn item above or an item in your bag.",
@@ -3932,10 +3932,10 @@ fn draw_enhance(ctx: &mut Painter<'_>, view: &FrontEndView, enhance: &EnhanceCar
     );
     let affordable = detail.cost.iter().all(|c| c.owned >= c.needed);
     ctx.button(
-        enhance_button(panel, scale),
-        "Enhance",
+        sharpen_button(panel, scale),
+        "Sharpen",
         ButtonKind::Primary,
-        &Hit::EnhanceGo,
+        &Hit::SharpenGo,
         affordable && view.busy.is_none(),
     );
 }
@@ -5491,25 +5491,25 @@ mod tests {
         assert!(lost.contains(&"Gold: +20".to_owned()));
     }
 
-    fn enhance_view(selected: bool, affordable: bool, blocked: Option<&str>) -> FrontEndView {
+    fn sharpen_view(selected: bool, affordable: bool, blocked: Option<&str>) -> FrontEndView {
         let mut view = workshop_view(vec![]);
         if let Some(workshop) = view.workshop.as_mut() {
-            workshop.enhance = Some(EnhanceCard {
-                worn: vec![EnhanceWorn {
+            workshop.sharpen = Some(SharpenCard {
+                worn: vec![SharpenWorn {
                     slot: "ring1".into(),
                     icon: ItemIcon::Helm,
                     quality: ItemQuality::Epic,
                     level: 4,
                     broken: false,
                 }],
-                selected: selected.then(|| EnhanceTarget::Worn("ring1".into())),
-                detail: selected.then(|| EnhanceDetail {
+                selected: selected.then(|| SharpenTarget::Worn("ring1".into())),
+                detail: selected.then(|| SharpenDetail {
                     name: "Ashgrave's Seal".into(),
                     quality: ItemQuality::Epic,
-                    current: "Enhancement +4%  Total 110%".into(),
+                    current: "Sharpening +4%  Total 110%".into(),
                     blocked: blocked.map(str::to_owned),
                     next: "Next: +5 (+1% of base stats)".into(),
-                    cost: vec![EnhanceCost {
+                    cost: vec![SharpenCost {
                         name: "Crypt Dust".into(),
                         needed: 75,
                         owned: if affordable { 100 } else { 10 },
@@ -5522,46 +5522,46 @@ mod tests {
     }
 
     #[test]
-    fn the_enhance_panel_selects_an_item_and_emits_the_enhance_action() {
+    fn the_sharpen_panel_selects_an_item_and_emits_the_sharpen_action() {
         let mut ui = FrontEndUi::new();
-        let view = enhance_view(true, true, None);
+        let view = sharpen_view(true, true, None);
         assert_eq!(
-            click(&mut ui, &view, &Hit::EnhanceWorn(0)),
-            vec![FrontEndAction::SelectEnhance(EnhanceTarget::Worn(
+            click(&mut ui, &view, &Hit::SharpenWorn(0)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Worn(
                 "ring1".into()
             ))]
         );
         assert_eq!(
             click(&mut ui, &view, &Hit::BagCell(4)),
-            vec![FrontEndAction::SelectEnhance(EnhanceTarget::Bag(4))],
-            "in enhance mode a bag click selects, it does not stage salvage"
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Bag(4))],
+            "in sharpen mode a bag click selects, it does not stage salvage"
         );
         assert_eq!(
-            click(&mut ui, &view, &Hit::EnhanceGo),
-            vec![FrontEndAction::Enhance]
+            click(&mut ui, &view, &Hit::SharpenGo),
+            vec![FrontEndAction::Sharpen]
         );
         assert_eq!(
-            click(&mut ui, &view, &Hit::EnhanceMode(false)),
+            click(&mut ui, &view, &Hit::SharpenMode(false)),
             vec![FrontEndAction::WorkshopMode(false)]
         );
         // Not affordable or blocked: no button to press.
         for view in [
-            enhance_view(true, false, None),
-            enhance_view(true, true, Some("A broken item cannot be enhanced.")),
+            sharpen_view(true, false, None),
+            sharpen_view(true, true, Some("A broken item cannot be sharpened.")),
         ] {
-            assert!(rect_of(&ui, &view, &Hit::EnhanceGo).is_none());
+            assert!(rect_of(&ui, &view, &Hit::SharpenGo).is_none());
         }
         // And the salvage side offers the way in.
         let salvage = workshop_view(vec![]);
         assert_eq!(
-            click(&mut ui, &salvage, &Hit::EnhanceMode(true)),
+            click(&mut ui, &salvage, &Hit::SharpenMode(true)),
             vec![FrontEndAction::WorkshopMode(true)]
         );
     }
 
     #[test]
-    fn the_enhance_panel_draws_the_cost_and_a_red_break_chance() {
-        let view = enhance_view(true, true, None);
+    fn the_sharpen_panel_draws_the_cost_and_a_red_break_chance() {
+        let view = sharpen_view(true, true, None);
         let mut list = UiDrawList::new();
         let mut ctx = Painter {
             list: &mut list,
@@ -5582,11 +5582,11 @@ mod tests {
             })
             .collect();
         let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
-        assert!(has("ENHANCE").is_some());
+        assert!(has("SHARPEN").is_some());
         assert!(has("Next: +5 (+1% of base stats)").is_some());
         assert_eq!(has("Crypt Dust: 100 / 75").map(|(_, c)| *c), Some(TEXT));
         assert_eq!(has("Break chance: 95%").map(|(_, c)| *c), Some(BAD));
-        assert!(has("Enhance").is_some());
+        assert!(has("Sharpen").is_some());
     }
 
     fn rusty_sword(index: u32) -> BagRow {
@@ -5625,7 +5625,7 @@ mod tests {
                     affordable: false,
                 },
             ],
-            enhance: None,
+            sharpen: None,
         });
         view
     }

@@ -27,7 +27,7 @@
 //! | [`catalog`] | which characters and dungeons exist |
 //! | [`loadout`] | what a character wears, and its gear score |
 //! | [`economy`] | resources, salvage and exchanges |
-//! | [`enhance`] | enhancing equipment: cost, success and breakage |
+//! | [`sharpen`] | sharpening equipment: cost, success and breakage |
 //! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
 //! | [`mapcheck`] | validation of community maps and official scenes, one shared rule set |
 //! | [`haul`] | monster drops and the loot lines of a run summary |
@@ -51,7 +51,6 @@ pub mod catalog;
 pub mod chat;
 pub mod combat;
 pub mod economy;
-pub mod enhance;
 pub mod error;
 pub mod haul;
 pub mod instance;
@@ -70,6 +69,7 @@ pub mod rate_limit;
 pub mod reconnect;
 pub mod rewards;
 pub mod role;
+pub mod sharpen;
 pub mod talents;
 
 pub use error::{ErrorCategory, RealmError};

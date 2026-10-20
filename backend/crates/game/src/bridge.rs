@@ -307,7 +307,7 @@ impl RealmBridge {
                 kind: row.state,
                 reason: row.reason,
                 quality: row.quality,
-                enhancement: row.enhancement,
+                sharpening: row.enhancement,
                 broken: row.broken,
             })
             .collect())
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(rows[0].loot_id, "12:acct:loot:1");
         assert_eq!(rows[0].state, "mail");
         assert_eq!(rows[0].reason, "unclaimed");
-        assert_eq!((rows[0].quality, rows[0].enhancement, rows[0].broken), (106, 3, false));
+        assert_eq!((rows[0].quality, rows[0].sharpening, rows[0].broken), (106, 3, false));
     }
 
     fn engaged(state: &str) -> Result<Engagement, BridgeError> {
