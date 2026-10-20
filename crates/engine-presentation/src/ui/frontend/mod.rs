@@ -267,11 +267,11 @@ pub struct SharpenDetail {
     pub name: String,
     /// Its rank, for the name's colour.
     pub quality: ItemQuality,
-    /// Its current state: `Sharpening +7%  Total 113%`.
+    /// Its current state: `Sharpening +7%  Effective Quality 113%`.
     pub current: String,
     /// Why it cannot be sharpened (broken, fully sharpened, not equipment), if it cannot.
     pub blocked: Option<String>,
-    /// The next level and what it adds: `Next: +8 (+1% of base stats)`.
+    /// The next level and what it adds: `Next: +8  ->  Effective Quality 114%`.
     pub next: String,
     /// The price of one attempt.
     pub cost: Vec<SharpenCost>,
@@ -5506,9 +5506,9 @@ mod tests {
                 detail: selected.then(|| SharpenDetail {
                     name: "Ashgrave's Seal".into(),
                     quality: ItemQuality::Epic,
-                    current: "Sharpening +4%  Total 110%".into(),
+                    current: "Sharpening +4%  Effective Quality 110%".into(),
                     blocked: blocked.map(str::to_owned),
-                    next: "Next: +5 (+1% of base stats)".into(),
+                    next: "Next: +5  ->  Effective Quality 111%".into(),
                     cost: vec![SharpenCost {
                         name: "Crypt Dust".into(),
                         needed: 75,
@@ -5583,7 +5583,7 @@ mod tests {
             .collect();
         let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
         assert!(has("SHARPEN").is_some());
-        assert!(has("Next: +5 (+1% of base stats)").is_some());
+        assert!(has("Next: +5  ->  Effective Quality 111%").is_some());
         assert_eq!(has("Crypt Dust: 100 / 75").map(|(_, c)| *c), Some(TEXT));
         assert_eq!(has("Break chance: 95%").map(|(_, c)| *c), Some(BAD));
         assert!(has("Sharpen").is_some());

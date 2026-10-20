@@ -175,6 +175,12 @@ impl Simulation {
         self.loot_bonus_pct = reward_bonus_pct;
     }
 
+    /// Names the dungeon the loot is rolled for (its stable id), so a sharpening curve limited to
+    /// one dungeon can apply. Optional: without it only dungeon-less curves match.
+    pub fn set_loot_dungeon(&mut self, dungeon: &str) {
+        self.loot_dungeon = dungeon.to_owned();
+    }
+
     /// The loot rules, if a host set them.
     #[must_use]
     pub fn loot_rules(&self) -> Option<&LootRules> {
@@ -243,6 +249,13 @@ impl Simulation {
             .or_else(|| rules.boss_tables.first().map(|entry| &entry.table))
             .unwrap_or(&rules.mob.table);
         let key_level = self.loot_key_level;
+        // A boss's chest drops from the boss curve; a chest with no boss is a plain chest.
+        let source = if boss.is_some() {
+            loot::DropSource::Boss
+        } else {
+            loot::DropSource::Chest
+        };
+        let dungeon = self.loot_dungeon.clone();
         let bonus = f32::from(u16::try_from(self.loot_bonus_pct).unwrap_or(u16::MAX)) / 100.0;
         let mut shares = Vec::with_capacity(self.player_count());
         for player in self.player_entities() {
@@ -251,7 +264,16 @@ impl Simulation {
                 rolls += 1;
             }
             let items = (0..rolls)
-                .filter_map(|_| loot::roll_equipment(table, rules, key_level, &mut self.loot_rng))
+                .filter_map(|_| {
+                    loot::roll_equipment(
+                        table,
+                        rules,
+                        source,
+                        &dungeon,
+                        key_level,
+                        &mut self.loot_rng,
+                    )
+                })
                 .map(|(item, props)| ItemStack::with_props(item, props))
                 .collect();
             shares.push((player, items));
@@ -540,9 +562,20 @@ impl Simulation {
                 }
                 continue;
             }
+            let source = if elite {
+                loot::DropSource::Elite
+            } else {
+                loot::DropSource::Mob
+            };
             if self.loot_rng.chance(rules.mob.equipment_chance)
-                && let Some((item, props)) =
-                    loot::roll_equipment(&rules.mob.table, &rules, key_level, &mut self.loot_rng)
+                && let Some((item, props)) = loot::roll_equipment(
+                    &rules.mob.table,
+                    &rules,
+                    source,
+                    &self.loot_dungeon,
+                    key_level,
+                    &mut self.loot_rng,
+                )
             {
                 self.events.push(CombatEvent::MobLoot {
                     player,

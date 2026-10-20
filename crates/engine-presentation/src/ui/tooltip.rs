@@ -1124,11 +1124,11 @@ fn write_quality_lines(model: &mut TooltipModel, props: ItemProps) {
     write_amount(&mut section.text, props.base_quality_pct());
     section.text.push('%');
     if props.broken {
-        section.text.push_str("\nTotal: ");
+        section.text.push_str("\nEffective Quality: ");
     } else {
         section.text.push_str("\nSharpening: +");
         write_amount(&mut section.text, props.sharpening_pct());
-        section.text.push_str("%\nTotal: ");
+        section.text.push_str("%\nEffective Quality: ");
     }
     write_amount(&mut section.text, props.total_pct());
     section.text.push('%');
@@ -1501,7 +1501,10 @@ mod tests {
             .find(SectionKind::Quality)
             .expect("quality lines")
             .text;
-        assert_eq!(lines, "Base Quality: 106%\nSharpening: +7%\nTotal: 113%");
+        assert_eq!(
+            lines,
+            "Base Quality: 106%\nSharpening: +7%\nEffective Quality: 113%"
+        );
         // The stats shown are the props-scaled ones, not the table's.
         let base = tooltip_of(ItemStack::one(def.id));
         let (scaled, plain) = (
@@ -1513,6 +1516,39 @@ mod tests {
     }
 
     #[test]
+    fn sharpening_is_printed_at_plus_zero_and_a_high_one_is_marked() {
+        let def = loot_item();
+        let text = |props| {
+            let model = tooltip_of(ItemStack::with_props(def.id, props));
+            (
+                model
+                    .find(SectionKind::Quality)
+                    .expect("lines")
+                    .text
+                    .clone(),
+                model.tag.clone(),
+            )
+        };
+        let (lines, tag) = text(ItemProps::new(82, 0, false));
+        assert_eq!(
+            lines,
+            "Base Quality: 82%
+Sharpening: +0%
+Effective Quality: 82%"
+        );
+        assert!(!tag.contains("Sharpened"), "{tag}");
+        let (lines, tag) = text(ItemProps::new(82, 7, false));
+        assert_eq!(
+            lines,
+            "Base Quality: 82%
+Sharpening: +7%
+Effective Quality: 89%"
+        );
+        assert!(tag.ends_with("Sharpened +7"), "{tag}");
+        assert!(!text(ItemProps::new(82, 4, false)).1.contains("Sharpened"));
+    }
+
+    #[test]
     fn a_broken_item_says_so_in_red_and_loses_its_sharpening_line() {
         let def = loot_item();
         let model = tooltip_of(ItemStack::with_props(def.id, ItemProps::new(100, 0, true)));
@@ -1520,7 +1556,7 @@ mod tests {
             .sections()
             .filter(|section| section.kind == Some(SectionKind::Quality));
         let lines = quality.next().expect("quality lines");
-        assert_eq!(lines.text, "Base Quality: 100%\nTotal: 85%");
+        assert_eq!(lines.text, "Base Quality: 100%\nEffective Quality: 85%");
         let broken = quality.next().expect("a broken line");
         assert!(broken.text.starts_with("BROKEN (-15%)"), "{}", broken.text);
         assert!(broken.text.contains("cannot be sharpened"));

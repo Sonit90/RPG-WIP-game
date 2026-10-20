@@ -805,6 +805,18 @@ mod tests {
     }"#;
 
     #[test]
+    fn sharpening_is_written_as_the_stable_enhancement_key_and_either_name_loads() {
+        let loadout: Loadout = serde_json::from_str(P1_LOADOUT).expect("P1 row");
+        let written = serde_json::to_value(&loadout).expect("serialize");
+        let ring = &written["equipment"][0];
+        assert_eq!(ring["enhancement"], 3, "the persisted key does not change");
+        assert!(ring.get("sharpening").is_none());
+        let renamed = P1_LOADOUT.replace("\"enhancement\"", "\"sharpening\"");
+        let alias: Loadout = serde_json::from_str(&renamed).expect("alias loads");
+        assert_eq!(alias, loadout);
+    }
+
+    #[test]
     fn a_p1_row_loads_unchanged_and_is_stamped_current() {
         let value: serde_json::Value = serde_json::from_str(P1_LOADOUT).expect("json");
         let loadout = migrate(value).expect("a P1 row");

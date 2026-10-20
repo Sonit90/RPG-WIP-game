@@ -2060,7 +2060,7 @@ impl OnlineSession {
             name: def.name.to_owned(),
             quality: def.quality,
             current: format!(
-                "Sharpening +{}%   Total {}%",
+                "Sharpening +{}%   Effective Quality {}%",
                 props.sharpening_pct().round(),
                 props.total_pct().round()
             ),
@@ -2072,9 +2072,10 @@ impl OnlineSession {
         match engine_realm::sharpen::preview(loadout, &slot, economy) {
             Ok(preview) => {
                 detail.next = format!(
-                    "Next: +{} (+{}% of base stats)",
+                    "Next: +{}  ->  Effective Quality {}%",
                     preview.target,
-                    engine_game::character::SHARPEN_STEP_PCT
+                    (props.total_pct() + f32::from(engine_game::character::SHARPEN_STEP_PCT))
+                        .round()
                 );
                 detail.cost = preview
                     .price

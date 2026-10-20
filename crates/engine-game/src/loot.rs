@@ -35,6 +35,7 @@
 
 use crate::character::{ItemId, ItemProps, ItemQuality, QUALITY_MAX, QUALITY_MIN, item};
 use crate::firemage::Rng;
+pub use crate::sharpen_drops::{DropSource, SharpeningDrops};
 
 /// One entry of a loot table: an item and how likely it is relative to its siblings.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -166,6 +167,8 @@ pub struct LootRules {
     pub currency: CurrencyRules,
     /// Gold.
     pub gold: GoldRules,
+    /// How a drop is pre-sharpened.
+    pub sharpening: SharpeningDrops,
 }
 
 impl LootRules {
@@ -315,15 +318,20 @@ fn pick_weighted(entries: &[WeightedItem], rng: &mut Rng) -> Option<ItemId> {
 }
 
 /// **One equipment roll from `table`**: epic or not by [`roll_epic`], an item of that rarity by
-/// weight, then a quality by [`roll_quality`]. The item comes back un-sharpened and unbroken.
+/// weight, a quality by [`roll_quality`], then a sharpening level by
+/// [`SharpeningDrops::roll`] for the drop's `source`, `dungeon` and key level. The item comes
+/// back unbroken.
 ///
-/// Draws exactly four numbers from `rng` (epic, pick, quality band, quality offset) whatever
-/// the outcome, so a roll's position in the sequence never depends on its result. `None` only
-/// for an empty table. A table with no epics still gives its other items on an epic roll
-/// rather than nothing, and the reverse.
+/// Draws exactly five numbers from `rng` (epic, pick, quality band, quality offset, sharpening)
+/// whatever the outcome, so a roll's position in the sequence never depends on its result; the
+/// sharpening draw is independent of which item was picked. `None` only for an empty table. A
+/// table with no epics still gives its other items on an epic roll rather than nothing, and the
+/// reverse.
 pub fn roll_equipment(
     table: &LootTable,
     rules: &LootRules,
+    source: DropSource,
+    dungeon: &str,
     key_level: u32,
     rng: &mut Rng,
 ) -> Option<(ItemId, ItemProps)> {
@@ -334,7 +342,8 @@ pub fn roll_equipment(
     }
     let picked = pick_weighted(&pool, rng);
     let quality = roll_quality(rules, key_level, rng);
-    picked.map(|id| (id, ItemProps::rolled(quality)))
+    let sharpening = rules.sharpening.roll(source, dungeon, key_level, rng);
+    picked.map(|id| (id, ItemProps::new(quality, sharpening, false)))
 }
 
 /// The modifier-reroll currency one ordinary or elite kill drops for one player.
@@ -501,6 +510,7 @@ pub(crate) mod tests {
                 per_mob_max: 4,
                 boss_amount: 50,
             },
+            sharpening: SharpeningDrops::none(),
         }
     }
 
@@ -582,8 +592,8 @@ pub(crate) mod tests {
         let mut rng = Rng::new(3);
         let (mut epics, n) = (0_u32, 40_000_u32);
         for _ in 0..n {
-            let (id, props) =
-                roll_equipment(table, &rules, 1, &mut rng).expect("a non-empty table");
+            let (id, props) = roll_equipment(table, &rules, DropSource::Chest, "", 1, &mut rng)
+                .expect("a non-empty table");
             assert!([rare_ring, rare_helm, epic_ring, epic_helm].contains(&id));
             assert!((QUALITY_MIN..=QUALITY_MAX).contains(&props.quality));
             assert_eq!((props.sharpening, props.broken), (0, false));
@@ -591,7 +601,17 @@ pub(crate) mod tests {
         }
         let rate = epics as f32 / n as f32;
         assert!((rate - 0.025).abs() < 0.006, "{rate}");
-        assert!(roll_equipment(&LootTable::default(), &rules, 1, &mut rng).is_none());
+        assert!(
+            roll_equipment(
+                &LootTable::default(),
+                &rules,
+                DropSource::Chest,
+                "",
+                1,
+                &mut rng
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -608,7 +628,7 @@ pub(crate) mod tests {
         };
         let mut rng = Rng::new(1);
         assert_eq!(
-            roll_equipment(&table, &rules, 1, &mut rng).map(|(id, _)| id),
+            roll_equipment(&table, &rules, DropSource::Chest, "", 1, &mut rng).map(|(id, _)| id),
             Some(rare_ring)
         );
     }
@@ -620,7 +640,7 @@ pub(crate) mod tests {
         let run = |seed| {
             let mut rng = Rng::new(seed);
             (0..200)
-                .map(|_| roll_equipment(table, &rules, 7, &mut rng))
+                .map(|_| roll_equipment(table, &rules, DropSource::Chest, "", 7, &mut rng))
                 .collect::<Vec<_>>()
         };
         assert_eq!(run(42), run(42));

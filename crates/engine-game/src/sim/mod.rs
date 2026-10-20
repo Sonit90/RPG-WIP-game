@@ -562,6 +562,8 @@ pub struct Simulation {
     loot_rules: Option<crate::loot::LootRules>,
     /// The dungeon key level the loot is rolled at.
     loot_key_level: u32,
+    /// The dungeon id the loot is rolled for; empty when unnamed.
+    loot_dungeon: String,
     /// The run's reward bonus, per cent. See `Simulation::set_loot_rules`.
     loot_bonus_pct: u32,
     /// The loot's own generator. Separate from the enemies' so that a monster dropping an item
@@ -716,6 +718,7 @@ impl Simulation {
             mail_epoch: 0.0,
             loot_rules: None,
             loot_key_level: 1,
+            loot_dungeon: String::new(),
             loot_bonus_pct: 0,
             loot_rng: crate::firemage::Rng::new(seed ^ 0x4C4F_4F54_5F52_4E47),
             events: EventStream::with_capacity(256),

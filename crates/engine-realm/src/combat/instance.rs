@@ -498,6 +498,12 @@ impl CombatInstance {
         self.sim.set_loot_rules(rules, key_level, reward_bonus_pct);
     }
 
+    /// Names the dungeon the fight's loot is rolled for, so dungeon-specific sharpening curves
+    /// apply. Called with [`CombatInstance::set_loot`].
+    pub fn set_loot_dungeon(&mut self, dungeon: &str) {
+        self.sim.set_loot_dungeon(dungeon);
+    }
+
     /// Seeds what the fight rolls loot with: the boss's chest and every monster drop.
     ///
     /// A fight is otherwise built from the fixed default seed, so every run of a dungeon would
