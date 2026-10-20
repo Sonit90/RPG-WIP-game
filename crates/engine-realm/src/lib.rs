@@ -29,6 +29,7 @@
 //! | [`economy`] | resources, salvage and exchanges |
 //! | [`enhance`] | enhancing equipment: cost, success and breakage |
 //! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
+//! | [`mapcheck`] | validation of community maps and official scenes, one shared rule set |
 //! | [`haul`] | monster drops and the loot lines of a run summary |
 //! | [`key`] | dungeon keys: validity, progression, scaling |
 //! | [`modifiers`] | dungeon key modifiers: rolling, scaling, reroll, downgrade |
@@ -57,6 +58,7 @@ pub mod instance;
 pub mod key;
 pub mod loadout;
 pub mod loot;
+pub mod mapcheck;
 pub mod matchmaking;
 pub mod meter;
 pub mod modifiers;
