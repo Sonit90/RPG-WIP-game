@@ -64,6 +64,12 @@ pub struct Bot {
     pub characters: Vec<CharacterSummary>,
     /// The last character in full the API sent (bag and mail included).
     pub detail: Option<CharacterDetail>,
+    /// The last history page the API sent.
+    pub history: Option<engine_realm::api::HistoryPage>,
+    /// The last run the API sent.
+    pub run: Option<engine_realm::api::RunDetail>,
+    /// The last leaderboard page the API sent.
+    pub board: Option<engine_realm::api::LeaderboardPage>,
     /// The realm connection's state.
     pub status: ConnectionStatus,
     /// Every failure the server reported.
@@ -105,6 +111,9 @@ impl Bot {
             session: None,
             characters: Vec::new(),
             detail: None,
+            history: None,
+            run: None,
+            board: None,
             status: ConnectionStatus::Offline,
             failures: Vec::new(),
             tried_login: false,
@@ -163,6 +172,9 @@ impl Bot {
             }
             NetEvent::Characters(characters) => self.characters = characters,
             NetEvent::Character(detail) => self.detail = Some(*detail),
+            NetEvent::History { page, .. } => self.history = Some(*page),
+            NetEvent::Run(run) => self.run = Some(*run),
+            NetEvent::Leaderboard(page) => self.board = Some(*page),
             NetEvent::Realm(update) => self.mirror.apply(update),
             NetEvent::Failed { action, error } => {
                 if action == Action::SignIn && !self.tried_login && self.session.is_none() {
