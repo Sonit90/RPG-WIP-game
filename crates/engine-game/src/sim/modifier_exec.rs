@@ -115,7 +115,7 @@ impl Simulation {
     }
 
     /// Whether `entity` is the dungeon's boss, or any boss-tier monster.
-    fn is_boss_entity(&self, entity: EntityId) -> bool {
+    pub(super) fn is_boss_entity(&self, entity: EntityId) -> bool {
         // The enemy table is out during the AI's own step, so the dungeon's rules answer
         // too: they name the boss encounter, whose first member is the boss.
         if let Some(Some(runtime)) = self.enemies.get(entity.index())

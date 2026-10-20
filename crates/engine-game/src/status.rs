@@ -160,6 +160,14 @@ pub enum StatusKind {
     /// Drowned Cultist's Brine Bolt stacks, so a dispel (or killing the cultist) is the answer.
     /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
     Waterlogged,
+    /// The Bone Foundry's slag ward: a shielder's blessing on its allies, taking a good share
+    /// less of every hit. A buff on a monster, so the answer is to stop the cast or to wait it out.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Warded,
+    /// The Bone Foundry's stoked furnace: a foreman's rally, every blow its bearer lands hitting
+    /// harder for a while. A buff on a monster, answered by stopping the cast.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Stoked,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -362,7 +370,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 34;
+pub const STATUS_KIND_COUNT: usize = 36;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -401,6 +409,8 @@ impl StatusKind {
         Self::TrinketAbsorb,
         Self::Spiteful,
         Self::Waterlogged,
+        Self::Warded,
+        Self::Stoked,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -987,6 +997,29 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         ],
         generic: GenericApplication::new(12.0, 0.0, 0.0),
         ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Warded,
+        id: "warded",
+        overlay_name: "WARDED",
+        name: "Slag Ward",
+        description: "Taking 40% less damage from every source.",
+        modifiers: &[EffectModifier::DamageTaken {
+            schools: Schools::ALL,
+            per_stack: -0.40,
+        }],
+        generic: GenericApplication::new(8.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Stoked,
+        id: "stoked",
+        overlay_name: "STOKED",
+        name: "Stoked",
+        description: "Dealing 30% more damage.",
+        modifiers: &[EffectModifier::DamageDealt { per_stack: 0.30 }],
+        generic: GenericApplication::new(10.0, 0.0, 0.0),
+        ..BUFF
     },
 ];
 

@@ -394,6 +394,15 @@ impl Simulation {
                     cast.ticks = done;
                 }
             }
+            // The conveyor carries while it runs, and opens a pool at the lane's end.
+            if let Some(cast) = runtime.brain.cast()
+                && cast.ability.definition().effect.is_conveyor()
+            {
+                let done = self.tick_conveyor(entity, &cast, scale, step);
+                if let Some(cast) = runtime.brain.cast_mut() {
+                    cast.ticks = done;
+                }
+            }
         }
         self.enemies = enemies;
         self.apply_hymns();
@@ -570,7 +579,28 @@ impl Simulation {
                 self.resolve_zone(entity, cast.ability, at, cast.shape, at, scale);
                 None
             }
-            EnemyEffect::Damage | EnemyEffect::Hazard { .. } => {
+            EnemyEffect::Conveyor { .. } => {
+                // The lane's own hit, on whoever is still riding it.
+                let at = cast.zones[0];
+                self.resolve_zone(entity, cast.ability, at, cast.shape, at, scale);
+                None
+            }
+            EnemyEffect::Bestow {
+                kind,
+                radius,
+                duration,
+            } => {
+                self.complete_bestow(entity, cast.ability, kind, radius, duration);
+                None
+            }
+            EnemyEffect::Detonate => {
+                // The blast, and then the fuse is spent: the caster goes with it.
+                let at = cast.zones[0];
+                self.resolve_zone(entity, cast.ability, at, cast.shape, at, scale);
+                self.slay(entity);
+                None
+            }
+            EnemyEffect::Damage | EnemyEffect::Hazard { .. } | EnemyEffect::Soak { .. } => {
                 if definition.delay > 0.0 {
                     // Every zone starts its own clock now, drawn from this moment.
                     for (anchor, shape, _, laid_on) in cast.zone_list() {
@@ -688,6 +718,114 @@ impl Simulation {
             done += 1;
         }
         done.min(usize::from(u8::MAX)) as u8
+    }
+
+    /// One step of a Conveyor Surge: carries everyone inside the lane away from the caster, and
+    /// opens the pools that are due at its far end. Returns how many pools have now been opened.
+    ///
+    /// The carry is a collided slide like the Undertow's, so a wall or a pillar at the end of the
+    /// lane stops whoever rode it there - and the lane's own hit finds them.
+    fn tick_conveyor(&mut self, entity: EntityId, cast: &EnemyCast, scale: f32, step: f32) -> u8 {
+        let EnemyEffect::Conveyor {
+            push_speed,
+            interval,
+            pool_radius,
+            pool_damage_per_second,
+            pool_duration,
+            pool_near,
+            pool_far,
+        } = cast.ability.definition().effect
+        else {
+            return cast.ticks;
+        };
+        let TelegraphShape::Line { yaw, width, .. } = cast.shape else {
+            return cast.ticks;
+        };
+        let anchor = cast.zones[0];
+        let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+        let across = Vec3::new(-forward.z, 0.0, forward.x);
+
+        // Collected first: a slide mutates the world the scan is reading.
+        let mut carried: Vec<EntityId> = Vec::new();
+        for candidate in self.world.entities() {
+            if !self.is_hostile_combatant(entity, candidate) {
+                continue;
+            }
+            let Some(position) = self.world.position(candidate) else {
+                continue;
+            };
+            if cast
+                .shape
+                .contains(anchor, position, self.world.radius(candidate))
+            {
+                carried.push(candidate);
+            }
+        }
+        for victim in carried {
+            self.slide_body(victim, forward * (push_speed * step));
+        }
+
+        // The pools, one per interval, along the far end of the lane and inside its width.
+        let due = crate::enemy::channel_ticks(cast.elapsed, interval);
+        let mut done = usize::from(cast.ticks);
+        while done < due.min(usize::from(u8::MAX)) {
+            let along = pool_near + (pool_far - pool_near) * self.enemy_random();
+            let offset = (self.enemy_random() - 0.5) * (width - pool_radius).max(0.0);
+            let at = anchor + forward * along + across * offset;
+            self.light_hazard(
+                entity,
+                cast.ability,
+                at,
+                pool_radius,
+                pool_duration,
+                pool_damage_per_second * scale,
+            );
+            done += 1;
+        }
+        done.min(usize::from(u8::MAX)) as u8
+    }
+
+    /// A bestowal that was allowed to finish: every living ally near the caster, itself
+    /// included, gets the status. A boss gets nothing.
+    fn complete_bestow(
+        &mut self,
+        entity: EntityId,
+        ability: EnemyAbility,
+        kind: StatusKind,
+        radius: f32,
+        duration: f32,
+    ) {
+        let (Some(centre), Some(faction)) =
+            (self.world.position(entity), self.world.faction(entity))
+        else {
+            return;
+        };
+        let mut allies: Vec<EntityId> = Vec::new();
+        for candidate in self.world.entities() {
+            if !self.world.is_alive(candidate) || self.world.faction(candidate) != Some(faction) {
+                continue;
+            }
+            let Some(position) = self.world.position(candidate) else {
+                continue;
+            };
+            if horizontal_distance(centre, position) > radius || self.is_boss_entity(candidate) {
+                continue;
+            }
+            allies.push(candidate);
+        }
+        self.events.push(CombatEvent::AbilityUsed {
+            source: entity,
+            ability: AbilityId::from_enemy(ability),
+            targets: allies.len() as u32,
+            facing: self.body_yaw(entity),
+            tick: self.tick,
+        });
+        for ally in allies {
+            let status =
+                Status::new(kind, entity, AbilityId::from_enemy(ability), duration, 0.0)
+                    .with_stacks(1);
+            self.apply_status(ally, status, duration);
+        }
     }
 
     /// A hymn that was allowed to finish: the caster recovers, and its allies are spurred on.
@@ -1025,13 +1163,33 @@ impl Simulation {
             }
             let definition = strike.ability.definition();
             let amount = definition.damage * strike.damage_scale;
-            self.hit_shape(
+            // Slag that lands leaves its pool, lit before the impact like an undelayed one.
+            self.leave_hazard(
                 strike.owner,
                 strike.ability,
                 strike.anchor,
                 strike.shape,
-                amount,
+                strike.anchor,
+                strike.damage_scale,
             );
+            if let EnemyEffect::Soak { overflow } = definition.effect {
+                self.soak_shape(
+                    strike.owner,
+                    strike.ability,
+                    strike.anchor,
+                    strike.shape,
+                    amount,
+                    overflow,
+                );
+            } else {
+                self.hit_shape(
+                    strike.owner,
+                    strike.ability,
+                    strike.anchor,
+                    strike.shape,
+                    amount,
+                );
+            }
             // A chain: everybody the detonation caught who was not its own victim carries a
             // mark of their own now. Once — a chained mark does not chain again.
             if definition.chain && !strike.chained {
@@ -1550,33 +1708,99 @@ impl Simulation {
         let definition = ability.definition();
         // Burning ground is lit before the impact is resolved, so the pool and the hit that
         // created it are one event pair rather than two things that happened to coincide.
-        if let EnemyEffect::Hazard {
+        self.leave_hazard(source, ability, anchor, shape, aim, scale);
+        if shape.is_area() {
+            self.hit_shape(source, ability, anchor, shape, definition.damage * scale);
+        }
+    }
+
+    /// Lights the ground an area ability leaves behind, if it leaves any.
+    fn leave_hazard(
+        &mut self,
+        source: EntityId,
+        ability: EnemyAbility,
+        anchor: Vec3,
+        shape: TelegraphShape,
+        aim: Vec3,
+        scale: f32,
+    ) {
+        let EnemyEffect::Hazard {
             duration,
             damage_per_second,
             grow_to,
             radius,
-        } = definition.effect
-        {
-            // A line leaves its pool where it was aimed; everything else covers its own shape.
-            let (center, pool) = match shape {
-                TelegraphShape::Line { .. } => (aim, radius.max(1.0)),
-                _ if radius > 0.0 => (anchor, radius),
-                _ => (anchor, shape.reach()),
-            };
-            let id = self.light_hazard(
-                source,
-                ability,
-                center,
-                pool,
-                duration,
-                damage_per_second * scale,
-            );
-            if grow_to > pool {
-                self.hazards.set_growth(id, grow_to);
+        } = ability.definition().effect
+        else {
+            return;
+        };
+        // A line leaves its pool where it was aimed; everything else covers its own shape.
+        let (center, pool) = match shape {
+            TelegraphShape::Line { .. } => (aim, radius.max(1.0)),
+            _ if radius > 0.0 => (anchor, radius),
+            _ => (anchor, shape.reach()),
+        };
+        let id = self.light_hazard(
+            source,
+            ability,
+            center,
+            pool,
+            duration,
+            damage_per_second * scale,
+        );
+        if grow_to > pool {
+            self.hazards.set_growth(id, grow_to);
+        }
+    }
+
+    /// A soak landing: `total` damage shared between every hostile inside `shape`.
+    ///
+    /// Nobody inside and every hostile in the world takes `overflow` of the total instead - the
+    /// penalty for leaving the marked ground unattended. Same hit test as every other zone.
+    fn soak_shape(
+        &mut self,
+        source: EntityId,
+        ability: EnemyAbility,
+        anchor: Vec3,
+        shape: TelegraphShape,
+        total: f32,
+        overflow: f32,
+    ) {
+        let mut inside: Vec<EntityId> = Vec::new();
+        let mut party: Vec<EntityId> = Vec::new();
+        if self.world.faction(source).is_some() {
+            for candidate in self.world.entities() {
+                if !self.is_hostile_combatant(source, candidate) {
+                    continue;
+                }
+                party.push(candidate);
+                let Some(position) = self.world.position(candidate) else {
+                    continue;
+                };
+                if shape.contains(anchor, position, self.world.radius(candidate))
+                    && self.blast_reaches(anchor, candidate)
+                {
+                    inside.push(candidate);
+                }
             }
         }
-        if shape.is_area() {
-            self.hit_shape(source, ability, anchor, shape, definition.damage * scale);
+        self.events.push(CombatEvent::AbilityUsed {
+            source,
+            ability: AbilityId::from_enemy(ability),
+            targets: inside.len() as u32,
+            facing: self.body_yaw(source),
+            tick: self.tick,
+        });
+        self.hits_last.clear();
+        self.hits_last.extend(inside.iter().copied());
+        if inside.is_empty() {
+            for victim in party {
+                self.strike_one(source, ability, victim, total * overflow);
+            }
+        } else {
+            let share = total / inside.len() as f32;
+            for victim in inside {
+                self.strike_one(source, ability, victim, share);
+            }
         }
     }
 
