@@ -2454,7 +2454,7 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         shape: TelegraphShape::Circle { radius: 5.5 },
         select: EnemyTarget::Random,
         delay: 5.5,
-        effect: EnemyEffect::Soak { overflow: 0.6 },
+        effect: EnemyEffect::Soak { overflow: 1.25 },
         recovery: 0.8,
         cue: EnemyCue::Heavy,
         ..EnemyAbilityDef::BASE

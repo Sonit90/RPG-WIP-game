@@ -86,7 +86,7 @@ Between the Abbess (17,000) and a harder dungeon's boss; he is never faster than
   Decision: spread, and do not run through each other.
 * **Molten Ladle** (the soak): a 5.5 m circle on one player's ground, drawn for 5.5 s. Its 330
   damage is **shared by whoever stands in it**; alone it is three times a share, and if nobody is in it
-  every player takes 60 % of the whole. Decision: everybody walks to the mark together, so the brand
+  every player takes 125 % of the whole, so even a solo player soaks it. Decision: everybody walks to the mark together, so the brand
   and the ladle pull the party in opposite directions in the same phase.
 * **Conveyor Surge** (the movement): a 10 m wide, 34 m lane aimed at a random player for a 5 s
   uninterruptible cast. Everyone inside is carried away from him at 3.4 m/s (a collided slide, so a wall

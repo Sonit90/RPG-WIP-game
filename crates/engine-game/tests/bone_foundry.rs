@@ -891,8 +891,9 @@ fn the_ladles_damage_is_shared_by_everyone_in_it_and_unattended_it_spills_on_the
         (spilled / alone - overflow).abs() < 0.02,
         "unattended it spilled {spilled} against {alone}"
     );
-    // Standing in it together beats leaving it empty, and leaving it empty beats being alone.
-    assert!(shared < spilled && spilled < alone);
+    // Standing in it together beats standing in it alone, and even alone beats leaving it
+    // empty: an unattended ladle hits everyone harder than one soaker takes, so solo soaks too.
+    assert!(shared < alone && alone < spilled);
 }
 
 #[test]
