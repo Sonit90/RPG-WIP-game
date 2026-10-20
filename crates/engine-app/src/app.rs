@@ -4391,6 +4391,14 @@ impl App {
             .as_ref()
             .is_some_and(|online| online.in_instance())
         {
+            if let Some(timer) = self.online.as_ref().and_then(|online| online.run_timer()) {
+                engine_presentation::ui::run_timer::push_run_timer(
+                    self.game_ui.list_mut(),
+                    scale,
+                    viewport,
+                    &timer,
+                );
+            }
             let ready = self.modifier_window.view().can_reroll();
             self.game_ui.push_modifier_button(viewport, ready);
             push_modifiers(
