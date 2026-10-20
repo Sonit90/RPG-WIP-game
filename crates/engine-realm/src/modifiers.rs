@@ -369,7 +369,7 @@ impl ModifierCatalog {
         // Odd and even levels in from_level..=level, in closed form so a key level of any size
         // costs the same. u64 so `level + 1` cannot overflow.
         let (from, to) = (u64::from(rules.from_level), u64::from(level));
-        let odd = (to + 1) / 2 - from / 2;
+        let odd = to.div_ceil(2) - from / 2;
         let even = to / 2 - (from - 1) / 2;
         let slots = (u64::from(last.modifier_slots) + odd * u64::from(rules.odd_add_slots))
             .min(u64::from(rules.max_modifier_slots));

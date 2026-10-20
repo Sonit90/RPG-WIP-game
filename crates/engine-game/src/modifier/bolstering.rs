@@ -108,6 +108,7 @@ pub fn factor(stacks: u8, pct: f32) -> f32 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "test code asserts on known-good values")]
 mod tests {
     use super::*;
 
