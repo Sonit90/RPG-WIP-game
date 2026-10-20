@@ -35,6 +35,28 @@ use crate::model::RealmUpdate;
 use crate::realm::{LinkSignal, RealmLink};
 use crate::token_store::{StoredSession, TokenStore};
 
+/// A fresh id for one user action on a hub route (a version 4 UUID).
+fn new_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Runs one hub call under a request id of its own. A call that failed on the connection (or
+/// with a server error) is made once more under the **same** id: if the first attempt did land,
+/// the server answers with what it did the first time instead of doing it again.
+fn with_request_id<T>(call: impl Fn(&str) -> Result<T, RealmError>) -> Result<T, RealmError> {
+    let request_id = new_request_id();
+    match call(&request_id) {
+        Err(error) if error.category == ErrorCategory::Connection => {
+            log::warn!(
+                "api: retrying under the same request id after: {}",
+                error.message
+            );
+            call(&request_id)
+        }
+        other => other,
+    }
+}
+
 /// Something the game asks the network layer to do.
 #[derive(Debug, Clone)]
 pub enum NetCommand {
@@ -580,10 +602,18 @@ impl Worker {
                 to,
             } => {
                 let Some(token) = self.access() else { return };
-                match self
-                    .api
-                    .move_item(&token, &character_id, &MoveItemRequest { from, to })
-                {
+                let result = with_request_id(|request_id| {
+                    self.api.move_item(
+                        &token,
+                        &character_id,
+                        &MoveItemRequest {
+                            from: from.clone(),
+                            to: to.clone(),
+                            request_id: Some(request_id.to_owned()),
+                        },
+                    )
+                });
+                match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::MoveItem, error),
                 }
@@ -593,7 +623,11 @@ impl Worker {
                 talents,
             } => {
                 let Some(token) = self.access() else { return };
-                match self.api.save_talents(&token, &character_id, &talents) {
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .save_talents(&token, &character_id, &talents, request_id)
+                });
+                match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::Talents, error),
                 }
@@ -604,7 +638,11 @@ impl Worker {
                 take,
             } => {
                 let Some(token) = self.access() else { return };
-                match self.api.mail(&token, &character_id, mail_id, take) {
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .mail(&token, &character_id, mail_id, take, request_id)
+                });
+                match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::Mail, error),
                 }
@@ -614,7 +652,11 @@ impl Worker {
                 indices,
             } => {
                 let Some(token) = self.access() else { return };
-                match self.api.salvage(&token, &character_id, &indices) {
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .salvage(&token, &character_id, &indices, request_id)
+                });
+                match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::Salvage, error),
                 }
@@ -625,31 +667,41 @@ impl Worker {
                 times,
             } => {
                 let Some(token) = self.access() else { return };
-                match self
-                    .api
-                    .exchange(&token, &character_id, &exchange_id, times)
-                {
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .exchange(&token, &character_id, &exchange_id, times, request_id)
+                });
+                match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::Exchange, error),
                 }
             }
             NetCommand::Enhance { character_id, slot } => {
                 let Some(token) = self.access() else { return };
-                match self.api.enhance(&token, &character_id, &slot) {
+                let result = with_request_id(|request_id| {
+                    self.api.enhance(&token, &character_id, &slot, request_id)
+                });
+                match result {
                     Ok(response) => self.emit(NetEvent::Enhanced(Box::new(response))),
                     Err(error) => self.fail(Action::Enhance, error),
                 }
             }
             NetCommand::DowngradeKey { character_id } => {
                 let Some(token) = self.access() else { return };
-                match self.api.downgrade_key(&token, &character_id) {
+                let result = with_request_id(|request_id| {
+                    self.api.downgrade_key(&token, &character_id, request_id)
+                });
+                match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::KeyChange, error),
                 }
             }
             NetCommand::CleanseKey { character_id } => {
                 let Some(token) = self.access() else { return };
-                match self.api.cleanse_key(&token, &character_id) {
+                let result = with_request_id(|request_id| {
+                    self.api.cleanse_key(&token, &character_id, request_id)
+                });
+                match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::KeyChange, error),
                 }

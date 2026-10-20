@@ -160,6 +160,10 @@ pub struct MoveItemRequest {
     pub from: SlotRef,
     /// Where it goes.
     pub to: SlotRef,
+    /// Idempotency key: the client's id for this one user action, reused if it retries. A
+    /// replay returns the first answer and changes nothing. Absent: no replay protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// `POST /api/v1/characters/{id}/salvage`.
@@ -167,6 +171,10 @@ pub struct MoveItemRequest {
 pub struct SalvageRequest {
     /// The bag cells to break down, whole stacks at once.
     pub indices: Vec<u32>,
+    /// Idempotency key: the client's id for this one user action, reused if it retries. A
+    /// replay returns the first answer and changes nothing. Absent: no replay protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// `POST /api/v1/characters/{id}/exchange`.
@@ -176,6 +184,20 @@ pub struct ExchangeRequest {
     pub exchange_id: String,
     /// How many trades.
     pub times: u32,
+    /// Idempotency key: the client's id for this one user action, reused if it retries. A
+    /// replay returns the first answer and changes nothing. Absent: no replay protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// The body of the hub routes that take nothing else (`mail/{id}/take`, `key/downgrade`,
+/// `key/cleanse`): only the idempotency key. The body may be omitted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestIdBody {
+    /// Idempotency key: the client's id for this one user action, reused if it retries. A
+    /// replay returns the first answer and changes nothing. Absent: no replay protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// One resource in [`EconomyInfo`].
@@ -234,6 +256,10 @@ pub struct EconomyInfo {
 pub struct TalentsRequest {
     /// Every talent the character should have, by key.
     pub talents: Vec<String>,
+    /// Idempotency key: the client's id for this one user action, reused if it retries. A
+    /// replay returns the first answer and changes nothing. Absent: no replay protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// `GET` / `PUT /api/v1/player/settings`.
@@ -275,8 +301,11 @@ pub struct ErrorDetail {
 /// One dungeon result, as the bridge hands it to the persistence store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DungeonResult {
-    /// Idempotency key.
+    /// Idempotency key: `"<run uid>:<account id>"`.
     pub result_id: String,
+    /// The run's uid (hex): groups the results of one run. Empty for a result that predates it.
+    #[serde(default)]
+    pub run_uid: String,
     /// Whose.
     pub account_id: String,
     /// Which character.
@@ -433,6 +462,10 @@ impl LootDelivery {
 pub struct EnhanceRequest {
     /// The worn slot or bag cell holding the item. There is no roll in it: the server rolls.
     pub slot: SlotRef,
+    /// Idempotency key: the client's id for this one user action, reused if it retries. A
+    /// replay returns the first answer and changes nothing. Absent: no replay protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// How an enhancement attempt ended.
@@ -505,6 +538,7 @@ mod tests {
     fn winning_result() -> DungeonResult {
         DungeonResult {
             result_id: "1:a".into(),
+            run_uid: String::new(),
             account_id: "a".into(),
             character_id: "c".into(),
             dungeon_id: "graveyard_crypt".into(),

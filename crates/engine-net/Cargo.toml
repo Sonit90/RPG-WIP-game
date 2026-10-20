@@ -20,6 +20,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # 2.10.2 requires rustc 1.96; 2.10.1 speaks the same protocol to a 2.10.2 server.
 spacetimedb-sdk = "=2.10.1"
+# One id per hub action, so a retried request is recognised by the server.
+uuid = { version = "1", default-features = false, features = ["v4"] }
 # Blocking HTTP for the realm API. It runs on the network thread, never on the game thread,
 # so an async client would buy nothing but a runtime.
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
