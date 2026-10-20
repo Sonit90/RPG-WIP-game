@@ -6,7 +6,7 @@
 //!                                                   ├─ resolve(level, &[KeyModifier]) ──► Vec<ActiveModifier> ─► Simulation::set_modifiers
 //!                                                   ├─ reroll_outcome / apply_reroll    ─► new magnitude_pct
 //!                                                   ├─ downgrade / cleanse              ─► a weaker key
-//!                                                   └─ key_scaling(level)               ─► (health, damage) multipliers
+//!                                                   └─ row_for / key_scaling(level)     ─► slots, (health, damage) multipliers
 //! ```
 //!
 //! # Pure functions
@@ -26,9 +26,17 @@
 //! * the **reroll magnitude** stored on the key, [`KeyModifier::magnitude_pct`]: `0` is the
 //!   modifier as designed, `+17` is seventeen per cent stronger, `−12` twelve per cent weaker.
 //!
-//! The progression table is also the source of the key level's monster health and damage
-//! multipliers ([`ModifierCatalog::key_scaling`]); the dungeon's own `keys.health_per_level`
-//! stays as the fallback for a catalog with no table.
+//! The progression table (key levels 1-12) and the `eternal` block that continues it are the
+//! single source of a key level's modifier slots and monster health and damage multipliers
+//! ([`ModifierCatalog::row_for`], [`ModifierCatalog::key_scaling`]); the dungeon's own
+//! `keys.health_per_level` stays only as the fallback for a catalog with no table.
+//!
+//! # Eternal keys
+//!
+//! Past the table, [`ModifierCatalog::row_for`] synthesises rows from the `eternal` rules: an
+//! odd level adds modifier slots (up to a cap) and carries the multipliers, an even level raises
+//! the multipliers by a fixed step and carries the slots. Pure arithmetic on the level, so any
+//! key level has a row and none is stored.
 
 use engine_game::modifier::{
     ActiveModifier, BeamParams, ModifierKind, ModifierParams, PlagueParams,
@@ -90,6 +98,21 @@ pub struct ProgressionRow {
     pub damage_mult: f32,
     /// A designer's note on the row.
     pub notes: String,
+}
+
+/// How key levels past the progression table continue it (`eternal` in `modifiers.json`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EternalRules {
+    /// The first key level the rules apply to: the level after the table's last row.
+    pub from_level: u32,
+    /// Modifier slots an odd level adds.
+    pub odd_add_slots: u32,
+    /// Added to the health multiplier by every even level.
+    pub even_health_step: f32,
+    /// Added to the damage multiplier by every even level.
+    pub even_damage_step: f32,
+    /// The most modifier slots a key can carry.
+    pub max_modifier_slots: u32,
 }
 
 /// The bounds a modifier's total magnitude is held to, in per cent.
@@ -282,6 +305,7 @@ impl KeyModifier {
 pub struct ModifierCatalog {
     modifiers: Vec<ModifierDefinition>,
     progression: Vec<ProgressionRow>,
+    eternal: Option<EternalRules>,
     limits: MagnitudeLimits,
     config: ModifierConfig,
 }
@@ -317,36 +341,65 @@ impl ModifierCatalog {
         self.limits
     }
 
-    /// The row for key `level`: the last row for a level past the table, the first for one
-    /// before it. `None` only for a catalog with no table at all.
+    /// The eternal rules that continue the table, if the catalog has them.
     #[must_use]
-    pub fn row(&self, level: u32) -> Option<&ProgressionRow> {
-        self.progression
-            .iter()
-            .find(|row| row.level == level)
-            .or_else(|| {
-                if level < 1 {
-                    self.progression.first()
-                } else {
-                    self.progression.last()
-                }
-            })
+    pub fn eternal(&self) -> Option<&EternalRules> {
+        self.eternal.as_ref()
+    }
+
+    /// The row for key `level`. `None` only for a catalog with no table at all.
+    ///
+    /// The table's own row for a level it covers, the first row for a level before it. Past the
+    /// table, with `eternal` rules, a row synthesised from the last table row: every odd level
+    /// from `from_level` adds the rules' slots (capped at `max_modifier_slots`), every even level
+    /// adds the health and damage steps. Without eternal rules, the last row holds.
+    #[must_use]
+    pub fn row_for(&self, level: u32) -> Option<ProgressionRow> {
+        let last = self.progression.last()?;
+        if level < 1 {
+            return self.progression.first().cloned();
+        }
+        if let Some(row) = self.progression.iter().find(|row| row.level == level) {
+            return Some(row.clone());
+        }
+        let Some(rules) = self.eternal.filter(|rules| level >= rules.from_level) else {
+            return Some(last.clone());
+        };
+        // Odd and even levels in from_level..=level, in closed form so a key level of any size
+        // costs the same. u64 so `level + 1` cannot overflow.
+        let (from, to) = (u64::from(rules.from_level), u64::from(level));
+        let odd = (to + 1) / 2 - from / 2;
+        let even = to / 2 - (from - 1) / 2;
+        let slots = (u64::from(last.modifier_slots) + odd * u64::from(rules.odd_add_slots))
+            .min(u64::from(rules.max_modifier_slots));
+        Some(ProgressionRow {
+            level,
+            modifier_slots: u32::try_from(slots).unwrap_or(rules.max_modifier_slots),
+            health_mult: last.health_mult + even as f32 * rules.even_health_step,
+            damage_mult: last.damage_mult + even as f32 * rules.even_damage_step,
+            notes: if level % 2 == 1 {
+                "Eternal: another modifier.".to_owned()
+            } else {
+                "Eternal: stronger monsters.".to_owned()
+            },
+        })
     }
 
     /// How many modifiers a key of `level` carries.
     #[must_use]
     pub fn slots(&self, level: u32) -> usize {
-        self.row(level).map_or(0, |row| row.modifier_slots as usize)
+        self.row_for(level)
+            .map_or(0, |row| row.modifier_slots as usize)
     }
 
     /// What a key of `level` multiplies monster `(health, damage)` by.
     ///
-    /// The progression table when the catalog has one, otherwise the dungeon's own linear
-    /// `keys` rule (see [`crate::key::scaling`]). The realm module calls this in place of
+    /// [`ModifierCatalog::row_for`] when the catalog has a table, otherwise the dungeon's own
+    /// linear `keys` rule (see [`crate::key::scaling`]). The realm module calls this in place of
     /// `key::scaling` when it builds the fight.
     #[must_use]
     pub fn key_scaling(&self, rules: &KeyRules, level: u32) -> (f32, f32) {
-        match self.row(level) {
+        match self.row_for(level) {
             Some(row) => (row.health_mult, row.damage_mult),
             None => crate::key::scaling(rules, level),
         }
@@ -422,7 +475,7 @@ impl ModifierCatalog {
             });
         }
 
-        let mut progression = Vec::with_capacity(file.progression.len());
+        let mut progression: Vec<ProgressionRow> = Vec::with_capacity(file.progression.len());
         for (index, row) in file.progression.into_iter().enumerate() {
             if row.level as usize != index + 1 {
                 return Err(CatalogError(format!(
@@ -437,6 +490,15 @@ impl ModifierCatalog {
                     row.level
                 )));
             }
+            if let Some(previous) = progression.last()
+                && (row.health_mult < previous.health_mult
+                    || row.damage_mult < previous.damage_mult)
+            {
+                return Err(CatalogError(format!(
+                    "modifiers.json: progression level {} lowers a multiplier; they may only rise",
+                    row.level
+                )));
+            }
             progression.push(ProgressionRow {
                 level: row.level,
                 modifier_slots: row.modifier_slots,
@@ -445,6 +507,41 @@ impl ModifierCatalog {
                 notes: row.notes,
             });
         }
+        let eternal = file
+            .eternal
+            .map(|record| {
+                let rules = EternalRules {
+                    from_level: record.from_level,
+                    odd_add_slots: record.odd.add_modifier_slots,
+                    even_health_step: record.even.health_mult_step,
+                    even_damage_step: record.even.damage_mult_step,
+                    max_modifier_slots: record.max_modifier_slots,
+                };
+                let next = progression.len() as u32 + 1;
+                let last_slots = progression.last().map_or(0, |row| row.modifier_slots);
+                if progression.is_empty() || rules.from_level != next {
+                    return Err(CatalogError(format!(
+                        "modifiers.json: eternal must start at level {next}, right after the table"
+                    )));
+                }
+                if !(rules.even_health_step > 0.0
+                    && rules.even_health_step.is_finite()
+                    && rules.even_damage_step > 0.0
+                    && rules.even_damage_step.is_finite())
+                {
+                    return Err(CatalogError(
+                        "modifiers.json: eternal steps must be above zero".into(),
+                    ));
+                }
+                if rules.max_modifier_slots < last_slots {
+                    return Err(CatalogError(
+                        "modifiers.json: eternal max_modifier_slots is below the table's last row"
+                            .into(),
+                    ));
+                }
+                Ok(rules)
+            })
+            .transpose()?;
         let config = ModifierConfig {
             reroll_unlock_fraction: file.config.reroll_unlock_fraction,
             reroll_resource: file.config.reroll_resource,
@@ -465,6 +562,7 @@ impl ModifierCatalog {
         Ok(Self {
             modifiers,
             progression,
+            eternal,
             limits,
             config,
         })
@@ -757,6 +855,30 @@ struct File {
     config: ConfigRecord,
     modifiers: Vec<ModifierRecord>,
     progression: Vec<RowRecord>,
+    #[serde(default)]
+    eternal: Option<EternalRecord>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EternalRecord {
+    from_level: u32,
+    odd: EternalOddRecord,
+    even: EternalEvenRecord,
+    max_modifier_slots: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EternalOddRecord {
+    add_modifier_slots: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EternalEvenRecord {
+    health_mult_step: f32,
+    damage_mult_step: f32,
 }
 
 #[derive(Deserialize)]
@@ -868,7 +990,7 @@ mod tests {
     #[test]
     fn the_shipped_modifiers_read() {
         let catalog = catalog();
-        assert_eq!(catalog.modifiers().len(), 2);
+        assert!(catalog.modifiers().len() >= 2);
         let beams = beams(&catalog);
         assert_eq!(beams.kind, ModifierKind::RotatingBeams);
         assert_eq!(beams.reroll.min_pct, 10);
@@ -892,18 +1014,130 @@ mod tests {
         let catalog = catalog();
         let slots: Vec<usize> = (1..=20).map(|level| catalog.slots(level)).collect();
         assert_eq!(&slots[..9], &[0, 0, 1, 1, 2, 2, 2, 2, 3]);
+        assert_eq!(
+            catalog.progression().len(),
+            12,
+            "the table is the normal keys"
+        );
         assert!(
             slots.windows(2).all(|pair| pair[0] <= pair[1]),
             "never fewer as keys rise"
         );
         let health: Vec<f32> = (1..=20)
-            .map(|level| catalog.row(level).expect("a row").health_mult)
+            .map(|level| catalog.row_for(level).expect("a row").health_mult)
             .collect();
         assert_eq!(health[0], 1.0);
         assert!(health.windows(2).all(|pair| pair[0] <= pair[1]));
-        // Past the table the last row holds; before it the first.
-        assert_eq!(catalog.row(99), catalog.row(20));
-        assert_eq!(catalog.row(0), catalog.row(1));
+        // Before the table the first row holds.
+        assert_eq!(catalog.row_for(0), catalog.row_for(1));
+    }
+
+    #[test]
+    fn eternal_levels_alternate_a_slot_and_a_step() {
+        let catalog = catalog();
+        let rows: Vec<ProgressionRow> = (10..=16)
+            .map(|level| catalog.row_for(level).expect("a row"))
+            .collect();
+        let slots: Vec<u32> = rows.iter().map(|row| row.modifier_slots).collect();
+        // 10-12 are the table; 13 and 15 (odd) add a slot; 14 and 16 (even) do not.
+        assert_eq!(slots, [3, 3, 3, 4, 4, 5, 5]);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        let (twelve, thirteen, fourteen, fifteen, sixteen) =
+            (&rows[2], &rows[3], &rows[4], &rows[5], &rows[6]);
+        // An odd level carries the multipliers; an even level raises them by the steps.
+        assert!(near(thirteen.health_mult, twelve.health_mult));
+        assert!(near(thirteen.damage_mult, twelve.damage_mult));
+        assert!(near(fourteen.health_mult, twelve.health_mult + 0.12));
+        assert!(near(fourteen.damage_mult, twelve.damage_mult + 0.06));
+        assert!(near(fifteen.health_mult, fourteen.health_mult));
+        assert!(near(sixteen.health_mult, twelve.health_mult + 0.24));
+        assert!(near(sixteen.damage_mult, twelve.damage_mult + 0.12));
+        // Rolling a key takes the slot count from the same rows.
+        assert_eq!(catalog.slots(13), 4);
+        let rules = KeyRules {
+            min_level: 1,
+            max_level: 99,
+            health_per_level: 0.10,
+            damage_per_level: 0.05,
+        };
+        assert_eq!(
+            catalog.key_scaling(&rules, 14),
+            (fourteen.health_mult, fourteen.damage_mult)
+        );
+    }
+
+    #[test]
+    fn eternal_rows_never_fall_and_slots_are_capped() {
+        let catalog = catalog();
+        let cap = catalog.eternal().expect("eternal rules").max_modifier_slots;
+        let mut previous = catalog.row_for(12).expect("a row");
+        for level in 13..=120 {
+            let row = catalog.row_for(level).expect("a row");
+            assert_eq!(row.level, level);
+            assert!(row.health_mult >= previous.health_mult);
+            assert!(row.damage_mult >= previous.damage_mult);
+            assert!(row.modifier_slots >= previous.modifier_slots);
+            assert!(row.modifier_slots <= cap);
+            previous = row;
+        }
+        let ninety_nine = catalog.row_for(99).expect("a row");
+        assert_eq!(ninety_nine.modifier_slots, cap);
+        // 43 even levels from 14 to 98: 2.02 + 43 * 0.12 and 1.51 + 43 * 0.06.
+        assert!(
+            (ninety_nine.health_mult - 7.18).abs() < 1e-3,
+            "{ninety_nine:?}"
+        );
+        assert!(
+            (ninety_nine.damage_mult - 4.09).abs() < 1e-3,
+            "{ninety_nine:?}"
+        );
+        // The largest level is arithmetic, not a loop.
+        let huge = catalog.row_for(u32::MAX).expect("a row");
+        assert_eq!(huge.modifier_slots, cap);
+        assert!(huge.health_mult.is_finite());
+    }
+
+    #[test]
+    fn eternal_rules_are_validated() {
+        let good = include_str!("../../../assets/catalog/modifiers.json");
+        assert!(ModifierCatalog::parse(good).is_ok());
+        for (from, to, why) in [
+            (
+                "\"from_level\": 13",
+                "\"from_level\": 14",
+                "a gap after the table",
+            ),
+            (
+                "\"from_level\": 13",
+                "\"from_level\": 12",
+                "overlapping the table",
+            ),
+            (
+                "\"health_mult_step\": 0.12",
+                "\"health_mult_step\": 0.0",
+                "a zero step",
+            ),
+            (
+                "\"damage_mult_step\": 0.06",
+                "\"damage_mult_step\": -0.1",
+                "a negative step",
+            ),
+            (
+                "\"max_modifier_slots\": 6",
+                "\"max_modifier_slots\": 2",
+                "a cap below the table",
+            ),
+            (
+                "\"level\": 12, \"modifier_slots\": 3, \"health_mult\": 2.02",
+                "\"level\": 12, \"modifier_slots\": 3, \"health_mult\": 1.0",
+                "a multiplier that falls",
+            ),
+        ] {
+            assert!(
+                ModifierCatalog::parse(&good.replacen(from, to, 1)).is_err(),
+                "{why}"
+            );
+        }
     }
 
     #[test]
@@ -916,7 +1150,7 @@ mod tests {
             damage_per_level: 0.05,
         };
         assert_eq!(catalog.key_scaling(&rules, 1), (1.0, 1.0));
-        let row = catalog.row(10).expect("a row");
+        let row = catalog.row_for(10).expect("a row");
         assert_eq!(
             catalog.key_scaling(&rules, 10),
             (row.health_mult, row.damage_mult)
