@@ -146,6 +146,9 @@ pub struct AbilityBook {
     extra_charges: [u8; ABILITY_COUNT],
     /// Seconds a hero talent adds to an ability's cooldown.
     extra_cooldown: [f32; ABILITY_COUNT],
+    /// What an ability's own cooldown is multiplied by before `extra_cooldown` is added: one,
+    /// less any cut an equipment set makes (see [`Self::set_cooldown_scale`]).
+    cooldown_scale: [f32; ABILITY_COUNT],
 }
 
 impl Default for AbilityBook {
@@ -167,6 +170,7 @@ impl AbilityBook {
             states,
             extra_charges: [0; ABILITY_COUNT],
             extra_cooldown: [0.0; ABILITY_COUNT],
+            cooldown_scale: [1.0; ABILITY_COUNT],
         }
     }
 
@@ -187,7 +191,25 @@ impl AbilityBook {
         if base <= 0.0 {
             return base;
         }
-        base + self.extra_cooldown[ability.index()]
+        base * self.cooldown_scale[ability.index()] + self.extra_cooldown[ability.index()]
+    }
+
+    /// Sets the factor `ability`'s own cooldown is multiplied by: how an equipment set cuts a
+    /// cooldown. One is no change, and the factor stays in `0.1..=1.0` whatever is asked, so a
+    /// bad row can neither lengthen a cooldown nor remove it. A recharge already running is
+    /// left alone; the next one uses the new length.
+    pub fn set_cooldown_scale(&mut self, ability: FireAbility, scale: f32) {
+        self.cooldown_scale[ability.index()] = if scale.is_finite() {
+            scale.clamp(0.1, 1.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// The factor `ability`'s own cooldown is multiplied by.
+    #[must_use]
+    pub fn cooldown_scale(&self, ability: FireAbility) -> f32 {
+        self.cooldown_scale[ability.index()]
     }
 
     /// Sets what a hero talent adds to `ability`: extra charges and extra cooldown seconds.
@@ -382,10 +404,15 @@ impl AbilityBook {
 
     /// Refills everything. For a reset.
     pub fn refill(&mut self, effects: &TalentEffects) {
-        let (charges, cooldown) = (self.extra_charges, self.extra_cooldown);
+        let (charges, cooldown, scale) = (
+            self.extra_charges,
+            self.extra_cooldown,
+            self.cooldown_scale,
+        );
         *self = Self::new(effects);
         self.extra_charges = charges;
         self.extra_cooldown = cooldown;
+        self.cooldown_scale = scale;
         for ability in FireAbility::ALL {
             self.states[ability.index()] = AbilityState::full(self.max_charges(ability, effects));
         }

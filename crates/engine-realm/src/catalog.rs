@@ -585,6 +585,7 @@ impl Catalog {
         economy.validate()?;
         let loot = LootCatalog::parse(loot)?;
         loot.validate_resources(&economy)?;
+        crate::sets::SetCatalog::parse(crate::sets::SETS_JSON, &loot)?;
         let modifiers = ModifierCatalog::parse(modifiers)?;
 
         let mut out = Self {

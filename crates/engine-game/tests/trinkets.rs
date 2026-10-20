@@ -49,6 +49,7 @@ fn register() {
         icon: ItemIcon::Trinket,
         stats: vec![(Stat::Stamina, 5.0)],
         active,
+        set: None,
     };
     register_catalog_items(vec![
         row(

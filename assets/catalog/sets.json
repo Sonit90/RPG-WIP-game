@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "_comment": "Equipment sets. Pieces are item ids from loot.json, and each of those items names its set back with a `set` field (both directions are checked at load). Bonus counts ascend and never exceed the piece count. Stats are added as written (not scaled by quality or sharpening); `main_stat` becomes the wearer's main stat. Effect kinds: damage_pct{ability}, cooldown_pct{ability}, resource_gen_pct (Heat for the FireMage, Astral Power for the Druid; no effect on the Warrior). Values are fractions: 0.1 is 10 per cent. See docs/sets.md.",
+  "sets": [
+    {
+      "id": "emberwake_regalia",
+      "name": "Emberwake Regalia",
+      "pieces": ["emberwake_hood", "emberwake_mantle", "emberwake_shroud", "emberwake_cuffs", "emberwake_gauntlets"],
+      "bonuses": [
+        { "count": 2, "stats": { "critical_strike": 6, "haste": 4 } },
+        { "count": 4, "stats": { "haste": 6 }, "effects": [
+          { "kind": "damage_pct", "ability": "firebolt", "value": 0.12 },
+          { "kind": "damage_pct", "ability": "flame_lance", "value": 0.12 }
+        ] },
+        { "count": 5, "effects": [
+          { "kind": "damage_pct", "ability": "detonate", "value": 0.15 },
+          { "kind": "cooldown_pct", "ability": "flame_lance", "value": 0.2 },
+          { "kind": "resource_gen_pct", "value": 0.15 }
+        ] }
+      ]
+    },
+    {
+      "id": "gravewarden_panoply",
+      "name": "Gravewarden's Panoply",
+      "pieces": ["gravewarden_greathelm", "gravewarden_hauberk", "gravewarden_cloak", "gravewarden_vambraces", "gravewarden_sollerets"],
+      "bonuses": [
+        { "count": 2, "stats": { "stamina": 10, "armor": 15 } },
+        { "count": 4, "stats": { "stamina": 8 }, "effects": [
+          { "kind": "damage_pct", "ability": "colossus_strike", "value": 0.12 },
+          { "kind": "cooldown_pct", "ability": "colossus_strike", "value": 0.15 }
+        ] },
+        { "count": 5, "effects": [
+          { "kind": "damage_pct", "ability": "war_stomp", "value": 0.15 },
+          { "kind": "damage_pct", "ability": "shield_charge", "value": 0.15 },
+          { "kind": "cooldown_pct", "ability": "shield_charge", "value": 0.15 }
+        ] }
+      ]
+    },
+    {
+      "id": "tidebloom_vestments",
+      "name": "Tidebloom Vestments",
+      "pieces": ["tidebloom_circlet", "tidebloom_robe", "tidebloom_veil", "tidebloom_bindings", "tidebloom_leggings"],
+      "bonuses": [
+        { "count": 2, "stats": { "haste": 6, "stamina": 6 } },
+        { "count": 4, "stats": { "spirit": 6 }, "effects": [
+          { "kind": "damage_pct", "ability": "wrath", "value": 0.08 }
+        ] },
+        { "count": 5, "effects": [
+          { "kind": "damage_pct", "ability": "sunfire", "value": 0.12 },
+          { "kind": "damage_pct", "ability": "moonfire", "value": 0.12 },
+          { "kind": "resource_gen_pct", "value": 0.1 }
+        ] }
+      ]
+    },
+    {
+      "id": "candlelit_vows",
+      "name": "Candlelit Vows",
+      "pieces": ["candlelit_vow_band", "candlelit_vow_locket"],
+      "bonuses": [
+        { "count": 2, "stats": { "haste": 6, "critical_strike": 4 } }
+      ]
+    },
+    {
+      "id": "ossuary_wardplate",
+      "name": "Ossuary Wardplate",
+      "pieces": ["ossuary_pauldrons", "ossuary_greaves"],
+      "bonuses": [
+        { "count": 2, "stats": { "stamina": 10, "versatility": 5 } }
+      ]
+    },
+    {
+      "id": "brinesung_chorus",
+      "name": "Brinesung Chorus",
+      "pieces": ["brinesung_band", "brinesung_idol"],
+      "bonuses": [
+        { "count": 2, "stats": { "main_stat": 5 }, "effects": [
+          { "kind": "resource_gen_pct", "value": 0.1 }
+        ] }
+      ]
+    }
+  ]
+}

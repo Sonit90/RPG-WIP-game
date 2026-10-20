@@ -74,6 +74,7 @@ pub mod rate_limit;
 pub mod reconnect;
 pub mod rewards;
 pub mod role;
+pub mod sets;
 pub mod talents;
 
 pub use error::{ErrorCategory, RealmError};

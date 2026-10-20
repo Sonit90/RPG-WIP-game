@@ -202,6 +202,8 @@ impl Simulation {
         if ability == FireAbility::Wrath && every > 0 && self.druid.wrath_streak % every == 0 {
             generated *= self.druid.effects().swift_wrath_astral_scale;
         }
+        // A set's resource generation scales what a cast pays into the bar.
+        generated *= self.set_effects().resource_gen_scale();
         let applied = self.druid.astral.gain(generated);
         if applied <= 0.0 {
             return;

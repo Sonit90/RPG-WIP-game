@@ -65,6 +65,9 @@ pub struct LootItem {
     /// The button a trinket gives while worn. Quality and enhancement do not scale it.
     #[serde(default)]
     pub active: Option<LootActive>,
+    /// The id of the equipment set (`sets.json`) this item is a piece of, if any.
+    #[serde(default)]
+    pub set: Option<String>,
 }
 
 /// A trinket's active as written: `{ "effect": "group_absorb", "cooldown_s": 120, ... }`.
@@ -424,6 +427,7 @@ impl LootCatalog {
                         .filter_map(|(name, value)| Some((Stat::from_key(name)?, *value)))
                         .collect(),
                     active: row.active.as_ref().and_then(LootActive::parsed),
+                    set: row.set.clone(),
                 })
             })
             .collect()
@@ -433,6 +437,12 @@ impl LootCatalog {
     /// process wins).
     pub fn register_items(&self) {
         register_catalog_items(self.items_for_registration());
+        // The sets name these items, so they travel together: whoever can resolve an item key
+        // can also tell which set it belongs to.
+        match crate::sets::SetCatalog::parse(crate::sets::SETS_JSON, self) {
+            Ok(sets) => sets.register(),
+            Err(error) => log::error!("{error}; no equipment sets are registered"),
+        }
     }
 
     /// The plain-data rules the simulation rolls with. **Registers the items first**, because
@@ -589,7 +599,7 @@ mod tests {
         let loot = catalog.loot();
         assert!(loot.items.len() >= 20, "only {} items", loot.items.len());
         let epics = loot.items.iter().filter(|row| row.rarity == "epic").count();
-        assert!((4..=14).contains(&epics), "{epics} epics");
+        assert!((4..=40).contains(&epics), "{epics} epics");
         for (index, row) in loot.items.iter().enumerate() {
             let def = item_by_key(&row.id).expect("registered");
             assert_eq!(

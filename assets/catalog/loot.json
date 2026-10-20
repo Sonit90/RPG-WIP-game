@@ -342,7 +342,28 @@
       "item_level": 12,
       "icon": "ring",
       "stats": { "stamina": 5, "main_stat": 6, "versatility": 8 }
-    }
+    },
+    { "id": "emberwake_hood", "name": "Emberwake Hood", "slot": "head", "rarity": "epic", "item_level": 12, "icon": "head", "set": "emberwake_regalia", "stats": { "stamina": 8, "main_stat": 8, "haste": 6, "critical_strike": 4 } },
+    { "id": "emberwake_mantle", "name": "Emberwake Mantle", "slot": "shoulder", "rarity": "epic", "item_level": 12, "icon": "shoulder", "set": "emberwake_regalia", "stats": { "stamina": 7, "main_stat": 7, "haste": 6, "critical_strike": 3 } },
+    { "id": "emberwake_shroud", "name": "Emberwake Shroud", "slot": "back", "rarity": "epic", "item_level": 12, "icon": "back", "set": "emberwake_regalia", "stats": { "stamina": 5, "main_stat": 6, "critical_strike": 6, "haste": 3 } },
+    { "id": "emberwake_cuffs", "name": "Emberwake Cuffs", "slot": "wrist", "rarity": "epic", "item_level": 12, "icon": "wrist", "set": "emberwake_regalia", "stats": { "stamina": 4, "main_stat": 5, "haste": 5, "versatility": 3 } },
+    { "id": "emberwake_gauntlets", "name": "Emberwake Gauntlets", "slot": "hands", "rarity": "epic", "item_level": 12, "icon": "hands", "set": "emberwake_regalia", "stats": { "main_stat": 8, "critical_strike": 6, "haste": 4 } },
+    { "id": "gravewarden_greathelm", "name": "Gravewarden's Greathelm", "slot": "head", "rarity": "epic", "item_level": 12, "icon": "head", "set": "gravewarden_panoply", "stats": { "stamina": 9, "armor": 14, "main_stat": 6, "versatility": 4 } },
+    { "id": "gravewarden_hauberk", "name": "Gravewarden's Hauberk", "slot": "chest", "rarity": "epic", "item_level": 12, "icon": "chest", "set": "gravewarden_panoply", "stats": { "stamina": 12, "armor": 16, "main_stat": 7, "critical_strike": 4 } },
+    { "id": "gravewarden_cloak", "name": "Gravewarden's Cloak", "slot": "back", "rarity": "epic", "item_level": 12, "icon": "back", "set": "gravewarden_panoply", "stats": { "stamina": 6, "armor": 8, "main_stat": 4, "haste": 4 } },
+    { "id": "gravewarden_vambraces", "name": "Gravewarden's Vambraces", "slot": "wrist", "rarity": "epic", "item_level": 12, "icon": "wrist", "set": "gravewarden_panoply", "stats": { "stamina": 5, "armor": 8, "main_stat": 4, "versatility": 3 } },
+    { "id": "gravewarden_sollerets", "name": "Gravewarden's Sollerets", "slot": "feet", "rarity": "epic", "item_level": 12, "icon": "feet", "set": "gravewarden_panoply", "stats": { "stamina": 7, "armor": 10, "main_stat": 5, "haste": 4 } },
+    { "id": "tidebloom_circlet", "name": "Tidebloom Circlet", "slot": "head", "rarity": "epic", "item_level": 12, "icon": "head", "set": "tidebloom_vestments", "stats": { "stamina": 8, "main_stat": 8, "haste": 5, "versatility": 4 } },
+    { "id": "tidebloom_robe", "name": "Tidebloom Robe", "slot": "chest", "rarity": "epic", "item_level": 12, "icon": "chest", "set": "tidebloom_vestments", "stats": { "stamina": 11, "main_stat": 8, "haste": 5, "spirit": 4 } },
+    { "id": "tidebloom_veil", "name": "Tidebloom Veil", "slot": "back", "rarity": "epic", "item_level": 12, "icon": "back", "set": "tidebloom_vestments", "stats": { "stamina": 5, "main_stat": 6, "haste": 4, "spirit": 4 } },
+    { "id": "tidebloom_bindings", "name": "Tidebloom Bindings", "slot": "wrist", "rarity": "epic", "item_level": 12, "icon": "wrist", "set": "tidebloom_vestments", "stats": { "stamina": 4, "main_stat": 5, "versatility": 4, "haste": 3 } },
+    { "id": "tidebloom_leggings", "name": "Tidebloom Leggings", "slot": "legs", "rarity": "epic", "item_level": 12, "icon": "legs", "set": "tidebloom_vestments", "stats": { "stamina": 9, "main_stat": 7, "critical_strike": 5, "haste": 4 } },
+    { "id": "candlelit_vow_band", "name": "Candlelit Vow Band", "slot": "ring", "rarity": "epic", "item_level": 12, "icon": "ring", "set": "candlelit_vows", "stats": { "main_stat": 6, "haste": 6, "critical_strike": 3 } },
+    { "id": "candlelit_vow_locket", "name": "Candlelit Vow Locket", "slot": "necklace", "rarity": "epic", "item_level": 12, "icon": "necklace", "set": "candlelit_vows", "stats": { "stamina": 6, "main_stat": 5, "haste": 5, "critical_strike": 3 } },
+    { "id": "ossuary_pauldrons", "name": "Ossuary Pauldrons", "slot": "shoulder", "rarity": "epic", "item_level": 12, "icon": "shoulder", "set": "ossuary_wardplate", "stats": { "stamina": 9, "armor": 8, "main_stat": 5, "versatility": 3 } },
+    { "id": "ossuary_greaves", "name": "Ossuary Greaves", "slot": "legs", "rarity": "epic", "item_level": 12, "icon": "legs", "set": "ossuary_wardplate", "stats": { "stamina": 10, "armor": 10, "main_stat": 5, "versatility": 3 } },
+    { "id": "brinesung_band", "name": "Brinesung Band", "slot": "ring", "rarity": "epic", "item_level": 12, "icon": "ring", "set": "brinesung_chorus", "stats": { "stamina": 4, "main_stat": 6, "spirit": 5, "haste": 4 } },
+    { "id": "brinesung_idol", "name": "Brinesung Idol", "slot": "trinket", "rarity": "epic", "item_level": 12, "icon": "trinket", "set": "brinesung_chorus", "stats": { "main_stat": 6, "haste": 6, "spirit": 4 } }
   ],
   "boss_tables": {
     "lord_ashgrave": [
@@ -429,7 +450,21 @@
       { "item": "wardens_rallying_bell", "weight": 7 },
       { "item": "censer_of_cleansing_ash", "weight": 7 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
-      { "item": "aegis_of_the_last_vigil", "weight": 7 }
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "emberwake_hood", "weight": 12 },
+      { "item": "emberwake_mantle", "weight": 12 },
+      { "item": "emberwake_shroud", "weight": 12 },
+      { "item": "emberwake_cuffs", "weight": 12 },
+      { "item": "emberwake_gauntlets", "weight": 12 },
+      { "item": "gravewarden_greathelm", "weight": 12 },
+      { "item": "gravewarden_hauberk", "weight": 12 },
+      { "item": "gravewarden_cloak", "weight": 12 },
+      { "item": "gravewarden_vambraces", "weight": 12 },
+      { "item": "gravewarden_sollerets", "weight": 12 },
+      { "item": "candlelit_vow_band", "weight": 12 },
+      { "item": "candlelit_vow_locket", "weight": 12 },
+      { "item": "ossuary_pauldrons", "weight": 12 },
+      { "item": "ossuary_greaves", "weight": 12 }
     ],
     "drowned_abbess": [
       { "item": "gravewardens_cowl", "weight": 10 },
@@ -455,7 +490,14 @@
       { "item": "tideworn_sabatons", "weight": 12 },
       { "item": "abbess_signet_of_the_deep", "weight": 12 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
-      { "item": "aegis_of_the_last_vigil", "weight": 7 }
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "tidebloom_circlet", "weight": 12 },
+      { "item": "tidebloom_robe", "weight": 12 },
+      { "item": "tidebloom_veil", "weight": 12 },
+      { "item": "tidebloom_bindings", "weight": 12 },
+      { "item": "tidebloom_leggings", "weight": 12 },
+      { "item": "brinesung_band", "weight": 12 },
+      { "item": "brinesung_idol", "weight": 12 }
     ]
   },
   "mob_table": {
