@@ -2472,6 +2472,8 @@ impl Simulation {
         if !self.world.contains(entity) {
             return;
         }
+        // A dungeon modifier's changes to it go first: restoring refills the *base* maximum.
+        self.modifier_restore_enemy(entity);
         self.world.restore(entity);
         if let Some(body) = self.world.body_mut(entity) {
             *body = crate::movement::Body::at(home);

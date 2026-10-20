@@ -9,6 +9,11 @@
 //!  │    encounter engaged / ended  ─▶ BeamField  (Rotating Beams)    │
 //!  │    monster died               ─▶ PlagueField (Plague Explosion) │
 //!  │    every tick                 ─▶ both: advance, hit, expire     │
+//!  │  and the four that act on the monsters themselves:              │
+//!  │    monster died   ─▶ Bolstering (neighbours grow), Necrotic     │
+//!  │                      Pools (ground the dead leave behind)       │
+//!  │    every tick     ─▶ Raging (the wounded hit harder)            │
+//!  │    cast started   ─▶ Spiteful Casters (faster; curse on landing)│
 //!  └──────────────────────────────────────────────────────────────────┘
 //!                          │ events                    │ damage / statuses
 //!                          ▼                           ▼
@@ -45,9 +50,14 @@
 //! in a single instant.
 
 pub mod beams;
+pub mod bolstering;
+pub mod necrotic;
 pub mod plague;
+pub mod raging;
+pub mod spiteful;
 
 pub use beams::{BeamEmitter, BeamField, MAX_BEAM_EMITTERS};
+pub use bolstering::{Bolster, BolsterField};
 pub use plague::{
     MAX_PLAGUE_CLOUDS, MAX_PLAGUE_FUSES, PlagueCloud, PlagueField, PlagueFuse, PlagueStep,
 };
@@ -70,11 +80,26 @@ pub enum ModifierKind {
     RotatingBeams,
     /// Dead monsters burst after a delay and leave a plague cloud.
     PlagueExplosion,
+    /// A dead monster's neighbours gain maximum health and damage, stacking.
+    Bolstering,
+    /// Dead monsters leave a ground pool that hurts whoever stands in it.
+    NecroticPools,
+    /// Wounded non-boss monsters enrage and hit harder.
+    Raging,
+    /// Casters cast faster, and a cast that lands leaves a dispellable curse.
+    SpitefulCasters,
 }
 
 impl ModifierKind {
     /// Every kind.
-    pub const ALL: [Self; 2] = [Self::RotatingBeams, Self::PlagueExplosion];
+    pub const ALL: [Self; 6] = [
+        Self::RotatingBeams,
+        Self::PlagueExplosion,
+        Self::Bolstering,
+        Self::NecroticPools,
+        Self::Raging,
+        Self::SpitefulCasters,
+    ];
 
     /// The kind's stable id, as the catalog writes it.
     #[must_use]
@@ -82,6 +107,10 @@ impl ModifierKind {
         match self {
             Self::RotatingBeams => "rotating_beams",
             Self::PlagueExplosion => "plague_explosion",
+            Self::Bolstering => "bolstering",
+            Self::NecroticPools => "necrotic_pools",
+            Self::Raging => "raging",
+            Self::SpitefulCasters => "spiteful_casters",
         }
     }
 
@@ -97,6 +126,10 @@ impl ModifierKind {
         match self {
             Self::RotatingBeams => ModifierParams::RotatingBeams(BeamParams::default()),
             Self::PlagueExplosion => ModifierParams::PlagueExplosion(PlagueParams::default()),
+            Self::Bolstering => ModifierParams::Bolstering(BolsteringParams::default()),
+            Self::NecroticPools => ModifierParams::NecroticPools(NecroticParams::default()),
+            Self::Raging => ModifierParams::Raging(RagingParams::default()),
+            Self::SpitefulCasters => ModifierParams::SpitefulCasters(SpitefulParams::default()),
         }
     }
 }
@@ -175,6 +208,96 @@ impl Default for PlagueParams {
     }
 }
 
+/// The base numbers of Bolstering. Percentages are whole numbers of the monster's *base*.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BolsteringParams {
+    /// How far from the dead monster a living one is bolstered, in metres.
+    pub radius: f32,
+    /// Maximum health each stack adds, in per cent of base, before magnitude.
+    pub health_pct: f32,
+    /// Damage each stack adds, in per cent of base, before magnitude.
+    pub damage_pct: f32,
+    /// The most stacks one monster carries.
+    pub max_stacks: u8,
+}
+
+impl Default for BolsteringParams {
+    fn default() -> Self {
+        Self {
+            radius: 30.0,
+            health_pct: 10.0,
+            damage_pct: 10.0,
+            max_stacks: 5,
+        }
+    }
+}
+
+/// The base numbers of Necrotic Pools. Percentages are of the victim's maximum health.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NecroticParams {
+    /// Seconds the ground only warns before the pool hurts.
+    pub warning: f32,
+    /// Radius of the pool, in metres.
+    pub radius: f32,
+    /// Seconds the pool lasts once it forms.
+    pub duration: f32,
+    /// Damage a second inside it as a percentage of maximum health, before magnitude.
+    pub pct_max_hp_per_sec: f32,
+    /// The most one tick may take, as a percentage of maximum health, after magnitude.
+    pub max_hit_pct: f32,
+}
+
+impl Default for NecroticParams {
+    fn default() -> Self {
+        Self {
+            warning: 1.5,
+            radius: 3.0,
+            duration: 8.0,
+            pct_max_hp_per_sec: 4.0,
+            max_hit_pct: 12.0,
+        }
+    }
+}
+
+/// The base numbers of Raging.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RagingParams {
+    /// Below this fraction of maximum health a non-boss monster enrages (`0.3` is 30 %).
+    pub threshold: f32,
+    /// Damage it gains, in per cent, before magnitude.
+    pub damage_pct: f32,
+}
+
+impl Default for RagingParams {
+    fn default() -> Self {
+        Self {
+            threshold: 0.30,
+            damage_pct: 50.0,
+        }
+    }
+}
+
+/// The base numbers of Spiteful Casters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpitefulParams {
+    /// How much faster an interruptible cast is, in per cent, before magnitude.
+    pub cast_speed_pct: f32,
+    /// Seconds the curse lasts on each victim.
+    pub debuff_duration: f32,
+    /// Fraction of healing the curse takes (`0.3` is thirty per cent), before magnitude.
+    pub heal_reduction: f32,
+}
+
+impl Default for SpitefulParams {
+    fn default() -> Self {
+        Self {
+            cast_speed_pct: 30.0,
+            debuff_duration: 10.0,
+            heal_reduction: 0.30,
+        }
+    }
+}
+
 /// A modifier's base numbers, by kind.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModifierParams {
@@ -182,6 +305,29 @@ pub enum ModifierParams {
     RotatingBeams(BeamParams),
     /// See [`PlagueParams`].
     PlagueExplosion(PlagueParams),
+    /// See [`BolsteringParams`].
+    Bolstering(BolsteringParams),
+    /// See [`NecroticParams`].
+    NecroticPools(NecroticParams),
+    /// See [`RagingParams`].
+    Raging(RagingParams),
+    /// See [`SpitefulParams`].
+    SpitefulCasters(SpitefulParams),
+}
+
+impl ModifierParams {
+    /// The kind these numbers belong to.
+    #[must_use]
+    pub fn kind(&self) -> ModifierKind {
+        match self {
+            Self::RotatingBeams(_) => ModifierKind::RotatingBeams,
+            Self::PlagueExplosion(_) => ModifierKind::PlagueExplosion,
+            Self::Bolstering(_) => ModifierKind::Bolstering,
+            Self::NecroticPools(_) => ModifierKind::NecroticPools,
+            Self::Raging(_) => ModifierKind::Raging,
+            Self::SpitefulCasters(_) => ModifierKind::SpitefulCasters,
+        }
+    }
 }
 
 /// One modifier in force for a run: what it is, how hard, and its numbers.
@@ -216,17 +362,7 @@ impl ActiveModifier {
     /// something other than what it is called.
     #[must_use]
     pub fn with_params(mut self, params: ModifierParams) -> Self {
-        let matches = matches!(
-            (self.kind, params),
-            (
-                ModifierKind::RotatingBeams,
-                ModifierParams::RotatingBeams(_)
-            ) | (
-                ModifierKind::PlagueExplosion,
-                ModifierParams::PlagueExplosion(_)
-            )
-        );
-        self.params = if matches {
+        self.params = if params.kind() == self.kind {
             params
         } else {
             self.kind.default_params()
@@ -237,14 +373,42 @@ impl ActiveModifier {
     fn beams(&self) -> Option<(BeamParams, f32)> {
         match self.params {
             ModifierParams::RotatingBeams(params) => Some((params, self.magnitude)),
-            ModifierParams::PlagueExplosion(_) => None,
+            _ => None,
         }
     }
 
     fn plague(&self) -> Option<(PlagueParams, f32)> {
         match self.params {
             ModifierParams::PlagueExplosion(params) => Some((params, self.magnitude)),
-            ModifierParams::RotatingBeams(_) => None,
+            _ => None,
+        }
+    }
+
+    fn bolstering(&self) -> Option<(BolsteringParams, f32)> {
+        match self.params {
+            ModifierParams::Bolstering(params) => Some((params, self.magnitude)),
+            _ => None,
+        }
+    }
+
+    fn necrotic(&self) -> Option<(NecroticParams, f32)> {
+        match self.params {
+            ModifierParams::NecroticPools(params) => Some((params, self.magnitude)),
+            _ => None,
+        }
+    }
+
+    fn raging(&self) -> Option<(RagingParams, f32)> {
+        match self.params {
+            ModifierParams::Raging(params) => Some((params, self.magnitude)),
+            _ => None,
+        }
+    }
+
+    fn spiteful(&self) -> Option<(SpitefulParams, f32)> {
+        match self.params {
+            ModifierParams::SpitefulCasters(params) => Some((params, self.magnitude)),
+            _ => None,
         }
     }
 }
@@ -255,12 +419,18 @@ pub struct ModifierRuntime {
     active: Vec<ActiveModifier>,
     beams: BeamField,
     plague: PlagueField,
+    /// Necrotic Pools: the same disc-on-the-ground state as the plague, kept apart so the two
+    /// modifiers can stand together without reading each other's numbers.
+    pools: PlagueField,
+    bolster: BolsterField,
     next_id: u32,
     /// Seconds until the next beam damage tick, shared by every emitter so a player in two
     /// beams still takes one tick.
     beam_timer: f32,
     /// Seconds until the next cloud tick, shared for the same reason.
     cloud_timer: f32,
+    /// Seconds until the next pool tick.
+    pool_timer: f32,
     /// Reused: what a plague step produced.
     pub(crate) scratch_step: PlagueStep,
     /// Reused: who a modifier tick is about to hurt, and for what share of their health.
@@ -281,9 +451,12 @@ impl ModifierRuntime {
             active: Vec::new(),
             beams: BeamField::new(),
             plague: PlagueField::new(),
+            pools: PlagueField::new(),
+            bolster: BolsterField::new(),
             next_id: MODIFIER_ID_BASE,
             beam_timer: MODIFIER_TICK_INTERVAL,
             cloud_timer: MODIFIER_TICK_INTERVAL,
+            pool_timer: MODIFIER_TICK_INTERVAL,
             scratch_step: PlagueStep::default(),
             scratch_hits: Vec::with_capacity(8),
         }
@@ -319,6 +492,54 @@ impl ModifierRuntime {
         self.active.iter().find_map(ActiveModifier::plague)
     }
 
+    /// The Bolstering modifier, if it is in force: its numbers and magnitude.
+    #[must_use]
+    pub fn bolstering_rules(&self) -> Option<(BolsteringParams, f32)> {
+        self.active.iter().find_map(ActiveModifier::bolstering)
+    }
+
+    /// The Necrotic Pools modifier, if it is in force: its numbers and magnitude.
+    #[must_use]
+    pub fn necrotic_rules(&self) -> Option<(NecroticParams, f32)> {
+        self.active.iter().find_map(ActiveModifier::necrotic)
+    }
+
+    /// The Raging modifier, if it is in force: its numbers and magnitude.
+    #[must_use]
+    pub fn raging_rules(&self) -> Option<(RagingParams, f32)> {
+        self.active.iter().find_map(ActiveModifier::raging)
+    }
+
+    /// The Spiteful Casters modifier, if it is in force: its numbers and magnitude.
+    #[must_use]
+    pub fn spiteful_rules(&self) -> Option<(SpitefulParams, f32)> {
+        self.active.iter().find_map(ActiveModifier::spiteful)
+    }
+
+    /// Every bolstered monster.
+    #[must_use]
+    pub fn bolstered(&self) -> &[Bolster] {
+        self.bolster.entries()
+    }
+
+    /// How many stacks of Bolstering `entity` carries.
+    #[must_use]
+    pub fn bolster_stacks(&self, entity: crate::entity::EntityId) -> u8 {
+        self.bolster.stacks(entity)
+    }
+
+    /// Every necrotic pool still warning.
+    #[must_use]
+    pub fn pool_warnings(&self) -> &[PlagueFuse] {
+        self.pools.fuses()
+    }
+
+    /// Every necrotic pool on the ground.
+    #[must_use]
+    pub fn pools(&self) -> &[PlagueCloud] {
+        self.pools.clouds()
+    }
+
     /// Every beam emitter standing, in the order they appeared.
     #[must_use]
     pub fn beams(&self) -> &[BeamEmitter] {
@@ -345,6 +566,14 @@ impl ModifierRuntime {
         &mut self.plague
     }
 
+    pub(crate) fn pool_field(&mut self) -> &mut PlagueField {
+        &mut self.pools
+    }
+
+    pub(crate) fn bolster_field(&mut self) -> &mut BolsterField {
+        &mut self.bolster
+    }
+
     /// A fresh id, in the modifiers' own space.
     pub(crate) fn fresh_id(&mut self) -> u32 {
         let id = self.next_id;
@@ -360,6 +589,11 @@ impl ModifierRuntime {
     /// Advances the shared damage clock for clouds. Returns whether a tick is due.
     pub(crate) fn cloud_tick_due(&mut self, step: f32) -> bool {
         Self::tick_due(&mut self.cloud_timer, step)
+    }
+
+    /// Advances the shared damage clock for necrotic pools. Returns whether a tick is due.
+    pub(crate) fn pool_tick_due(&mut self, step: f32) -> bool {
+        Self::tick_due(&mut self.pool_timer, step)
     }
 
     fn tick_due(timer: &mut f32, step: f32) -> bool {
@@ -381,8 +615,12 @@ impl ModifierRuntime {
         for id in self.plague.drain_ids() {
             ended.push(EndedModifier::Plague(id));
         }
+        for id in self.pools.drain_ids() {
+            ended.push(EndedModifier::Plague(id));
+        }
         self.beam_timer = MODIFIER_TICK_INTERVAL;
         self.cloud_timer = MODIFIER_TICK_INTERVAL;
+        self.pool_timer = MODIFIER_TICK_INTERVAL;
     }
 
     /// Files away what the authority announced, for presentation to draw. A client's only
@@ -500,6 +738,21 @@ mod tests {
         let modifier = ActiveModifier::new(ModifierKind::RotatingBeams, 1.0)
             .with_params(ModifierParams::PlagueExplosion(PlagueParams::default()));
         assert!(matches!(modifier.params, ModifierParams::RotatingBeams(_)));
+    }
+
+    #[test]
+    fn every_kind_carries_its_own_params_and_nobody_elses() {
+        for kind in ModifierKind::ALL {
+            assert_eq!(kind.default_params().kind(), kind);
+            for other in ModifierKind::ALL {
+                let modifier = ActiveModifier::new(kind, 1.0).with_params(other.default_params());
+                assert_eq!(
+                    modifier.params.kind(),
+                    kind,
+                    "{kind:?} given {other:?}'s numbers"
+                );
+            }
+        }
     }
 
     #[test]

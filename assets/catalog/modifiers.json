@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "notes": "Dungeon key modifiers, the key-level progression table and the reroll / cleanse tunables (`config`: a reroll unlocks once `reroll_unlock_fraction` of the placed monsters are dead, costs `reroll_cost` of `reroll_resource`, at most `max_rerolls_per_run` per run for the whole party, and a run that rerolled and succeeds pays `reroll_reward_bonus_pct` more; a cleanse costs `cleanse_gold_cost` gold). Percentages are whole numbers (5.0 is five per cent) and, for damage, of the victim's maximum health. A modifier's strength is `1 + scaling_per_level * (key level - introduced_at_level)`, times `1 + magnitude_pct / 100` from rerolls.",
+  "notes": "Dungeon key modifiers, the key-level progression table and the reroll / cleanse tunables (`config`: a reroll unlocks once `reroll_unlock_fraction` of the placed monsters are dead, costs `reroll_cost` of `reroll_resource`, at most `max_rerolls_per_run` per run for the whole party, and a run that rerolled and succeeds pays `reroll_reward_bonus_pct` more; a cleanse costs `cleanse_gold_cost` gold). Percentages are whole numbers (5.0 is five per cent) and, for damage, of the victim's maximum health. A modifier's strength is `1 + scaling_per_level * (key level - introduced_at_level)`, times `1 + magnitude_pct / 100` from rerolls. `progression` covers key levels 1-12; from `eternal.from_level` every odd level adds `add_modifier_slots` slots (up to `max_modifier_slots`) and every even level raises the health and damage multipliers by the steps, carrying the rest of the previous row. The table and the eternal block are the only source of key scaling; a dungeon's `keys.health_per_level` is a fallback for a catalog with no table.",
   "magnitude_limits": { "min_pct": -50, "max_pct": 100 },
   "config": {
     "reroll_unlock_fraction": 0.5,
@@ -54,6 +54,76 @@
       "amplifiable": true,
       "reducible": true,
       "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "bolstering",
+      "name": "Bolstering",
+      "description": "When a monster dies, every living monster nearby grows stronger: more health and more damage, stacking. Kill packs down together, not one at a time.",
+      "icon": "bolstering",
+      "kind": "bolstering",
+      "introduced_at_level": 5,
+      "params": {
+        "radius": 30.0,
+        "health_pct": 10.0,
+        "damage_pct": 10.0,
+        "max_stacks": 5
+      },
+      "scaling_per_level": 0.04,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "raging",
+      "name": "Raging",
+      "description": "Monsters below 30% health fly into a rage and hit much harder. Finish them quickly or hold your cooldowns.",
+      "icon": "raging",
+      "kind": "raging",
+      "introduced_at_level": 7,
+      "params": {
+        "threshold": 0.30,
+        "damage_pct": 50.0
+      },
+      "scaling_per_level": 0.04,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "necrotic_pools",
+      "name": "Necrotic Pools",
+      "description": "Slain monsters leave a pool of rot after a moment's warning. Standing in one burns. Fight where the dead will not fall at your feet.",
+      "icon": "necrotic_pools",
+      "kind": "necrotic_pools",
+      "introduced_at_level": 11,
+      "params": {
+        "warning": 1.5,
+        "radius": 3.0,
+        "duration": 8.0,
+        "pct_max_hp_per_sec": 4.0,
+        "max_hit_pct": 12.0
+      },
+      "scaling_per_level": 0.05,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
+    },
+    {
+      "id": "spiteful_casters",
+      "name": "Spiteful Casters",
+      "description": "Casters cast faster. A cast that lands leaves a curse that cuts the healing you receive; interrupt the cast or dispel the curse.",
+      "icon": "spiteful_casters",
+      "kind": "spiteful_casters",
+      "introduced_at_level": 13,
+      "params": {
+        "cast_speed_pct": 30.0,
+        "debuff_duration": 10.0,
+        "heal_reduction": 0.30
+      },
+      "scaling_per_level": 0.04,
+      "amplifiable": true,
+      "reducible": true,
+      "reroll": { "strengthen_chance": 0.60, "min_pct": 10, "max_pct": 25 }
     }
   ],
   "progression": [
@@ -68,14 +138,12 @@
     { "level": 9, "modifier_slots": 3, "health_mult": 1.60, "damage_mult": 1.30, "notes": "Third modifier." },
     { "level": 10, "modifier_slots": 3, "health_mult": 1.80, "damage_mult": 1.40, "notes": "Stronger monsters." },
     { "level": 11, "modifier_slots": 3, "health_mult": 1.80, "damage_mult": 1.40, "notes": "" },
-    { "level": 12, "modifier_slots": 3, "health_mult": 2.02, "damage_mult": 1.51, "notes": "Stronger monsters." },
-    { "level": 13, "modifier_slots": 3, "health_mult": 2.02, "damage_mult": 1.51, "notes": "" },
-    { "level": 14, "modifier_slots": 3, "health_mult": 2.26, "damage_mult": 1.63, "notes": "Stronger monsters." },
-    { "level": 15, "modifier_slots": 3, "health_mult": 2.26, "damage_mult": 1.63, "notes": "" },
-    { "level": 16, "modifier_slots": 3, "health_mult": 2.52, "damage_mult": 1.76, "notes": "Stronger monsters." },
-    { "level": 17, "modifier_slots": 3, "health_mult": 2.52, "damage_mult": 1.76, "notes": "" },
-    { "level": 18, "modifier_slots": 3, "health_mult": 2.80, "damage_mult": 1.90, "notes": "Stronger monsters." },
-    { "level": 19, "modifier_slots": 3, "health_mult": 2.80, "damage_mult": 1.90, "notes": "" },
-    { "level": 20, "modifier_slots": 3, "health_mult": 3.10, "damage_mult": 2.05, "notes": "Highest key." }
-  ]
+    { "level": 12, "modifier_slots": 3, "health_mult": 2.02, "damage_mult": 1.51, "notes": "Stronger monsters. Last row of the table." }
+  ],
+  "eternal": {
+    "from_level": 13,
+    "odd": { "add_modifier_slots": 1 },
+    "even": { "health_mult_step": 0.12, "damage_mult_step": 0.06 },
+    "max_modifier_slots": 6
+  }
 }

@@ -1,6 +1,6 @@
 # Dungeon modifiers
 
-A dungeon key has a level (1..20) and a list of modifiers. Modifiers are data
+A dungeon key has a level (1..99) and a list of modifiers. Modifiers are data
 (`assets/catalog/modifiers.json`) run by the shared simulation (`engine_game::modifier`).
 
 ```text
@@ -18,14 +18,20 @@ modifiers.json ─► engine-realm::modifiers ─ roll / resolve / reroll / down
 * `modifiers[]`: `id, name, description, icon, kind, introduced_at_level, params,
   scaling_per_level, amplifiable, reducible, reroll {strengthen_chance, min_pct, max_pct}`.
   Strength = `(1 + scaling_per_level * (level - introduced_at_level)) * (1 + magnitude_pct / 100)`.
-* `progression[]`: per key level `modifier_slots, health_mult, damage_mult`. It is the source of
-  key-level monster scaling through `ModifierCatalog::key_scaling`; the dungeon's
-  `keys.health_per_level` stays as the fallback (the realm module uses `key_scaling`).
+* `progression[]`: per key level `modifier_slots, health_mult, damage_mult` for the normal keys
+  1-12 (multipliers may only rise). `eternal` continues it from level 13: every odd level adds
+  `odd.add_modifier_slots` (up to `max_modifier_slots`), every even level adds
+  `even.health_mult_step` / `even.damage_mult_step`. `ModifierCatalog::row_for(level)` is the one
+  lookup (slots, `key_scaling`, rolls), synthesising rows past the table in closed form. The
+  dungeon's `keys.health_per_level` is only the fallback for a catalog with no table.
 * `magnitude_limits`: the clamp for a key's total reroll magnitude (-50..+100).
 * `config`: `reroll_unlock_fraction` (0.5), `reroll_resource` (`aether_shard`), `reroll_cost` (1),
   `max_rerolls_per_run` (1), `reroll_reward_bonus_pct` (25), `cleanse_gold_cost` (100).
 
-## First two modifiers
+## The modifiers
+
+Rotating Beams and Plague Explosion (key 3), then the monster-side four. All numbers are
+`params` in the catalog; strength is the magnitude above.
 
 * **Rotating Beams**: when a pack engages (and for the boss fight) an emitter appears at the
   pack's centroid: 3 beams, 9 m, 0.9 m wide, 35 deg/s, direction and start angle from the sim's
@@ -36,6 +42,19 @@ modifiers.json ─► engine-realm::modifiers ─ roll / resolve / reroll / down
   burst of 12 % max HP in 4 m, then a 4 m cloud for 6 s ticking 3 %/s and applying `Plagued`
   (-20 % healing received, refreshed while inside, lingers 3 s). Healing reduction is applied
   in `GameWorld::heal`, the one heal path. Fuses (48) and clouds (16) are bounded arrays.
+
+* **Bolstering** (key 5): when a non-boss monster dies, each living non-boss monster within
+  30 m gains a stack (cap 5): +10 % of its base max health (current health rises with it) and
+  +10 % damage. Undone by a reset or wipe.
+* **Raging** (key 7): a non-boss monster below 30 % health deals +50 % damage. Not a status, so
+  not dispellable; it ends if the monster is healed back over the threshold.
+* **Necrotic Pools** (key 11): a non-boss death marks the ground (1.5 s warning, 3 m), then a
+  pool lasts 8 s dealing 4 %/s of max HP to players inside (capped per tick). It reuses the
+  plague's `PlagueArmed` / `PlagueExploded` / `PlagueCloudEnded` events, so clients draw it with
+  the plague's floor discs; the burst effect plays when the pool forms.
+* **Spiteful Casters** (key 13): interruptible enemy casts are 30 % faster; a completed one
+  gives its targets `Spite` (Magic school, so dispellable; -30 % healing received, 10 s). An
+  interrupt stops the cast and its curse.
 
 Modifier damage comes from no entity and no ability, skips the incoming multipliers, and is
 capped (`max_hit_pct`), so it cannot one-shot a full-health player.

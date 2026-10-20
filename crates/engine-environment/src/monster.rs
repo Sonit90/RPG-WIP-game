@@ -73,6 +73,9 @@ pub struct MonsterPlacement {
     pub enabled: bool,
     /// What killing it is worth towards dungeon completion. `None` is the monster's own value.
     pub completion: Option<f32>,
+    /// Waypoints `[x, z]` it walks in a loop while idle. Empty means it stands where it is
+    /// placed. Aggro works as for any idle monster, from wherever it is on the loop.
+    pub patrol: Vec<[f32; 2]>,
 }
 
 impl MonsterPlacement {
@@ -90,6 +93,7 @@ impl MonsterPlacement {
             level: 1,
             enabled: true,
             completion: None,
+            patrol: Vec::new(),
         }
     }
 
@@ -128,6 +132,10 @@ impl MonsterPlacement {
             && self
                 .completion
                 .is_none_or(|value| value.is_finite() && value >= 0.0)
+            && self
+                .patrol
+                .iter()
+                .all(|point| point[0].is_finite() && point[1].is_finite())
     }
 
     /// The name the pack is known by: the author's, or one made from the placement's index.

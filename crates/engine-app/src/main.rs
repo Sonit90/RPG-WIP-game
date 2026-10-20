@@ -65,7 +65,9 @@ fn main() -> ExitCode {
     log::info!("developer tools enabled (mygame-dev-tools-marker): not for release builds");
 
     // Online, the world is a realm dungeon: the level is the dungeon's, whatever scene the
-    // command line's default would have chosen. Its monsters come from the server.
+    // command line's default would have chosen. Its monsters come from the server. The crypt
+    // is only the level the client starts with: once an instance names its dungeon the client
+    // loads that dungeon's scene from `dungeons.json` (see `App::install_dungeon_level`).
     if args.network_mode == args::NetworkMode::Online && args.scene_file.is_none() {
         args.scene = args::Scene::Graveyard;
     }
