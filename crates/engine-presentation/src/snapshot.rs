@@ -130,6 +130,7 @@ fn character_view(simulation: &Simulation) -> CharacterView {
         equipment,
         inventory,
         spirit_stacks: simulation.spirit().stacks(),
+        books_learned: 0,
     }
 }
 
@@ -759,6 +760,71 @@ pub struct TalentView {
     pub icon: Option<engine_render_data::ui::UiIcon>,
 }
 
+/// One option of an enhancement book, as the talent screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookOptionView {
+    /// Its stable id (what the server is asked to put in force).
+    pub id: String,
+    /// Uppercase name.
+    pub name: String,
+    /// What it does.
+    pub description: String,
+    /// Whether it is the option in force.
+    pub active: bool,
+}
+
+/// An enhancement book: one signature ability, three ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnhancementBookView {
+    /// Its stable id.
+    pub id: String,
+    /// Uppercase name.
+    pub name: String,
+    /// The ability it changes, uppercase.
+    pub ability: String,
+    /// Whether the character has read it.
+    pub learned: bool,
+    /// The key level a boss must be run at for it to drop.
+    pub min_key_level: u32,
+    /// The options, in book order.
+    pub options: Vec<BookOptionView>,
+}
+
+/// A talent-point book.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TalentBookView {
+    /// Uppercase name.
+    pub name: String,
+    /// Whether the character has read it (its point is in the total).
+    pub learned: bool,
+    /// The key level a boss must be run at for it to drop.
+    pub min_key_level: u32,
+}
+
+/// The hero's books and what is learned, as the talent screen's Books page shows them. Filled by
+/// the application from the server's copy of the character; empty offline.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BooksView {
+    /// The talent-point books.
+    pub talent: Vec<TalentBookView>,
+    /// The enhancement books.
+    pub enhancement: Vec<EnhancementBookView>,
+}
+
+impl BooksView {
+    /// Whether there is nothing to show (offline, or a hero without books).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.talent.is_empty() && self.enhancement.is_empty()
+    }
+
+    /// How many talent books are learned: the points they add to the total.
+    #[must_use]
+    pub fn learned_points(&self) -> u32 {
+        u32::try_from(self.talent.iter().filter(|book| book.learned).count()).unwrap_or(0)
+    }
+}
+
 /// One party member, as their frame shows them.
 ///
 /// Health and nothing invented. There are no character names in the world yet — an entity
@@ -840,9 +906,18 @@ pub struct CharacterView {
     pub inventory: [Option<ItemStack>; INVENTORY_SLOTS],
     /// How many stacks of the Spirit buff are running. Zero on the current roster.
     pub spirit_stacks: u8,
+    /// Which books the character has read, one bit per book
+    /// ([`engine_game::talent::books::book_bit`]). Set by the application online; zero otherwise.
+    pub books_learned: u32,
 }
 
 impl CharacterView {
+    /// Whether the character has read the book `id`.
+    #[must_use]
+    pub fn has_read(&self, id: &str) -> bool {
+        engine_game::talent::books::book_bit(id).is_some_and(|bit| self.books_learned & (1 << bit) != 0)
+    }
+
     /// What is in `slot`.
     #[must_use]
     pub fn at(&self, slot: ItemSlot) -> Option<ItemStack> {
@@ -971,6 +1046,9 @@ pub struct UiSnapshot {
     pub talent_points_total: u32,
     /// Whose tree `talents` lists.
     pub talent_hero: Hero,
+    /// The hero's books, for the talent screen's Books page. Set by the application (online
+    /// only); the simulation knows nothing of them.
+    pub books: BooksView,
     /// Letters in the active character's mailbox that have not been read: the badge on the
     /// mailbox button.
     pub mail_unread: u32,
@@ -1076,6 +1154,7 @@ impl UiSnapshot {
             talent_points: 0,
             talent_points_total: 0,
             talent_hero: Hero::default(),
+            books: BooksView::default(),
             mail_unread: 0,
             talents: Vec::with_capacity(engine_game::talent::MAX_TALENTS),
             spell_power: 0.0,
@@ -1227,7 +1306,7 @@ impl UiSnapshot {
         self.mail_unread = u32::try_from(simulation.mailbox().unread_count()).unwrap_or(u32::MAX);
         self.talents.clear();
         for (index, talent) in engine_game::talent::hero_talents(simulation.hero())
-            .talents
+            .visible()
             .iter()
             .enumerate()
         {
@@ -1860,8 +1939,7 @@ mod tests {
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
             snapshot.talents.len(),
-            engine_game::talent::hero_talents(Hero::FireMage)
-                .talents
+            engine_game::talent::hero_talents(Hero::FireMage).visible()
                 .len()
         );
         assert!(snapshot.talents.iter().all(|talent| !talent.purchased));
@@ -1911,8 +1989,7 @@ mod tests {
         assert_eq!(snapshot.talents.capacity(), capacity, "the snapshot grew");
         assert_eq!(
             snapshot.talents.len(),
-            engine_game::talent::hero_talents(Hero::FireMage)
-                .talents
+            engine_game::talent::hero_talents(Hero::FireMage).visible()
                 .len()
         );
     }

@@ -236,6 +236,12 @@ pub enum CharacterMenuOutcome {
         /// Where it was dropped.
         to: ItemSlot,
     },
+    /// The player right-clicked a book in the bag: read it. A request, like a move; the server
+    /// consumes the item and learns the book.
+    Use {
+        /// The bag cell holding the book.
+        cell: usize,
+    },
     /// The panel was closed.
     Closed,
 }
@@ -476,6 +482,16 @@ impl CharacterMenu {
             && let Some(slot) = over
             && let Some(stack) = character.at(slot)
         {
+            if let ItemSlot::Inventory(cell) = slot
+                && stack.def().is_some_and(|def| def.family == engine_game::character::ItemFamily::Book)
+            {
+                return if character.has_read(stack.def().map_or("", |def| def.key)) {
+                    self.refused = Some(slot);
+                    CharacterMenuOutcome::Idle
+                } else {
+                    CharacterMenuOutcome::Use { cell }
+                };
+            }
             let target = match slot {
                 ItemSlot::Inventory(_) => equip_target(character, stack).map(ItemSlot::Equipment),
                 ItemSlot::Equipment(_) => free_cell(character).map(ItemSlot::Inventory),

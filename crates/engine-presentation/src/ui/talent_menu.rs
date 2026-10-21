@@ -53,6 +53,13 @@ mod layout {
     pub const RESET_HEIGHT: f32 = 30.0;
 }
 
+/// Height of the row of talent-point books on the Books page, in design pixels.
+const BOOK_ROW: f32 = 58.0;
+/// Height of an enhancement book's heading on the Books page.
+const BOOK_HEAD: f32 = 46.0;
+/// Height of one option card on the Books page.
+const BOOK_CARD: f32 = 128.0;
+
 /// Every talent-menu measurement, converted from its design size to physical pixels once.
 ///
 /// The same arrangement as [`crate::game_ui::HudMetrics`]; see it for why the conversion
@@ -118,6 +125,15 @@ pub enum TalentMenuOutcome {
     Purchase(usize),
     /// The player asked for every talent to be refunded.
     Reset,
+    /// The player picked option `option` of enhancement book `book` (positions in
+    /// [`UiSnapshot::books`]) on the Books page. Only emitted for a learned book, an option that is
+    /// not already in force, and while the build is not locked.
+    SetBookOption {
+        /// Which enhancement book.
+        book: usize,
+        /// Which of its options.
+        option: usize,
+    },
     /// The menu was closed.
     Closed,
 }
@@ -131,6 +147,12 @@ pub struct TalentMenu {
     locked: bool,
     /// Whether the pointer is over the reset button.
     reset_hovered: bool,
+    /// Whether the Books page is showing instead of the talent tiers.
+    books_page: bool,
+    /// Whether the pointer is over the page toggle.
+    books_hovered: bool,
+    /// The book option under the pointer on the Books page, `(book, option)`.
+    option_hovered: Option<(usize, usize)>,
     /// Every measurement, already converted to physical pixels for the current UI scale.
     metrics: TalentMetrics,
 }
@@ -150,6 +172,9 @@ impl TalentMenu {
             hovered: None,
             locked: false,
             reset_hovered: false,
+            books_page: false,
+            books_hovered: false,
+            option_hovered: None,
             metrics: TalentMetrics::new(scale),
         }
     }
@@ -227,10 +252,64 @@ impl TalentMenu {
         )
     }
 
+    /// Whether the Books page is showing.
+    #[must_use]
+    pub fn books_page(&self) -> bool {
+        self.books_page
+    }
+
+    /// Where the Books/Talents page toggle sits: left of the reset button.
+    #[must_use]
+    pub fn books_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let reset = self.reset_rect(viewport);
+        let m = self.metrics_for(viewport);
+        let width = reset.width * 1.15;
+        UiRect::new(
+            reset.x - m.node_gap - width,
+            reset.y,
+            width,
+            reset.height,
+        )
+    }
+
+    /// Where option `option` of enhancement book `book` sits on the Books page: three columns,
+    /// one per book, under a row of talent-point books.
+    #[must_use]
+    pub fn book_option_rect(&self, book: usize, option: usize, viewport: (u32, u32)) -> UiRect {
+        let panel = self.panel_rect(viewport);
+        let m = self.metrics_for(viewport);
+        let inner = panel.width - m.padding * 2.0;
+        let column = (inner - m.node_gap * 2.0) / 3.0;
+        let top = panel.y + m.padding + m.header + m.scale.px(BOOK_ROW + 18.0) + m.scale.px(BOOK_HEAD);
+        let card = m.scale.px(BOOK_CARD);
+        UiRect::new(
+            panel.x + m.padding + book as f32 * (column + m.node_gap),
+            top + option as f32 * (card + m.node_gap),
+            column,
+            card,
+        )
+    }
+
+    /// Where talent-point book `index` sits on the Books page.
+    #[must_use]
+    pub fn talent_book_rect(&self, index: usize, viewport: (u32, u32)) -> UiRect {
+        let panel = self.panel_rect(viewport);
+        let m = self.metrics_for(viewport);
+        let inner = panel.width - m.padding * 2.0;
+        let column = (inner - m.node_gap * 2.0) / 3.0;
+        UiRect::new(
+            panel.x + m.padding + index as f32 * (column + m.node_gap),
+            panel.y + m.padding + m.header,
+            column,
+            m.scale.px(BOOK_ROW),
+        )
+    }
+
     /// Opens it.
     pub fn open(&mut self) {
         self.open = true;
         self.hovered = None;
+        self.option_hovered = None;
     }
 
     /// Closes it.
@@ -264,13 +343,40 @@ impl TalentMenu {
         }
 
         self.hovered = None;
+        self.option_hovered = None;
         let mut clicked = None;
-        for (index, talent) in snapshot.talents.iter().enumerate() {
-            let rect = self.node_rect(index, snapshot, viewport);
-            if rect.contains(input.pointer.0, input.pointer.1) {
-                self.hovered = Some(talent.index);
-                if input.pointer_pressed {
-                    clicked = Some(talent.index);
+        let mut option_clicked = None;
+        // The page toggle: only when the hero has books to show.
+        let toggle = self.books_rect(viewport);
+        self.books_hovered = !snapshot.books.is_empty()
+            && toggle.contains(input.pointer.0, input.pointer.1);
+        if self.books_hovered && input.pointer_pressed {
+            self.books_page = !self.books_page;
+            return TalentMenuOutcome::Idle;
+        }
+        if snapshot.books.is_empty() {
+            self.books_page = false;
+        }
+        if self.books_page {
+            for (book_index, book) in snapshot.books.enhancement.iter().enumerate() {
+                for option_index in 0..book.options.len() {
+                    let rect = self.book_option_rect(book_index, option_index, viewport);
+                    if rect.contains(input.pointer.0, input.pointer.1) {
+                        self.option_hovered = Some((book_index, option_index));
+                        if input.pointer_pressed {
+                            option_clicked = Some((book_index, option_index));
+                        }
+                    }
+                }
+            }
+        } else {
+            for (index, talent) in snapshot.talents.iter().enumerate() {
+                let rect = self.node_rect(index, snapshot, viewport);
+                if rect.contains(input.pointer.0, input.pointer.1) {
+                    self.hovered = Some(talent.index);
+                    if input.pointer_pressed {
+                        clicked = Some(talent.index);
+                    }
                 }
             }
         }
@@ -293,6 +399,14 @@ impl TalentMenu {
             return TalentMenuOutcome::Closed;
         }
 
+        if let Some((book, option)) = option_clicked
+            && !self.locked
+            && let Some(view) = snapshot.books.enhancement.get(book)
+            && view.learned
+            && view.options.get(option).is_some_and(|candidate| !candidate.active)
+        {
+            return TalentMenuOutcome::SetBookOption { book, option };
+        }
         match clicked {
             Some(index) if !self.locked => TalentMenuOutcome::Purchase(index),
             _ => TalentMenuOutcome::Idle,
@@ -473,11 +587,29 @@ pub fn push_talent_menu(
         .disabled(!can_reset),
     );
 
+    let toggle = menu.books_rect(viewport);
+    let has_books = !snapshot.books.is_empty();
+    if has_books {
+        kit::button(
+            list,
+            &kit,
+            toggle,
+            if menu.books_page() { "Talents" } else { "Books" },
+            None,
+            ButtonVariant::Secondary,
+            Interaction {
+                hovered: menu.books_hovered,
+                ..Interaction::default()
+            },
+        );
+    }
+
     if menu.is_locked() {
         let banner = UiRect::new(
             panel.x + metrics.padding,
             reset.y,
-            (reset.x - panel.x - metrics.padding * 2.0).max(0.0),
+            ((if has_books { toggle.x } else { reset.x }) - panel.x - metrics.padding * 2.0)
+                .max(0.0),
             reset.height,
         );
         kit::banner(
@@ -487,6 +619,24 @@ pub fn push_talent_menu(
             "LOCKED FOR THIS RUN: talents cannot change while you are queued, in a party or in a dungeon.",
             tone::WARN,
         );
+    }
+
+    if menu.books_page() {
+        push_books_page(list, &kit, menu, snapshot, viewport, scratch);
+        kit.text(
+            list,
+            panel.x + metrics.padding,
+            panel.bottom() - metrics.padding - kit.px(4.0),
+            if menu.is_locked() {
+                "Esc closes."
+            } else {
+                "Click an option to put it in force. You can switch at the hub. Esc closes."
+            },
+            type_scale::META,
+            color::TEXT_MUTED,
+            TextAlign::Left,
+        );
+        return;
     }
 
     if snapshot.talents.is_empty() {
@@ -560,6 +710,178 @@ pub fn push_talent_menu(
         color::TEXT_MUTED,
         TextAlign::Left,
     );
+}
+
+/// The Books page: the talent-point books across the top (each worth one point once read), then one
+/// column per enhancement book with its three options. The option in force is outlined in green;
+/// a book that is not learned is dim and says what it takes.
+fn push_books_page(
+    list: &mut UiDrawList,
+    kit: &Kit,
+    menu: &TalentMenu,
+    snapshot: &UiSnapshot,
+    viewport: (u32, u32),
+    scratch: &mut String,
+) {
+    let corner = kit.px(radius::CARD);
+    let pad = kit.px(8.0);
+    for (index, book) in snapshot.books.talent.iter().enumerate().take(3) {
+        let rect = menu.talent_book_rect(index, viewport);
+        let (top, bottom, edge) = if book.learned {
+            (
+                color::alpha(tone::GOOD, 0.26),
+                color::alpha(tone::GOOD, 0.12),
+                color::alpha(tone::GOOD, 0.80),
+            )
+        } else {
+            (color::SURFACE_1, color::SURFACE_1, color::BORDER)
+        };
+        list.panel(rect, corner, top, bottom);
+        list.panel_stroke(rect, corner, 1.0, edge);
+        kit.text(
+            list,
+            rect.x + pad,
+            rect.y + kit.px(17.0),
+            &book.name,
+            type_scale::HEADING,
+            if book.learned {
+                color::TEXT_PRIMARY
+            } else {
+                color::TEXT_MUTED
+            },
+            TextAlign::Left,
+        );
+        scratch.clear();
+        if book.learned {
+            scratch.push_str("LEARNED: +1 TALENT POINT");
+        } else {
+            scratch.push_str("+1 TALENT POINT. BOSS DROP, KEY LEVEL ");
+            push_integer(scratch, book.min_key_level);
+            scratch.push('+');
+        }
+        kit.text(
+            list,
+            rect.x + pad,
+            rect.y + kit.px(40.0),
+            scratch,
+            type_scale::META,
+            if book.learned {
+                tone::GOOD
+            } else {
+                color::TEXT_MUTED
+            },
+            TextAlign::Left,
+        );
+    }
+
+    for (book_index, book) in snapshot.books.enhancement.iter().enumerate().take(3) {
+        let first = menu.book_option_rect(book_index, 0, viewport);
+        let head_y = first.y - kit.px(BOOK_HEAD);
+        kit.text(
+            list,
+            first.x,
+            head_y + kit.px(14.0),
+            &book.name,
+            type_scale::HEADING,
+            if book.learned {
+                color::TEXT_PRIMARY
+            } else {
+                color::TEXT_MUTED
+            },
+            TextAlign::Left,
+        );
+        scratch.clear();
+        scratch.push_str(&book.ability);
+        if book.learned {
+            scratch.push_str(" - CHOOSE ONE");
+        } else {
+            scratch.push_str(" - NOT LEARNED. BOSS DROP, KEY LEVEL ");
+            push_integer(scratch, book.min_key_level);
+            scratch.push('+');
+        }
+        kit.text(
+            list,
+            first.x,
+            head_y + kit.px(32.0),
+            scratch,
+            type_scale::META,
+            if book.learned {
+                tone::CURRENCY
+            } else {
+                color::TEXT_MUTED
+            },
+            TextAlign::Left,
+        );
+        for (option_index, option) in book.options.iter().enumerate() {
+            let rect = menu.book_option_rect(book_index, option_index, viewport);
+            let hovered = menu.option_hovered == Some((book_index, option_index));
+            let clickable = book.learned && !menu.is_locked() && !option.active;
+            let (top, bottom, edge) = if option.active {
+                (
+                    color::alpha(tone::GOOD, 0.26),
+                    color::alpha(tone::GOOD, 0.12),
+                    color::alpha(tone::GOOD, 0.80),
+                )
+            } else if clickable {
+                (
+                    if hovered {
+                        color::SURFACE_3
+                    } else {
+                        color::SURFACE_2
+                    },
+                    color::SURFACE_1,
+                    tokens::ACCENT,
+                )
+            } else {
+                (color::SURFACE_1, color::SURFACE_1, color::BORDER)
+            };
+            list.panel(rect, corner, top, bottom);
+            list.panel_stroke(rect, corner, kit.px(if option.active { 2.0 } else { 1.0 }), edge);
+            let reachable = book.learned;
+            kit.text(
+                list,
+                rect.x + pad,
+                rect.y + kit.px(15.0),
+                &option.name,
+                type_scale::HEADING,
+                if reachable {
+                    color::TEXT_PRIMARY
+                } else {
+                    color::TEXT_MUTED
+                },
+                TextAlign::Left,
+            );
+            if option.active {
+                kit.text(
+                    list,
+                    rect.right() - pad,
+                    rect.y + kit.px(15.0),
+                    "ACTIVE",
+                    type_scale::LABEL,
+                    tone::GOOD,
+                    TextAlign::Right,
+                );
+            }
+            let lines = kit
+                .style
+                .wrap(type_scale::META, &option.description, rect.width - pad * 2.0);
+            for (line, text) in lines.iter().take(6).enumerate() {
+                kit.text(
+                    list,
+                    rect.x + pad,
+                    rect.y + kit.px(36.0) + kit.px(14.0) * line as f32,
+                    text,
+                    type_scale::META,
+                    if reachable {
+                        color::TEXT_SECONDARY
+                    } else {
+                        color::TEXT_MUTED
+                    },
+                    TextAlign::Left,
+                );
+            }
+        }
+    }
 }
 
 /// The icon a talent wears: the ability family it modifies, by the talent's key.
@@ -795,6 +1117,99 @@ mod tests {
         }
     }
 
+    fn with_books(learned: bool, active: Option<usize>) -> UiSnapshot {
+        use crate::snapshot::{
+            BookOptionView, BooksView, EnhancementBookView, TalentBookView,
+        };
+        let mut snapshot = snapshot();
+        let option = |index: usize| BookOptionView {
+            id: format!("o{index}"),
+            name: format!("OPTION {index}"),
+            description: "DOES A THING".to_owned(),
+            active: active == Some(index),
+        };
+        snapshot.books = BooksView {
+            talent: vec![TalentBookView {
+                name: "CODEX".to_owned(),
+                learned,
+                min_key_level: 8,
+            }],
+            enhancement: vec![EnhancementBookView {
+                id: "b".to_owned(),
+                name: "MANUAL".to_owned(),
+                ability: "WAR STOMP".to_owned(),
+                learned,
+                min_key_level: 6,
+                options: (0..3).map(option).collect(),
+            }],
+        };
+        snapshot
+    }
+
+    fn open_books(snapshot: &UiSnapshot) -> TalentMenu {
+        let mut menu = TalentMenu::new();
+        menu.open();
+        let toggle = menu.books_rect(VIEWPORT);
+        let outcome = menu.update(&click(toggle.x + 4.0, toggle.y + 4.0), snapshot, VIEWPORT);
+        assert_eq!(outcome, TalentMenuOutcome::Idle);
+        assert!(menu.books_page());
+        menu
+    }
+
+    #[test]
+    fn the_books_page_lists_books_highlights_the_active_option_and_switches_on_click() {
+        let snapshot = with_books(true, Some(1));
+        let mut menu = open_books(&snapshot);
+        let shown = texts(&render(&menu, &snapshot));
+        for wanted in ["CODEX", "MANUAL", "OPTION 0", "OPTION 1", "OPTION 2", "ACTIVE"] {
+            assert!(shown.iter().any(|t| t == wanted), "{wanted} missing: {shown:?}");
+        }
+        // Clicking the active option does nothing; another one is a request.
+        let active = menu.book_option_rect(0, 1, VIEWPORT);
+        assert_eq!(
+            menu.update(&click(active.x + 5.0, active.y + 5.0), &snapshot, VIEWPORT),
+            TalentMenuOutcome::Idle
+        );
+        let other = menu.book_option_rect(0, 2, VIEWPORT);
+        assert_eq!(
+            menu.update(&click(other.x + 5.0, other.y + 5.0), &snapshot, VIEWPORT),
+            TalentMenuOutcome::SetBookOption { book: 0, option: 2 }
+        );
+    }
+
+    #[test]
+    fn an_option_cannot_be_chosen_while_locked_or_before_the_book_is_learned() {
+        let snapshot = with_books(true, None);
+        let mut menu = open_books(&snapshot);
+        menu.set_locked(true);
+        let rect = menu.book_option_rect(0, 0, VIEWPORT);
+        assert_eq!(
+            menu.update(&click(rect.x + 5.0, rect.y + 5.0), &snapshot, VIEWPORT),
+            TalentMenuOutcome::Idle
+        );
+        let shown = texts(&render(&menu, &snapshot));
+        assert!(shown.iter().any(|t| t.starts_with("LOCKED FOR THIS RUN")), "{shown:?}");
+
+        let unlearned = with_books(false, None);
+        let mut menu = open_books(&unlearned);
+        assert_eq!(
+            menu.update(&click(rect.x + 5.0, rect.y + 5.0), &unlearned, VIEWPORT),
+            TalentMenuOutcome::Idle
+        );
+        let shown = texts(&render(&menu, &unlearned));
+        assert!(shown.iter().any(|t| t.contains("NOT LEARNED")), "{shown:?}");
+    }
+
+    #[test]
+    fn without_books_there_is_no_page_to_open() {
+        let snapshot = snapshot();
+        let mut menu = TalentMenu::new();
+        menu.open();
+        let toggle = menu.books_rect(VIEWPORT);
+        menu.update(&click(toggle.x + 4.0, toggle.y + 4.0), &snapshot, VIEWPORT);
+        assert!(!menu.books_page());
+    }
+
     #[test]
     fn a_closed_menu_draws_nothing_and_answers_nothing() {
         let menu = TalentMenu::new();
@@ -810,7 +1225,7 @@ mod tests {
         let drawn = texts(&render(&menu, &snapshot));
 
         assert!(drawn.contains(&"FIREMAGE TALENTS".to_owned()), "{drawn:?}");
-        for talent in &hero_talents(Hero::FireMage).talents {
+        for talent in hero_talents(Hero::FireMage).visible() {
             assert!(
                 drawn.contains(&talent.name),
                 "{} is missing from the menu",
@@ -1001,7 +1416,7 @@ mod tests {
         let druid = UiSnapshot::build(&simulation);
         let drawn = texts(&render(&menu, &druid));
         assert!(drawn.contains(&"DRUID TALENTS".to_owned()), "{drawn:?}");
-        for talent in &hero_talents(Hero::Druid).talents {
+        for talent in hero_talents(Hero::Druid).visible() {
             assert!(drawn.contains(&talent.name), "{}", talent.name);
         }
 
@@ -1010,7 +1425,7 @@ mod tests {
         let warrior = UiSnapshot::build(&simulation);
         let drawn = texts(&render(&menu, &warrior));
         assert!(drawn.contains(&"WARRIOR TALENTS".to_owned()), "{drawn:?}");
-        for talent in &hero_talents(Hero::Warrior).talents {
+        for talent in hero_talents(Hero::Warrior).visible() {
             assert!(drawn.contains(&talent.name), "{}", talent.name);
         }
         assert!(
@@ -1022,7 +1437,7 @@ mod tests {
     #[test]
     fn every_description_fits_its_node() {
         for hero in Hero::ALL {
-            for talent in &hero_talents(hero).talents {
+            for talent in hero_talents(hero).visible() {
                 assert!(
                     talent.description.len() <= DESCRIPTION_COLUMNS * DESCRIPTION_LINES - 26,
                     "{} is too long for a node: {}",
@@ -1067,7 +1482,7 @@ mod tests {
     #[test]
     fn every_talent_of_every_hero_has_an_icon() {
         for hero in engine_game::hero::Hero::ALL {
-            for talent in &engine_game::talent::hero_talents(hero).talents {
+            for talent in engine_game::talent::hero_talents(hero).visible() {
                 assert!(
                     talent_icon(&talent.key).is_some(),
                     "{} has no icon",

@@ -293,7 +293,7 @@ fn run_class(
         .collect();
 
     // Phase two: every talent alone on Default, and every talent of the best build removed.
-    let table = &hero_talents(class.hero()).talents;
+    let table = hero_talents(class.hero()).visible();
     let mut jobs = Vec::new();
     // (talent, tier, kind) in job order, so the results can be read back.
     let mut keys: Vec<(usize, usize, bool, bool)> = Vec::new();

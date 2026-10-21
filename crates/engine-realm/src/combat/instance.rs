@@ -367,10 +367,11 @@ pub struct CombatInstance {
 
 /// The talents a player enters the fight with.
 ///
-/// Checked again here, whatever the API did: a key the hero lacks or a set that costs more than
+/// Hidden book nodes ride in the same list (the API appends the active options' nodes) and cost
+/// nothing. Checked again here, whatever the API did: a key the hero lacks or a set that costs more than
 /// the snapshot's points drops *all* the talents (and says so) rather than half of them.
 fn talent_grid_of(spec: &PlayerSpec) -> TalentGrid {
-    match TalentGrid::from_keys(spec.hero, &spec.talents, spec.talent_points) {
+    match TalentGrid::from_keys_with_nodes(spec.hero, &spec.talents, spec.talent_points) {
         Ok(grid) => grid,
         Err(error) => {
             log::warn!(

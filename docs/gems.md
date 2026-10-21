@@ -82,7 +82,7 @@ with a wide spread because the kind is a lottery). `gem_sim::tests` hold the med
 The `p2_gems` tier in the balance simulator is `p2_set` with a level-5 Ruby (main stat) in the first
 socket of every piece and a level-5 Amber (stamina) in a second one. `docs/balance/sim-report.md`
 section 7 (20 iterations): single-target 60 s DPS Warrior 891 -> 975 (+9.4 %), Druid 878 -> 963
-(+9.7 %), Mage 2001 -> 2191 (+9.5 %); survivability rises a little too (stamina). Section 8 of the
+(+9.7 %), Mage 2001 -> 2191 (+9.5 %); survivability rises a little too (stamina). Section 9 of the
 same report and `docs/balance/gem-economy.md` hold the economy.
 
 ## Client

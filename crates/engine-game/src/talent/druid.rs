@@ -31,6 +31,25 @@ pub enum DruidTalent {
     BarkskinInstinct,
     /// Tranquility recharges sooner and costs less Mana, and heals less.
     TranquilMind,
+    // Hidden book nodes (tier 0), one per enhancement-book option, in book order.
+    /// Sunfire Book: a wider, softer Sunfire.
+    WideBloom,
+    /// Sunfire Book: a tighter, harder Sunfire.
+    SearingBloom,
+    /// Sunfire Book: a little of both.
+    BalancedBloom,
+    /// Swiftmend Book: Swiftmend recharges much sooner.
+    QuickMend,
+    /// Swiftmend Book: Swiftmend refunds a lot of Astral Power.
+    AstralMend,
+    /// Swiftmend Book: a modest cooldown cut and refund.
+    MeasuredMend,
+    /// Tranquility Book: cheaper Tranquility, slightly weaker.
+    GentlePeace,
+    /// Tranquility Book: Tranquility recharges much sooner, weaker.
+    SwiftPeace,
+    /// Tranquility Book: a stronger, dearer Tranquility.
+    DeepPeace,
 }
 
 impl TalentKey for DruidTalent {
@@ -51,8 +70,23 @@ impl TalentKey for DruidTalent {
     }
 }
 
+impl DruidTalent {
+    /// The hidden book nodes, in table order after the visible talents.
+    pub const NODES: [Self; 9] = [
+        Self::WideBloom,
+        Self::SearingBloom,
+        Self::BalancedBloom,
+        Self::QuickMend,
+        Self::AstralMend,
+        Self::MeasuredMend,
+        Self::GentlePeace,
+        Self::SwiftPeace,
+        Self::DeepPeace,
+    ];
+}
+
 /// The built-in Druid rows: the same numbers `assets/catalog/talents.json` ships.
-pub const DEFS: [TalentDef; 8] = [
+pub const DEFS: [TalentDef; 17] = [
     TalentDef {
         key: "swift_wrath",
         name: "SWIFT WRATH",
@@ -120,6 +154,78 @@ pub const DEFS: [TalentDef; 8] = [
             ("mana_cut", 0.5),
             ("heal_penalty", 0.15),
         ],
+    },
+    TalentDef {
+        key: "bk_wide_bloom",
+        name: "WIDE BLOOM",
+        tier: 0,
+        cost: 0,
+        description: "SUNFIRE RADIUS +{radius_bonus%}%. SUNFIRE TICK DAMAGE -{tick_penalty%}%",
+        values: &[("radius_bonus", 0.6), ("tick_penalty", 0.15)],
+    },
+    TalentDef {
+        key: "bk_searing_bloom",
+        name: "SEARING BLOOM",
+        tier: 0,
+        cost: 0,
+        description: "SUNFIRE TICK DAMAGE +{tick_bonus%}%. SUNFIRE RADIUS -{radius_penalty%}%",
+        values: &[("tick_bonus", 0.5), ("radius_penalty", 0.3)],
+    },
+    TalentDef {
+        key: "bk_balanced_bloom",
+        name: "BALANCED BLOOM",
+        tier: 0,
+        cost: 0,
+        description: "SUNFIRE RADIUS +{radius_bonus%}% AND TICK DAMAGE +{tick_bonus%}%",
+        values: &[("radius_bonus", 0.25), ("tick_bonus", 0.1)],
+    },
+    TalentDef {
+        key: "bk_quick_mend",
+        name: "QUICK MEND",
+        tier: 0,
+        cost: 0,
+        description: "SWIFTMEND COOLDOWN -{cooldown_cut} S",
+        values: &[("cooldown_cut", 4.0), ("astral_refund", 0.0)],
+    },
+    TalentDef {
+        key: "bk_astral_mend",
+        name: "ASTRAL MEND",
+        tier: 0,
+        cost: 0,
+        description: "EACH SWIFTMEND REFUNDS {astral_refund} ASTRAL POWER",
+        values: &[("cooldown_cut", 0.0), ("astral_refund", 20.0)],
+    },
+    TalentDef {
+        key: "bk_measured_mend",
+        name: "MEASURED MEND",
+        tier: 0,
+        cost: 0,
+        description: "SWIFTMEND COOLDOWN -{cooldown_cut} S AND REFUNDS {astral_refund} ASTRAL POWER",
+        values: &[("cooldown_cut", 2.0), ("astral_refund", 10.0)],
+    },
+    TalentDef {
+        key: "bk_gentle_peace",
+        name: "GENTLE PEACE",
+        tier: 0,
+        cost: 0,
+        description: "TRANQUILITY MANA COST -{mana_cut%}%. ITS HEALING -{heal_penalty%}%",
+        values: &[("mana_cut", 0.4), ("heal_penalty", 0.1), ("cooldown_cut", 0.0), ("heal_bonus", 0.0), ("mana_penalty", 0.0)],
+    },
+    TalentDef {
+        key: "bk_swift_peace",
+        name: "SWIFT PEACE",
+        tier: 0,
+        cost: 0,
+        description: "TRANQUILITY COOLDOWN -{cooldown_cut} S. ITS HEALING -{heal_penalty%}%",
+        values: &[("mana_cut", 0.0), ("heal_penalty", 0.15), ("cooldown_cut", 30.0), ("heal_bonus", 0.0), ("mana_penalty", 0.0)],
+    },
+    TalentDef {
+        key: "bk_deep_peace",
+        name: "DEEP PEACE",
+        tier: 0,
+        cost: 0,
+        description: "TRANQUILITY HEALING +{heal_bonus%}%. ITS MANA COST +{mana_penalty%}%",
+        values: &[("mana_cut", 0.0), ("heal_penalty", 0.0), ("cooldown_cut", 0.0), ("heal_bonus", 0.25), ("mana_penalty", 0.3)],
     },
 ];
 
@@ -235,6 +341,36 @@ impl DruidTalentEffects {
             fx.tranquility_mana_scale = 1.0 - v(TranquilMind, "mana_cut");
             fx.tranquility_heal_scale = 1.0 - v(TranquilMind, "heal_penalty");
         }
+        // Book options come last and compose with the talents above.
+        use DruidTalent::{
+            AstralMend, BalancedBloom, DeepPeace, GentlePeace, MeasuredMend, QuickMend,
+            SearingBloom, SwiftPeace, WideBloom,
+        };
+        if on(WideBloom) {
+            fx.sunfire_radius_scale *= 1.0 + v(WideBloom, "radius_bonus");
+            fx.sunfire_tick_scale *= 1.0 - v(WideBloom, "tick_penalty");
+        }
+        if on(SearingBloom) {
+            fx.sunfire_tick_scale *= 1.0 + v(SearingBloom, "tick_bonus");
+            fx.sunfire_radius_scale *= 1.0 - v(SearingBloom, "radius_penalty");
+        }
+        if on(BalancedBloom) {
+            fx.sunfire_radius_scale *= 1.0 + v(BalancedBloom, "radius_bonus");
+            fx.sunfire_tick_scale *= 1.0 + v(BalancedBloom, "tick_bonus");
+        }
+        for mend in [QuickMend, AstralMend, MeasuredMend] {
+            if on(mend) {
+                fx.swiftmend_cooldown_cut += v(mend, "cooldown_cut");
+                fx.swiftmend_astral_refund += v(mend, "astral_refund");
+            }
+        }
+        for peace in [GentlePeace, SwiftPeace, DeepPeace] {
+            if on(peace) {
+                fx.tranquility_cooldown_cut += v(peace, "cooldown_cut");
+                fx.tranquility_mana_scale *= (1.0 - v(peace, "mana_cut")) * (1.0 + v(peace, "mana_penalty"));
+                fx.tranquility_heal_scale *= (1.0 + v(peace, "heal_bonus")) * (1.0 - v(peace, "heal_penalty"));
+            }
+        }
         fx
     }
 
@@ -252,6 +388,33 @@ impl DruidTalentEffects {
 )]
 mod tests {
     use super::*;
+
+    fn node_effects(node: DruidTalent) -> DruidTalentEffects {
+        DruidTalentEffects::from_grid(&TalentGrid::from_nodes(&[node]))
+    }
+
+    #[test]
+    fn every_book_node_changes_its_ability_through_the_talent_path() {
+        let none = DruidTalentEffects::default();
+        for node in DruidTalent::NODES {
+            assert!(node.spec().is_hidden(), "{node:?}");
+            assert_ne!(node_effects(node), none, "{node:?} changed nothing");
+        }
+        let wide = node_effects(DruidTalent::WideBloom);
+        assert!(wide.sunfire_radius_scale > 1.5 && wide.sunfire_tick_scale < 1.0);
+        let searing = node_effects(DruidTalent::SearingBloom);
+        assert!(searing.sunfire_tick_scale > 1.3 && searing.sunfire_radius_scale < 1.0);
+        let balanced = node_effects(DruidTalent::BalancedBloom);
+        assert!(balanced.sunfire_tick_scale > 1.0 && balanced.sunfire_radius_scale > 1.0);
+        assert!((node_effects(DruidTalent::QuickMend).swiftmend_cooldown_cut - 4.0).abs() < 1e-6);
+        assert!((node_effects(DruidTalent::AstralMend).swiftmend_astral_refund - 20.0).abs() < 1e-6);
+        let measured = node_effects(DruidTalent::MeasuredMend);
+        assert!(measured.swiftmend_cooldown_cut > 0.0 && measured.swiftmend_astral_refund > 0.0);
+        assert!(node_effects(DruidTalent::GentlePeace).tranquility_mana_scale < 0.7);
+        assert!(node_effects(DruidTalent::SwiftPeace).tranquility_cooldown_cut > 20.0);
+        let deep = node_effects(DruidTalent::DeepPeace);
+        assert!(deep.tranquility_heal_scale > 1.2 && deep.tranquility_mana_scale > 1.2);
+    }
 
     #[test]
     fn every_druid_talent_changes_something_and_resets_cleanly() {

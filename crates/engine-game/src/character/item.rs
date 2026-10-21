@@ -202,13 +202,17 @@ pub enum ItemFamily {
     Ring,
     /// A trinket. Either trinket slot takes one.
     Trinket,
+    /// A book: read from the bag, never worn. Not in [`ItemFamily::ALL`], which lists the
+    /// equipment families; its identity is the item key (the book's id in `talents.json`).
+    Book,
     /// A gem: socketed into a piece of equipment, worn in no slot. Not in [`ItemFamily::ALL`],
     /// which lists the families that have a slot.
     Gem,
 }
 
 impl ItemFamily {
-    /// Every family that is worn, in slot order. Excludes [`ItemFamily::Gem`].
+    /// Every family that is worn, in slot order. Excludes [`ItemFamily::Book`] and
+    /// [`ItemFamily::Gem`].
     pub const ALL: [Self; 11] = [
         Self::Head,
         Self::Shoulder,
@@ -254,6 +258,7 @@ impl ItemFamily {
             Self::Necklace => "NECK",
             Self::Ring => "FINGER",
             Self::Trinket => "TRINKET",
+            Self::Book => "BOOK",
             Self::Gem => "GEM",
         }
     }
@@ -414,8 +419,8 @@ impl ItemIcon {
             ItemFamily::Wrist => Self::Bracers,
             ItemFamily::Necklace => Self::Amulet,
             ItemFamily::Ring => Self::Ring,
-            // No picture of its own yet: a gem borrows the trinket's.
-            ItemFamily::Trinket | ItemFamily::Gem => Self::Trinket,
+            // No art of its own yet: a book or a gem wears the trinket picture.
+            ItemFamily::Trinket | ItemFamily::Book | ItemFamily::Gem => Self::Trinket,
         }
     }
 }

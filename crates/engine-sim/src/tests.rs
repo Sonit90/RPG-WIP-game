@@ -56,8 +56,8 @@ fn the_matrix_and_its_report_do_not_depend_on_thread_scheduling() {
     };
     let profiles = GearProfile::select(&[GearTier::None, GearTier::High]);
     let run = || matrix::run(&Class::ALL, &profiles, 1, SEED, &|_, _| {});
-    let first = matrix_report(&run(), &options, None, None);
-    let second = matrix_report(&run(), &options, None, None);
+    let first = matrix_report(&run(), &options, None, None, &[]);
+    let second = matrix_report(&run(), &options, None, None, &[]);
     assert_eq!(first, second, "two runs of the same seed disagree");
 }
 
@@ -233,7 +233,7 @@ fn the_report_has_every_section_and_every_class() {
     };
     let profiles = GearProfile::select(&[GearTier::High]);
     let matrix = matrix::run(&Class::ALL, &profiles, 1, SEED, &|_, _| {});
-    let text = matrix_report(&matrix, &options, None, None);
+    let text = matrix_report(&matrix, &options, None, None, &[]);
     for needle in [
         "## 1. Summary matrix",
         "## 2. Balance check",
@@ -429,10 +429,10 @@ fn the_validation_names_every_talent_and_flags_what_it_finds() {
     // Something is in the best build, so something has a removal figure.
     assert!(warrior.talents.iter().any(|t| t.removal[0].is_some()));
 
-    let text = matrix_report(&matrix, &options, Some(&validation), None);
+    let text = matrix_report(&matrix, &options, Some(&validation), None, &[]);
     assert!(text.contains("## 6. Talent validation"));
     for talent in engine_game::talent::hero_talents(Class::Warrior.hero())
-        .talents
+        .visible()
         .iter()
     {
         assert!(text.contains(&talent.name), "{} is missing", talent.name);

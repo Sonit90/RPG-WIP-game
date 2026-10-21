@@ -286,6 +286,18 @@ impl Simulation {
             ) {
                 items.push(ItemStack::one(gem));
             }
+            // Books: only when the rules carry them, so a ruleset without them draws exactly
+            // what it always drew. Rolled after the gem so each ruleset's draw order is fixed.
+            if let Some(books) = &rules.books {
+                let hero = self
+                    .with_player(player, |sim| sim.hero)
+                    .unwrap_or(self.hero);
+                if let Some(book) =
+                    loot::roll_book(books, boss, hero, key_level, &mut self.loot_rng)
+                {
+                    items.push(ItemStack::one(book));
+                }
+            }
             shares.push((player, items));
         }
         shares

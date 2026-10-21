@@ -32,11 +32,14 @@ use engine_game::character::{
     item_by_key, loot_pool, register_catalog_items,
 };
 use engine_game::enemy::EnemyKind;
+use engine_game::hero::Hero;
 use engine_game::loot::{
-    BossTable, CurrencyRules, DropSource, EpicRules, GoldRules, LootRules, LootTable, MobLootRules,
-    GemDrops, QualityBucket, QualityRules, SharpeningDrops, WeightedItem,
+    BookChances, BookDrop, BookRules, BossTable, CurrencyRules, DropSource, EpicRules, GemDrops,
+    GoldRules, LootRules, LootTable, MobLootRules, QualityBucket, QualityRules, SharpeningDrops,
+    WeightedItem,
 };
 use engine_game::sharpen_drops::{SharpenCurve, validate_weights};
+use engine_game::talent::books::BookKind;
 use engine_game::trinket::{TrinketActive, TrinketEffect};
 use serde::Deserialize;
 
@@ -268,6 +271,25 @@ pub struct SharpeningDropsRow {
     pub key_shift: Option<SharpeningKeyShift>,
 }
 
+/// A boss's chance of a book, per player, as written.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct BookChanceRow {
+    /// A talent-point book.
+    pub talent_point: f32,
+    /// An enhancement book.
+    pub enhancement: f32,
+}
+
+/// The `book_drops` block as written.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BookDropsRow {
+    /// The chances of a boss with no row of its own.
+    pub default: BookChanceRow,
+    /// Per-boss chances, by the boss's stable id.
+    #[serde(default)]
+    pub bosses: BTreeMap<String, BookChanceRow>,
+}
+
 /// The whole loot catalog.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LootCatalog {
@@ -291,6 +313,9 @@ pub struct LootCatalog {
     /// How drops are pre-sharpened. Absent: every drop is `+0`.
     #[serde(default)]
     pub sharpening_drops: Option<SharpeningDropsRow>,
+    /// Book drops from boss chests. Absent: no books drop.
+    #[serde(default)]
+    pub book_drops: Option<BookDropsRow>,
 }
 
 fn err(message: impl Into<String>) -> CatalogError {
@@ -320,6 +345,21 @@ impl LootCatalog {
     }
 
     fn validate(&self) -> Result<(), CatalogError> {
+        if let Some(drops) = &self.book_drops {
+            for (what, row) in std::iter::once(("default", &drops.default))
+                .chain(drops.bosses.iter().map(|(boss, row)| (boss.as_str(), row)))
+            {
+                check_chance(&format!("book_drops {what} talent_point"), row.talent_point)?;
+                check_chance(&format!("book_drops {what} enhancement"), row.enhancement)?;
+            }
+            if let Some(boss) = drops
+                .bosses
+                .keys()
+                .find(|boss| !self.boss_tables.contains_key(*boss))
+            {
+                return Err(err(format!("book_drops names unknown boss {boss:?}")));
+            }
+        }
         self.validate_sharpening_drops(
             usize::from(engine_game::character::SHARPENING_CEILING) + 1,
         )?;
@@ -527,6 +567,14 @@ impl LootCatalog {
     /// The items as `engine-game` registers them, in file order.
     #[must_use]
     pub fn items_for_registration(&self) -> Vec<CatalogItem> {
+        let mut items = self.loot_items_for_registration();
+        // Books come after every loot-file item, so appending loot rows never renumbers them
+        // relative to each other; ids are runtime-only (persistence stores keys).
+        items.extend(crate::talents::book_items());
+        items
+    }
+
+    fn loot_items_for_registration(&self) -> Vec<CatalogItem> {
         self.items
             .iter()
             .filter_map(|row| {
@@ -650,12 +698,61 @@ impl LootCatalog {
                 boss_amount: self.gold.boss_amount,
             },
             sharpening: self.sharpening_rules(),
+            books: self.book_rules()?,
             gems: crate::gems::builtin().map_or_else(GemDrops::none, |gems| gems.drop_rules()),
         })
     }
 }
 
 impl LootCatalog {
+    /// The boss book rules: the chances from `book_drops`, the books from `talents.json`.
+    fn book_rules(&self) -> Result<Option<BookRules>, CatalogError> {
+        let Some(drops) = &self.book_drops else {
+            return Ok(None);
+        };
+        let talents = crate::talents::builtin()?;
+        let chances = |row: &BookChanceRow| BookChances {
+            talent: row.talent_point,
+            enhancement: row.enhancement,
+        };
+        let drop_of = |id: &str, kind, min_key_level| -> Result<BookDrop, CatalogError> {
+            item_by_key(id)
+                .map(|def| BookDrop {
+                    item: def.id,
+                    kind,
+                    min_key_level,
+                })
+                .ok_or_else(|| err(format!("book {id:?} is not registered as an item")))
+        };
+        let mut per_hero: [Vec<BookDrop>; 3] = Default::default();
+        for hero in Hero::ALL {
+            let books = &talents.books[hero.index()];
+            for book in &books.talent {
+                per_hero[hero.index()].push(drop_of(
+                    &book.id,
+                    BookKind::TalentPoint,
+                    book.min_key_level,
+                )?);
+            }
+            for book in &books.enhancement {
+                per_hero[hero.index()].push(drop_of(
+                    &book.id,
+                    BookKind::Enhancement,
+                    book.min_key_level,
+                )?);
+            }
+        }
+        Ok(Some(BookRules {
+            default: chances(&drops.default),
+            bosses: drops
+                .bosses
+                .iter()
+                .map(|(boss, row)| (boss.clone(), chances(row)))
+                .collect(),
+            per_hero,
+        }))
+    }
+
     /// The sharpening-drop rules as `engine-game` rolls them. Also what the interface marks
     /// as highly sharpened (`highlight_from`).
     #[must_use]
@@ -1338,6 +1435,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shipped_book_drops_are_gated_by_key_level_and_deterministic() {
+        use engine_game::firemage::Rng;
+        use engine_game::loot::roll_book;
+        let rules = rules();
+        let books = rules.books.as_ref().expect("the shipped file has book_drops");
+        assert!(books.bosses.iter().any(|(boss, _)| boss == "lord_ashgrave"));
+        for hero in Hero::ALL {
+            assert_eq!(books.per_hero[hero.index()].len(), 6, "3 + 3 books");
+        }
+        let count = |hero: Hero, key: u32, seed: u64| {
+            let mut rng = Rng::new(seed);
+            (0..4000)
+                .filter_map(|_| roll_book(books, Some("drowned_abbess"), hero, key, &mut rng))
+                .collect::<Vec<_>>()
+        };
+        // Key 5: below every gate. Key 6: enhancement books only. Key 8: both.
+        assert!(count(Hero::Warrior, 5, 1).is_empty());
+        let six = count(Hero::Warrior, 6, 1);
+        assert!(!six.is_empty());
+        assert!(six.iter().all(|item| {
+            item_by_key("manual_of_tremors").is_some_and(|d| d.id == *item)
+                || item_by_key("manual_of_the_charge").is_some_and(|d| d.id == *item)
+                || item_by_key("manual_of_the_headsman").is_some_and(|d| d.id == *item)
+        }));
+        let eight = count(Hero::Warrior, 8, 1);
+        // About 0.06 + 0.94 * 0.05 = 10.7 % of 4000.
+        assert!((330..=530).contains(&eight.len()), "{}", eight.len());
+        assert_eq!(eight, count(Hero::Warrior, 8, 1));
+        assert_ne!(eight, count(Hero::Warrior, 8, 2));
+    }
+
+    #[test]
+    fn a_book_drop_block_naming_an_unknown_boss_or_a_bad_chance_is_refused() {
+        let edited = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut value: serde_json::Value = serde_json::from_str(LOOT_JSON).expect("json");
+            edit(&mut value);
+            LootCatalog::parse(&value.to_string())
+        };
+        let unknown = edited(&|json| {
+            json["book_drops"]["bosses"]["nobody"] =
+                serde_json::json!({ "talent_point": 0.1, "enhancement": 0.1 });
+        });
+        assert!(unknown.is_err());
+        let bad = edited(&|json| {
+            json["book_drops"]["default"]["talent_point"] = serde_json::json!(1.5);
+        });
+        assert!(bad.is_err());
     }
 
     #[test]

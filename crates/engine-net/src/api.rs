@@ -10,8 +10,8 @@ use engine_realm::api::{
     CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, LoginRequest,
     GemSlotResponse, GemSocketRequest, GemUnsocketRequest, GemUpgradeRequest, GemUpgradeResponse,
     MoveItemRequest, QueueRequest, ReforgeRequest, ReforgeResponse, RefreshRequest,
-    RegisterRequest, RequestIdBody, SalvageRequest, SettingsDocument, SharpenRequest,
-    SharpenResponse, TokenPair, UserProfile,
+    RegisterRequest, RequestIdBody, SalvageRequest, SetActiveBookRequest, SettingsDocument,
+    SharpenRequest, SharpenResponse, TokenPair, UseBookRequest, UseBookResponse, UserProfile,
 };
 use engine_realm::loadout::SlotRef;
 use engine_realm::{ErrorCategory, RealmError};
@@ -337,6 +337,33 @@ impl ApiClient {
         )
     }
 
+    /// Reads the book in bag cell `slot`: the item is consumed and the book learned. `request_id`
+    /// is the one id of this user action; a retry gets the first answer back and consumes nothing
+    /// more.
+    ///
+    /// # Errors
+    ///
+    /// The cell holds no book, the book is another class's or already learned (a conflict, the
+    /// item stays), the character is not the caller's, or the server is unreachable.
+    pub fn use_book(
+        &self,
+        token: &str,
+        id: &str,
+        slot: &SlotRef,
+        request_id: &str,
+    ) -> Result<UseBookResponse, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/books/use", path_segment(id)),
+            Some(token),
+            &UseBookRequest {
+                slot: slot.clone(),
+                request_id: request_id.to_owned(),
+            },
+            Category::Persistence,
+        )
+    }
+
     /// Puts one gem from bag cell `gem_slot` into an empty `socket` of the item at `item_slot`.
     /// `request_id` is the one id of this user action; a retry gets the first answer back.
     ///
@@ -362,6 +389,34 @@ impl ApiClient {
                 item_slot: item_slot.clone(),
                 socket,
                 gem_slot,
+            },
+            Category::Persistence,
+        )
+    }
+
+    /// Chooses the option in force for an enhancement book.
+    ///
+    /// # Errors
+    ///
+    /// The book is not learned or has no such option, the character is engaged (queued, in a
+    /// party or a dungeon: a conflict), it is not the caller's, or the server is unreachable.
+    pub fn set_active_book(
+        &self,
+        token: &str,
+        id: &str,
+        book_id: &str,
+        option_id: &str,
+        request_id: &str,
+    ) -> Result<CharacterDetail, RealmError> {
+        self.send(
+            "PUT",
+            &self.persistence,
+            &format!("/api/v1/characters/{}/books/active", path_segment(id)),
+            Some(token),
+            &SetActiveBookRequest {
+                book_id: book_id.to_owned(),
+                option_id: option_id.to_owned(),
+                request_id: request_id.to_owned(),
             },
             Category::Persistence,
         )

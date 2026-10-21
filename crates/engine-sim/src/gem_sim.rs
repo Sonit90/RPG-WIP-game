@@ -287,7 +287,7 @@ pub fn report(rules: &LootRules, gems: &GemCatalog, cells: &[Cell], seed: u64) -
 
 /// The main report's section: the headline key levels only, from a modest sample.
 pub fn write_section(out: &mut String, seed: u64) {
-    let _ = writeln!(out, "## 8. Gem economy\n");
+    let _ = writeln!(out, "## 9. Gem economy\n");
     let (Some(rules), Some(gems)) = (
         engine_realm::loot::builtin_rules(),
         engine_realm::gems::builtin(),

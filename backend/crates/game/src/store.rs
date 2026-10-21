@@ -5,6 +5,7 @@
 use crate::history;
 use engine_realm::api::{CharacterDetail, DungeonCompletion, DungeonResult, LootDelivery};
 use engine_realm::economy::{add_resources, debit_resources, spend_resource};
+use engine_realm::books::{use_book, BookError, BookState};
 use engine_realm::gems::{
     GemError, socket as gem_socket, unsocket as gem_unsocket, upgrade as gem_upgrade,
 };
@@ -34,6 +35,8 @@ pub struct CharacterRow {
     pub talents: Json<Vec<String>>,
     /// Talent points earned from runs; the starting points come from the catalog.
     pub talent_points_earned: i32,
+    /// Books learned and the option in force for each enhancement book.
+    pub books: Json<BookState>,
 }
 
 /// A character's dungeon key.
@@ -53,7 +56,7 @@ pub(crate) fn db(e: sqlx::Error) -> AppError {
 }
 
 const COLUMNS: &str =
-    "id, account_id, definition_id, name, level, experience, loadout, talents, talent_points_earned";
+    "id, account_id, definition_id, name, level, experience, loadout, talents, talent_points_earned, books";
 
 /// The account's characters, creating one of each starter definition it does not have yet.
 pub async fn list_or_provision(
@@ -468,6 +471,18 @@ impl HubTx {
             .await
             .map_err(db)?;
         self.row.talents = Json(talents.to_vec());
+        Ok(())
+    }
+
+    /// Stores `books` as the character's.
+    pub async fn save_books(&mut self, books: &BookState) -> Result<(), AppError> {
+        sqlx::query("UPDATE game.characters SET books = $2, updated_at = now() WHERE id = $1")
+            .bind(self.row.id)
+            .bind(Json(books))
+            .execute(&mut *self.tx)
+            .await
+            .map_err(db)?;
+        self.row.books = Json(books.clone());
         Ok(())
     }
 
@@ -924,6 +939,107 @@ where
     };
     hub.commit(&response).await?;
     Ok(Some(response))
+}
+
+/// A refused book action as the HTTP error: a request that names nothing usable is a 400; a book
+/// the character cannot use in its state (already learned, another class, not learned) is a 409.
+#[must_use]
+pub fn book_error(error: BookError) -> AppError {
+    let message = error.to_string();
+    match error {
+        BookError::NotABook | BookError::NotEnhancement | BookError::UnknownOption => {
+            AppError::BadRequest(message)
+        }
+        BookError::WrongClass | BookError::AlreadyLearned | BookError::NotLearned => {
+            AppError::Conflict(message)
+        }
+    }
+}
+
+/// Reads the book in bag cell `slot` of one of the account's characters: the item is consumed and
+/// the book learned, atomic and idempotent.
+///
+/// One transaction under the character row's lock: a replayed `request_id` returns the stored
+/// answer and consumes nothing; otherwise the book is learned and the item removed together. A
+/// duplicate, another class's book or a non-book is refused with nothing changed, so the item stays.
+/// Two uses racing on two copies serialise on the lock: one learns, the other is refused. Reading is
+/// allowed while engaged: it changes no combat number until the next queue, and a talent book only
+/// adds a point. `Ok(None)` if the character is not the account's.
+///
+/// # Errors
+///
+/// [`book_error`]'s refusals, a request id that belongs to another action, or a database failure.
+pub async fn use_book_character(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    request_id: Uuid,
+    slot: &SlotRef,
+) -> Result<Option<engine_realm::api::UseBookResponse>, AppError> {
+    let mut hub = match HubTx::begin(pool, account_id, id, Some(request_id), "book_use").await? {
+        HubStart::Missing => return Ok(None),
+        HubStart::Replay(response) => {
+            return serde_json::from_value(response).map(Some).map_err(|_| {
+                AppError::internal("The earlier answer to that request could not be read.")
+            });
+        }
+        HubStart::Locked(hub) => hub,
+    };
+    let hero = crate::characters::hero(&hub.row);
+    let mut loadout = hub.row.loadout.0.clone();
+    let mut books = hub.row.books.0.clone();
+    let learned = use_book(&mut loadout, &mut books, hero, slot).map_err(book_error)?;
+    hub.save_loadout(&loadout).await?;
+    hub.save_books(&books).await?;
+    tracing::info!(account_id = %account_id, character_id = %id, book = %learned.book, "book learned");
+    let response = engine_realm::api::UseBookResponse {
+        book: learned.book,
+        character: hub.detail().await?,
+    };
+    hub.commit(&response).await?;
+    Ok(Some(response))
+}
+
+/// Puts `option_id` in force for enhancement book `book_id`, atomic and idempotent. Refused while
+/// the character is engaged (`ensure_unlocked`: queued, in a party or in a dungeon), because the
+/// realm holds a snapshot of the talents. `Ok(None)` if the character is not the account's.
+///
+/// # Errors
+///
+/// The error of `ensure_unlocked`, [`book_error`]'s refusals, a request id that belongs to another
+/// action, or a database failure.
+pub async fn set_active_book<Fut>(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    request_id: Uuid,
+    book_id: &str,
+    option_id: &str,
+    ensure_unlocked: impl FnOnce() -> Fut,
+) -> Result<Option<CharacterDetail>, AppError>
+where
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    let mut hub = match HubTx::begin(pool, account_id, id, Some(request_id), "book_active").await? {
+        HubStart::Missing => return Ok(None),
+        HubStart::Replay(response) => {
+            return serde_json::from_value(response).map(Some).map_err(|_| {
+                AppError::internal("The earlier answer to that request could not be read.")
+            });
+        }
+        HubStart::Locked(hub) => hub,
+    };
+    ensure_unlocked().await?;
+    let hero = crate::characters::hero(&hub.row);
+    let mut books = hub.row.books.0.clone();
+    books
+        .set_active(hero, book_id, option_id)
+        .map_err(book_error)?;
+    hub.save_books(&books).await?;
+    tracing::info!(account_id = %account_id, character_id = %id, book = book_id, option = option_id, "book option set");
+    let detail = hub.detail().await?;
+    hub.commit(&detail).await?;
+    Ok(Some(detail))
 }
 
 /// Replaces a character's talents under the character's row lock. `false` if it is not the

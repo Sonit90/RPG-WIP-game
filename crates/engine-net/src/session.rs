@@ -143,6 +143,22 @@ pub enum NetCommand {
         /// The worn slot or bag cell.
         slot: SlotRef,
     },
+    /// Read a book from the bag: the item is consumed and the book learned.
+    UseBook {
+        /// Which character.
+        character_id: String,
+        /// The bag cell holding the book.
+        slot: SlotRef,
+    },
+    /// Choose the active option of an enhancement book (hub only).
+    SetActiveBook {
+        /// Which character.
+        character_id: String,
+        /// The enhancement book.
+        book_id: String,
+        /// The option to put in force.
+        option_id: String,
+    },
     /// Put a gem from the bag into an empty socket of an item.
     SocketGem {
         /// Which character.
@@ -276,6 +292,8 @@ pub enum Action {
     Sharpen,
     /// Reforging an item.
     Reforge,
+    /// Reading a book or choosing its option.
+    Book,
     /// Socketing, unsocketing or upgrading a gem.
     Gems,
     /// Loading the economy catalog.
@@ -365,6 +383,8 @@ pub enum NetEvent {
     Sharpened(Box<engine_realm::api::SharpenResponse>),
     /// An item was reforged; the character is the server's copy afterwards.
     Reforged(Box<engine_realm::api::ReforgeResponse>),
+    /// A book was read; the character is the server's copy afterwards.
+    BookRead(Box<engine_realm::api::UseBookResponse>),
     /// A gem was socketed or taken out; the character is the server's copy afterwards.
     GemSlotted(Box<engine_realm::api::GemSlotResponse>),
     /// A gem upgrade was rolled; the character is the server's copy afterwards.
@@ -777,6 +797,16 @@ impl Worker {
                     Err(error) => self.fail(Action::Reforge, error),
                 }
             }
+            NetCommand::UseBook { character_id, slot } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api.use_book(&token, &character_id, &slot, request_id)
+                });
+                match result {
+                    Ok(response) => self.emit(NetEvent::BookRead(Box::new(response))),
+                    Err(error) => self.fail(Action::Book, error),
+                }
+            }
             NetCommand::SocketGem {
                 character_id,
                 item_slot,
@@ -812,6 +842,21 @@ impl Worker {
                 match result {
                     Ok(response) => self.emit(NetEvent::GemSlotted(Box::new(response))),
                     Err(error) => self.fail(Action::Gems, error),
+                }
+            }
+            NetCommand::SetActiveBook {
+                character_id,
+                book_id,
+                option_id,
+            } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .set_active_book(&token, &character_id, &book_id, &option_id, request_id)
+                });
+                match result {
+                    Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
+                    Err(error) => self.fail(Action::Book, error),
                 }
             }
             NetCommand::UpgradeGem {

@@ -139,6 +139,10 @@ pub struct CharacterDetail {
     /// Talent points not yet spent.
     #[serde(default)]
     pub talent_points_available: u32,
+    /// The books learned and the enhancement option in force for each. The talent points
+    /// above already include the learned talent books.
+    #[serde(default)]
+    pub books: crate::books::BookState,
     /// Derived stats, `(key, value)`.
     pub stats: Vec<(String, f32)>,
     /// Dungeons completed, by id, with counts.
@@ -701,6 +705,36 @@ pub struct ReforgeResponse {
     pub character: CharacterDetail,
 }
 
+/// `POST /api/v1/characters/{id}/books/use`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UseBookRequest {
+    /// The bag cell holding the book.
+    pub slot: SlotRef,
+    /// Idempotency key (a UUID): the client's id for this one user action, reused if it
+    /// retries. A replay returns the first answer and consumes nothing more.
+    pub request_id: String,
+}
+
+/// What `POST /api/v1/characters/{id}/books/use` answers with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UseBookResponse {
+    /// The book learned.
+    pub book: String,
+    /// The character in full, as every other change answers.
+    pub character: CharacterDetail,
+}
+
+/// `PUT /api/v1/characters/{id}/books/active`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetActiveBookRequest {
+    /// The enhancement book.
+    pub book_id: String,
+    /// The option to put in force.
+    pub option_id: String,
+    /// Idempotency key (a UUID), reused if the client retries.
+    pub request_id: String,
+}
+
 /// `POST /api/v1/characters/{id}/gems/socket`: one gem from the bag fills an empty socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GemSocketRequest {
@@ -809,6 +843,7 @@ mod tests {
             talents: vec![],
             talent_points_total: 5,
             talent_points_available: 5,
+            books: crate::books::BookState::default(),
             stats: vec![("str".into(), 1.0)],
             completions: vec![],
         };

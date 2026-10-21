@@ -545,6 +545,43 @@ fn a_warriors_talents_reach_the_simulation_and_stay_with_the_warrior() {
 }
 
 #[test]
+fn an_active_book_option_reaches_the_simulation_for_free_and_is_not_a_cheat_slot() {
+    let (scene, barriers, mut players) = crypt();
+    crate::talents::install_builtin().expect("talents");
+    // The tank (warrior) carries the Twin Charge node in its snapshot next to a bought talent
+    // that fills its points exactly; the node costs nothing.
+    players[0].talents = vec!["unyielding".into(), "bk_twin_charge".into()];
+    players[0].talent_points = 5;
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let tank = fight
+        .resolve(&EntityRef::Player("tank".into()))
+        .expect("tank");
+    let (charges, stacks, bought) = fight
+        .sim
+        .with_player(tank, |sim| {
+            (
+                sim.warrior_effects().shield_charge_extra_charges,
+                sim.warrior_effects().last_stand_fervor_stacks,
+                sim.talent_grid().purchased_count(),
+            )
+        })
+        .expect("warrior");
+    assert_eq!((charges, stacks, bought), (1, 2, 1));
+
+    // A node of another hero, or an over-budget set, still drops everything.
+    players[0].talents = vec!["bk_twin_pyre".into()];
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let tank = fight
+        .resolve(&EntityRef::Player("tank".into()))
+        .expect("tank");
+    let charges = fight
+        .sim
+        .with_player(tank, |sim| sim.warrior_effects().shield_charge_extra_charges)
+        .expect("warrior");
+    assert_eq!(charges, 0);
+}
+
+#[test]
 fn talents_that_do_not_fit_are_dropped_whole() {
     let (scene, barriers, mut players) = crypt();
     // Six points cannot hold seven; and an unknown key spoils the whole set too.

@@ -1704,6 +1704,7 @@ fn the_mini_boss_pays_a_table_of_its_own_and_the_last_boss_pays_through_the_ches
         },
         sharpening: engine_game::loot::SharpeningDrops::none(),
         gems: engine_game::loot::GemDrops::none(),
+        books: None,
     };
     let mut simulation = sanctum();
     simulation.set_loot_rules(rules, 1, 0);

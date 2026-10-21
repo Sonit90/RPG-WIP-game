@@ -483,9 +483,13 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
         sockets: 0,
         gem_level: 0,
     };
+    let mut book = row("it_book", ItemQuality::Epic, 0.0);
+    book.family = ItemFamily::Book;
+    book.stats.clear();
     register_catalog_items(vec![
         row("it_rare_ring", ItemQuality::Rare, 10.0),
         row("it_epic_ring", ItemQuality::Epic, 15.0),
+        book,
     ]);
     let table = LootTable {
         entries: ["it_rare_ring", "it_epic_ring"]
@@ -540,6 +544,7 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
             boss_amount: 40,
         },
         sharpening: engine_game::loot::SharpeningDrops::none(),
+        books: None,
         gems: engine_game::loot::GemDrops::none(),
     }
 }
@@ -762,4 +767,55 @@ fn a_client_under_a_remote_authority_rolls_nothing() {
         simulation.step_once();
     }
     assert!(mob_loot(&events).is_empty() && gold(&events).is_empty());
+}
+
+// ---------------------------------------------------------------------------------------
+// Books: one extra item in a boss-chest share, gated by the key level.
+// ---------------------------------------------------------------------------------------
+
+fn with_books(min_key_level: u32) -> LootRules {
+    use engine_game::character::item_by_key;
+    use engine_game::loot::{BookChances, BookDrop, BookRules};
+    use engine_game::talent::books::BookKind;
+    let mut rules = rules(0.0);
+    let drop = BookDrop {
+        item: item_by_key("it_book").expect("registered").id,
+        kind: BookKind::TalentPoint,
+        min_key_level,
+    };
+    rules.books = Some(BookRules {
+        default: BookChances {
+            talent: 1.0,
+            enhancement: 0.0,
+        },
+        bosses: Vec::new(),
+        per_hero: [vec![drop], vec![drop], vec![drop]],
+    });
+    rules
+}
+
+#[test]
+fn a_boss_chest_share_holds_a_book_at_or_above_its_key_level_only() {
+    let shares = |key_level: u32, min: u32| {
+        let (simulation, players, ..) = finished_crypt_with(1, Some((with_books(min), key_level, 0)));
+        let chest = simulation.loot_chest().expect("a chest");
+        assert_eq!(chest.claims().len(), players.len());
+        chest
+            .claims()
+            .iter()
+            .map(|claim| claim.items.iter().map(|stack| Some(stack.item)).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    };
+    let high = shares(8, 8);
+    // After the first chest: `rules` registers the test book.
+    let book = engine_game::character::item_by_key("it_book").map(|def| def.id);
+    for claim in &high {
+        assert_eq!(claim.len(), 3, "two rings and a book");
+        assert_eq!(claim[2], book, "the book comes last");
+        assert!(!claim[..2].contains(&book));
+    }
+    for claim in shares(7, 8) {
+        assert_eq!(claim.len(), 2, "below the gate: no book");
+    }
+    assert_eq!(high, shares(8, 8), "the same seed rolls the same chest");
 }

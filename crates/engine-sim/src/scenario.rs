@@ -282,7 +282,7 @@ impl Encounter {
         simulation.set_player_entity(player);
         simulation.set_hero(build.class().hero());
         match gear {
-            Worn::Sheet(sheet) => {
+            Worn::Sheet(sheet) | Worn::Books(sheet, _) => {
                 *simulation.roster_mut().sheet_mut(build.class().hero()) = (**sheet).clone();
                 simulation.refresh_character();
             }
@@ -290,6 +290,9 @@ impl Encounter {
         }
         simulation.select_nearest_target();
         build.apply(&mut simulation);
+        if let Worn::Books(_, plan) = gear {
+            crate::books::apply(&mut simulation, build.class().hero(), plan);
+        }
         // The Mage's Ultimate is ready at the pull. A boss fight is entered after trash, and
         // the bar refills in about ninety seconds of casting (see the refill test), so a fresh
         // fight starts with a full bar; the beam's own ninety-second cooldown then sets how

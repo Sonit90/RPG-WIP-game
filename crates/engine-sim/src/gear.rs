@@ -26,6 +26,7 @@
 //! | `p2_max` | the same pieces as `high`                | 110     | +10         |
 //! | `p2_set` | `p2_max` with the full major set on      | 110     | +10         |
 //! | `p2_gems`| `p2_set` with max gems in every socket (main stat; stamina in a second) | 110 | +10 |
+//! | `p2_books` | `p2_gems` plus the class's books (see [`crate::books`]) | 110 | +10    |
 //!
 //! `high` is the best the game currently lets a character reach short of a jackpot roll;
 //! `p2_max` is the ceiling P2 is designed against (maximum quality, a heavily sharpened set).
@@ -78,6 +79,8 @@ pub enum Worn {
     Sheet(Box<CharacterSheet>),
     /// A stat block granted on top of a bare sheet, for studies that state gear as rating.
     Bonus(StatBlock),
+    /// A sheet and the books the character has read: applied to the talent grid after the build.
+    Books(Box<CharacterSheet>, crate::books::BookPlan),
 }
 
 impl From<CharacterSheet> for Worn {
@@ -109,11 +112,14 @@ pub enum GearTier {
     P2Set,
     /// `P2Set` with a max-level gem in every socket: what the gems are worth.
     P2Gems,
+    /// `P2Gems` with the class's books: its talent point and the best option of each enhancement
+    /// book. What books are worth on top of the best gear.
+    P2Books,
 }
 
 impl GearTier {
     /// Every tier, lowest first.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::None,
         Self::Low,
         Self::Medium,
@@ -121,6 +127,7 @@ impl GearTier {
         Self::P2Max,
         Self::P2Set,
         Self::P2Gems,
+        Self::P2Books,
     ];
 
     /// The written name the command line takes.
@@ -134,6 +141,7 @@ impl GearTier {
             Self::P2Max => "p2_max",
             Self::P2Set => "p2_set",
             Self::P2Gems => "p2_gems",
+            Self::P2Books => "p2_books",
         }
     }
 
@@ -175,18 +183,21 @@ pub struct GearProfile {
     pub quality: u8,
     /// The sharpening level of every piece.
     pub sharpening: u8,
+    /// Whether the character also has the class's books ([`crate::books::shipped_plan`]).
+    pub books: bool,
     /// Whether every socket holds a max-level gem ([`GEM_KIND`], then [`SECOND_GEM_KIND`]).
     pub gems: bool,
 }
 
 /// **Every gear profile the simulator knows, in one table.** Adding one is adding a row.
-pub const PROFILES: [GearProfile; 7] = [
+pub const PROFILES: [GearProfile; 8] = [
     GearProfile {
         tier: GearTier::None,
         variant: "none",
         pick: Pick::Nothing,
         quality: 100,
         sharpening: 0,
+        books: false,
         gems: false,
     },
     GearProfile {
@@ -195,6 +206,7 @@ pub const PROFILES: [GearProfile; 7] = [
         pick: Pick::Rare,
         quality: 70,
         sharpening: 0,
+        books: false,
         gems: false,
     },
     GearProfile {
@@ -203,6 +215,7 @@ pub const PROFILES: [GearProfile; 7] = [
         pick: Pick::Mixed,
         quality: 85,
         sharpening: 3,
+        books: false,
         gems: false,
     },
     GearProfile {
@@ -211,6 +224,7 @@ pub const PROFILES: [GearProfile; 7] = [
         pick: Pick::Epic,
         quality: 100,
         sharpening: 6,
+        books: false,
         gems: false,
     },
     GearProfile {
@@ -219,6 +233,7 @@ pub const PROFILES: [GearProfile; 7] = [
         pick: Pick::Epic,
         quality: QUALITY_MAX,
         sharpening: 10,
+        books: false,
         gems: false,
     },
     GearProfile {
@@ -227,6 +242,7 @@ pub const PROFILES: [GearProfile; 7] = [
         pick: Pick::MajorSet,
         quality: QUALITY_MAX,
         sharpening: 10,
+        books: false,
         gems: false,
     },
     GearProfile {
@@ -235,6 +251,16 @@ pub const PROFILES: [GearProfile; 7] = [
         pick: Pick::MajorSet,
         quality: QUALITY_MAX,
         sharpening: 10,
+        books: false,
+        gems: true,
+    },
+    GearProfile {
+        tier: GearTier::P2Books,
+        variant: "p2_books",
+        pick: Pick::MajorSet,
+        quality: QUALITY_MAX,
+        sharpening: 10,
+        books: true,
         gems: true,
     },
 ];
@@ -325,6 +351,10 @@ impl GearProfile {
     /// What an encounter is dressed in for `hero`.
     #[must_use]
     pub fn worn(&self, hero: Hero) -> Worn {
+        if self.books {
+            let class = crate::class::Class::of_hero(hero);
+            return Worn::Books(Box::new(self.sheet(hero)), crate::books::shipped_plan(class));
+        }
         self.sheet(hero).into()
     }
 
@@ -561,10 +591,10 @@ mod tests {
         };
         let totals: Vec<f32> = GearTier::ALL.into_iter().map(total).collect();
         assert_eq!(totals[0], 0.0);
-        assert!(
-            totals.windows(2).all(|pair| pair[0] < pair[1]),
-            "{totals:?}"
-        );
+        // Books are not stats: `p2_books` wears the same gear as `p2_gems`.
+        let (gear, books) = totals.split_at(totals.len() - 1);
+        assert!(gear.windows(2).all(|pair| pair[0] < pair[1]), "{totals:?}");
+        assert_eq!(gear[gear.len() - 1], books[0], "{totals:?}");
     }
 
 

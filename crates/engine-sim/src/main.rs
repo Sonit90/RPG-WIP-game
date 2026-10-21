@@ -21,13 +21,14 @@
 //! matrix.rs   every combination          report.rs   markdown
 //! study.rs    the FireMage talent search (--search)
 //! loot_sim.rs the sharpening-drop distribution (--loot-sim)
-//! gem_sim.rs  runs to a max-level gem (--gem-sim, section 8)
+//! gem_sim.rs  runs to a max-level gem (--gem-sim, section 9)
 //! validation.rs  is any talent mandatory or worthless (the report's section 6)
 //! scaling.rs  does each gear tier beat the one below it (section 7)
 //! ```
 
 mod ai;
 mod balance;
+mod books;
 mod build;
 mod class;
 mod gear;
@@ -172,7 +173,8 @@ validation {done}/{total} cells"
             }
         });
         eprintln!();
-        balance::matrix_report(&matrix, &options, validation.as_ref(), Some(&scaling))
+        let books = books::study(&options);
+        balance::matrix_report(&matrix, &options, validation.as_ref(), Some(&scaling), &books)
     };
 
     print!("{text}");
@@ -228,13 +230,13 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
                     GearTier::ALL.to_vec()
                 } else {
                     vec![GearTier::parse(&text).ok_or_else(|| {
-                        format!("unknown gear {text}; expected none, low, medium, high, p2_max, p2_set, p2_gems (alias top) or all")
+                        format!("unknown gear {text}; expected none, low, medium, high, p2_max, p2_set, p2_gems, p2_books (alias top) or all")
                     })?]
                 };
             }
             "--help" | "-h" => {
                 println!(
-                    "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|p2_set|p2_gems|all]\n\
+                    "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|p2_set|p2_gems|p2_books|all]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH] [--no-validation]\n\
                      engine-sim --search [--budget N] [--sweep-iterations N] [--finalists N]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH]

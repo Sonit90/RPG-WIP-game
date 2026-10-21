@@ -51,6 +51,7 @@
 //! | [`error`] | the error categories a player can be shown |
 
 pub mod api;
+pub mod books;
 pub mod catalog;
 pub mod chat;
 pub mod combat;
