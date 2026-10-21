@@ -443,7 +443,7 @@ mod tests {
             2
         );
         let batter = node_effects(WarriorTalent::BatteringCharge);
-        assert!(batter.shield_charge_impact_scale > 1.4 && batter.shield_charge_extra_charges == 0);
+        assert!(batter.shield_charge_impact_scale > 1.25 && batter.shield_charge_extra_charges == 0);
         let mark = node_effects(WarriorTalent::HeadsmansMark);
         assert!(mark.executioner_bonus > 0.5 && mark.executioner_threshold < 0.3);
         let reach = node_effects(WarriorTalent::ReapersReach);

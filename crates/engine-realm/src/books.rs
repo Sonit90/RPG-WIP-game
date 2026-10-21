@@ -192,7 +192,11 @@ impl BookState {
         let Some(enhancement) = books.enhancement_book(book) else {
             return Err(BookError::NotEnhancement);
         };
-        if !enhancement.options.iter().any(|candidate| candidate.id == option) {
+        if !enhancement
+            .options
+            .iter()
+            .any(|candidate| candidate.id == option)
+        {
             return Err(BookError::UnknownOption);
         }
         self.active.insert(book.to_owned(), option.to_owned());
@@ -321,7 +325,9 @@ mod tests {
                 &mut loadout,
                 &mut state,
                 Hero::Warrior,
-                &SlotRef::Equipment { slot: "head".into() }
+                &SlotRef::Equipment {
+                    slot: "head".into()
+                }
             ),
             Err(BookError::NotABook)
         );
@@ -338,7 +344,10 @@ mod tests {
             Err(BookError::NotLearned)
         );
         state.learn(Hero::Warrior, &book.id).expect("learn");
-        assert!(state.active_nodes(Hero::Warrior).is_empty(), "none chosen yet");
+        assert!(
+            state.active_nodes(Hero::Warrior).is_empty(),
+            "none chosen yet"
+        );
         assert_eq!(
             state.set_active(Hero::Warrior, &book.id, "nope"),
             Err(BookError::UnknownOption)
@@ -346,11 +355,17 @@ mod tests {
         state
             .set_active(Hero::Warrior, &book.id, &book.options[0].id)
             .expect("choose");
-        assert_eq!(state.active_nodes(Hero::Warrior), [book.options[0].node.clone()]);
+        assert_eq!(
+            state.active_nodes(Hero::Warrior),
+            [book.options[0].node.clone()]
+        );
         state
             .set_active(Hero::Warrior, &book.id, &book.options[2].id)
             .expect("switch");
-        assert_eq!(state.active_nodes(Hero::Warrior), [book.options[2].node.clone()]);
+        assert_eq!(
+            state.active_nodes(Hero::Warrior),
+            [book.options[2].node.clone()]
+        );
         let talent = &books_of(Hero::Warrior).talent[0].id;
         state.learn(Hero::Warrior, talent).expect("learn");
         assert_eq!(
@@ -366,16 +381,30 @@ mod tests {
         let keys = |names: &[&str]| names.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>();
         // Warrior: unbroken_momentum 3, shockwave 3, executioner 4. The start gives 5 points.
         let two = keys(&["unbroken_momentum", "shockwave"]);
-        assert_eq!(validate(Hero::Warrior, &two, 0), Err(TalentError::NotEnoughPoints));
+        assert_eq!(
+            validate(Hero::Warrior, &two, 0),
+            Err(TalentError::NotEnoughPoints)
+        );
         let mut state = BookState::default();
         let books = books_of(Hero::Warrior);
-        state.learn(Hero::Warrior, &books.talent[0].id).expect("learn");
+        state
+            .learn(Hero::Warrior, &books.talent[0].id)
+            .expect("learn");
         assert!(validate(Hero::Warrior, &two, state.point_bonus(Hero::Warrior)).is_ok());
         // Two books make 7 points: 3 + 4 fits, 3 + 3 + 4 = 10 does not, whatever the books.
-        state.learn(Hero::Warrior, &books.talent[1].id).expect("learn");
+        state
+            .learn(Hero::Warrior, &books.talent[1].id)
+            .expect("learn");
         let bonus = state.point_bonus(Hero::Warrior);
         assert_eq!(bonus, 2);
-        assert!(validate(Hero::Warrior, &keys(&["unbroken_momentum", "executioner"]), bonus).is_ok());
+        assert!(
+            validate(
+                Hero::Warrior,
+                &keys(&["unbroken_momentum", "executioner"]),
+                bonus
+            )
+            .is_ok()
+        );
         assert_eq!(
             validate(
                 Hero::Warrior,
@@ -385,7 +414,9 @@ mod tests {
             Err(TalentError::NotEnoughPoints)
         );
         // An enhancement book adds no point.
-        state.learn(Hero::Warrior, &books.enhancement[0].id).expect("learn");
+        state
+            .learn(Hero::Warrior, &books.enhancement[0].id)
+            .expect("learn");
         assert_eq!(state.point_bonus(Hero::Warrior), 2);
     }
 
@@ -400,10 +431,15 @@ mod tests {
         assert!(state.active_nodes(Hero::Warrior).is_empty());
         let book = &books_of(Hero::Warrior).enhancement[0];
         state.unlocked.push(book.id.clone());
-        state.active.insert(book.id.clone(), "retired_option".into());
+        state
+            .active
+            .insert(book.id.clone(), "retired_option".into());
         assert!(state.active_nodes(Hero::Warrior).is_empty());
         let json = serde_json::to_string(&BookState::default()).expect("json");
         assert_eq!(json, r#"{"unlocked":[],"active":{}}"#);
-        assert_eq!(serde_json::from_str::<BookState>("{}").expect("empty"), BookState::default());
+        assert_eq!(
+            serde_json::from_str::<BookState>("{}").expect("empty"),
+            BookState::default()
+        );
     }
 }

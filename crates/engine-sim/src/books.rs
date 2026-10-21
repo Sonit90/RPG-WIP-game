@@ -53,7 +53,11 @@ pub struct BookPlan {
 pub fn shipped_plan(class: Class) -> BookPlan {
     let nodes: &[&str] = match class {
         // The stomp is the Warrior's damage button; the execute is its finisher.
-        Class::Warrior => &["bk_crushing_quake", "bk_battering_charge", "bk_headsmans_mark"],
+        Class::Warrior => &[
+            "bk_crushing_quake",
+            "bk_battering_charge",
+            "bk_headsmans_mark",
+        ],
         Class::Druid => &["bk_searing_bloom", "bk_astral_mend", "bk_deep_peace"],
         Class::Mage => &["bk_twin_pyre", "bk_impact_crater", "bk_slow_burn"],
     };
@@ -161,7 +165,11 @@ pub fn study(options: &Options) -> Vec<OptionMeasure> {
 }
 
 /// The "Books" section.
-pub fn write_section(out: &mut String, measures: &[OptionMeasure], scaling: Option<&crate::scaling::Scaling>) {
+pub fn write_section(
+    out: &mut String,
+    measures: &[OptionMeasure],
+    scaling: Option<&crate::scaling::Scaling>,
+) {
     let _ = writeln!(out, "## 8. Books\n");
     let _ = writeln!(
         out,
@@ -170,11 +178,14 @@ pub fn write_section(out: &mut String, measures: &[OptionMeasure], scaling: Opti
          `p2_books` tier wears the starred option of each book, plus the talent the three talent \
          books pay for, on top of `p2_set`.\n"
     );
-    let _ = writeln!(out, "| Class | Book | Option | Single target | 8 targets | In `p2_books` |");
+    let _ = writeln!(
+        out,
+        "| Class | Book | Option | Single target | 8 targets | In `p2_books` |"
+    );
     let _ = writeln!(out, "|---|---|---|---:|---:|:-:|");
     for measure in measures {
-        let starred = measure.node.is_empty()
-            || shipped_plan(measure.class).nodes.contains(&measure.node);
+        let starred =
+            measure.node.is_empty() || shipped_plan(measure.class).nodes.contains(&measure.node);
         let _ = writeln!(
             out,
             "| {} | {} | {} | {:+.1}% | {:+.1}% | {} |",
@@ -188,7 +199,10 @@ pub fn write_section(out: &mut String, measures: &[OptionMeasure], scaling: Opti
     }
     let _ = writeln!(out);
     if let Some(scaling) = scaling {
-        let _ = writeln!(out, "**What books add on top of the top gear tier** (the `Default` build, single target 60 s):\n");
+        let _ = writeln!(
+            out,
+            "**What books add on top of the top gear tier** (the `Default` build, single target 60 s):\n"
+        );
         let _ = writeln!(out, "| Class | `p2_set` DPS | `p2_books` DPS | Books add |");
         let _ = writeln!(out, "|---|---:|---:|---:|");
         for class in &scaling.classes {
@@ -236,7 +250,8 @@ mod tests {
             let grid = encounter.simulation().talent_grid_of(hero);
             assert_eq!(grid.granted_keys(), plan.nodes, "{class:?}");
             assert!(
-                grid.purchased_keys().contains(&book_talent(class).to_owned()),
+                grid.purchased_keys()
+                    .contains(&book_talent(class).to_owned()),
                 "{class:?} bought its book talent"
             );
         }

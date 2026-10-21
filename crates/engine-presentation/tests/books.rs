@@ -3,6 +3,8 @@
 //! An integration test of its own because it needs the shipped talent catalog installed before
 //! anything reads the talent tables, and each test binary is one process.
 
+#![allow(clippy::expect_used, reason = "test code asserts on known-good values")]
+
 use engine_game::arena::{self, ArenaConfig};
 use engine_game::character::{ItemStack, item_by_key};
 use engine_game::hero::Hero;

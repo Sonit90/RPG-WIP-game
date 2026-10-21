@@ -132,7 +132,9 @@ async fn reading_a_talent_book_consumes_it_and_adds_a_point_the_server_enforces(
     let id = stocked(&pool, account, Hero::Warrior, &[(2, &book)]).await;
     let before = characters::detail(&row(&pool, account, id).await, vec![], None);
 
-    let response = read(&pool, account, id, Uuid::new_v4(), 2).await.expect("read");
+    let response = read(&pool, account, id, Uuid::new_v4(), 2)
+        .await
+        .expect("read");
     assert_eq!(response.book, book);
     assert_eq!(
         response.character.talent_points_total,
@@ -142,7 +144,7 @@ async fn reading_a_talent_book_consumes_it_and_adds_a_point_the_server_enforces(
         response.character.talent_points_available,
         before.talent_points_available + 1
     );
-    assert_eq!(response.character.books.unlocked, [book.clone()]);
+    assert_eq!(response.character.books.unlocked, std::slice::from_ref(&book));
     let stored = row(&pool, account, id).await;
     assert!(bag_cells(&stored).is_empty(), "the item is consumed");
     assert_eq!(stored.books.0.unlocked, [book]);
@@ -153,9 +155,15 @@ async fn reading_a_talent_book_consumes_it_and_adds_a_point_the_server_enforces(
     assert_eq!(budget, before.talent_points_total + 1);
     // Warrior talents cost 3, 3, 4, 4, ...: the first two cost 6 = the starting 5 + the book.
     let keys = vec!["unbroken_momentum".to_owned(), "shockwave".to_owned()];
-    assert!(engine_realm::talents::validate(hero, &keys, characters::earned_points(&stored)).is_ok());
-    let without = engine_realm::talents::validate(hero, &keys, characters::earned_points(&stored) - 1);
-    assert!(without.is_err(), "without the book the same set does not fit");
+    assert!(
+        engine_realm::talents::validate(hero, &keys, characters::earned_points(&stored)).is_ok()
+    );
+    let without =
+        engine_realm::talents::validate(hero, &keys, characters::earned_points(&stored) - 1);
+    assert!(
+        without.is_err(),
+        "without the book the same set does not fit"
+    );
     drop_account(&pool, account).await;
 }
 
@@ -166,7 +174,9 @@ async fn a_duplicate_is_a_conflict_and_the_item_is_kept() {
     let account = new_account(&pool).await;
     let book = books_of(Hero::Druid).talent[0].id.clone();
     let id = stocked(&pool, account, Hero::Druid, &[(0, &book), (1, &book)]).await;
-    read(&pool, account, id, Uuid::new_v4(), 0).await.expect("first");
+    read(&pool, account, id, Uuid::new_v4(), 0)
+        .await
+        .expect("first");
 
     let second = read(&pool, account, id, Uuid::new_v4(), 1).await;
     assert!(matches!(second, Err(AppError::Conflict(_))), "{second:?}");
@@ -208,17 +218,44 @@ async fn an_enhancement_option_is_set_switched_and_refused_while_engaged() {
     let id = stocked(&pool, account, Hero::FireMage, &[(4, &book.id)]).await;
 
     // Not learned yet.
-    let early = choose(&pool, account, id, Uuid::new_v4(), &book.id, &book.options[0].id, false).await;
+    let early = choose(
+        &pool,
+        account,
+        id,
+        Uuid::new_v4(),
+        &book.id,
+        &book.options[0].id,
+        false,
+    )
+    .await;
     assert!(matches!(early, Err(AppError::Conflict(_))), "{early:?}");
 
-    read(&pool, account, id, Uuid::new_v4(), 4).await.expect("learn");
-    let detail = choose(&pool, account, id, Uuid::new_v4(), &book.id, &book.options[0].id, false)
+    read(&pool, account, id, Uuid::new_v4(), 4)
         .await
-        .expect("choose");
+        .expect("learn");
+    let detail = choose(
+        &pool,
+        account,
+        id,
+        Uuid::new_v4(),
+        &book.id,
+        &book.options[0].id,
+        false,
+    )
+    .await
+    .expect("choose");
     assert_eq!(detail.books.active[&book.id], book.options[0].id);
-    let switched = choose(&pool, account, id, Uuid::new_v4(), &book.id, &book.options[2].id, false)
-        .await
-        .expect("switch");
+    let switched = choose(
+        &pool,
+        account,
+        id,
+        Uuid::new_v4(),
+        &book.id,
+        &book.options[2].id,
+        false,
+    )
+    .await
+    .expect("switch");
     assert_eq!(switched.books.active[&book.id], book.options[2].id);
     // The run snapshot carries the hidden node, not a bought talent.
     let stored = row(&pool, account, id).await;
@@ -229,7 +266,16 @@ async fn an_enhancement_option_is_set_switched_and_refused_while_engaged() {
     assert!(stored.talents.0.is_empty());
 
     // Engaged: refused, and the choice stays.
-    let engaged = choose(&pool, account, id, Uuid::new_v4(), &book.id, &book.options[1].id, true).await;
+    let engaged = choose(
+        &pool,
+        account,
+        id,
+        Uuid::new_v4(),
+        &book.id,
+        &book.options[1].id,
+        true,
+    )
+    .await;
     assert!(matches!(engaged, Err(AppError::Conflict(_))), "{engaged:?}");
     assert_eq!(
         row(&pool, account, id).await.books.0.active[&book.id],
@@ -237,7 +283,10 @@ async fn an_enhancement_option_is_set_switched_and_refused_while_engaged() {
     );
     // An unknown option or book.
     let unknown = choose(&pool, account, id, Uuid::new_v4(), &book.id, "nope", false).await;
-    assert!(matches!(unknown, Err(AppError::BadRequest(_))), "{unknown:?}");
+    assert!(
+        matches!(unknown, Err(AppError::BadRequest(_))),
+        "{unknown:?}"
+    );
     drop_account(&pool, account).await;
 }
 
@@ -260,7 +309,16 @@ async fn a_replayed_request_returns_the_first_answer_and_consumes_nothing_more()
 
     // The same request id for another action is a conflict, not a replay.
     let book_def = &books_of(Hero::Warrior).enhancement[0];
-    let mixed = choose(&pool, account, id, request, &book_def.id, &book_def.options[0].id, false).await;
+    let mixed = choose(
+        &pool,
+        account,
+        id,
+        request,
+        &book_def.id,
+        &book_def.options[0].id,
+        false,
+    )
+    .await;
     assert!(matches!(mixed, Err(AppError::Conflict(_))), "{mixed:?}");
     drop_account(&pool, account).await;
 }
@@ -313,7 +371,9 @@ async fn a_book_from_a_boss_chest_is_delivered_once_and_can_then_be_read() {
     let stored = row(&pool, account, id).await;
     assert_eq!(bag_cells(&stored).len(), 1, "delivered once");
     let cell = bag_cells(&stored)[0];
-    let response = read(&pool, account, id, Uuid::new_v4(), cell).await.expect("read");
+    let response = read(&pool, account, id, Uuid::new_v4(), cell)
+        .await
+        .expect("read");
     assert_eq!(response.book, book);
     drop_account(&pool, account).await;
 }
