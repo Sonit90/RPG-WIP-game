@@ -1758,9 +1758,19 @@ pub fn loot(endpoints: &RealmEndpoints) -> Outcome {
     let mut gold_looted: Vec<u64> = Vec::new();
     for bot in &bots {
         let summary = bot.mirror.run_summary.as_ref().ok_or("no summary")?;
+        // The chest may also hold a gem or a book on top of its two pieces of equipment.
         check(
-            summary.loot.len() == 2,
-            "the summary lists two chest items per player",
+            summary
+                .loot
+                .iter()
+                .filter(|line| {
+                    engine_game::character::item_by_key(&line.item).is_some_and(|def| {
+                        engine_game::character::ItemFamily::ALL.contains(&def.family)
+                    })
+                })
+                .count()
+                == 2,
+            "the summary lists two chest equipment items per player",
         )?;
         check(
             summary
