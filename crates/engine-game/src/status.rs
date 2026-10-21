@@ -168,6 +168,19 @@ pub enum StatusKind {
     /// harder for a while. A buff on a monster, answered by stopping the cast.
     /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
     Stoked,
+    /// The Sanctum of Ash's mirror ward: a buff on a monster that sends a share of every hit
+    /// it takes back at whoever dealt it, so the answer is to stop the cast, to hit something else,
+    /// or to wait it out.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Mirrored,
+    /// The Sanctum of Ash's ashen curse: a dispellable Curse that stacks on a player, taking more
+    /// damage and moving slower for each stack.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Ashen,
+    /// The Ashen Pontiff's brand: a dispellable stacking mark on whoever he strikes, each stack
+    /// making the next blows heavier. Passed to another tank, dispelled or kicked off the cast.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Branded,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -298,6 +311,12 @@ pub enum EffectModifier {
     /// Less healing received, by the status's own [`Status::magnitude`] as a fraction: `0.2`
     /// is twenty per cent less. Applied where health is restored, whoever healed.
     HealingReduced,
+    /// A share of every hit the bearer takes is sent back at whoever dealt it, as a fraction
+    /// (`0.5` is half). Read where damage is applied, so no source can slip past it.
+    Reflect {
+        /// The share sent back, `0..1`.
+        fraction: f32,
+    },
 }
 
 /// Whether an effect is something the bearer wants.
@@ -370,7 +389,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 36;
+pub const STATUS_KIND_COUNT: usize = 39;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -411,6 +430,9 @@ impl StatusKind {
         Self::Waterlogged,
         Self::Warded,
         Self::Stoked,
+        Self::Mirrored,
+        Self::Ashen,
+        Self::Branded,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -1021,6 +1043,50 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         generic: GenericApplication::new(10.0, 0.0, 0.0),
         ..BUFF
     },
+    StatusDef {
+        kind: StatusKind::Mirrored,
+        id: "mirrored",
+        overlay_name: "MIRRORED",
+        name: "Mirror Ward",
+        description: "Sending half of all damage taken back at whoever dealt it.",
+        modifiers: &[EffectModifier::Reflect { fraction: 0.5 }],
+        generic: GenericApplication::new(6.0, 0.0, 0.0),
+        ..BUFF
+    },
+    StatusDef {
+        kind: StatusKind::Ashen,
+        id: "ashen",
+        overlay_name: "ASHEN",
+        name: "Ashen Curse",
+        description: "Taking 6% more damage and moving 3% slower per stack. Dispel it.",
+        // A curse, not a wound: a dispel takes every stack at once.
+        dispel: Some(DispelSchool::Curse),
+        max_stacks: 5,
+        modifiers: &[
+            EffectModifier::DamageTaken {
+                schools: Schools::ALL,
+                per_stack: 0.06,
+            },
+            EffectModifier::MoveSpeed { per_stack: -0.03 },
+        ],
+        generic: GenericApplication::new(20.0, 0.0, 0.0),
+        ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Branded,
+        id: "branded",
+        overlay_name: "BRANDED",
+        name: "Pontiff's Brand",
+        description: "Taking 12% more damage per stack. Dispel it, or pass the Pontiff to another tank.",
+        dispel: Some(DispelSchool::Magic),
+        max_stacks: 8,
+        modifiers: &[EffectModifier::DamageTaken {
+            schools: Schools::ALL,
+            per_stack: 0.12,
+        }],
+        generic: GenericApplication::new(20.0, 0.0, 0.0),
+        ..DEBUFF
+    },
 ];
 
 /// Why a status ended.
@@ -1485,6 +1551,18 @@ impl StatusSet {
             }
         }
         multiplier
+    }
+
+    /// The share of every hit on the bearer that is sent back at its author, `0..1`.
+    #[must_use]
+    pub fn reflect_fraction(&self) -> f32 {
+        let mut kept = 1.0;
+        for (_, modifier) in self.modifiers() {
+            if let EffectModifier::Reflect { fraction } = *modifier {
+                kept *= 1.0 - fraction.clamp(0.0, 1.0);
+            }
+        }
+        1.0 - kept
     }
 
     /// What the bearer's damage is multiplied by.

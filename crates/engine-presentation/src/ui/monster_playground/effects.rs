@@ -153,6 +153,12 @@ pub(super) fn modifier_lines(kind: StatusKind) -> Vec<String> {
                 "{:.0}% less healing received",
                 definition.generic.magnitude * 100.0
             ),
+            EffectModifier::Reflect { fraction } => {
+                format!(
+                    "{:.0}% of damage taken sent back at its author",
+                    fraction * 100.0
+                )
+            }
         })
         .collect()
 }

@@ -1125,6 +1125,9 @@ impl EnemyBrain {
                     // there, which is what the executor's farthest-hostile scan reports.
                     EnemyTarget::Random if definition.min_range > 0.0 => percept.farthest?,
                     EnemyTarget::Random => target,
+                    // Picked by the simulation when the ability starts; the brain only needs its
+                    // own target to be in reach, as for a random mark.
+                    EnemyTarget::Weakest => target,
                     EnemyTarget::WoundedAlly => percept.wounded_ally?,
                     EnemyTarget::Farthest => percept.farthest?,
                 };

@@ -202,6 +202,21 @@ Five more archetypes, drawn with existing models and forge colours (see
 | `foundry_foreman` | `grave_acolyte` | Elite: interruptible Stoke the Furnace (Stoked, 30 % more damage), Chain Lash |
 | `foundry_overseer` | `grave_brute` | Boss: Slag Brand (spread), Molten Ladle (soak), Conveyor Surge (lane), Overheat |
 
+## The Sanctum of Ash roster
+
+Seven more archetypes, drawn with existing models in ash and ember colours (see
+[`dungeon/SANCTUM_OF_ASH.md`](dungeon/SANCTUM_OF_ASH.md)):
+
+| Id | Drawn as | Role |
+|---|---|---|
+| `mirror_penitent` | `skeleton_warrior` | Melee: interruptible Mirror Ward (Mirrored, half of damage taken sent back at the attacker, capped), Penitent Blade |
+| `ash_cantor` | `grave_acolyte` | Support: Litany of Ash (stacking dispellable Ashen Curse on two players), Ashen Mend |
+| `ash_stalker` | `crypt_ghoul` | Melee: Ambush Leap at the player with the least health left, bleeding Slash |
+| `pyre_immolator` | `grave_brute` | Melee: Pyre Slam; its death leaves Ember Collapse, a blast and a fire that spreads |
+| `ember_pylon` | `grave_acolyte` | Called by the boss, never placed: rooted, Ash Tithe pulses the sanctum, holds the boss immune while it stands |
+| `censer_warden` | `grave_brute` | Elite (mid-dungeon guardian, own loot table): Smoke Veil, Litany of Ash, Censer Swing, Censer Blaze at 50 % |
+| `ashen_pontiff` | `grave_brute` | Boss: Branding Strike (stacking Branded), Rite of Cinders (line of sight), pylons at 50 %, Last Rite |
+
 ## Cost
 
 Measured in the Graveyard Crypt, release build, hidden 1920×1080, 6,000 frames, with all 37

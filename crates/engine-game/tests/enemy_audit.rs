@@ -133,6 +133,10 @@ fn every_ability_is_owned_by_some_monster() {
                 owned[ability.index()] = true;
             }
         }
+        // What a death resolves belongs to the monster that dies.
+        if let Some(ability) = archetype.on_death {
+            owned[ability.index()] = true;
+        }
     }
     for ability in EnemyAbility::ALL {
         assert!(owned[ability.index()], "{ability:?} belongs to no monster");
@@ -237,7 +241,10 @@ fn every_row_is_internally_consistent() {
                     "{name}: a charge is never a second swing"
                 );
                 assert!(
-                    matches!(d.select, EnemyTarget::Farthest | EnemyTarget::Random),
+                    matches!(
+                        d.select,
+                        EnemyTarget::Farthest | EnemyTarget::Random | EnemyTarget::Weakest
+                    ),
                     "{name}"
                 );
             }
@@ -438,7 +445,7 @@ fn scenarios() -> Vec<(Vec<EnemyKind>, usize)> {
     let mut all = Vec::new();
     for kind in EnemyKind::ALL {
         for phase in 0..kind.archetype().phase_count() {
-            let pack = if kind == EnemyKind::Warden {
+            let pack = if matches!(kind, EnemyKind::Warden | EnemyKind::AshCantor) {
                 vec![kind, EnemyKind::Melee]
             } else {
                 vec![kind]
@@ -457,7 +464,24 @@ fn play(
     ticks: u32,
 ) -> (Fight, Vec<CombatEvent>) {
     let mut fight = roster_fight(kinds, phase, damage_scale);
-    let events = run(&mut fight.sim, ticks);
+    let mut events = Vec::new();
+    // What a death leaves is only seen if somebody dies: the party kills such a monster
+    // five seconds in, through the ordinary damage path.
+    if kinds[0].archetype().on_death.is_some() {
+        events.extend(run(&mut fight.sim, 60 * 5));
+        let (killer, victim) = (fight.players[0], fight.enemy);
+        fight.sim.apply_damage(
+            killer,
+            victim,
+            1.0e9,
+            AbilityId::NONE,
+            engine_game::combat::DamageType::Physical,
+        );
+        events.extend_from_slice(fight.sim.events());
+        events.extend(run(&mut fight.sim, ticks.saturating_sub(60 * 5)));
+    } else {
+        events.extend(run(&mut fight.sim, ticks));
+    }
     (fight, events)
 }
 
@@ -555,7 +579,7 @@ fn owner_of(ability: EnemyAbility) -> (Vec<EnemyKind>, usize) {
                 .phase_abilities(phase)
                 .any(|owned| owned == ability)
             {
-                let pack = if kind == EnemyKind::Warden {
+                let pack = if matches!(kind, EnemyKind::Warden | EnemyKind::AshCantor) {
                     vec![kind, EnemyKind::Melee]
                 } else {
                     vec![kind]

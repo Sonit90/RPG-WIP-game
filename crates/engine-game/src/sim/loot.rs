@@ -538,11 +538,13 @@ impl Simulation {
 
     /// Rolls what a dead monster drops, for every player.
     ///
-    /// A boss pays its gold; any other monster rolls the equipment chance, the currency chance
+    /// A monster with a table of its own that is not the dungeon's last boss (a mid-dungeon
+    /// guardian) also gets one equipment roll from it, for every player. A boss pays its gold; any
+    /// other monster rolls the equipment chance, the currency chance
     /// (`elite` uses the elite one) and its gold. Nothing without [`LootRules`] and nothing
     /// under a remote authority, whose server rolls and sends the events. Every roll comes
     /// from the loot generator, in player order, so it is a function of the seed and the fight.
-    pub(super) fn drop_kill_loot(&mut self, boss: bool, elite: bool) {
+    pub(super) fn drop_kill_loot(&mut self, boss: bool, elite: bool, id: &'static str) {
         if self.remote_authority {
             return;
         }
@@ -550,7 +552,31 @@ impl Simulation {
             return;
         };
         let (tick, key_level, bonus) = (self.tick, self.loot_key_level, self.loot_bonus_pct);
+        // A monster that is not the dungeon's last boss (a mid-dungeon guardian) can have a table
+        // of its own: one roll each, where it fell. The last boss pays out through the chest.
+        let own_table = if self.boss_id() == Some(id) {
+            None
+        } else {
+            rules.boss_table(id)
+        };
         for player in self.player_entities() {
+            if let Some(table) = own_table
+                && let Some((item, props)) = loot::roll_equipment(
+                    table,
+                    &rules,
+                    loot::DropSource::Elite,
+                    &self.loot_dungeon,
+                    key_level,
+                    &mut self.loot_rng,
+                )
+            {
+                self.events.push(CombatEvent::MobLoot {
+                    player,
+                    item,
+                    props,
+                    tick,
+                });
+            }
             if boss {
                 if let Some(gold) = loot::boss_gold(&rules, bonus) {
                     self.events.push(CombatEvent::MobCurrency {
