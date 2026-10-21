@@ -42,6 +42,23 @@ pub const COMMUNITY_FORMAT: u32 = 1;
 /// The largest community file accepted, in bytes.
 pub const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
+/// Fewest characters in a map's title.
+pub const TITLE_MIN: usize = 3;
+/// Most characters in a map's title.
+pub const TITLE_MAX: usize = 48;
+/// Most characters in a map's description.
+pub const DESCRIPTION_MAX: usize = 1000;
+/// Most tags on a map.
+pub const TAGS_MAX: usize = 5;
+/// Most characters in one tag.
+pub const TAG_MAX: usize = 16;
+/// Lowest and highest difficulty an author may claim.
+pub const DIFFICULTY_RANGE: (u8, u8) = (1, 5);
+/// Most characters in a pack, monster, scene or dungeon name.
+pub const NAME_MAX: usize = 48;
+/// Most adds a boss may call.
+pub const ADD_COUNT_MAX: u8 = 16;
+
 /// One problem found in a map.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Issue {
@@ -51,6 +68,76 @@ pub struct Issue {
     pub path: String,
     /// What is wrong, for a person.
     pub message: String,
+}
+
+/// What in the map an [`Issue`] is about, read off its `path`.
+///
+/// The path format is part of the stable contract (`docs/community-maps.md`), so this is the
+/// one place that reads it back: the editor selects the object an issue names without
+/// parsing strings of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// The map as a whole, or a list with no single member to point at.
+    Map,
+    /// The title, description, difficulty or tags.
+    Meta,
+    /// `scene.objects[i]`.
+    Object(usize),
+    /// `scene.monsters[i]`, including its patrol.
+    Monster(usize),
+    /// `scene.spawn_points[i]`.
+    SpawnPoint(usize),
+    /// `scene.lights[i]`.
+    Light(usize),
+    /// The dungeon block (`scene.dungeon`), except the two members below.
+    Dungeon,
+    /// `scene.dungeon.boss_gate`.
+    BossGate,
+    /// `scene.dungeon.add_spawns[i]`.
+    AddSpawn(usize),
+}
+
+impl Issue {
+    /// What this issue points at.
+    #[must_use]
+    pub fn target(&self) -> Target {
+        let path = self.path.as_str();
+        if path == "meta" || path.starts_with("meta.") || path.starts_with("meta[") {
+            return Target::Meta;
+        }
+        let Some(rest) = path.strip_prefix("scene.") else {
+            return Target::Map;
+        };
+        if let Some(rest) = rest.strip_prefix("dungeon") {
+            if rest.starts_with(".boss_gate") {
+                return Target::BossGate;
+            }
+            if let Some(index) = indexed(rest.strip_prefix(".add_spawns")) {
+                return Target::AddSpawn(index);
+            }
+            return Target::Dungeon;
+        }
+        for prefix in ["objects", "monsters", "spawn_points", "lights"] {
+            if let Some(rest) = rest.strip_prefix(prefix)
+                && let Some(index) = indexed(Some(rest))
+            {
+                return match prefix {
+                    "objects" => Target::Object(index),
+                    "monsters" => Target::Monster(index),
+                    "spawn_points" => Target::SpawnPoint(index),
+                    _ => Target::Light(index),
+                };
+            }
+        }
+        Target::Map
+    }
+}
+
+/// The `i` of a leading `[i]`, if `text` starts with one.
+fn indexed(text: Option<&str>) -> Option<usize> {
+    let inner = text?.strip_prefix('[')?;
+    let (digits, _) = inner.split_once(']')?;
+    digits.parse().ok()
 }
 
 impl std::fmt::Display for Issue {
@@ -166,6 +253,24 @@ pub struct Rules {
 }
 
 impl Rules {
+    /// Whether a map under these rules may place the asset called `name`.
+    ///
+    /// The one answer both the validator and the editor's "approved library only" warning
+    /// give.
+    #[must_use]
+    pub fn allows_asset(&self, name: &str) -> bool {
+        match self.assets {
+            AssetPolicy::Library => asset_named(name).is_some(),
+            AssetPolicy::Any => !name.trim().is_empty(),
+        }
+    }
+
+    /// The monster `id` names, if these rules allow placing it.
+    #[must_use]
+    pub fn allowed_monster(&self, id: &str) -> Option<EnemyKind> {
+        EnemyKind::from_id(id).filter(|kind| self.monsters.contains(kind))
+    }
+
     /// The rules for a community upload, built from the real catalogs.
     #[must_use]
     pub fn default_community() -> Self {
@@ -636,11 +741,11 @@ fn printable(text: &str, allow_newline: bool) -> bool {
 
 fn check_meta(meta: &Meta, report: &mut Report) {
     let title_len = meta.title.trim().chars().count();
-    if !(3..=48).contains(&title_len) || meta.title.chars().count() > 48 {
+    if !(TITLE_MIN..=TITLE_MAX).contains(&title_len) || meta.title.chars().count() > TITLE_MAX {
         report.error(
             "bad_meta",
             "meta.title",
-            "the title must be 3 to 48 characters",
+            format!("the title must be {TITLE_MIN} to {TITLE_MAX} characters"),
         );
     }
     if !printable(&meta.title, false) {
@@ -650,11 +755,11 @@ fn check_meta(meta: &Meta, report: &mut Report) {
             "the title contains control characters",
         );
     }
-    if meta.description.chars().count() > 1000 {
+    if meta.description.chars().count() > DESCRIPTION_MAX {
         report.error(
             "bad_meta",
             "meta.description",
-            "the description is over 1000 characters",
+            format!("the description is over {DESCRIPTION_MAX} characters"),
         );
     }
     if !printable(&meta.description, true) {
@@ -664,19 +769,26 @@ fn check_meta(meta: &Meta, report: &mut Report) {
             "the description contains control characters",
         );
     }
-    if !(1..=5).contains(&meta.difficulty) {
-        report.error("bad_meta", "meta.difficulty", "difficulty must be 1 to 5");
+    if !(DIFFICULTY_RANGE.0..=DIFFICULTY_RANGE.1).contains(&meta.difficulty) {
+        report.error(
+            "bad_meta",
+            "meta.difficulty",
+            format!(
+                "difficulty must be {} to {}",
+                DIFFICULTY_RANGE.0, DIFFICULTY_RANGE.1
+            ),
+        );
     }
-    if meta.tags.len() > 5 {
-        report.error("bad_meta", "meta.tags", "at most 5 tags");
+    if meta.tags.len() > TAGS_MAX {
+        report.error("bad_meta", "meta.tags", format!("at most {TAGS_MAX} tags"));
     }
     for (index, tag) in meta.tags.iter().enumerate() {
         let length = tag.trim().chars().count();
-        if length == 0 || tag.chars().count() > 16 || !printable(tag, false) {
+        if length == 0 || tag.chars().count() > TAG_MAX || !printable(tag, false) {
             report.error(
                 "bad_meta",
                 format!("meta.tags[{index}]"),
-                "a tag is 1 to 16 printable characters",
+                format!("a tag is 1 to {TAG_MAX} printable characters"),
             );
         }
     }
@@ -808,11 +920,11 @@ impl SceneCheck<'_> {
 }
 
 fn check_string(text: &str, path: &str, report: &mut Report) {
-    if text.chars().count() > 48 || !printable(text, false) {
+    if text.chars().count() > NAME_MAX || !printable(text, false) {
         report.error(
             "bad_string",
             path,
-            "names are at most 48 printable characters",
+            format!("names are at most {NAME_MAX} printable characters"),
         );
     }
 }
@@ -945,11 +1057,7 @@ fn check_objects(scene: &SceneDocument, rules: &Rules, root: &str, report: &mut 
     let (low, high) = rules.scale_range;
     for (index, object) in scene.objects.iter().enumerate() {
         let path = format!("{root}.objects[{index}]");
-        let known = match rules.assets {
-            AssetPolicy::Library => asset_named(&object.asset).is_some(),
-            AssetPolicy::Any => !object.asset.trim().is_empty(),
-        };
-        if !known {
+        if !rules.allows_asset(&object.asset) {
             report.error(
                 "missing_asset",
                 format!("{path}.asset"),
@@ -1041,6 +1149,33 @@ struct MonsterSummary {
     credit: f32,
 }
 
+/// What killing a `kind` placed with `completion` counts towards the objective, if it counts:
+/// bosses and non-finite numbers do not.
+fn credit_of(kind: EnemyKind, completion: Option<f32>) -> Option<f32> {
+    if kind.is_boss() {
+        return None;
+    }
+    Some(completion.unwrap_or(kind.archetype().completion)).filter(|credit| credit.is_finite())
+}
+
+/// What an enabled placement of monster `id` counts towards `required_completion` under
+/// `rules`: `None` for a boss, an unapproved monster or a disabled placement.
+///
+/// The validator's own rule, exposed so the editor's running total can never disagree with
+/// the `impossible_objective` check.
+#[must_use]
+pub fn monster_credit(
+    rules: &Rules,
+    id: &str,
+    enabled: bool,
+    completion: Option<f32>,
+) -> Option<f32> {
+    if !enabled {
+        return None;
+    }
+    credit_of(rules.allowed_monster(id)?, completion)
+}
+
 fn check_monsters(check: &SceneCheck<'_>, root: &str, report: &mut Report) -> MonsterSummary {
     let rules = check.rules;
     let (low, high) = rules.scale_range;
@@ -1099,9 +1234,7 @@ fn check_monsters(check: &SceneCheck<'_>, root: &str, report: &mut Report) -> Mo
             );
         }
 
-        let kind =
-            EnemyKind::from_id(&monster.monster).filter(|kind| rules.monsters.contains(kind));
-        let Some(kind) = kind else {
+        let Some(kind) = rules.allowed_monster(&monster.monster) else {
             report.error(
                 "unknown_monster",
                 format!("{path}.monster"),
@@ -1134,11 +1267,8 @@ fn check_monsters(check: &SceneCheck<'_>, root: &str, report: &mut Report) -> Mo
             {
                 summary.packs.push(pack.clone());
             }
-            if !kind.is_boss() {
-                let credit = monster.completion.unwrap_or(kind.archetype().completion);
-                if credit.is_finite() {
-                    summary.credit += credit;
-                }
+            if let Some(credit) = credit_of(kind, monster.completion) {
+                summary.credit += credit;
             }
         }
     }
@@ -1248,11 +1378,11 @@ fn check_dungeon(
             report,
         );
     }
-    if dungeon.add_count > 16 {
+    if dungeon.add_count > ADD_COUNT_MAX {
         report.error(
             "bad_number",
             format!("{path}.add_count"),
-            "add_count is at most 16",
+            format!("add_count is at most {ADD_COUNT_MAX}"),
         );
     }
     if dungeon.add_count > 0 && dungeon.add_pool.is_empty() {

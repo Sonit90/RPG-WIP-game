@@ -31,6 +31,7 @@ use engine_render_data::ui::{UiColor, UiDrawList, UiRect};
 
 use crate::browser::BrowserRow;
 use crate::commands::BrowserView;
+use crate::community::{self, EditTarget};
 use crate::icons::Icon;
 use crate::layout::{Layout, Splitter};
 use crate::panels::{self, DialogKind, Element, HierarchyRow, Tile, ToolKind};
@@ -1141,6 +1142,7 @@ fn push_inspector(
     }
 
     let editing = editor.inspector_edit();
+    let level_edit = editor.level_edit();
     let primary = editor.selection();
     for element in panels::inspector(editor, scene, layout) {
         let hover = element.rect().contains(pointer.0, pointer.1) && editor.open_menu().is_none();
@@ -1311,6 +1313,94 @@ fn push_inspector(
             }
             Element::Note { rect, text } => {
                 paint.label(rect, rect.x, rect.right(), &text, theme::TEXT_FAINT);
+            }
+            Element::Tab { rect, tab, active } => {
+                paint.state_fill(
+                    rect,
+                    State {
+                        active,
+                        hover,
+                        ..State::default()
+                    },
+                );
+                paint.centred(
+                    rect,
+                    tab.label(),
+                    Paint::ink(State {
+                        active,
+                        hover,
+                        ..State::default()
+                    }),
+                );
+            }
+            Element::Heading { rect, text } => {
+                paint.label(rect, rect.x, rect.right(), text, theme::ACCENT);
+                paint.divider_h(rect.x, rect.right(), rect.bottom() - paint.px(1.0));
+            }
+            Element::Letter {
+                rect,
+                letter,
+                color,
+            } => {
+                paint.fill(rect, [color[0], color[1], color[2], 0.18]);
+                paint.centred(rect, letter, color);
+            }
+            Element::Field { rect, field } => {
+                let active = level_edit.filter(|edit| edit.target == EditTarget::Number(field));
+                if let Some(edit) = active {
+                    paint.field(rect, None, edit.field.text(), "", true, false);
+                } else {
+                    paint.fill(rect, theme::FIELD);
+                    paint.frame(rect, if hover { theme::DIVIDER } else { theme::BORDER });
+                    let value = community::field_value(scene, editor.community_meta(), field);
+                    let text = value.map_or_else(
+                        || "-".to_owned(),
+                        |value| format!("{:.*}", field.decimals(), value),
+                    );
+                    paint.right(
+                        rect,
+                        rect.right() - paint.px(4.0),
+                        &paint.ty.fit(&text, rect.width - paint.px(6.0)),
+                        theme::TEXT,
+                    );
+                }
+            }
+            Element::Text { rect, target } => {
+                let active = level_edit.filter(|edit| edit.target == EditTarget::Text(target));
+                if let Some(edit) = active {
+                    paint.field(rect, None, edit.field.text(), "", true, false);
+                } else {
+                    let text = community::text_value(scene, editor.community_meta(), target)
+                        .unwrap_or_default();
+                    paint.field(rect, None, &text, "click to type", false, hover);
+                }
+            }
+            Element::Notice { rect, text, color } => {
+                paint.label(rect, rect.x, rect.right(), &text, color);
+            }
+            Element::Issue {
+                rect, error, text, ..
+            } => {
+                if hover {
+                    paint.fill(rect, theme::HOVER);
+                }
+                let color = if error { theme::DANGER } else { theme::WARNING };
+                paint.fill(
+                    UiRect::new(
+                        rect.x,
+                        rect.y + paint.px(2.0),
+                        paint.px(2.0),
+                        rect.height - paint.px(4.0),
+                    ),
+                    color,
+                );
+                paint.label(
+                    rect,
+                    rect.x + paint.px(6.0),
+                    rect.right(),
+                    &text,
+                    if error { theme::TEXT } else { theme::TEXT_DIM },
+                );
             }
         }
     }
@@ -1730,6 +1820,7 @@ fn push_dialogs(paint: &mut Paint<'_>, editor: &Editor, layout: &Layout) {
     let title = match kind {
         DialogKind::Shortcuts => "Keyboard Shortcuts",
         DialogKind::Unsaved => "Unsaved Changes",
+        DialogKind::SaveAs if editor.is_export_prompt() => "Export Community Map",
         DialogKind::SaveAs => "Save Level As",
     };
     paint.header(dialog.title, title, None);
@@ -1800,7 +1891,11 @@ fn push_dialogs(paint: &mut Paint<'_>, editor: &Editor, layout: &Layout) {
             paint.right(
                 field,
                 field.right() - paint.px(6.0),
-                ".json",
+                if editor.is_export_prompt() {
+                    ".community.json"
+                } else {
+                    ".json"
+                },
                 theme::TEXT_FAINT,
             );
         }

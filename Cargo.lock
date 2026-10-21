@@ -696,8 +696,10 @@ dependencies = [
  "engine-core",
  "engine-environment",
  "engine-presentation",
+ "engine-realm",
  "engine-render-data",
  "log",
+ "serde_json",
 ]
 
 [[package]]

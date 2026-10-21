@@ -1424,7 +1424,12 @@ mod tests {
         // The generated library, if this checkout has it: a boulder is solid and a water
         // plane is not, and both answers come out of the geometry rather than out of a table.
         let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
-        if !root.join("generated").is_dir() {
+        // The two files it uses, not the folder: baking a level's map also creates
+        // `generated/`, with nothing of the library in it.
+        let library = root.join("generated/environment");
+        if !library.join("rocks/boulder_large.glb").is_file()
+            || !library.join("water/water_plane.glb").is_file()
+        {
             return;
         }
         let mut browser = AssetBrowser::new();

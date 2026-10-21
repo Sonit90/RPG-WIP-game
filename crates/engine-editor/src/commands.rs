@@ -144,6 +144,42 @@ pub enum Command {
     /// The editor cannot draw — it has no renderer — so this raises a request the application
     /// answers, exactly as opening a level does.
     BakeMap,
+    /// Show a page of the inspector.
+    SetTab(crate::community::Tab),
+    /// Give this level a community listing, so it is checked and can be exported.
+    MakeCommunity,
+    /// Open a new community map made from the template.
+    NewCommunityMap,
+    /// Run the community validator now.
+    Validate,
+    /// Ask where to write the community file, then write it if the validator accepts it.
+    ExportCommunity,
+    /// Go to what validator issue number `n` is about.
+    SelectIssue(usize),
+    /// Give the level a dungeon block.
+    AddDungeon,
+    /// Make the previous or next pack the boss pack.
+    CycleBossPack(bool),
+    /// Make the selected monster's pack the boss pack.
+    MarkBossPack,
+    /// Move the selected monsters into the boss pack.
+    AssignBossPack,
+    /// Put the boss gate at the middle of the view, or move it there.
+    AddGate,
+    /// Take the boss gate away.
+    RemoveGate,
+    /// Put a spawn point at the middle of the view.
+    AddSpawnHere,
+    /// Let the selected monster's type be called as an add.
+    AddPoolType,
+    /// Empty the add pool.
+    ClearPool,
+    /// Allow or forbid the same add twice.
+    ToggleDuplicateAdds,
+    /// Give the selected monster a patrol waypoint at the middle of the view.
+    AddPatrolPoint,
+    /// Take the selected monster's patrol away.
+    ClearPatrol,
 }
 
 impl Editor {
@@ -351,6 +387,24 @@ impl Editor {
                 self.status = "Baking the map...".to_owned();
                 false
             }
+            Command::SetTab(_)
+            | Command::MakeCommunity
+            | Command::NewCommunityMap
+            | Command::Validate
+            | Command::ExportCommunity
+            | Command::SelectIssue(_)
+            | Command::AddDungeon
+            | Command::CycleBossPack(_)
+            | Command::MarkBossPack
+            | Command::AssignBossPack
+            | Command::AddGate
+            | Command::RemoveGate
+            | Command::AddSpawnHere
+            | Command::AddPoolType
+            | Command::ClearPool
+            | Command::ToggleDuplicateAdds
+            | Command::AddPatrolPoint
+            | Command::ClearPatrol => self.execute_community(command, scene),
             Command::ToggleShortcuts => {
                 self.modal = match self.modal {
                     Some(crate::Modal::Shortcuts) => None,
@@ -437,7 +491,7 @@ impl Editor {
                     | inspector::Property::ScaleZ => 1.0,
                     _ => return false,
                 };
-                let before = crate::Snapshot::of(scene, &self.flags);
+                let before = self.capture(scene);
                 let selection = self.selected.clone();
                 let mut changed = false;
                 let properties: &[inspector::Property] = match property {
@@ -501,12 +555,14 @@ impl Editor {
                         (at + count - 1) % count
                     }
                 };
-                self.edit_monsters(scene, |monster, catalogue| {
+                let changed = self.edit_monsters(scene, |monster, catalogue| {
                     let index = next(catalogue.index_of(&monster.monster));
                     if let Some(entry) = catalogue.get(index) {
                         monster.monster.clone_from(&entry.id);
                     }
-                })
+                });
+                self.check_selected_monsters_approved(scene);
+                changed
             }
             Command::UseBrowserMonster => {
                 let Some(id) = self
@@ -517,7 +573,10 @@ impl Editor {
                     self.status = "Choose a monster in the browser first".to_owned();
                     return false;
                 };
-                self.edit_monsters(scene, |monster, _| monster.monster.clone_from(&id))
+                let changed =
+                    self.edit_monsters(scene, |monster, _| monster.monster.clone_from(&id));
+                self.check_selected_monsters_approved(scene);
+                changed
             }
             Command::ToggleMonsterEnabled => {
                 let enable = self
@@ -864,7 +923,7 @@ impl Editor {
         // A crate lifted by the Y handle comes back to the floor, and a rock buried by a brush
         // stroke comes back up out of the hill.
         self.water_touched = self.selected.iter().all(|what| !what.is_scene_kind());
-        let before = crate::Snapshot::of(scene, &self.flags);
+        let before = self.capture(scene);
         let moving = self.selected_objects();
         let mut moved = 0;
         for what in self.selected.clone() {

@@ -299,3 +299,84 @@ fn official_dungeons_pass_the_validator() {
     }
     assert!(failures.is_empty(), "{failures}");
 }
+
+fn issue_at(path: &str) -> Issue {
+    Issue {
+        code: "x",
+        path: path.to_owned(),
+        message: String::new(),
+    }
+}
+
+#[test]
+fn an_issue_path_names_what_it_is_about() {
+    for (path, target) in [
+        ("meta.title", Target::Meta),
+        ("meta.tags[2]", Target::Meta),
+        ("scene.objects[12].asset", Target::Object(12)),
+        ("scene.objects[3].collision.shape", Target::Object(3)),
+        ("scene.monsters[7].monster", Target::Monster(7)),
+        ("scene.monsters[7].patrol[1]", Target::Monster(7)),
+        ("scene.spawn_points[0]", Target::SpawnPoint(0)),
+        ("scene.spawn_points[1].yaw", Target::SpawnPoint(1)),
+        ("scene.lights[4]", Target::Light(4)),
+        ("scene.dungeon.boss_pack", Target::Dungeon),
+        ("scene.dungeon.required_completion", Target::Dungeon),
+        ("scene.dungeon.boss_gate", Target::BossGate),
+        ("scene.dungeon.add_spawns[2]", Target::AddSpawn(2)),
+        ("scene.dungeon.add_pool[0]", Target::Dungeon),
+        ("scene.monsters", Target::Map),
+        ("scene.spawn_points", Target::Map),
+        ("scene.half_extent", Target::Map),
+        ("", Target::Map),
+    ] {
+        assert_eq!(issue_at(path).target(), target, "{path}");
+    }
+}
+
+#[test]
+fn every_path_the_validator_emits_for_the_fixture_edits_maps_to_a_target() {
+    let mut v = fixture();
+    v["scene"]["objects"][1]["asset"] = json!("generated/not_in_library");
+    v["scene"]["monsters"][2]["monster"] = json!("dragon_of_doom");
+    let report = check(&v);
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|issue| issue.target() == Target::Object(1))
+    );
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|issue| issue.target() == Target::Monster(2))
+    );
+}
+
+#[test]
+fn the_approval_questions_have_one_answer_for_validator_and_editor() {
+    let rules = Rules::default_community();
+    assert!(rules.allows_asset("crypt_floor"));
+    assert!(!rules.allows_asset("generated/not_in_library"));
+    assert!(Rules::official().allows_asset("generated/not_in_library"));
+    assert!(rules.allowed_monster("skeleton_warrior").is_some());
+    assert!(rules.allowed_monster("dragon_of_doom").is_none());
+}
+
+#[test]
+fn monster_credit_follows_the_objective_rule() {
+    let rules = Rules::default_community();
+    let own = monster_credit(&rules, "skeleton_warrior", true, None).expect("counts");
+    assert!(own > 0.0);
+    assert_eq!(
+        monster_credit(&rules, "skeleton_warrior", true, Some(7.5)),
+        Some(7.5)
+    );
+    assert_eq!(
+        monster_credit(&rules, "skeleton_warrior", false, None),
+        None
+    );
+    assert_eq!(monster_credit(&rules, "lord_ashgrave", true, None), None);
+    assert_eq!(monster_credit(&rules, "dragon_of_doom", true, None), None);
+}

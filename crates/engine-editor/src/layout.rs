@@ -94,6 +94,9 @@ pub struct Layout {
     pub hierarchy_list: UiRect,
     /// The inspector's header strip.
     pub inspector_header: UiRect,
+    /// The strip of tabs under the inspector's header: the selection, the dungeon, the
+    /// community metadata and the validation.
+    pub inspector_tabs: UiRect,
     /// Where the inspector's properties go.
     pub inspector_body: UiRect,
 }
@@ -170,11 +173,17 @@ impl Layout {
         );
 
         let inspector_header = UiRect::new(inspector.x, inspector.y, inspector.width, header);
-        let inspector_body = UiRect::new(
+        let inspector_tabs = UiRect::new(
             inspector.x,
             inspector_header.bottom(),
             inspector.width,
-            (inspector.bottom() - inspector_header.bottom()).max(0.0),
+            px(metrics::ROW_HEIGHT + 4.0),
+        );
+        let inspector_body = UiRect::new(
+            inspector.x,
+            inspector_tabs.bottom(),
+            inspector.width,
+            (inspector.bottom() - inspector_tabs.bottom()).max(0.0),
         );
 
         Self {
@@ -196,6 +205,7 @@ impl Layout {
             hierarchy_search,
             hierarchy_list,
             inspector_header,
+            inspector_tabs,
             inspector_body,
         }
     }
