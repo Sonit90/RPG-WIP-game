@@ -131,8 +131,9 @@ fn every_monster_in_the_roster_is_distinct_and_reachable() {
             "{kind:?}"
         );
         assert!(archetype.aggro_radius < archetype.leash_radius, "{kind:?}");
+        // Everything walks, except what a boss roots in the floor and calls a pylon.
         assert!(
-            archetype.max_health > 0.0 && archetype.speed > 0.0,
+            archetype.max_health > 0.0 && (archetype.speed > 0.0 || archetype.shields_boss),
             "{kind:?}"
         );
         // Slower than the player, in every phase. Read off the player's own movement config

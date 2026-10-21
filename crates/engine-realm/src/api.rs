@@ -735,6 +735,77 @@ pub struct SetActiveBookRequest {
     pub request_id: String,
 }
 
+/// `POST /api/v1/characters/{id}/gems/socket`: one gem from the bag fills an empty socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GemSocketRequest {
+    /// Idempotency key (a UUID): the client's id for this one user action, reused on retry.
+    pub request_id: String,
+    /// The worn slot or bag cell holding the item with the socket.
+    pub item_slot: SlotRef,
+    /// Which socket (0-based).
+    pub socket: u8,
+    /// The bag cell holding the gem stack.
+    pub gem_slot: u32,
+}
+
+/// `POST /api/v1/characters/{id}/gems/unsocket`: take a gem out for gold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GemUnsocketRequest {
+    /// Idempotency key (a UUID).
+    pub request_id: String,
+    /// The worn slot or bag cell holding the item.
+    pub item_slot: SlotRef,
+    /// Which socket (0-based).
+    pub socket: u8,
+}
+
+/// `POST /api/v1/characters/{id}/gems/upgrade`: consume gems and gold for a higher level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GemUpgradeRequest {
+    /// Idempotency key (a UUID). A replay returns the first answer and rolls nothing.
+    pub request_id: String,
+    /// The bag cell holding the gem stack to upgrade.
+    pub gem_slot: u32,
+}
+
+/// What `gems/socket` and `gems/unsocket` answer with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GemSlotResponse {
+    /// The item's stable key.
+    pub item: String,
+    /// The socket.
+    pub socket: u8,
+    /// The gem's item key.
+    pub gem: String,
+    /// The gold paid (zero for socketing).
+    pub cost: u64,
+    /// The gold the character holds afterwards.
+    pub gold_left: u64,
+    /// The character in full.
+    pub character: CharacterDetail,
+}
+
+/// What `gems/upgrade` answers with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GemUpgradeResponse {
+    /// The gem that was upgraded (item key).
+    pub gem: String,
+    /// The gem it becomes on success.
+    pub result: String,
+    /// Whether the roll succeeded.
+    pub success: bool,
+    /// How many gems were consumed.
+    pub consumed: u16,
+    /// How many came back (the failure rule).
+    pub returned: u16,
+    /// The gold paid.
+    pub cost: u64,
+    /// The gold the character holds afterwards.
+    pub gold_left: u64,
+    /// The character in full.
+    pub character: CharacterDetail,
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test code asserts on known-good values")]
 mod tests {

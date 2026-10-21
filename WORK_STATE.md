@@ -64,7 +64,19 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 ## Remaining P2 work (order)
 
 1. (done) Sets. 2. Gems (in flight). 4. (done) Reforge. 5. Dungeon 4 done, dungeon 5 in flight.
-3. Books (talent-point + 3×3 enhancement books per class as hidden talent nodes) — §2.8. NEXT.
+3. Books — in flight (`p2-books`, worktree `../myGame-wt-books`, migration 0014_books).
+   Gems + books may both bump loadout CURRENT_VERSION → resolve at merge.
+MERGED `p2-dungeon5`: Sanctum of Ash (3 shrines, all required; mini-boss censer_warden 11k Elite
+with own table, boss ashen_pontiff 22k: Branded stacks, LOS Rite behind pillars, pylon immunity, Last
+Rite enrage). Statuses Mirrored/Ashen/Branded (count 39), Reflect modifier, EnemyTarget::Weakest,
+on_death. No pylon-immunity visual indicator yet (UI polish). 5 dungeons done.
+`p2-community` (worktree `../myGame-wt-community`): Postgres+API+realm cm: instances+browser+realm-bot,
+migration 0015. ONLY this agent may use the realm stack. Editor dungeon-block inspector = separate task after.
+MERGED `p2-gems`: gems.json 7 kinds × 5 levels, every epic socketed (6 with 2), routes
+socket/unsocket/upgrade, loadout v3 (gems as item keys), median 108 runs to max gem at key 10,
+p2_gems ≈ +9.5 % DPS over p2_set. Gems borrow the trinket icon. `--gem-sim` → docs/balance/gem-economy.md.
+`p2-editor` (worktree `../myGame-wt-editor`): dungeon-block inspector, community metadata, live mapcheck, export, template.
+p2-core verified after sets+reforge: workspace 4527, embedded 331, backend 121, DB 36, clippy clean.
 6. Community publishing: Postgres tables, API, realm `community_map` table, `cm:<id>:<ver>` instances,
    editor dungeon-block inspector, client map browser, community boards — §2.10.
 7. Economy sim, power-scaling sim with gems/sets/books, audio cues, UI polish, perf check.

@@ -480,6 +480,8 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
         stats: vec![(Stat::Stamina, value)],
         active: None,
         set: None,
+        sockets: 0,
+        gem_level: 0,
     };
     let mut book = row("it_book", ItemQuality::Epic, 0.0);
     book.family = ItemFamily::Book;
@@ -543,6 +545,7 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
         },
         sharpening: engine_game::loot::SharpeningDrops::none(),
         books: None,
+        gems: engine_game::loot::GemDrops::none(),
     }
 }
 
@@ -793,7 +796,6 @@ fn with_books(min_key_level: u32) -> LootRules {
 
 #[test]
 fn a_boss_chest_share_holds_a_book_at_or_above_its_key_level_only() {
-    let book = engine_game::character::item_by_key("it_book").map(|def| def.id);
     let shares = |key_level: u32, min: u32| {
         let (simulation, players, ..) = finished_crypt_with(1, Some((with_books(min), key_level, 0)));
         let chest = simulation.loot_chest().expect("a chest");
@@ -805,6 +807,8 @@ fn a_boss_chest_share_holds_a_book_at_or_above_its_key_level_only() {
             .collect::<Vec<_>>()
     };
     let high = shares(8, 8);
+    // After the first chest: `rules` registers the test book.
+    let book = engine_game::character::item_by_key("it_book").map(|def| def.id);
     for claim in &high {
         assert_eq!(claim.len(), 3, "two rings and a book");
         assert_eq!(claim[2], book, "the book comes last");

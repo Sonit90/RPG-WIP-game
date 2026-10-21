@@ -335,6 +335,108 @@ fn the_bone_foundry_loads_on_the_realm_path_and_can_be_cleared() {
 }
 
 #[test]
+fn the_sanctum_of_ash_loads_on_the_realm_path_and_can_be_cleared() {
+    let (scene, barriers, players) = dungeon_party("sanctum_of_ash");
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let monsters = fight.monster_states();
+    assert_eq!(
+        monsters.len(),
+        scene.monsters.len(),
+        "no unknown ids dropped"
+    );
+    fight.open_start_barrier();
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let mut saw_unlock = false;
+    for _ in 0..400 {
+        let living: Vec<EntityId> = fight
+            .sim
+            .enemies()
+            .map(|(entity, _)| entity)
+            .filter(|entity| fight.sim.world().is_alive(*entity))
+            .collect();
+        for entity in living {
+            fight.sim.apply_damage(
+                mage,
+                entity,
+                1.0e7,
+                AbilityId::from_fire(FireAbility::Firebolt),
+                DamageType::Fire,
+            );
+        }
+        let _ = fight.advance(30);
+        saw_unlock |= fight.unlocked();
+        if fight.completed().is_some() {
+            break;
+        }
+    }
+    assert!(saw_unlock, "the gate opened");
+    assert!(
+        fight.completed().is_some(),
+        "the Pontiff died and the run completed"
+    );
+}
+
+#[test]
+fn the_censer_warden_pays_each_player_one_item_from_its_own_table_where_it_falls() {
+    let (scene, barriers, players) = dungeon_party("sanctum_of_ash");
+    let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
+    let rules = crate::loot::builtin_rules().expect("the shipped rules build");
+    fight.set_loot(rules.clone(), 5, 0);
+    fight.open_start_barrier();
+    let mage = fight
+        .resolve(&EntityRef::Player("dps".into()))
+        .expect("dps");
+    let warden = fight
+        .sim
+        .encounters()
+        .iter()
+        .find(|encounter| encounter.name() == "GALLERY OF CENSERS")
+        .and_then(|encounter| encounter.members().first().copied())
+        .expect("the Warden's pack");
+    fight.sim.apply_damage(
+        mage,
+        warden,
+        1.0e7,
+        AbilityId::from_fire(FireAbility::Firebolt),
+        DamageType::Fire,
+    );
+    let announced: Vec<engine_game::event::CombatEvent> = fight.sim.events().to_vec();
+    let name = |entity: EntityId| fight.name(entity);
+    let events: Vec<WireEvent> = announced
+        .iter()
+        .filter_map(|event| encode(event, &name))
+        .collect();
+    let table = rules.boss_table("censer_warden").expect("its table");
+    let rows: Vec<&str> = table
+        .entries
+        .iter()
+        .filter_map(|entry| engine_game::character::item(entry.item))
+        .map(|def| def.key)
+        .collect();
+    let drops = crate::haul::drops_in(&events);
+    for account in ["tank", "healer", "dps"] {
+        let items: Vec<&str> = drops
+            .iter()
+            .filter_map(|drop| match drop {
+                crate::haul::Drop::Item {
+                    account: who, item, ..
+                } if who == account => Some(item.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(items.len(), 1, "{account}: {items:?}");
+        assert!(
+            rows.contains(&items[0]),
+            "{account}: {} is not its",
+            items[0]
+        );
+        assert!(gold_of(&events, account) >= 1, "{account} was paid gold");
+    }
+}
+
+#[test]
 fn a_rebuilt_fight_keeps_keys_the_dead_and_the_bodies() {
     let (scene, barriers, players) = crypt();
     let mut fight = CombatInstance::new(&scene, &players, &barriers, (1.0, 1.0));
@@ -693,7 +795,15 @@ fn gold_of(events: &[WireEvent], account: &str) -> u32 {
 fn a_cleared_run_with_loot_rules_rolls_two_items_per_player_and_pays_gold() {
     let (fight, events) = cleared_with_loot(0);
     for account in ["tank", "healer", "dps"] {
-        let items = fight.loot_items_of(account);
+        // The chest may also hold a gem; the equipment is two rolls.
+        let items: Vec<_> = fight
+            .loot_items_of(account)
+            .into_iter()
+            .filter(|item| {
+                engine_game::character::item_by_key(item.key)
+                    .is_some_and(|def| def.family != engine_game::character::ItemFamily::Gem)
+            })
+            .collect();
         assert_eq!(items.len(), 2, "{account} gets two chest items");
         for item in &items {
             assert!(

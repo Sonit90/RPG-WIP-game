@@ -260,6 +260,7 @@ mod tests {
                 quantity: 1,
                 quality: 100,
                 sharpening: 0,
+                gems: Vec::new(),
                 broken: false,
             }],
             ..Loadout::default()

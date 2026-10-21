@@ -1422,7 +1422,12 @@ fn an_avoidable_hit_is_survivable_once_and_lethal_if_ignored_twice() {
 fn every_telegraph_gives_the_party_time_to_react() {
     for ability in EnemyAbility::ALL {
         let definition = ability.definition();
+        // What a death leaves has no cast to warn with: the warning is the monster's own health.
+        let on_death = EnemyKind::ALL
+            .iter()
+            .any(|kind| kind.archetype().on_death == Some(ability));
         if !avoidable(ability)
+            || on_death
             || EnemyKind::ALL[..7].iter().any(|legacy| {
                 legacy.archetype().abilities().any(|own| own == ability)
                     || (0..legacy.archetype().phase_count()).any(|phase| {

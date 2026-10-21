@@ -246,6 +246,8 @@ pub fn book_items() -> Vec<engine_game::character::CatalogItem> {
         icon: ItemIcon::of_family(ItemFamily::Book),
         stats: Vec::new(),
         active: None,
+        sockets: 0,
+        gem_level: 0,
         set: None,
     };
     let mut items = Vec::new();

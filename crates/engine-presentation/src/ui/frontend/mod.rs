@@ -351,6 +351,79 @@ pub struct ReforgeCard {
     pub result: Option<ReforgeReveal>,
 }
 
+/// One socket of the selected item, as the Gems panel prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemSocketRow {
+    /// The gem in it, as `Perfect Ruby  +6 Main Stat`; `None` for a hollow socket.
+    pub filled: Option<String>,
+    /// The rank of the gem in it, for its colour.
+    pub quality: ItemQuality,
+    /// What taking the gem out costs (gold), when it is filled.
+    pub unsocket: Option<SharpenCost>,
+    /// Whether the picked gem could go in it now (it is empty and a gem is picked).
+    pub can_socket: bool,
+}
+
+/// The item selected in the Gems panel and its sockets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemItemDetail {
+    /// The item's name.
+    pub name: String,
+    /// Its rank, for the name's colour.
+    pub quality: ItemQuality,
+    /// One row per socket (empty when it has none).
+    pub sockets: Vec<GemSocketRow>,
+    /// Why nothing can be done with it (no sockets), if so.
+    pub blocked: Option<String>,
+}
+
+/// What upgrading the picked gem would take and risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemUpgradeView {
+    /// How many gems an attempt consumes.
+    pub consume: u16,
+    /// The gem it would become: `Flawed Ruby`.
+    pub result: String,
+    /// The success chance, as text (`90%`).
+    pub chance: String,
+    /// What a failure does: `One gem is returned, the rest are lost.`
+    pub on_fail: String,
+    /// The gold price.
+    pub cost: SharpenCost,
+    /// Whether the stack has enough gems.
+    pub enough_gems: bool,
+}
+
+/// The gem picked from the bag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemPickDetail {
+    /// `Chipped Ruby  +1 Main Stat`.
+    pub name: String,
+    /// Its rank, for the colour.
+    pub quality: ItemQuality,
+    /// How many are in the stack.
+    pub quantity: u16,
+    /// The upgrade, unless it is at the top level.
+    pub upgrade: Option<GemUpgradeView>,
+}
+
+/// The gems half of the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GemsCard {
+    /// The worn items, in slot order.
+    pub worn: Vec<SharpenWorn>,
+    /// The selected item, if one is.
+    pub selected: Option<SharpenTarget>,
+    /// Its sockets.
+    pub item: Option<GemItemDetail>,
+    /// The picked gem.
+    pub pick: Option<GemPickDetail>,
+    /// Whether the player pressed Upgrade and is being asked to confirm.
+    pub confirming: bool,
+    /// What the last action did.
+    pub result: Option<ReforgeReveal>,
+}
+
 /// The salvage and exchange screen.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkshopCard {
@@ -370,6 +443,8 @@ pub struct WorkshopCard {
     pub sharpen: Option<SharpenCard>,
     /// The reforge panel, while it is the one showing.
     pub reforge: Option<ReforgeCard>,
+    /// The gems panel, while it is the one showing.
+    pub gems: Option<GemsCard>,
 }
 
 /// One chest item on the completion panel.
@@ -706,6 +781,20 @@ pub enum FrontEndAction {
     ReforgeCancel,
     /// Reforge the selected item (confirmed).
     Reforge,
+    /// Show the gems panel.
+    GemsMode,
+    /// A bag cell was clicked in the gems panel: a gem to pick, or an item to inspect.
+    GemsPick(u32),
+    /// Put the picked gem into this socket of the selected item.
+    SocketGem(u8),
+    /// Take the gem out of this socket of the selected item.
+    UnsocketGem(u8),
+    /// The Upgrade button was pressed: ask the player to confirm.
+    GemUpgradeAsk,
+    /// The player backed out of the upgrade confirmation.
+    GemUpgradeCancel,
+    /// Upgrade the picked gem (confirmed).
+    GemUpgrade,
     /// Lower the character's key one level (confirmed).
     DowngradeKey,
     /// Strip the character's key of its modifiers for gold (confirmed).
@@ -801,6 +890,20 @@ enum Hit {
     ReforgeConfirm,
     /// Backs out of the reforge confirmation.
     ReforgeCancel,
+    /// The switch to the gems panel.
+    GemsMode,
+    /// A worn item in the gems row, by position.
+    GemsWorn(usize),
+    /// Socket the picked gem into socket `n`.
+    GemSocket(u8),
+    /// Take the gem out of socket `n`.
+    GemUnsocket(u8),
+    /// The Upgrade button (asks to confirm).
+    GemUpgradeGo,
+    /// Confirms the upgrade.
+    GemUpgradeConfirm,
+    /// Backs out of the upgrade confirmation.
+    GemUpgradeCancel,
     /// The hub key panel's Downgrade button (asks to confirm).
     KeyDowngrade,
     /// The hub key panel's Cleanse button (asks to confirm).
@@ -1191,7 +1294,9 @@ impl FrontEndUi {
             Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
             Hit::ReturnToHub => actions.push(FrontEndAction::ReturnToHub),
             Hit::BagCell(index) => {
-                if view
+                if view.workshop.as_ref().is_some_and(|w| w.gems.is_some()) {
+                    actions.push(FrontEndAction::GemsPick(index));
+                } else if view
                     .workshop
                     .as_ref()
                     .is_some_and(|w| w.sharpen.is_some() || w.reforge.is_some())
@@ -1204,6 +1309,24 @@ impl FrontEndUi {
             Hit::SharpenMode(on) => actions.push(FrontEndAction::WorkshopMode(on)),
             Hit::SharpenGo => actions.push(FrontEndAction::Sharpen),
             Hit::ReforgeMode => actions.push(FrontEndAction::ReforgeMode),
+            Hit::GemsMode => actions.push(FrontEndAction::GemsMode),
+            Hit::GemSocket(n) => actions.push(FrontEndAction::SocketGem(n)),
+            Hit::GemUnsocket(n) => actions.push(FrontEndAction::UnsocketGem(n)),
+            Hit::GemUpgradeGo => actions.push(FrontEndAction::GemUpgradeAsk),
+            Hit::GemUpgradeConfirm => actions.push(FrontEndAction::GemUpgrade),
+            Hit::GemUpgradeCancel => actions.push(FrontEndAction::GemUpgradeCancel),
+            Hit::GemsWorn(position) => {
+                if let Some(worn) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|w| w.gems.as_ref())
+                    .and_then(|g| g.worn.get(position))
+                {
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                        worn.slot.clone(),
+                    )));
+                }
+            }
             Hit::ReforgeGo => actions.push(FrontEndAction::ReforgeAsk),
             Hit::ReforgeConfirm => actions.push(FrontEndAction::Reforge),
             Hit::ReforgeCancel => actions.push(FrontEndAction::ReforgeCancel),
@@ -1431,6 +1554,7 @@ impl FrontEndUi {
                     layout.add(Hit::Panel, panel);
                     layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
                     layout.add(Hit::ReforgeMode, second_mode_button(panel, scale));
+                    layout.add(Hit::GemsMode, third_mode_button(panel, scale));
                     for row in &workshop.bag {
                         layout.add(
                             Hit::BagCell(row.index),
@@ -1458,6 +1582,7 @@ impl FrontEndUi {
                     layout.add(Hit::Panel, panel);
                     layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
                     layout.add(Hit::SharpenMode(true), second_mode_button(panel, scale));
+                    layout.add(Hit::GemsMode, third_mode_button(panel, scale));
                     for row in &workshop.bag {
                         layout.add(
                             Hit::BagCell(row.index),
@@ -1482,8 +1607,60 @@ impl FrontEndUi {
                             layout.add(Hit::ReforgeGo, sharpen_button(panel, scale));
                         }
                     }
+                } else if let Some(workshop) = &view.workshop
+                    && let Some(gems) = &workshop.gems
+                {
+                    let idle = view.busy.is_none();
+                    let panel = sharpen_panel(&panels);
+                    layout.add(Hit::Panel, panel);
+                    layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
+                    layout.add(Hit::SharpenMode(true), second_mode_button(panel, scale));
+                    layout.add(Hit::ReforgeMode, third_mode_button(panel, scale));
+                    for row in &workshop.bag {
+                        layout.add(
+                            Hit::BagCell(row.index),
+                            bag_cell_rect(panels.bag, row.index as usize, scale),
+                        );
+                    }
+                    for position in 0..gems.worn.len() {
+                        layout.add(
+                            Hit::GemsWorn(position),
+                            sharpen_worn_rect(panel, position, scale),
+                        );
+                    }
+                    if idle {
+                        if let Some(item) = &gems.item {
+                            for (socket, row) in item.sockets.iter().enumerate() {
+                                let n = u8::try_from(socket).unwrap_or(u8::MAX);
+                                let rect =
+                                    gem_socket_button(panel, gems.worn.len(), socket, scale);
+                                if row.filled.is_some() {
+                                    if row.unsocket.as_ref().is_some_and(|c| c.owned >= c.needed) {
+                                        layout.add(Hit::GemUnsocket(n), rect);
+                                    }
+                                } else if row.can_socket {
+                                    layout.add(Hit::GemSocket(n), rect);
+                                }
+                            }
+                        }
+                        if let Some(upgrade) = gems.pick.as_ref().and_then(|p| p.upgrade.as_ref())
+                            && upgrade.enough_gems
+                            && upgrade.cost.owned >= upgrade.cost.needed
+                        {
+                            if gems.confirming {
+                                layout.add(Hit::GemUpgradeConfirm, sharpen_button(panel, scale));
+                                layout.add(
+                                    Hit::GemUpgradeCancel,
+                                    reforge_cancel_button(panel, scale),
+                                );
+                            } else {
+                                layout.add(Hit::GemUpgradeGo, sharpen_button(panel, scale));
+                            }
+                        }
+                    }
                 } else if let Some(workshop) = &view.workshop {
                     let idle = view.busy.is_none();
+                    layout.add(Hit::GemsMode, mode_button(panels.bag, scale));
                     layout.add(Hit::SharpenMode(true), mode_button(panels.salvage, scale));
                     layout.add(Hit::ReforgeMode, mode_button(panels.exchange, scale));
                     if idle {
@@ -2699,6 +2876,39 @@ fn second_mode_button(panel: UiRect, scale: UiScale) -> UiRect {
     )
 }
 
+/// The third switch on a big panel's title row, left of [`second_mode_button`].
+fn third_mode_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let second = second_mode_button(panel, scale);
+    UiRect::new(
+        second.x - scale.px(150.0),
+        second.y,
+        second.width,
+        second.height,
+    )
+}
+
+/// Where the Gems panel's text starts: below the worn row.
+fn gems_body_origin(panel: UiRect, worn: usize, scale: UiScale) -> (f32, f32) {
+    let rows = worn.div_ceil(INVENTORY_COLUMNS).max(1);
+    let first = sharpen_worn_rect(panel, 0, scale);
+    let second = sharpen_worn_rect(panel, INVENTORY_COLUMNS, scale);
+    (
+        panel.x + scale.px(20.0),
+        first.y + (second.y - first.y) * rows as f32 + scale.px(8.0),
+    )
+}
+
+/// The button of socket `socket` in the Gems panel (Socket or Unsocket), on its row.
+fn gem_socket_button(panel: UiRect, worn: usize, socket: usize, scale: UiScale) -> UiRect {
+    let (_, y) = gems_body_origin(panel, worn, scale);
+    UiRect::new(
+        panel.right() - scale.px(20.0) - scale.px(220.0),
+        y + scale.px(52.0) + scale.px(36.0) * socket as f32,
+        scale.px(220.0),
+        scale.px(30.0),
+    )
+}
+
 /// The reforge confirmation's Cancel button, left of the (Confirm) button.
 fn reforge_cancel_button(panel: UiRect, scale: UiScale) -> UiRect {
     let button = sharpen_button(panel, scale);
@@ -3882,8 +4092,11 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let (bag, salvage, exchange) = (panels.bag, panels.salvage, panels.exchange);
     let sharpening = workshop.sharpen.is_some();
     let reforging = workshop.reforge.is_some();
+    let gemming = workshop.gems.is_some();
     let big = sharpen_panel(&panels);
-    let shown: Vec<(UiRect, &str)> = if reforging {
+    let shown: Vec<(UiRect, &str)> = if gemming {
+        vec![(bag, "BAG"), (big, "GEMS")]
+    } else if reforging {
         vec![(bag, "BAG"), (big, "REFORGE")]
     } else if sharpening {
         vec![(bag, "BAG"), (big, "SHARPEN")]
@@ -3907,8 +4120,10 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     // but dimmed, so the player sees where it came from.
     for index in 0..INVENTORY_SLOTS {
         let row = find(u32::try_from(index).unwrap_or(u32::MAX));
-        let staged =
-            !sharpening && !reforging && row.is_some_and(|row| workshop.tray.contains(&row.index));
+        let staged = !sharpening
+            && !reforging
+            && !gemming
+            && row.is_some_and(|row| workshop.tray.contains(&row.index));
         let hit = row.map(|row| Hit::BagCell(row.index));
         draw_item_cell(
             ctx,
@@ -3939,6 +4154,7 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             )
         }
         None if workshop.bag.is_empty() => "Your bag is empty.".to_owned(),
+        None if gemming => "Click a gem to pick it, or an item to see its sockets.".to_owned(),
         None if reforging => "Click an item to reforge it.".to_owned(),
         None if sharpening => "Click an item to sharpen it.".to_owned(),
         None => "Click an item to put it in the salvage tray.".to_owned(),
@@ -3956,8 +4172,10 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         draw_sharpen(ctx, view, sharpen, big);
     } else if let Some(reforge) = &workshop.reforge {
         draw_reforge(ctx, view, reforge, big);
+    } else if let Some(gems) = &workshop.gems {
+        draw_gems(ctx, view, gems, big);
     }
-    if sharpening || reforging {
+    if sharpening || reforging || gemming {
         let (back, _) = footer_buttons(w, h, scale);
         ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
         if let Some(busy) = &view.busy {
@@ -3972,6 +4190,13 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         }
         return;
     }
+    ctx.button(
+        mode_button(bag, scale),
+        "Gems",
+        ButtonKind::Secondary,
+        &Hit::GemsMode,
+        true,
+    );
     ctx.button(
         mode_button(salvage, scale),
         "Sharpen items",
@@ -4090,6 +4315,13 @@ fn draw_sharpen(ctx: &mut Painter<'_>, view: &FrontEndView, sharpen: &SharpenCar
         "Reforge items",
         ButtonKind::Secondary,
         &Hit::ReforgeMode,
+        true,
+    );
+    ctx.button(
+        third_mode_button(panel, scale),
+        "Gems",
+        ButtonKind::Secondary,
+        &Hit::GemsMode,
         true,
     );
     let selected_slot = match &sharpen.selected {
@@ -4238,6 +4470,13 @@ fn draw_reforge(ctx: &mut Painter<'_>, view: &FrontEndView, reforge: &ReforgeCar
         "Sharpen items",
         ButtonKind::Secondary,
         &Hit::SharpenMode(true),
+        true,
+    );
+    ctx.button(
+        third_mode_button(panel, scale),
+        "Gems",
+        ButtonKind::Secondary,
+        &Hit::GemsMode,
         true,
     );
     let selected_slot = match &reforge.selected {
@@ -4396,6 +4635,223 @@ fn draw_reforge(ctx: &mut Painter<'_>, view: &FrontEndView, reforge: &ReforgeCar
             "Reforge",
             ButtonKind::Primary,
             &Hit::ReforgeGo,
+            affordable && idle,
+        );
+    }
+}
+
+/// The Gems panel: the worn items, the selected item's sockets (a hollow marker when empty, the
+/// gem and its stat when filled, with the price of taking it out), and the picked gem's upgrade
+/// (consume count, gold, success chance and the failure rule, behind a confirm).
+fn draw_gems(ctx: &mut Painter<'_>, view: &FrontEndView, gems: &GemsCard, panel: UiRect) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.button(
+        mode_button(panel, scale),
+        "Salvage & Exchange",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(false),
+        true,
+    );
+    ctx.button(
+        second_mode_button(panel, scale),
+        "Sharpen items",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(true),
+        true,
+    );
+    ctx.button(
+        third_mode_button(panel, scale),
+        "Reforge items",
+        ButtonKind::Secondary,
+        &Hit::ReforgeMode,
+        true,
+    );
+    let selected_slot = match &gems.selected {
+        Some(SharpenTarget::Worn(slot)) => Some(slot.as_str()),
+        _ => None,
+    };
+    for (position, worn) in gems.worn.iter().enumerate() {
+        let row = BagRow {
+            index: 0,
+            name: String::new(),
+            quantity: 1,
+            item_level: 0,
+            icon: worn.icon,
+            quality: worn.quality,
+            yields: String::new(),
+        };
+        let rect = sharpen_worn_rect(panel, position, scale);
+        let hit = Hit::GemsWorn(position);
+        draw_item_cell(ctx, rect, Some(&row), false, Some(&hit));
+        if selected_slot == Some(worn.slot.as_str()) {
+            ctx.list
+                .panel_stroke(rect, 6.0 * px(1.0), 2.5 * px(1.0), SELECTED);
+        }
+    }
+    let (x, mut y) = gems_body_origin(panel, gems.worn.len(), scale);
+    let idle = view.busy.is_none();
+    match &gems.item {
+        Some(item) => {
+            ctx.text(
+                (x, y),
+                &item.name,
+                super::character_menu::quality_color(item.quality),
+                UiFont::SemiBold,
+                18.0,
+                TextAlign::Left,
+            );
+            if let Some(blocked) = &item.blocked {
+                ctx.text(
+                    (x, y + px(26.0)),
+                    blocked,
+                    DIM,
+                    UiFont::Medium,
+                    14.0,
+                    TextAlign::Left,
+                );
+            }
+            for (socket, row) in item.sockets.iter().enumerate() {
+                let row_y = y + px(52.0) + px(36.0) * socket as f32;
+                // A hollow marker for an empty socket, a filled one for a gem.
+                let (marker, color, label) = match &row.filled {
+                    Some(gem) => (
+                        "(*)",
+                        super::character_menu::quality_color(row.quality),
+                        gem.as_str(),
+                    ),
+                    None => ("( )", DIM, "Empty socket"),
+                };
+                let at = (x, row_y + px(6.0));
+                ctx.text(at, marker, color, UiFont::SemiBold, 16.0, TextAlign::Left);
+                let at = (x + px(36.0), row_y + px(6.0));
+                ctx.text(at, label, color, UiFont::Medium, 15.0, TextAlign::Left);
+                let rect = gem_socket_button(panel, gems.worn.len(), socket, scale);
+                let n = u8::try_from(socket).unwrap_or(u8::MAX);
+                match (&row.filled, &row.unsocket) {
+                    (Some(_), Some(cost)) => ctx.button(
+                        rect,
+                        &format!("Unsocket ({} {})", cost.needed, cost.name),
+                        ButtonKind::Secondary,
+                        &Hit::GemUnsocket(n),
+                        idle && cost.owned >= cost.needed,
+                    ),
+                    (None, _) => ctx.button(
+                        rect,
+                        "Socket picked gem",
+                        ButtonKind::Secondary,
+                        &Hit::GemSocket(n),
+                        idle && row.can_socket,
+                    ),
+                    _ => {}
+                }
+            }
+            y += px(52.0) + px(36.0) * item.sockets.len().max(1) as f32 + px(10.0);
+        }
+        None => {
+            ctx.text(
+                (x, y),
+                "Select a worn item above or an item in your bag.",
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            y += px(30.0);
+        }
+    }
+    if let Some(result) = &gems.result {
+        let color = match result.improved {
+            Some(true) => GOOD,
+            Some(false) => BAD,
+            None => TEXT,
+        };
+        ctx.text(
+            (x, y),
+            &result.text,
+            color,
+            UiFont::SemiBold,
+            16.0,
+            TextAlign::Left,
+        );
+        y += px(26.0);
+    }
+    let Some(pick) = &gems.pick else {
+        ctx.text(
+            (x, y),
+            "Click a gem in your bag to socket or upgrade it.",
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        return;
+    };
+    ctx.text(
+        (x, y),
+        &format!("Picked: {}  x{}", pick.name, pick.quantity),
+        super::character_menu::quality_color(pick.quality),
+        UiFont::SemiBold,
+        16.0,
+        TextAlign::Left,
+    );
+    y += px(24.0);
+    let Some(upgrade) = &pick.upgrade else {
+        ctx.text(
+            (x, y),
+            "Highest level: it cannot be upgraded.",
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        return;
+    };
+    let paid = upgrade.cost.owned >= upgrade.cost.needed;
+    let lines = [
+        (
+            format!(
+                "Upgrade: consume {} for 1 {}",
+                upgrade.consume, upgrade.result
+            ),
+            if upgrade.enough_gems { TEXT } else { BAD },
+        ),
+        (format!("Success chance: {}", upgrade.chance), TEXT),
+        (upgrade.on_fail.clone(), BAD),
+        (
+            format!(
+                "{}: {} / {}",
+                upgrade.cost.name, upgrade.cost.owned, upgrade.cost.needed
+            ),
+            if paid { TEXT } else { BAD },
+        ),
+    ];
+    for (text, color) in lines {
+        ctx.text((x, y), &text, color, UiFont::Medium, 14.0, TextAlign::Left);
+        y += px(20.0);
+    }
+    let affordable = upgrade.enough_gems && paid;
+    if gems.confirming {
+        ctx.button(
+            sharpen_button(panel, scale),
+            &format!("Confirm ({} gold)", upgrade.cost.needed),
+            ButtonKind::Primary,
+            &Hit::GemUpgradeConfirm,
+            affordable && idle,
+        );
+        ctx.button(
+            reforge_cancel_button(panel, scale),
+            "Cancel",
+            ButtonKind::Secondary,
+            &Hit::GemUpgradeCancel,
+            true,
+        );
+    } else {
+        ctx.button(
+            sharpen_button(panel, scale),
+            "Upgrade",
+            ButtonKind::Primary,
+            &Hit::GemUpgradeGo,
             affordable && idle,
         );
     }
@@ -6198,6 +6654,147 @@ mod tests {
         assert!(has("Cancel").is_some());
     }
 
+    fn gems_view(confirming: bool, gold: u64, gems_in_stack: u16) -> FrontEndView {
+        let mut view = workshop_view(vec![]);
+        if let Some(workshop) = view.workshop.as_mut() {
+            let cost = |needed| SharpenCost {
+                name: "Gold".into(),
+                needed,
+                owned: gold,
+            };
+            workshop.gems = Some(GemsCard {
+                worn: vec![SharpenWorn {
+                    slot: "ring1".into(),
+                    icon: ItemIcon::Helm,
+                    quality: ItemQuality::Epic,
+                    level: 0,
+                    broken: false,
+                }],
+                selected: Some(SharpenTarget::Worn("ring1".into())),
+                item: Some(GemItemDetail {
+                    name: "Ashgrave's Seal".into(),
+                    quality: ItemQuality::Epic,
+                    sockets: vec![
+                        GemSocketRow {
+                            filled: Some("Perfect Ruby  +6 Main Stat".into()),
+                            quality: ItemQuality::Legendary,
+                            unsocket: Some(cost(150)),
+                            can_socket: false,
+                        },
+                        GemSocketRow {
+                            filled: None,
+                            quality: ItemQuality::Common,
+                            unsocket: None,
+                            can_socket: true,
+                        },
+                    ],
+                    blocked: None,
+                }),
+                pick: Some(GemPickDetail {
+                    name: "Chipped Emerald  +1 Haste".into(),
+                    quality: ItemQuality::Common,
+                    quantity: gems_in_stack,
+                    upgrade: Some(GemUpgradeView {
+                        consume: 2,
+                        result: "Flawed Emerald".into(),
+                        chance: "90%".into(),
+                        on_fail: "On failure one gem is returned and the rest are lost.".into(),
+                        cost: cost(10),
+                        enough_gems: gems_in_stack >= 2,
+                    }),
+                }),
+                confirming,
+                result: None,
+            });
+        }
+        view
+    }
+
+    #[test]
+    fn the_gems_panel_routes_socket_unsocket_and_asks_before_it_upgrades() {
+        let mut ui = FrontEndUi::new();
+        let view = gems_view(false, 500, 5);
+        assert_eq!(
+            click(&mut ui, &workshop_view(vec![]), &Hit::GemsMode),
+            vec![FrontEndAction::GemsMode]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::GemsPick(4)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemsWorn(0)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                "ring1".into()
+            ))]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemSocket(1)),
+            vec![FrontEndAction::SocketGem(1)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemUnsocket(0)),
+            vec![FrontEndAction::UnsocketGem(0)]
+        );
+        // The first press only asks; there is no confirm button yet.
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemUpgradeGo),
+            vec![FrontEndAction::GemUpgradeAsk]
+        );
+        assert!(rect_of(&ui, &view, &Hit::GemUpgradeConfirm).is_none());
+        let asking = gems_view(true, 500, 5);
+        assert!(rect_of(&ui, &asking, &Hit::GemUpgradeGo).is_none());
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::GemUpgradeConfirm),
+            vec![FrontEndAction::GemUpgrade]
+        );
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::GemUpgradeCancel),
+            vec![FrontEndAction::GemUpgradeCancel]
+        );
+        // Too few gems or too little gold: nothing to press. A filled socket's Unsocket needs gold.
+        for view in [gems_view(false, 500, 1), gems_view(false, 5, 5)] {
+            assert!(rect_of(&ui, &view, &Hit::GemUpgradeGo).is_none());
+        }
+        assert!(rect_of(&ui, &gems_view(false, 100, 5), &Hit::GemUnsocket(0)).is_none());
+    }
+
+    #[test]
+    fn the_gems_panel_draws_hollow_and_filled_sockets_and_the_upgrade_terms() {
+        let view = gems_view(true, 500, 5);
+        let mut list = UiDrawList::new();
+        let mut ctx = Painter {
+            list: &mut list,
+            scale: scale(),
+            hovered: None,
+            pointer: (0.0, 0.0),
+            hint: None,
+        };
+        draw_workshop(&mut ctx, &view, 1280.0, 720.0);
+        let drawn: Vec<(String, UiColor)> = list
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Label { range, color, .. } => {
+                    Some((list.text_of(*range).to_owned(), *color))
+                }
+                _ => None,
+            })
+            .collect();
+        let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
+        assert!(has("GEMS").is_some());
+        assert!(has("( )").is_some() && has("Empty socket").is_some());
+        assert!(has("(*)").is_some() && has("Perfect Ruby  +6 Main Stat").is_some());
+        assert!(has("Unsocket (150 Gold)").is_some());
+        assert!(has("Upgrade: consume 2 for 1 Flawed Emerald").is_some());
+        assert!(has("Success chance: 90%").is_some());
+        assert_eq!(
+            has("On failure one gem is returned and the rest are lost.").map(|(_, c)| *c),
+            Some(BAD)
+        );
+        assert!(has("Confirm (10 gold)").is_some());
+    }
+
     fn rusty_sword(index: u32) -> BagRow {
         BagRow {
             index,
@@ -6236,6 +6833,7 @@ mod tests {
             ],
             sharpen: None,
             reforge: None,
+            gems: None,
         });
         view
     }

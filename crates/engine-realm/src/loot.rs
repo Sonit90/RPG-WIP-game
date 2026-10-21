@@ -34,8 +34,9 @@ use engine_game::character::{
 use engine_game::enemy::EnemyKind;
 use engine_game::hero::Hero;
 use engine_game::loot::{
-    BookChances, BookDrop, BookRules, BossTable, CurrencyRules, DropSource, EpicRules, GoldRules, LootRules, LootTable, MobLootRules,
-    QualityBucket, QualityRules, SharpeningDrops, WeightedItem,
+    BookChances, BookDrop, BookRules, BossTable, CurrencyRules, DropSource, EpicRules, GemDrops,
+    GoldRules, LootRules, LootTable, MobLootRules, QualityBucket, QualityRules, SharpeningDrops,
+    WeightedItem,
 };
 use engine_game::sharpen_drops::{SharpenCurve, validate_weights};
 use engine_game::talent::books::BookKind;
@@ -71,6 +72,9 @@ pub struct LootItem {
     /// The id of the equipment set (`sets.json`) this item is a piece of, if any.
     #[serde(default)]
     pub set: Option<String>,
+    /// How many gem sockets it has, `0..=2`. Absent: none.
+    #[serde(default)]
+    pub sockets: u8,
 }
 
 /// A trinket's active as written: `{ "effect": "group_absorb", "cooldown_s": 120, ... }`.
@@ -372,6 +376,19 @@ impl LootCatalog {
                     row.id
                 )));
             }
+            if row.id.starts_with("gem_") {
+                return Err(err(format!(
+                    "item {:?} uses the gem key prefix, which belongs to gems.json",
+                    row.id
+                )));
+            }
+            if usize::from(row.sockets) > engine_game::character::GEM_SOCKETS_MAX {
+                return Err(err(format!(
+                    "item {:?} has more than {} sockets",
+                    row.id,
+                    engine_game::character::GEM_SOCKETS_MAX
+                )));
+            }
             if ItemFamily::from_key(&row.slot).is_none() {
                 return Err(err(format!(
                     "item {:?} has unknown slot {:?}",
@@ -420,9 +437,14 @@ impl LootCatalog {
             return Err(err("there is no boss table"));
         }
         for (boss, entries) in &self.boss_tables {
-            let is_boss = EnemyKind::from_id(boss).is_some_and(EnemyKind::is_boss);
-            if !is_boss {
-                return Err(err(format!("boss table {boss:?} is not a boss")));
+            // A boss, or an elite that guards the way to one and pays out where it falls.
+            let has_table = EnemyKind::from_id(boss).is_some_and(|kind| {
+                kind.is_boss() || kind.archetype().role == engine_game::enemy::MonsterRole::Elite
+            });
+            if !has_table {
+                return Err(err(format!(
+                    "boss table {boss:?} is not a boss or an elite"
+                )));
             }
             self.validate_table(&format!("boss table {boss:?}"), entries)?;
         }
@@ -575,6 +597,8 @@ impl LootCatalog {
                         .collect(),
                     active: row.active.as_ref().and_then(LootActive::parsed),
                     set: row.set.clone(),
+                    sockets: row.sockets,
+                    gem_level: 0,
                 })
             })
             .collect()
@@ -583,7 +607,12 @@ impl LootCatalog {
     /// Registers the items with `engine-game` (idempotent; the first registration in the
     /// process wins).
     pub fn register_items(&self) {
-        register_catalog_items(self.items_for_registration());
+        // The gems follow the dungeon items, so their ids are positions after the file's own.
+        let mut items = self.items_for_registration();
+        if let Some(gems) = crate::gems::builtin() {
+            items.extend(gems.items_for_registration());
+        }
+        register_catalog_items(items);
         // The interface marks highly sharpened copies from the same number the file states.
         engine_game::character::set_sharpen_highlight_from(self.sharpening_rules().highlight_from);
         // The sets name these items, so they travel together: whoever can resolve an item key
@@ -670,6 +699,7 @@ impl LootCatalog {
             },
             sharpening: self.sharpening_rules(),
             books: self.book_rules()?,
+            gems: crate::gems::builtin().map_or_else(GemDrops::none, |gems| gems.drop_rules()),
         })
     }
 }
@@ -827,7 +857,7 @@ mod tests {
         let loot = catalog.loot();
         assert!(loot.items.len() >= 20, "only {} items", loot.items.len());
         let epics = loot.items.iter().filter(|row| row.rarity == "epic").count();
-        assert!((4..=40).contains(&epics), "{epics} epics");
+        assert!((4..=48).contains(&epics), "{epics} epics");
         for (index, row) in loot.items.iter().enumerate() {
             let def = item_by_key(&row.id).expect("registered");
             assert_eq!(
@@ -919,6 +949,94 @@ mod tests {
             let def = item_by_key(key).expect("registered");
             assert!(stat_total(def.id) <= best_crypt * 1.2, "{key}");
         }
+    }
+
+    #[test]
+    fn the_pontiff_drops_armoured_epics_for_the_slots_that_had_none() {
+        let rules = rules();
+        let table = rules
+            .boss_table("ashen_pontiff")
+            .expect("the Pontiff has a table");
+        // Shoulder, legs, hands and feet had epics, but none with armour: tanks had nothing.
+        let mut slots = std::collections::HashSet::new();
+        for key in [
+            "pontiffs_ashplate_pauldrons",
+            "cinderforged_greaves",
+            "gauntlets_of_the_last_rite",
+            "ashwalker_sabatons",
+        ] {
+            let def = item_by_key(key).expect("registered");
+            assert_eq!(def.quality, ItemQuality::Epic, "{key}");
+            assert_eq!(def.item_level, 14, "{key}");
+            assert!(stat_total(def.id) >= 19.0, "{key}");
+            let armour = item(def.id)
+                .expect("registered")
+                .stats
+                .entries()
+                .find(|(stat, _)| *stat == engine_game::character::Stat::Armor)
+                .map_or(0.0, |(_, value)| value);
+            assert!(armour > 0.0, "{key} has no armour");
+            assert!(
+                table.entries.iter().any(|entry| entry.item == def.id),
+                "{key}"
+            );
+            slots.insert(def.family);
+        }
+        assert_eq!(slots.len(), 4, "four different slots: {slots:?}");
+        // Stronger than the Overseer's by an item level, never by more than the Foundry's
+        // tolerance over the best of the crypt's.
+        let best_crypt = stat_total(
+            item_by_key("stewards_funerary_raiment")
+                .expect("registered")
+                .id,
+        );
+        for entry in &table.entries {
+            let def = item(entry.item).expect("registered");
+            if def.quality == ItemQuality::Epic && def.item_level == 14 {
+                assert!(stat_total(def.id) <= best_crypt * 1.2, "{}", def.key);
+            }
+        }
+        // Every table row is something the registry knows, and only the Pontiff's own epics
+        // are the new ones.
+        for entry in &table.entries {
+            assert!(item(entry.item).is_some());
+        }
+    }
+
+    #[test]
+    fn the_censer_warden_has_a_small_table_of_its_own_that_is_not_the_chests() {
+        let rules = rules();
+        let warden = rules
+            .boss_table("censer_warden")
+            .expect("the Warden has a table");
+        let pontiff = rules
+            .boss_table("ashen_pontiff")
+            .expect("the Pontiff has a table");
+        // Small: a handful of rows, two of them its own epics.
+        assert!(warden.entries.len() <= 10, "{} rows", warden.entries.len());
+        assert!(warden.entries.len() < pontiff.entries.len());
+        let epics: Vec<_> = warden
+            .entries
+            .iter()
+            .filter_map(|entry| item(entry.item))
+            .filter(|def| def.quality == ItemQuality::Epic)
+            .collect();
+        assert_eq!(epics.len(), 2, "the Warden's own two epics");
+        for def in &epics {
+            assert_eq!(def.item_level, 13);
+            assert!(stat_total(def.id) >= 19.0, "{}", def.key);
+            assert!(
+                !pontiff.entries.iter().any(|entry| entry.item == def.id),
+                "{} is on both tables",
+                def.key
+            );
+        }
+        // The Warden is an elite guarding the way: a table may be keyed by one.
+        assert!(
+            EnemyKind::from_id("censer_warden")
+                .is_some_and(|kind| kind.archetype().role == MonsterRole::Elite)
+        );
+        assert!(EnemyKind::from_id("ashen_pontiff").is_some_and(EnemyKind::is_boss));
     }
 
     #[test]

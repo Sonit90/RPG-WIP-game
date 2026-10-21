@@ -14,6 +14,9 @@
 //! | `POST /characters/{id}/reforge` | re-roll an item's base quality from the published table: the server rolls, the locked row pays |
 //! | `POST /characters/{id}/books/use` | read a book from the bag: the item is consumed, the book learned (409 for a duplicate or another class's book) |
 //! | `PUT  /characters/{id}/books/active` | choose the active option of an enhancement book (hub only: 409 while engaged) |
+//! | `POST /characters/{id}/gems/socket` | fill an empty socket with a gem from the bag |
+//! | `POST /characters/{id}/gems/unsocket` | take a gem out for gold, back into the bag |
+//! | `POST /characters/{id}/gems/upgrade` | consume gems and gold for a higher level: the server rolls |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
 //! | `POST /characters/{id}/key/downgrade` | key one level lower, extra modifiers dropped (hub only) |
 //! | `POST /characters/{id}/key/cleanse` | strip a key's modifiers for gold (hub only) |
@@ -56,8 +59,9 @@ use axum::{
 use engine_realm::api::{
     CharacterDetail, CharacterSummary, HistoryPage, LeaderboardPage, RunDetail, EconomyInfo, SharpenOutcomeName, SharpenRequest,
     SharpenResponse, ExchangeInfo, ExchangeRequest, MoveItemRequest, QueueRequest, ResourceInfo,
-    ReforgeRequest, ReforgeResponse, RequestIdBody, SalvageInfo, SalvageRequest, SettingsDocument, SetActiveBookRequest, TalentsRequest,
-    UseBookRequest, UseBookResponse,
+    GemSlotResponse, GemSocketRequest, GemUnsocketRequest, GemUpgradeRequest, GemUpgradeResponse,
+    ReforgeRequest, ReforgeResponse, RequestIdBody, SalvageInfo, SalvageRequest, SetActiveBookRequest,
+    SettingsDocument, TalentsRequest, UseBookRequest, UseBookResponse,
 };
 use generic_auth_core::AppError;
 use realm_game::bridge::{BridgeError, Snapshot};
@@ -84,6 +88,9 @@ pub fn router() -> Router<AppState> {
         .route("/characters/{id}/reforge", post(reforge))
         .route("/characters/{id}/books/use", post(use_book))
         .route("/characters/{id}/books/active", put(set_active_book))
+        .route("/characters/{id}/gems/socket", post(gem_socket))
+        .route("/characters/{id}/gems/unsocket", post(gem_unsocket))
+        .route("/characters/{id}/gems/upgrade", post(gem_upgrade))
         .route("/economy", get(get_economy))
         .route("/characters/{id}/key/downgrade", post(downgrade_key))
         .route("/characters/{id}/key/cleanse", post(cleanse_key))
@@ -598,6 +605,87 @@ async fn reforge(
     Ok(Json(response))
 }
 
+/// Rate limit and parse the ids every gem route starts with.
+fn gem_prelude(
+    state: &AppState,
+    user: &AuthUser,
+    id: &str,
+    request_id: &str,
+) -> Result<(uuid::Uuid, uuid::Uuid), ApiError> {
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let character = character_id(id)?;
+    let request_id = request_id_of(Some(request_id))?
+        .ok_or_else(|| ApiError(AppError::BadRequest("A gem action needs a request id.".into())))?;
+    Ok((character, request_id))
+}
+
+/// Socket a gem: one gem from the bag fills an empty socket. Atomic and idempotent in
+/// [`store::socket_gem`]; refused while the character is engaged.
+async fn gem_socket(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<GemSocketRequest>,
+) -> ApiResult<Json<GemSlotResponse>> {
+    let (character, request_id) = gem_prelude(&state, &user, &id, &body.request_id)?;
+    let response = store::socket_gem(&state.db, user.user_id, character, request_id, &body, || async {
+        ensure_unlocked(&state, &user).await.map_err(|e| e.0)
+    })
+    .await
+    .map_err(ApiError)?
+    .ok_or(ApiError(AppError::NotFound))?;
+    Ok(Json(response))
+}
+
+/// Unsocket a gem: costs gold, the gem returns to the bag. See [`store::unsocket_gem`].
+async fn gem_unsocket(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<GemUnsocketRequest>,
+) -> ApiResult<Json<GemSlotResponse>> {
+    let (character, request_id) = gem_prelude(&state, &user, &id, &body.request_id)?;
+    let response = store::unsocket_gem(&state.db, user.user_id, character, request_id, &body, || async {
+        ensure_unlocked(&state, &user).await.map_err(|e| e.0)
+    })
+    .await
+    .map_err(ApiError)?
+    .ok_or(ApiError(AppError::NotFound))?;
+    Ok(Json(response))
+}
+
+/// Upgrade a gem: the server rolls from the operating system's random source (nothing from the
+/// request). See [`store::upgrade_gem`].
+async fn gem_upgrade(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<GemUpgradeRequest>,
+) -> ApiResult<Json<GemUpgradeResponse>> {
+    use rand::RngCore;
+    let (character, request_id) = gem_prelude(&state, &user, &id, &body.request_id)?;
+    let mut draw = || rand::rngs::OsRng.next_u64();
+    let response = store::upgrade_gem(
+        &state.db,
+        user.user_id,
+        character,
+        request_id,
+        body.gem_slot,
+        &mut draw,
+        || async { ensure_unlocked(&state, &user).await.map_err(|e| e.0) },
+    )
+    .await
+    .map_err(ApiError)?
+    .ok_or(ApiError(AppError::NotFound))?;
+    Ok(Json(response))
+}
+
 /// Reads a book from the bag: the item is consumed and the book learned, in one transaction
 /// ([`store::use_book_character`]). The request id is required. A duplicate or another class's
 /// book is a 409 and the item stays. Which key level a book needs is decided at the drop, not here.
@@ -1039,6 +1127,35 @@ mod tests {
         let ask = body.find("ensure_unlocked()").expect("asks the realm");
         let write = body.find("hub.save_loadout").expect("writes");
         assert!(begin < ask && ask < write, "lock, ask, then write");
+    }
+
+    /// The gem routes hand the whole transaction to the store, which asks the realm with the row
+    /// locked before it writes; the upgrade rolls from the operating system.
+    #[test]
+    fn gem_routes_ask_the_realm_inside_the_store_and_the_upgrade_rolls_from_the_os() {
+        for (name, call) in [
+            ("gem_socket", "store::socket_gem("),
+            ("gem_unsocket", "store::unsocket_gem("),
+            ("gem_upgrade", "store::upgrade_gem("),
+        ] {
+            let text = handler(name);
+            assert!(text.contains(call), "{name}");
+            assert!(text.contains("ensure_unlocked(&state, &user)"), "{name}");
+        }
+        let upgrade = handler("gem_upgrade");
+        assert!(upgrade.contains("OsRng"));
+        assert!(!upgrade.contains("body.roll") && !upgrade.contains("seed"));
+        let source = include_str!("../../../game/src/store.rs");
+        for function in ["socket_gem", "unsocket_gem", "upgrade_gem"] {
+            let start = source
+                .find(&format!("pub async fn {function}"))
+                .expect("the store function");
+            let body = &source[start..];
+            let begin = body.find("HubTx::begin(").expect("takes the row lock");
+            let ask = body.find("ensure_unlocked()").expect("asks the realm");
+            let write = body.find("hub.save_loadout").expect("writes");
+            assert!(begin < ask && ask < write, "{function}: lock, ask, then write");
+        }
     }
 
     /// Choosing an option asks the realm inside the store, after the row lock and before the

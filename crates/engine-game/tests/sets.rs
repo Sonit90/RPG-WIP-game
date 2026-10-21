@@ -35,6 +35,8 @@ fn piece(key: &str, family: ItemFamily, set: Option<&str>) -> CatalogItem {
         stats: vec![(Stat::Stamina, 10.0)],
         active: None,
         set: set.map(str::to_owned),
+        sockets: 0,
+        gem_level: 0,
     }
 }
 

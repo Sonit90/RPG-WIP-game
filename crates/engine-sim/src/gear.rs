@@ -25,7 +25,8 @@
 //! | `high`   | best *epic* in every slot that has one   | 100     | +6          |
 //! | `p2_max` | the same pieces as `high`                | 110     | +10         |
 //! | `p2_set` | `p2_max` with the full major set on      | 110     | +10         |
-//! | `p2_books` | `p2_set` plus the class's books (see [`crate::books`]) | 110 | +10    |
+//! | `p2_gems`| `p2_set` with max gems in every socket (main stat; stamina in a second) | 110 | +10 |
+//! | `p2_books` | `p2_gems` plus the class's books (see [`crate::books`]) | 110 | +10    |
 //!
 //! `high` is the best the game currently lets a character reach short of a jackpot roll;
 //! `p2_max` is the ceiling P2 is designed against (maximum quality, a heavily sharpened set).
@@ -58,6 +59,12 @@ use engine_game::character::{
 use engine_game::hero::Hero;
 use engine_realm::loadout::{EquippedItem, Loadout as StoredLoadout, sheet_of};
 use engine_realm::loot::{LootCatalog, LootItem, ensure_items_registered};
+
+/// The gem kind the `p2_gems` tier puts in every first socket: the main stat, every class's best.
+pub const GEM_KIND: &str = "main_stat";
+
+/// The kind in a second socket: Stamina, so the tier also buys survivability.
+pub const SECOND_GEM_KIND: &str = "stamina";
 
 /// What a loadout is made of: slot, item key (`assets/catalog/loot.json`'s `id`) and props.
 pub type Loadout = Vec<(EquipSlot, String, ItemProps)>;
@@ -103,20 +110,23 @@ pub enum GearTier {
     P2Max,
     /// `P2Max` with the class's full major set swapped in: what a set bonus is worth.
     P2Set,
-    /// `P2Set` with the class's books: its talent point and the best option of each enhancement
+    /// `P2Set` with a max-level gem in every socket: what the gems are worth.
+    P2Gems,
+    /// `P2Gems` with the class's books: its talent point and the best option of each enhancement
     /// book. What books are worth on top of the best gear.
     P2Books,
 }
 
 impl GearTier {
     /// Every tier, lowest first.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::None,
         Self::Low,
         Self::Medium,
         Self::High,
         Self::P2Max,
         Self::P2Set,
+        Self::P2Gems,
         Self::P2Books,
     ];
 
@@ -130,6 +140,7 @@ impl GearTier {
             Self::High => "high",
             Self::P2Max => "p2_max",
             Self::P2Set => "p2_set",
+            Self::P2Gems => "p2_gems",
             Self::P2Books => "p2_books",
         }
     }
@@ -174,10 +185,12 @@ pub struct GearProfile {
     pub sharpening: u8,
     /// Whether the character also has the class's books ([`crate::books::shipped_plan`]).
     pub books: bool,
+    /// Whether every socket holds a max-level gem ([`GEM_KIND`], then [`SECOND_GEM_KIND`]).
+    pub gems: bool,
 }
 
 /// **Every gear profile the simulator knows, in one table.** Adding one is adding a row.
-pub const PROFILES: [GearProfile; 7] = [
+pub const PROFILES: [GearProfile; 8] = [
     GearProfile {
         tier: GearTier::None,
         variant: "none",
@@ -185,6 +198,7 @@ pub const PROFILES: [GearProfile; 7] = [
         quality: 100,
         sharpening: 0,
         books: false,
+        gems: false,
     },
     GearProfile {
         tier: GearTier::Low,
@@ -193,6 +207,7 @@ pub const PROFILES: [GearProfile; 7] = [
         quality: 70,
         sharpening: 0,
         books: false,
+        gems: false,
     },
     GearProfile {
         tier: GearTier::Medium,
@@ -201,6 +216,7 @@ pub const PROFILES: [GearProfile; 7] = [
         quality: 85,
         sharpening: 3,
         books: false,
+        gems: false,
     },
     GearProfile {
         tier: GearTier::High,
@@ -209,6 +225,7 @@ pub const PROFILES: [GearProfile; 7] = [
         quality: 100,
         sharpening: 6,
         books: false,
+        gems: false,
     },
     GearProfile {
         tier: GearTier::P2Max,
@@ -217,6 +234,7 @@ pub const PROFILES: [GearProfile; 7] = [
         quality: QUALITY_MAX,
         sharpening: 10,
         books: false,
+        gems: false,
     },
     GearProfile {
         tier: GearTier::P2Set,
@@ -225,6 +243,16 @@ pub const PROFILES: [GearProfile; 7] = [
         quality: QUALITY_MAX,
         sharpening: 10,
         books: false,
+        gems: false,
+    },
+    GearProfile {
+        tier: GearTier::P2Gems,
+        variant: "p2_gems",
+        pick: Pick::MajorSet,
+        quality: QUALITY_MAX,
+        sharpening: 10,
+        books: false,
+        gems: true,
     },
     GearProfile {
         tier: GearTier::P2Books,
@@ -233,6 +261,7 @@ pub const PROFILES: [GearProfile; 7] = [
         quality: QUALITY_MAX,
         sharpening: 10,
         books: true,
+        gems: true,
     },
 ];
 
@@ -307,6 +336,9 @@ impl GearProfile {
                 }
             }
         }
+        if self.gems {
+            socket_max_gems(&mut loadout);
+        }
         loadout
     }
 
@@ -357,6 +389,25 @@ impl GearProfile {
     }
 }
 
+/// Puts a max-level [`GEM_KIND`] gem in the first socket of every piece in `loadout`, and a
+/// max-level [`SECOND_GEM_KIND`] gem in the second.
+pub fn socket_max_gems(loadout: &mut Loadout) {
+    ensure_items_registered();
+    let Some(catalog) = engine_realm::gems::builtin() else {
+        return;
+    };
+    let gem = |kind: &str| {
+        item_by_key(&engine_realm::gems::gem_key(kind, catalog.max_level)).map_or(0, |def| def.id.0)
+    };
+    let kinds = [gem(GEM_KIND), gem(SECOND_GEM_KIND)];
+    for (_, key, props) in loadout.iter_mut() {
+        let sockets = item_by_key(key).map_or(0, |def| usize::from(def.sockets));
+        for (socket, kind) in props.gems.iter_mut().zip(kinds).take(sockets) {
+            *socket = kind;
+        }
+    }
+}
+
 /// **A character sheet from a hand-made loadout**, through the realm's own `sheet_of`.
 ///
 /// Entries the game cannot honour (an unknown key, an item in the wrong slot) are dropped and
@@ -373,6 +424,7 @@ pub fn sheet_of_items(hero: Hero, loadout: &[(EquipSlot, String, ItemProps)]) ->
                 quality: props.quality,
                 sharpening: props.sharpening,
                 broken: props.broken,
+                gems: engine_realm::loadout::gem_keys_of(props.gems),
             })
             .collect(),
         ..StoredLoadout::default()
@@ -539,7 +591,7 @@ mod tests {
         };
         let totals: Vec<f32> = GearTier::ALL.into_iter().map(total).collect();
         assert_eq!(totals[0], 0.0);
-        // Books are not stats: `p2_books` wears the same gear as `p2_set`.
+        // Books are not stats: `p2_books` wears the same gear as `p2_gems`.
         let (gear, books) = totals.split_at(totals.len() - 1);
         assert!(gear.windows(2).all(|pair| pair[0] < pair[1]), "{totals:?}");
         assert_eq!(gear[gear.len() - 1], books[0], "{totals:?}");
@@ -554,7 +606,7 @@ mod tests {
             for profile in PROFILES {
                 let sheet = profile.sheet(hero);
                 let worn = active_sets(sheet.equipment());
-                if matches!(profile.tier, GearTier::P2Set | GearTier::P2Books) {
+                if profile.pick == Pick::MajorSet {
                     let active = worn.get(&major.id).expect("the major set is worn");
                     assert_eq!(usize::from(active.equipped), major.pieces.len());
                     assert_eq!(active.tiers_active(), major.bonuses.len());

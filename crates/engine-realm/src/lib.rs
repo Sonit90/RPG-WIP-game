@@ -28,6 +28,7 @@
 //! | [`loadout`] | what a character wears, and its gear score |
 //! | [`economy`] | resources, salvage and exchanges |
 //! | [`sharpen`] | sharpening equipment: cost, success and breakage |
+//! | [`gems`] | gems: the catalog, socketing, unsocketing and upgrading |
 //! | [`reforge`] | the reforge gamble: re-roll an item's base quality from a published table |
 //! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
 //! | [`mapcheck`] | validation of community maps and official scenes, one shared rule set |
@@ -56,6 +57,7 @@ pub mod chat;
 pub mod combat;
 pub mod economy;
 pub mod error;
+pub mod gems;
 pub mod haul;
 pub mod instance;
 pub mod key;

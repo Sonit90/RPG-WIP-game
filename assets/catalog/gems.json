@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "_comment": "Gems: socketed into equipment (loot.json `sockets`, 0-2 per item) for a flat stat that is NOT scaled by the piece's quality or sharpening. Gem items are registered as gem_<kind id>_<level> (stackable). `values` are per level, strictly increasing. Upgrade: consume `consume` gems of one kind and level, pay `gold`, succeed with `success_chance` for the level being upgraded (steps[0] is level 1 -> 2); on failure `keep_one` hands one of the consumed gems back. Drops: per player per event; the chance grows with the key level by key_bonus_per_level (capped); level_weights are relative per level (index 0 = level 1). Tuned so a max-level gem of a chosen kind takes about 100 runs (see docs/gems.md).",
+  "max_level": 5,
+  "level_names": ["Chipped", "Flawed", "Cut", "Flawless", "Perfect"],
+  "kinds": [
+    { "id": "main_stat", "name": "Ruby", "stat": "main_stat", "values": [0.2, 0.5, 0.8, 1.0, 1.5] },
+    { "id": "stamina", "name": "Amber", "stat": "stamina", "values": [1.0, 1.5, 2.5, 3.5, 5.0] },
+    { "id": "critical_strike", "name": "Topaz", "stat": "critical_strike", "values": [0.2, 0.5, 0.8, 1.0, 1.5] },
+    { "id": "haste", "name": "Emerald", "stat": "haste", "values": [0.2, 0.5, 0.8, 1.0, 1.5] },
+    { "id": "versatility", "name": "Amethyst", "stat": "versatility", "values": [0.2, 0.5, 0.8, 1.0, 1.5] },
+    { "id": "armor", "name": "Onyx", "stat": "armor", "values": [1.5, 2.5, 4.0, 5.5, 8.0] },
+    { "id": "spirit", "name": "Opal", "stat": "spirit", "values": [0.2, 0.5, 0.8, 1.0, 1.5] }
+  ],
+  "drops": {
+    "key_bonus_per_level": 0.04,
+    "max_multiplier": 2.0,
+    "sources": [
+      { "source": "mob", "chance": 0.004, "level_weights": [1] },
+      { "source": "elite", "chance": 0.05, "level_weights": [80, 20] },
+      { "source": "boss", "chance": 0.5, "level_weights": [60, 30, 10] },
+      { "source": "chest", "chance": 0.25, "level_weights": [70, 25, 5] }
+    ]
+  },
+  "upgrade": {
+    "consume": 2,
+    "on_fail": "keep_one",
+    "steps": [
+      { "gold": 10, "success_chance": 0.9 },
+      { "gold": 25, "success_chance": 0.75 },
+      { "gold": 60, "success_chance": 0.6 },
+      { "gold": 150, "success_chance": 0.45 }
+    ]
+  },
+  "unsocket": { "gold": [5, 12, 30, 70, 150] }
+}

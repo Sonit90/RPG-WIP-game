@@ -52,6 +52,7 @@ fn book_item(cell: u32, id: &str) -> BagItem {
         quality: 100,
         sharpening: 0,
         broken: false,
+        gems: Vec::new(),
     }
 }
 

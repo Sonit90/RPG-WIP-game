@@ -1,7 +1,7 @@
 //! Books in the power-scaling simulation.
 //!
 //! ```text
-//! p2_books = p2_set gear  +  the class's talent books  +  the best option of each enhancement book
+//! p2_books = p2_gems gear  +  the class's talent books  +  the best option of each enhancement book
 //! ```
 //!
 //! Books are not stats on the sheet. A talent book is a talent point (the plan buys the best
@@ -10,7 +10,7 @@
 //! measured change is the game's own `<Hero>TalentEffects` at work.
 //!
 //! The study at the end of the report ([`study`]) measures every option of every enhancement book
-//! alone on `p2_set`, which is what justifies [`shipped_plan`]'s choices: the best option of each
+//! alone on `p2_gems`, which is what justifies [`shipped_plan`]'s choices: the best option of each
 //! book for the class, by single-target and eight-target damage.
 
 use std::fmt::Write as _;
@@ -87,7 +87,7 @@ pub fn apply(simulation: &mut Simulation, hero: Hero, plan: &BookPlan) {
     }
 }
 
-/// One option's measured gain over `p2_set`.
+/// One option's measured gain over `p2_gems`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionMeasure {
     /// The class.
@@ -104,10 +104,10 @@ pub struct OptionMeasure {
     pub area: f64,
 }
 
-/// Measures every enhancement option of every class alone on the `Default` build in `p2_set`.
+/// Measures every enhancement option of every class alone on the `Default` build in `p2_gems`.
 #[must_use]
 pub fn study(options: &Options) -> Vec<OptionMeasure> {
-    let profile = GearProfile::headline(GearTier::P2Set);
+    let profile = GearProfile::headline(GearTier::P2Gems);
     let mut out = Vec::new();
     for class in &options.classes {
         let Some(build) = builds_for(*class).into_iter().next() else {
@@ -173,10 +173,10 @@ pub fn write_section(
     let _ = writeln!(out, "## 8. Books\n");
     let _ = writeln!(
         out,
-        "Every enhancement option alone, on the `Default` build in `p2_set` gear, against the same \
+        "Every enhancement option alone, on the `Default` build in `p2_gems` gear, against the same \
          build without it (damage per second; a negative number is a trade, not a mistake). The \
          `p2_books` tier wears the starred option of each book, plus the talent the three talent \
-         books pay for, on top of `p2_set`.\n"
+         books pay for, on top of `p2_gems`.\n"
     );
     let _ = writeln!(
         out,
@@ -203,11 +203,11 @@ pub fn write_section(
             out,
             "**What books add on top of the top gear tier** (the `Default` build, single target 60 s):\n"
         );
-        let _ = writeln!(out, "| Class | `p2_set` DPS | `p2_books` DPS | Books add |");
+        let _ = writeln!(out, "| Class | `p2_gems` DPS | `p2_books` DPS | Books add |");
         let _ = writeln!(out, "|---|---:|---:|---:|");
         for class in &scaling.classes {
             let find = |tier| class.tiers.iter().find(|t| t.tier == tier).map(|t| t.dps);
-            if let (Some(set), Some(books)) = (find(GearTier::P2Set), find(GearTier::P2Books)) {
+            if let (Some(set), Some(books)) = (find(GearTier::P2Gems), find(GearTier::P2Books)) {
                 let _ = writeln!(
                     out,
                     "| {} | {:.0} | {:.0} | {:+.1}% |",

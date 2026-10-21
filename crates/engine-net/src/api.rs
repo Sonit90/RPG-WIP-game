@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use engine_realm::api::{
     CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, LoginRequest,
+    GemSlotResponse, GemSocketRequest, GemUnsocketRequest, GemUpgradeRequest, GemUpgradeResponse,
     MoveItemRequest, QueueRequest, ReforgeRequest, ReforgeResponse, RefreshRequest,
     RegisterRequest, RequestIdBody, SalvageRequest, SetActiveBookRequest, SettingsDocument,
     SharpenRequest, SharpenResponse, TokenPair, UseBookRequest, UseBookResponse, UserProfile,
@@ -363,6 +364,36 @@ impl ApiClient {
         )
     }
 
+    /// Puts one gem from bag cell `gem_slot` into an empty `socket` of the item at `item_slot`.
+    /// `request_id` is the one id of this user action; a retry gets the first answer back.
+    ///
+    /// # Errors
+    ///
+    /// The socket is taken or missing, the cell holds no gem, the character is engaged, it is
+    /// not the caller's, or the server is unreachable.
+    pub fn socket_gem(
+        &self,
+        token: &str,
+        id: &str,
+        item_slot: &SlotRef,
+        socket: u8,
+        gem_slot: u32,
+        request_id: &str,
+    ) -> Result<GemSlotResponse, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/gems/socket", path_segment(id)),
+            Some(token),
+            &GemSocketRequest {
+                request_id: request_id.to_owned(),
+                item_slot: item_slot.clone(),
+                socket,
+                gem_slot,
+            },
+            Category::Persistence,
+        )
+    }
+
     /// Chooses the option in force for an enhancement book.
     ///
     /// # Errors
@@ -386,6 +417,58 @@ impl ApiClient {
                 book_id: book_id.to_owned(),
                 option_id: option_id.to_owned(),
                 request_id: request_id.to_owned(),
+            },
+            Category::Persistence,
+        )
+    }
+
+    /// Takes the gem out of `socket` for gold; it returns to the bag.
+    ///
+    /// # Errors
+    ///
+    /// The socket is empty, the gold is short, the bag is full, the character is engaged, or
+    /// the server is unreachable.
+    pub fn unsocket_gem(
+        &self,
+        token: &str,
+        id: &str,
+        item_slot: &SlotRef,
+        socket: u8,
+        request_id: &str,
+    ) -> Result<GemSlotResponse, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/gems/unsocket", path_segment(id)),
+            Some(token),
+            &GemUnsocketRequest {
+                request_id: request_id.to_owned(),
+                item_slot: item_slot.clone(),
+                socket,
+            },
+            Category::Persistence,
+        )
+    }
+
+    /// Upgrades the gem stack in bag cell `gem_slot`: the server consumes gems and gold and rolls.
+    ///
+    /// # Errors
+    ///
+    /// Too few gems, short of gold, the gem is at the top level, the bag is full, the character
+    /// is engaged, or the server is unreachable.
+    pub fn upgrade_gem(
+        &self,
+        token: &str,
+        id: &str,
+        gem_slot: u32,
+        request_id: &str,
+    ) -> Result<GemUpgradeResponse, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/gems/upgrade", path_segment(id)),
+            Some(token),
+            &GemUpgradeRequest {
+                request_id: request_id.to_owned(),
+                gem_slot,
             },
             Category::Persistence,
         )

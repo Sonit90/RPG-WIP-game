@@ -159,6 +159,33 @@ pub enum NetCommand {
         /// The option to put in force.
         option_id: String,
     },
+    /// Put a gem from the bag into an empty socket of an item.
+    SocketGem {
+        /// Which character.
+        character_id: String,
+        /// The item: a worn slot or bag cell.
+        item_slot: SlotRef,
+        /// The socket, 0-based.
+        socket: u8,
+        /// The bag cell of the gem stack.
+        gem_slot: u32,
+    },
+    /// Take the gem out of a socket (costs gold).
+    UnsocketGem {
+        /// Which character.
+        character_id: String,
+        /// The item: a worn slot or bag cell.
+        item_slot: SlotRef,
+        /// The socket, 0-based.
+        socket: u8,
+    },
+    /// Upgrade the gem stack in a bag cell; the server rolls.
+    UpgradeGem {
+        /// Which character.
+        character_id: String,
+        /// The bag cell of the gem stack.
+        gem_slot: u32,
+    },
     /// Load the economy catalog.
     FetchEconomy,
     /// Load a page of a character's run history (fetched when the screen opens or pages).
@@ -267,6 +294,8 @@ pub enum Action {
     Reforge,
     /// Reading a book or choosing its option.
     Book,
+    /// Socketing, unsocketing or upgrading a gem.
+    Gems,
     /// Loading the economy catalog.
     Economy,
     /// Loading run history or a run.
@@ -356,6 +385,10 @@ pub enum NetEvent {
     Reforged(Box<engine_realm::api::ReforgeResponse>),
     /// A book was read; the character is the server's copy afterwards.
     BookRead(Box<engine_realm::api::UseBookResponse>),
+    /// A gem was socketed or taken out; the character is the server's copy afterwards.
+    GemSlotted(Box<engine_realm::api::GemSlotResponse>),
+    /// A gem upgrade was rolled; the character is the server's copy afterwards.
+    GemUpgraded(Box<engine_realm::api::GemUpgradeResponse>),
     /// The economy catalog.
     Economy(Box<EconomyInfo>),
     /// A page of run history; `before` echoes the request (`None`: the first page).
@@ -774,6 +807,43 @@ impl Worker {
                     Err(error) => self.fail(Action::Book, error),
                 }
             }
+            NetCommand::SocketGem {
+                character_id,
+                item_slot,
+                socket,
+                gem_slot,
+            } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api.socket_gem(
+                        &token,
+                        &character_id,
+                        &item_slot,
+                        socket,
+                        gem_slot,
+                        request_id,
+                    )
+                });
+                match result {
+                    Ok(response) => self.emit(NetEvent::GemSlotted(Box::new(response))),
+                    Err(error) => self.fail(Action::Gems, error),
+                }
+            }
+            NetCommand::UnsocketGem {
+                character_id,
+                item_slot,
+                socket,
+            } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .unsocket_gem(&token, &character_id, &item_slot, socket, request_id)
+                });
+                match result {
+                    Ok(response) => self.emit(NetEvent::GemSlotted(Box::new(response))),
+                    Err(error) => self.fail(Action::Gems, error),
+                }
+            }
             NetCommand::SetActiveBook {
                 character_id,
                 book_id,
@@ -787,6 +857,20 @@ impl Worker {
                 match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),
                     Err(error) => self.fail(Action::Book, error),
+                }
+            }
+            NetCommand::UpgradeGem {
+                character_id,
+                gem_slot,
+            } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .upgrade_gem(&token, &character_id, gem_slot, request_id)
+                });
+                match result {
+                    Ok(response) => self.emit(NetEvent::GemUpgraded(Box::new(response))),
+                    Err(error) => self.fail(Action::Gems, error),
                 }
             }
             NetCommand::DowngradeKey { character_id } => {

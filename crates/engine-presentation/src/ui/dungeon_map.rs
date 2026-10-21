@@ -868,6 +868,7 @@ pub fn ability_effects(def: &EnemyAbilityDef, damage_scale: f32) -> Vec<String> 
         EnemyTarget::WoundedAlly => "its most wounded ally",
         EnemyTarget::Farthest => "the farthest player",
         EnemyTarget::Random => "a random player",
+        EnemyTarget::Weakest => "the weakest player",
     };
     match def.shape {
         TelegraphShape::Single => lines.push(if def.effect.is_self() {
@@ -938,8 +939,14 @@ pub fn ability_effects(def: &EnemyAbilityDef, damage_scale: f32) -> Vec<String> 
             trail_duration,
             ..
         } => {
+            // The hunter's leap goes for whoever has the least health left, not its target.
+            let at = if def.select == EnemyTarget::Weakest {
+                "the weakest player"
+            } else {
+                "its target"
+            };
             lines.push(format!(
-                "Charges its target, slowing them {}% for {}",
+                "Charges {at}, slowing them {}% for {}",
                 (slow * 100.0).round() as i32,
                 seconds(slow_duration)
             ));
@@ -1091,6 +1098,12 @@ pub fn abilities_of(kind: EnemyKind) -> Vec<(EnemyAbility, usize)> {
                 out.push((ability, phase));
             }
         }
+    }
+    // What its death resolves is part of what it does, though no priority list owns it.
+    if let Some(ability) = archetype.on_death
+        && !out.iter().any(|(held, _)| *held == ability)
+    {
+        out.push((ability, 0));
     }
     out
 }

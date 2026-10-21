@@ -135,7 +135,7 @@ module schema changed. Because the active options ride in the snapshot, they can
 
 ## Simulator
 
-`engine-sim` has a `p2_books` tier: `p2_set` gear, the one talent the three talent books pay for, and the
+`engine-sim` has a `p2_books` tier: `p2_gems` gear (all other P2 power), the one talent the three talent books pay for, and the
 best option of each enhancement book (`books::shipped_plan`). Section 8 of `docs/balance/sim-report.md`
-measures every option alone against `p2_set` and the tier's gain per class. Options that only move heals
+measures every option alone against `p2_gems` and the tier's gain per class. Options that only move heals
 or defence, and the Warrior's execute (the dummies never get low), do not show in a damage number.

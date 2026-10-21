@@ -245,7 +245,7 @@ pub fn write_section(out: &mut String, scaling: &Scaling) {
          **survivability** is effective health (maximum health over the share of a physical hit \
          that lands), and **kill time** is how long a boss sized to die after \
          {KILL_SECONDS:.0} s of the ungeared build takes to die (capped at {KILL_LIMIT:.0} s). \
-         The required order is `none < low < medium < high < p2_max < p2_set < p2_books` in DPS (survivability too, except that books leave it as it is), \
+         The required order is `none < low < medium < high < p2_max < p2_set < p2_gems < p2_books` in DPS (survivability too, except that books leave it as it is), \
          and the reverse in kill time.\n"
     );
     for class in &scaling.classes {
