@@ -1567,6 +1567,7 @@ impl FrontEndUi {
                     layout.add(Hit::Workshop, rects.workshop);
                     layout.add(Hit::HistoryButton, rects.history);
                     layout.add(Hit::BoardsButton, rects.boards);
+                    layout.add(Hit::CommunityButton, rects.community);
                     if hub.can_change_character {
                         layout.add(Hit::ChangeCharacter, rects.change);
                     }
@@ -2828,6 +2829,7 @@ struct HubRects {
     workshop: UiRect,
     history: UiRect,
     boards: UiRect,
+    community: UiRect,
     change: UiRect,
     logout: UiRect,
 }
@@ -2842,7 +2844,7 @@ fn hub_rects(resource_lines: usize, status_line: bool, w: f32, h: f32, scale: Ui
     let x = w - width - px(20.0);
     let status = if status_line { px(22.0) } else { 0.0 };
     let to_buttons = px(112.0) + lines * px(19.0) + px(8.0) + status;
-    let height = to_buttons + px(38.0) * 6.0 - px(6.0) + px(14.0);
+    let height = to_buttons + px(38.0) * 7.0 - px(6.0) + px(14.0);
     let y = h - height - px(20.0);
     let button = |i: f32| {
         UiRect::new(
@@ -2870,8 +2872,9 @@ fn hub_rects(resource_lines: usize, status_line: bool, w: f32, h: f32, scale: Ui
         workshop: button(2.0),
         history: half(true),
         boards: half(false),
-        change: button(4.0),
-        logout: button(5.0),
+        community: button(4.0),
+        change: button(5.0),
+        logout: button(6.0),
     }
 }
 
@@ -3302,7 +3305,7 @@ fn draw_dungeons(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let px = move |v: f32| scale.px(v);
     ctx.button(
         community_button(w, scale),
-        "Community maps",
+        "Community Maps",
         ButtonKind::Secondary,
         &Hit::CommunityButton,
         true,
@@ -3860,6 +3863,13 @@ fn draw_hub(
             "Boards",
             ButtonKind::Secondary,
             &Hit::BoardsButton,
+            true,
+        );
+        ctx.button(
+            rects.community,
+            "Community Maps",
+            ButtonKind::Secondary,
+            &Hit::CommunityButton,
             true,
         );
         ctx.button(
@@ -6386,11 +6396,40 @@ mod tests {
             (Hit::DungeonFinder, FrontEndAction::OpenDungeonFinder),
             (Hit::Equipment, FrontEndAction::OpenEquipment),
             (Hit::Workshop, FrontEndAction::OpenWorkshop),
+            (Hit::CommunityButton, FrontEndAction::OpenCommunity),
             (Hit::ChangeCharacter, FrontEndAction::ChangeCharacter),
             (Hit::Logout, FrontEndAction::Logout),
         ] {
             assert_eq!(click(&mut ui, &view, &hit), vec![action]);
         }
+    }
+
+    #[test]
+    fn the_hub_has_a_community_maps_entry_that_stays_reachable_while_queued() {
+        let mut ui = FrontEndUi::new();
+        let mut view = hub_view();
+        let entry = rect_of(&ui, &view, &Hit::CommunityButton).expect("a hub entry");
+        // Its own row: clear of the finder it used to hide behind, and of its neighbours.
+        for other in [Hit::DungeonFinder, Hit::Workshop, Hit::BoardsButton, Hit::ChangeCharacter] {
+            let rect = rect_of(&ui, &view, &other).expect("laid out");
+            assert!(!crate::ui::layout_audit::overlap(entry, rect), "{other:?}");
+        }
+        // Browsing needs no free character: the entry is there with the finder shut.
+        view.queue = Some(queue_card(false));
+        if let Some(hub) = view.hub.as_mut() {
+            hub.can_find_dungeon = false;
+            hub.can_change_character = false;
+        }
+        assert!(rect_of(&ui, &view, &Hit::DungeonFinder).is_none());
+        assert!(rect_of(&ui, &view, &Hit::CommunityButton).is_some());
+        assert_eq!(
+            click(&mut ui, &view, &Hit::CommunityButton),
+            vec![FrontEndAction::OpenCommunity]
+        );
+        // And it is drawn with its name, in the hub's button style.
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(words(&list).iter().any(|text| text == "Community Maps"));
     }
 
     #[test]

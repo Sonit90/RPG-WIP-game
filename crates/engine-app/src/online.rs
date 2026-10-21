@@ -420,6 +420,9 @@ pub struct OnlineSession {
     /// A community map the player chose to play: `(dungeon id, difficulty)`, set from the
     /// community page and used by the next queue join.
     community_play: Option<(String, u32)>,
+    /// Where the Community Maps page was opened from (the hub or the Dungeon Finder): Back
+    /// returns there.
+    community_from: Screen,
     /// Community maps' level data, by dungeon id, fetched from the API for an instance.
     community_levels: BTreeMap<String, CommunityLevel>,
     /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
@@ -537,6 +540,7 @@ impl OnlineSession {
             records: crate::online_records::Records::default(),
             community: crate::online_community::CommunityState::default(),
             community_play: None,
+            community_from: Screen::Dungeons,
             community_fetching: BTreeSet::new(),
             community_levels: BTreeMap::new(),
             seen_reroll: None,
@@ -642,6 +646,14 @@ impl OnlineSession {
                 dungeon_id,
                 difficulty,
             } => {
+                // Browsing is free; starting a map is not while queued, grouped or saving.
+                if !self.can_find_dungeon() {
+                    self.toast(
+                        StatusLevel::Warning,
+                        "Finish your current queue, party or run before starting a map.",
+                    );
+                    return;
+                }
                 self.community_play = Some((dungeon_id, difficulty));
                 self.selected_dungeon = None;
                 self.stage = Screen::Roles;
@@ -1860,6 +1872,11 @@ impl OnlineSession {
                 }
             }
             FrontEndAction::OpenCommunity => {
+                self.community_from = if self.stage == Screen::Hub {
+                    Screen::Hub
+                } else {
+                    Screen::Dungeons
+                };
                 self.stage = Screen::Community;
                 self.error = None;
                 self.community_play = None;
@@ -1937,7 +1954,7 @@ impl OnlineSession {
                 self.salvage_tray.clear();
                 self.stage = match self.stage {
                     Screen::Roles if self.community_play.is_some() => Screen::Community,
-                    Screen::Community => Screen::Dungeons,
+                    Screen::Community => self.community_from,
                     Screen::Roles => Screen::Dungeons,
                     Screen::Dungeons
                     | Screen::Workshop
@@ -4649,6 +4666,21 @@ mod tests {
             session.dungeon_scene_file("not_a_dungeon"),
             engine_game::dungeon::GRAVEYARD_CRYPT_FILE
         );
+    }
+
+    #[test]
+    fn community_maps_open_from_the_hub_and_back_returns_where_they_were_opened() {
+        let mut session = session();
+        session.stage = Screen::Hub;
+        session.on_action(FrontEndAction::OpenCommunity);
+        assert_eq!(session.stage, Screen::Community);
+        session.on_action(FrontEndAction::Back);
+        assert_eq!(session.stage, Screen::Hub, "back to the hub it was opened from");
+        // From the Dungeon Finder it still goes back to the finder.
+        session.stage = Screen::Dungeons;
+        session.on_action(FrontEndAction::OpenCommunity);
+        session.on_action(FrontEndAction::Back);
+        assert_eq!(session.stage, Screen::Dungeons);
     }
 
     #[test]
