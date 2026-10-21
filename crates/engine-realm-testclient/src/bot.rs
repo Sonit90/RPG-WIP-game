@@ -88,6 +88,8 @@ pub struct Bot {
     pub start_position: Option<Vec3>,
     /// The access token the bot's own API client holds (security probes only).
     pub probe_token: Option<String>,
+    /// The difficulty to queue a community map at.
+    pub difficulty: Option<u32>,
 }
 
 impl Bot {
@@ -127,6 +129,7 @@ impl Bot {
             last_act: None,
             start_position: None,
             probe_token: None,
+            difficulty: None,
         })
     }
 
@@ -228,6 +231,7 @@ impl Bot {
                 character_id: character.id,
                 dungeon_id: self.config.dungeon.clone(),
                 role: self.config.role,
+                difficulty: self.difficulty,
             });
             self.queue_sent_at = Some(Instant::now());
         }
