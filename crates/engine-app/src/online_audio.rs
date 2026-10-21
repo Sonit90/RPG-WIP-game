@@ -36,6 +36,7 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::ChangeCharacter
         | A::UnstageSalvage(_)
         | A::ReforgeCancel
+        | A::GemUpgradeCancel
         | A::WithdrawKey
         | A::Kick(_) => SoundId::UiCancel,
         A::Login { .. }
@@ -51,6 +52,9 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::Exchange(_)
         | A::Sharpen
         | A::Reforge
+        | A::GemUpgrade
+        | A::SocketGem(_)
+        | A::UnsocketGem(_)
         | A::SalvageTray => SoundId::UiSelect,
         A::JoinQueue
         | A::InsertKey
@@ -71,6 +75,9 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::WorkshopMode(_)
         | A::ReforgeMode
         | A::ReforgeAsk
+        | A::GemsMode
+        | A::GemsPick(_)
+        | A::GemUpgradeAsk
         | A::DowngradeKey
         | A::CleanseKey => SoundId::UiClick,
     }
