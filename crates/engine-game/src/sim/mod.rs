@@ -642,6 +642,10 @@ pub struct Simulation {
     effect_stat_bonus: crate::character::StatBlock,
     /// The active player's trinket cooldowns and Group Absorb pool.
     trinket: crate::trinket::TrinketState,
+    /// The active player's equipment-set effects, worked out by
+    /// [`Simulation::refresh_character`] whenever what they wear changes, so a hit reads a
+    /// copy instead of recounting the pieces.
+    set_effects: crate::character::SetEffects,
 }
 
 impl Simulation {
@@ -736,6 +740,7 @@ impl Simulation {
             health_override: None,
             effect_stat_bonus: crate::character::StatBlock::default(),
             trinket: crate::trinket::TrinketState::new(),
+            set_effects: crate::character::SetEffects::NONE,
             tick: 0,
             time: 0.0,
             stats: SimStats::default(),
@@ -982,9 +987,10 @@ impl Simulation {
 
         // **Equipment sets.** The stats above already include the active tiers (they ride
         // `gear_stats`); the cooldown cuts go into the ability book, the same place a hero
-        // talent's change to a cooldown goes. Damage and resource generation are read live
-        // from the sheet where they apply (see `set_effects`).
-        let effects = self.set_effects();
+        // talent's change to a cooldown goes. Damage and resource generation read the copy
+        // kept here where they apply (see `set_effects`).
+        let effects = crate::character::SetEffects::of(self.sheet().equipment());
+        self.set_effects = effects;
         for ability in FireAbility::ALL {
             self.mage
                 .abilities
@@ -994,11 +1000,11 @@ impl Simulation {
 
     /// **What the active player's equipment sets are doing to their abilities right now.**
     ///
-    /// Derived from the worn items on every call, like the stats: nothing stores it, so it
-    /// cannot outlive the pieces that earned it.
+    /// Worked out from the worn items by [`Simulation::refresh_character`], which every change
+    /// to them goes through, and kept per player; the hot paths (every hit) read this copy.
     #[must_use]
     pub fn set_effects(&self) -> crate::character::SetEffects {
-        crate::character::SetEffects::of(self.sheet().equipment())
+        self.set_effects
     }
 
     /// Replaces the player's maximum health with `max`, or gives it back to the character
