@@ -8,13 +8,13 @@
       "pieces": ["emberwake_hood", "emberwake_mantle", "emberwake_shroud", "emberwake_cuffs", "emberwake_gauntlets"],
       "bonuses": [
         { "count": 2, "stats": { "critical_strike": 6, "haste": 4, "stamina": 8 } },
-        { "count": 4, "stats": { "haste": 6 }, "effects": [
-          { "kind": "damage_pct", "ability": "firebolt", "value": 0.12 },
-          { "kind": "damage_pct", "ability": "flame_lance", "value": 0.12 }
+        { "count": 4, "stats": { "haste": 2 }, "effects": [
+          { "kind": "damage_pct", "ability": "firebolt", "value": 0.10 },
+          { "kind": "damage_pct", "ability": "flame_lance", "value": 0.10 }
         ] },
         { "count": 5, "effects": [
-          { "kind": "damage_pct", "ability": "detonate", "value": 0.15 },
-          { "kind": "cooldown_pct", "ability": "flame_lance", "value": 0.2 },
+          { "kind": "damage_pct", "ability": "detonate", "value": 0.12 },
+          { "kind": "cooldown_pct", "ability": "flame_lance", "value": 0.15 },
           { "kind": "resource_gen_pct", "value": 0.15 }
         ] }
       ]
@@ -25,11 +25,11 @@
       "pieces": ["gravewarden_greathelm", "gravewarden_hauberk", "gravewarden_cloak", "gravewarden_vambraces", "gravewarden_sollerets"],
       "bonuses": [
         { "count": 2, "stats": { "stamina": 10, "armor": 15 } },
-        { "count": 4, "stats": { "stamina": 8 }, "effects": [
-          { "kind": "damage_pct", "ability": "colossus_strike", "value": 0.10 },
+        { "count": 4, "stats": { "stamina": 8, "haste": 7, "critical_strike": 9 }, "effects": [
+          { "kind": "damage_pct", "ability": "colossus_strike", "value": 0.12 },
           { "kind": "cooldown_pct", "ability": "colossus_strike", "value": 0.10 }
         ] },
-        { "count": 5, "effects": [
+        { "count": 5, "stats": { "main_stat": 4 }, "effects": [
           { "kind": "damage_pct", "ability": "war_stomp", "value": 0.10 },
           { "kind": "damage_pct", "ability": "shield_charge", "value": 0.10 },
           { "kind": "cooldown_pct", "ability": "shield_charge", "value": 0.10 }
@@ -41,8 +41,8 @@
       "name": "Tidebloom Vestments",
       "pieces": ["tidebloom_circlet", "tidebloom_robe", "tidebloom_veil", "tidebloom_bindings", "tidebloom_leggings"],
       "bonuses": [
-        { "count": 2, "stats": { "haste": 6, "stamina": 6 } },
-        { "count": 4, "stats": { "spirit": 6 }, "effects": [
+        { "count": 2, "stats": { "haste": 6, "stamina": 12 } },
+        { "count": 4, "stats": { "spirit": 6, "stamina": 6 }, "effects": [
           { "kind": "damage_pct", "ability": "wrath", "value": 0.08 }
         ] },
         { "count": 5, "effects": [

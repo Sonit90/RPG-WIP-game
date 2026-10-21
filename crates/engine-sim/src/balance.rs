@@ -55,6 +55,10 @@ pub fn matrix_report(
         crate::books::write_section(&mut out, books, scaling);
     }
     crate::gem_sim::write_section(&mut out, options.seed);
+    crate::economy_sim::write_section(&mut out, options.seed);
+    if let Some(scaling) = scaling {
+        crate::eternal::write_section(&mut out, scaling);
+    }
     caveats(&mut out);
     out
 }
