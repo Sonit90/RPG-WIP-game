@@ -1099,10 +1099,10 @@ mod tests {
     #[test]
     fn the_epic_rate_matches_the_catalog_and_rises_with_the_key() {
         let rules = rules();
-        assert!((epic_chance_at(rules, 1) - 0.025).abs() < 1e-6);
-        assert!((epic_chance_at(rules, 11) - 0.045).abs() < 1e-6);
-        assert!((epic_chance_at(rules, 20) - 0.063).abs() < 1e-6);
-        assert!((epic_chance_at(rules, 100) - 0.08).abs() < 1e-6);
+        assert!((epic_chance_at(rules, 1) - 0.06).abs() < 1e-6);
+        assert!((epic_chance_at(rules, 11) - 0.11).abs() < 1e-6);
+        assert!((epic_chance_at(rules, 20) - 0.155).abs() < 1e-6);
+        assert!((epic_chance_at(rules, 100) - 0.2).abs() < 1e-6);
         let table = rules.boss_table("lord_ashgrave").expect("the table");
         let rate = |level: u32| {
             let mut rng = Rng::new(77);
@@ -1118,8 +1118,8 @@ mod tests {
                 / n as f32
         };
         let (low, high) = (rate(1), rate(20));
-        assert!((low - 0.025).abs() < 0.006, "{low}");
-        assert!((high - 0.063).abs() < 0.008, "{high}");
+        assert!((low - 0.06).abs() < 0.008, "{low}");
+        assert!((high - 0.155).abs() < 0.012, "{high}");
         assert!(high > low);
     }
 
@@ -1218,7 +1218,7 @@ mod tests {
             // A table for something that is not a boss.
             edit("\"lord_ashgrave\"", "\"skeleton_warrior\""),
             // A chance above one.
-            edit("\"base_chance\": 0.025", "\"base_chance\": 1.5"),
+            edit("\"base_chance\": 0.06", "\"base_chance\": 1.5"),
             // The wrong version.
             edit("\"version\": 1", "\"version\": 2"),
         ] {

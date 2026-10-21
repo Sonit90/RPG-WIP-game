@@ -49,3 +49,18 @@ set 4 or 5 with tiers such as 2 / 4 / 5.
    The `p2_set` tier wears the class's major set (the registered set of 4+ pieces whose effects
    name that hero's abilities) over `p2_max`; set pieces are never picked by the plain tiers.
    Aim for the 4- and 5-piece effects to be worth about +6-10 % DPS.
+
+## Where the major sets drop
+
+One boss table per major set, so a player knows where to farm (`loot.json` `boss_tables`, piece
+weight 24, against 7-14 for the other epics):
+
+| Set | Class | Boss | Dungeon |
+|---|---|---|---|
+| Gravewarden's Panoply | Warrior | Lord Ashgrave | Graveyard Crypt |
+| Tidebloom Vestments | Druid | Drowned Abbess | Drowned Catacombs |
+| Emberwake Regalia | Mage | Foundry Overseer | Bone Foundry |
+
+The minor sets drop from the Ashen Pontiff (Candlelit Vows, Ossuary Wardplate) and the Drowned Abbess
+(Brinesung Chorus). With the epic chance in `loot.json` a player who farms the right dungeon has the
+full major set after about 70-95 runs; `docs/balance/economy.md` has the distribution.

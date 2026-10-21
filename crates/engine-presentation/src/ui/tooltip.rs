@@ -1909,8 +1909,8 @@ Effective Quality: 89%"
         assert!(bonuses[0].text.starts_with("(2) +6 Critical Strike"));
         assert!(!bonuses[0].text.contains("(4)"));
         assert!(bonuses[1].text.contains("(4)") && bonuses[1].text.contains("(5)"));
-        assert!(bonuses[1].text.contains("+12% Firebolt damage"));
-        assert!(bonuses[1].text.contains("Flame Lance cooldown -20%"));
+        assert!(bonuses[1].text.contains("+10% Firebolt damage"));
+        assert!(bonuses[1].text.contains("Flame Lance cooldown -15%"));
         assert_ne!(bonuses[0].color, bonuses[1].color);
 
         // An item that is part of no set says nothing about one.

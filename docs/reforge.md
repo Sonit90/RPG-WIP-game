@@ -38,8 +38,9 @@ Shipped table:
 
 Expected value 71.5. A drop rolls 72.8 on average at key level 1 (`loot.json` `quality`), so an
 average item is a slightly losing bet; only a low roll or a lottery ticket (5 % to reach 100+)
-makes it worth paying. Cost of a loot item (level 5, unsharpened) is 100 gold, about one run's
-gold income, so it is a sink, not a free re-roll.
+makes it worth paying. Cost of a loot item (level 5, unsharpened) is 150 gold, a little over one run's
+gold income, so it is a sink, not a free re-roll. The price (gold 50, 20 per item level, 20 per
+sharpening level) is set so gold stays in use up to best-in-slot: `docs/balance/economy.md`.
 
 ## Code
 
