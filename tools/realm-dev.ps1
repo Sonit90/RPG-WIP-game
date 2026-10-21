@@ -9,6 +9,9 @@
     publish  Rebuilds and republishes the module and regenerates the client bindings.
     down     Stops the API and SpacetimeDB (Postgres keeps its data; -Wipe removes it too).
     status   Shows what is running.
+    restart  Restarts everything without republishing: stops the API and SpacetimeDB,
+             restarts the Postgres container, starts them again on the same data. Progression
+             (Postgres) and the realm's own tables (SpacetimeDB data dir) must survive it.
 
     Everything this script starts writes its logs to .realm-dev/ at the repository root,
     which is ignored by git. SpacetimeDB keeps its data there as well.
@@ -24,7 +27,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('up', 'publish', 'down', 'status')]
+    [ValidateSet('up', 'publish', 'down', 'status', 'restart')]
     [string] $Command = 'status',
     [switch] $Wipe,
     [string] $Database = 'realm'
@@ -127,7 +130,29 @@ function Stop-Recorded([string] $Name) {
     }
 }
 
+# Stops whatever listens on $Port (and the spacetime CLI that launched it), recorded or not.
+function Stop-Listener([int] $Port) {
+    $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $listener) { return }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
+    $parent = if ($process.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId=$($process.ParentProcessId)" } else { $null }
+    if ($parent -and $parent.Name -like 'spacetime*') { Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue }
+    Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
+    Write-Step "stopped the listener on $Port ($($listener.OwningProcess))"
+}
+
 switch ($Command) {
+    'restart' {
+        Stop-Recorded 'api'
+        Stop-Recorded 'spacetime'
+        Stop-Listener 8080
+        Stop-Listener 3000
+        Invoke-Native { docker compose -f (Join-Path $Root 'deploy\docker-compose.dev.yml') restart } 'docker compose restart'
+        Wait-Port 5434 60
+        Start-Spacetime
+        Start-Api
+        Write-Host 'Realm restarted (nothing republished).' -ForegroundColor Green
+    }
     'up' {
         Start-Postgres
         Start-Spacetime
