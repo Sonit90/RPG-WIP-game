@@ -169,7 +169,7 @@ pub const DEFS: [TalentDef; 17] = [
         tier: 0,
         cost: 0,
         description: "SUNFIRE TICK DAMAGE +{tick_bonus%}%. SUNFIRE RADIUS -{radius_penalty%}%",
-        values: &[("tick_bonus", 0.35), ("radius_penalty", 0.2)],
+        values: &[("tick_bonus", 0.5), ("radius_penalty", 0.3)],
     },
     TalentDef {
         key: "bk_balanced_bloom",

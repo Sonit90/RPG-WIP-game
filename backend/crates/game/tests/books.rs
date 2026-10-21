@@ -288,3 +288,32 @@ async fn two_uses_of_two_copies_at_once_learn_it_exactly_once() {
     );
     drop_account(&pool, account).await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn a_book_from_a_boss_chest_is_delivered_once_and_can_then_be_read() {
+    use engine_realm::api::LootDelivery;
+    let pool = pool().await;
+    let account = new_account(&pool).await;
+    let book = books_of(Hero::Warrior).talent[2].id.clone();
+    let id = stocked(&pool, account, Hero::Warrior, &[]).await;
+    let delivery = LootDelivery {
+        loot_id: format!("test-{}:{account}:loot:0", Uuid::new_v4()),
+        account_id: account.to_string(),
+        character_id: id.to_string(),
+        item: book.clone(),
+        kind: "bag".into(),
+        reason: String::new(),
+        quality: 100,
+        sharpening: 0,
+        broken: false,
+    };
+    assert!(store::apply_loot(&pool, &delivery).await.expect("applied"));
+    assert!(!store::apply_loot(&pool, &delivery).await.expect("replayed"));
+    let stored = row(&pool, account, id).await;
+    assert_eq!(bag_cells(&stored).len(), 1, "delivered once");
+    let cell = bag_cells(&stored)[0];
+    let response = read(&pool, account, id, Uuid::new_v4(), cell).await.expect("read");
+    assert_eq!(response.book, book);
+    drop_account(&pool, account).await;
+}

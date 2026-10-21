@@ -360,6 +360,36 @@ mod tests {
     }
 
     #[test]
+    fn the_talent_budget_includes_learned_books_and_still_rejects_overspending() {
+        use crate::talents::{TalentError, validate};
+        setup();
+        let keys = |names: &[&str]| names.iter().map(|k| (*k).to_owned()).collect::<Vec<_>>();
+        // Warrior: unbroken_momentum 3, shockwave 3, executioner 4. The start gives 5 points.
+        let two = keys(&["unbroken_momentum", "shockwave"]);
+        assert_eq!(validate(Hero::Warrior, &two, 0), Err(TalentError::NotEnoughPoints));
+        let mut state = BookState::default();
+        let books = books_of(Hero::Warrior);
+        state.learn(Hero::Warrior, &books.talent[0].id).expect("learn");
+        assert!(validate(Hero::Warrior, &two, state.point_bonus(Hero::Warrior)).is_ok());
+        // Two books make 7 points: 3 + 4 fits, 3 + 3 + 4 = 10 does not, whatever the books.
+        state.learn(Hero::Warrior, &books.talent[1].id).expect("learn");
+        let bonus = state.point_bonus(Hero::Warrior);
+        assert_eq!(bonus, 2);
+        assert!(validate(Hero::Warrior, &keys(&["unbroken_momentum", "executioner"]), bonus).is_ok());
+        assert_eq!(
+            validate(
+                Hero::Warrior,
+                &keys(&["unbroken_momentum", "shockwave", "executioner"]),
+                bonus
+            ),
+            Err(TalentError::NotEnoughPoints)
+        );
+        // An enhancement book adds no point.
+        state.learn(Hero::Warrior, &books.enhancement[0].id).expect("learn");
+        assert_eq!(state.point_bonus(Hero::Warrior), 2);
+    }
+
+    #[test]
     fn stale_state_is_harmless() {
         setup();
         let mut state = BookState {

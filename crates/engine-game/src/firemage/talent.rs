@@ -282,7 +282,7 @@ pub const DEFS: [TalentDef; TALENT_COUNT + 9] = [
         tier: 0,
         cost: 0,
         description: "IGNITE LASTS {bonus_seconds} SECONDS LONGER. ITS DAMAGE REDUCED TO {ignite_scale%}%",
-        values: &[("bonus_seconds", 6.0), ("ignite_scale", 0.95)],
+        values: &[("bonus_seconds", 4.0), ("ignite_scale", 0.95)],
     },
     TalentDef {
         key: "bk_hot_core",

@@ -207,7 +207,7 @@ pub const DEFS: [TalentDef; 17] = [
         tier: 0,
         cost: 0,
         description: "SHIELD CHARGE IMPACT DAMAGE +{impact_bonus%}%",
-        values: &[("impact_bonus", 0.5)],
+        values: &[("impact_bonus", 0.3)],
     },
     TalentDef {
         key: "bk_headsmans_mark",

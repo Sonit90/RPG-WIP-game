@@ -32,6 +32,16 @@ impl Class {
         }
     }
 
+    /// The class that plays `hero`.
+    #[must_use]
+    pub fn of_hero(hero: Hero) -> Self {
+        match hero {
+            Hero::Warrior => Self::Warrior,
+            Hero::Druid => Self::Druid,
+            Hero::FireMage => Self::Mage,
+        }
+    }
+
     /// The name the command line and the report use.
     #[must_use]
     pub fn as_str(self) -> &'static str {

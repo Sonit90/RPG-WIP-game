@@ -26,6 +26,7 @@
 
 mod ai;
 mod balance;
+mod books;
 mod build;
 mod class;
 mod gear;
@@ -155,7 +156,8 @@ validation {done}/{total} cells"
             }
         });
         eprintln!();
-        balance::matrix_report(&matrix, &options, validation.as_ref(), Some(&scaling))
+        let books = books::study(&options);
+        balance::matrix_report(&matrix, &options, validation.as_ref(), Some(&scaling), &books)
     };
 
     print!("{text}");
@@ -210,13 +212,13 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
                     GearTier::ALL.to_vec()
                 } else {
                     vec![GearTier::parse(&text).ok_or_else(|| {
-                        format!("unknown gear {text}; expected none, low, medium, high, p2_max, p2_set (alias top) or all")
+                        format!("unknown gear {text}; expected none, low, medium, high, p2_max, p2_set, p2_books (alias top) or all")
                     })?]
                 };
             }
             "--help" | "-h" => {
                 println!(
-                    "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|p2_set|all]\n\
+                    "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|p2_set|p2_books|all]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH] [--no-validation]\n\
                      engine-sim --search [--budget N] [--sweep-iterations N] [--finalists N]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH]
