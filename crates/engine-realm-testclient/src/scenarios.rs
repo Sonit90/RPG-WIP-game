@@ -2535,6 +2535,12 @@ pub fn community(endpoints: &RealmEndpoints) -> Outcome {
         "every member's history lists the community run",
     )?;
 
+    // The P2 verification restarts the stack with a published map in it.
+    if std::env::var("P2_KEEP_PUBLISHED").is_ok() {
+        log::info!("  published map kept: {id}");
+        return Ok(());
+    }
+
     // Unpublishing makes it invisible to others.
     let (status, _) = api_json(
         endpoints,

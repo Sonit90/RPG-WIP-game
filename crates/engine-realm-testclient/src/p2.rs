@@ -1142,5 +1142,21 @@ pub fn p2_after(endpoints: &RealmEndpoints) -> Outcome {
             .all(|uid| board.rows.iter().any(|row| Some(row.run_uid.as_str()) == uid.as_str())),
         "the leaderboard still lists the three runs",
     )?;
+    // A community map published before the restart is still listed, with its version.
+    if let Ok(map_id) = std::env::var("P2_COMMUNITY_ID") {
+        let token = &pair.access_token;
+        let detail = api.community_map(token, &map_id).map_err(|e| e.message)?;
+        check(
+            detail.dungeon_id == format!("cm:{map_id}:1"),
+            "the published community map is still there, as cm:<id>:1, after the restart",
+        )?;
+        let listed = api
+            .community_list(token, &engine_realm::community::MapQuery::default())
+            .map_err(|e| e.message)?;
+        check(
+            listed.maps.iter().any(|m| m.id == map_id),
+            "and it is still in the public listing",
+        )?;
+    }
     Ok(())
 }
