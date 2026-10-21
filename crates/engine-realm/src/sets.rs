@@ -327,7 +327,7 @@ mod tests {
         let sheet = crate::loadout::sheet_of(Hero::FireMage, &loadout);
         let worn = active_sets(sheet.equipment());
         assert_eq!(worn.get("emberwake_regalia").expect("worn").equipped, 5);
-        // Piece stats alone, then the 2-piece (+6 crit, +4 haste) and 4-piece (+6 haste).
+        // Piece stats alone, then the 2-piece (+6 crit, +4 haste) and 4-piece (+2 haste).
         let pieces: f32 = set
             .pieces
             .iter()
@@ -337,7 +337,7 @@ mod tests {
                     .get(engine_game::character::Stat::Haste)
             })
             .sum();
-        assert!((sheet.gear_stats().get(engine_game::character::Stat::Haste) - (pieces + 10.0)).abs() < 1e-3);
+        assert!((sheet.gear_stats().get(engine_game::character::Stat::Haste) - (pieces + 6.0)).abs() < 1e-3);
         assert!(crate::loadout::stats_of(&sheet).iter().any(|(name, _)| name.contains("aste")));
     }
 }

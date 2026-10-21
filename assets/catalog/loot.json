@@ -567,20 +567,11 @@
       { "item": "censer_of_cleansing_ash", "weight": 7 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
       { "item": "aegis_of_the_last_vigil", "weight": 7 },
-      { "item": "emberwake_hood", "weight": 12 },
-      { "item": "emberwake_mantle", "weight": 12 },
-      { "item": "emberwake_shroud", "weight": 12 },
-      { "item": "emberwake_cuffs", "weight": 12 },
-      { "item": "emberwake_gauntlets", "weight": 12 },
-      { "item": "gravewarden_greathelm", "weight": 12 },
-      { "item": "gravewarden_hauberk", "weight": 12 },
-      { "item": "gravewarden_cloak", "weight": 12 },
-      { "item": "gravewarden_vambraces", "weight": 12 },
-      { "item": "gravewarden_sollerets", "weight": 12 },
-      { "item": "candlelit_vow_band", "weight": 12 },
-      { "item": "candlelit_vow_locket", "weight": 12 },
-      { "item": "ossuary_pauldrons", "weight": 12 },
-      { "item": "ossuary_greaves", "weight": 12 }
+      { "item": "gravewarden_greathelm", "weight": 24 },
+      { "item": "gravewarden_hauberk", "weight": 24 },
+      { "item": "gravewarden_cloak", "weight": 24 },
+      { "item": "gravewarden_vambraces", "weight": 24 },
+      { "item": "gravewarden_sollerets", "weight": 24 }
     ],
     "drowned_abbess": [
       { "item": "gravewardens_cowl", "weight": 10 },
@@ -607,11 +598,11 @@
       { "item": "abbess_signet_of_the_deep", "weight": 12 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
       { "item": "aegis_of_the_last_vigil", "weight": 7 },
-      { "item": "tidebloom_circlet", "weight": 12 },
-      { "item": "tidebloom_robe", "weight": 12 },
-      { "item": "tidebloom_veil", "weight": 12 },
-      { "item": "tidebloom_bindings", "weight": 12 },
-      { "item": "tidebloom_leggings", "weight": 12 },
+      { "item": "tidebloom_circlet", "weight": 24 },
+      { "item": "tidebloom_robe", "weight": 24 },
+      { "item": "tidebloom_veil", "weight": 24 },
+      { "item": "tidebloom_bindings", "weight": 24 },
+      { "item": "tidebloom_leggings", "weight": 24 },
       { "item": "brinesung_band", "weight": 12 },
       { "item": "brinesung_idol", "weight": 12 }
     ],
@@ -639,7 +630,12 @@
       { "item": "furnace_wardens_cuirass", "weight": 12 },
       { "item": "emberlink_chain", "weight": 12 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
-      { "item": "aegis_of_the_last_vigil", "weight": 7 }
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "emberwake_hood", "weight": 24 },
+      { "item": "emberwake_mantle", "weight": 24 },
+      { "item": "emberwake_shroud", "weight": 24 },
+      { "item": "emberwake_cuffs", "weight": 24 },
+      { "item": "emberwake_gauntlets", "weight": 24 }
     ],
     "ashen_pontiff": [
       { "item": "gravewardens_cowl", "weight": 10 },
@@ -664,7 +660,11 @@
       { "item": "gauntlets_of_the_last_rite", "weight": 12 },
       { "item": "ashwalker_sabatons", "weight": 12 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
-      { "item": "aegis_of_the_last_vigil", "weight": 7 }
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "candlelit_vow_band", "weight": 12 },
+      { "item": "candlelit_vow_locket", "weight": 12 },
+      { "item": "ossuary_pauldrons", "weight": 12 },
+      { "item": "ossuary_greaves", "weight": 12 }
     ],
     "censer_warden": [
       { "item": "gate_wardens_helm", "weight": 10 },
@@ -782,10 +782,10 @@
     ]
   },
   "epic": {
-    "_comment": "Chance that one equipment roll is an epic: base_chance + per_key_level x (key level - 1), capped at max_chance. On an epic the item is picked among the table's epics, otherwise among the rest.",
-    "base_chance": 0.025,
-    "per_key_level": 0.002,
-    "max_chance": 0.08
+    "_comment": "Chance that one equipment roll is an epic: base_chance + per_key_level x (key level - 1), capped at max_chance. On an epic the item is picked among the table's epics, otherwise among the rest. Tuned with the set piece weights (a major set piece is 24, other epics 7-14) so that a player farming the right dungeon completes a class's set in about 70-95 runs and has all thirteen best-in-slot pieces in about 250: docs/balance/economy.md.",
+    "base_chance": 0.06,
+    "per_key_level": 0.005,
+    "max_chance": 0.2
   },
   "currency": {
     "_comment": "Aether Shards, the modifier reroll currency. The Graveyard Crypt places 36 ordinary monsters and the boss calls 2 more (38 kills in a full clear, no elites), so per_mob_chance 0.033 x 38 = 1.25 shards per player per run. elite_chance applies to elite monsters (none in the crypt).",

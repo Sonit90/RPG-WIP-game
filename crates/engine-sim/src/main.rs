@@ -7,6 +7,7 @@
 //! engine-sim --search [--budget N]            the FireMage talent combination search
 //! engine-sim --loot-sim [--samples N]         how often drops are pre-sharpened (loot.json)
 //! engine-sim --gem-sim [--samples N]          runs to a max-level gem (gems.json)
+//! engine-sim --economy-sim [--samples N]      income, sinks and runs to best-in-slot (all catalogs)
 //! ```
 //!
 //! It drives the game's own [`engine_game::sim::Simulation`]: the same ability table, the
@@ -22,7 +23,9 @@
 //! study.rs    the FireMage talent search (--search)
 //! loot_sim.rs the sharpening-drop distribution (--loot-sim)
 //! gem_sim.rs  runs to a max-level gem (--gem-sim, section 9)
+//! economy_sim.rs the whole economy: gold and dust against every sink (--economy-sim)
 //! validation.rs  is any talent mandatory or worthless (the report's section 6)
+//! eternal.rs  where eternal keys outgrow a fully geared player (section 11)
 //! scaling.rs  does each gear tier beat the one below it (section 7)
 //! ```
 
@@ -31,6 +34,8 @@ mod balance;
 mod books;
 mod build;
 mod class;
+mod economy_sim;
+mod eternal;
 mod gear;
 mod gem_sim;
 mod loot_sim;
@@ -62,6 +67,8 @@ pub struct Options {
     pub loot_sim: bool,
     /// Run the gem economy simulation instead of the combat matrix.
     pub gem_sim: bool,
+    /// Run the whole-economy simulation instead of the combat matrix.
+    pub economy_sim: bool,
     /// Items rolled per source and key level by `--loot-sim`.
     pub samples: u32,
     /// Fights averaged per scenario.
@@ -90,6 +97,7 @@ impl Default for Options {
             search: false,
             loot_sim: false,
             gem_sim: false,
+            economy_sim: false,
             samples: 100_000,
             iterations: 10,
             sweep_iterations: 8,
@@ -139,6 +147,14 @@ fn main() {
         let players = options.samples.min(5_000);
         let cells = gem_sim::run(rules, gems, players, options.seed);
         gem_sim::report(rules, gems, &cells, options.seed)
+    } else if options.economy_sim {
+        let Some(world) = economy_sim::world() else {
+            eprintln!("the shipped catalogs did not build");
+            std::process::exit(2);
+        };
+        let players = options.samples.min(600);
+        let studies = economy_sim::run(world, players, economy_sim::HORIZON, options.seed);
+        economy_sim::report(world, &studies, options.seed)
     } else if options.search {
         study::run(&options)
     } else {
@@ -199,6 +215,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
             "--search" => options.search = true,
             "--loot-sim" => options.loot_sim = true,
             "--gem-sim" => options.gem_sim = true,
+            "--economy-sim" => options.economy_sim = true,
             "--samples" => options.samples = parse_number("--samples", &value("--samples")?)?,
             "--no-validation" => options.validate = false,
             "--iterations" => {
@@ -240,7 +257,8 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
                      \x20          [--iterations N] [--seed N] [--out PATH] [--no-validation]\n\
                      engine-sim --search [--budget N] [--sweep-iterations N] [--finalists N]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH]
-\n                     engine-sim --loot-sim [--samples N] [--seed N] [--out PATH]"
+\n                     engine-sim --loot-sim [--samples N] [--seed N] [--out PATH]\n\
+                     engine-sim --gem-sim | --economy-sim [--samples N] [--seed N] [--out PATH]"
                 );
                 return Ok(None);
             }

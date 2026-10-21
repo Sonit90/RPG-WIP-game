@@ -84,6 +84,15 @@ community.moderate→admin), /api/v1/community/*, realm private `community_map` 
 30 s reconciler, `cm:<id>:<ver>` instances, 4-layer no-loot isolation, client browser (via Dungeon
 Finder), realm-bot `community`; live `scenario all` 14/14. Dev DB `realm` had 0015 before 0014 —
 applied 0014 manually with sqlx checksum. Verified: workspace 4645, embedded 375, backend 127, DB 62.
+MERGED `p2-editor`: inspector tabs Selection/Dungeon/Listing/Validate, debounced mapcheck (same
+check_str as server), issue→selection, approved-library warning from mapcheck Rules, Export Community
+Map (refuses on errors), New Community Map template `assets/templates/community_blank.json`, listing in
+`<level>.meta.json`. Fixed editor test that broke with assets/generated. Text entry lacks punctuation.
+MERGED `p2-balance`: `--economy-sim` → docs/balance/economy.md, docs/balance/P2_BALANCE.md. Tuning:
+epic chance 6 % +0.5 %/key max 20 %, set weights 24, one major set per boss table, reforge 50+20·ilvl
++20·sharp, Gravewarden/Tidebloom/Emberwake retuned; no monotonic violations. Eternal wall key 24
+(Warrior) / 20 (Druid, Mage). Known risks for final report: dust glut past +4, idle gold after BIS
+(~171 runs at run 900), quality 100+ lottery. Perf check (runner) in flight.
 `p2-polish` (worktree `../myGame-wt-polish`): audio audit, pylon-immunity indicator, gem/book icons,
 hub entry for community, community timer_seconds, terminology sweep.
 `p2-balance` (worktree `../myGame-wt-balance`): economy sim, set/druid survivability fixes, eternal wall, P2_BALANCE.md.

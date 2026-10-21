@@ -102,6 +102,9 @@ pub struct OptionMeasure {
     pub single: f64,
     /// Eight-target gain, a fraction.
     pub area: f64,
+    /// Change of effective health on the single-target fight, a fraction (an option may trade
+    /// uptime of a defensive effect for damage).
+    pub health: f64,
 }
 
 /// Measures every enhancement option of every class alone on the `Default` build in `p2_gems`.
@@ -122,24 +125,28 @@ pub fn study(options: &Options) -> Vec<OptionMeasure> {
             } else {
                 Worn::Books(Box::new(sheet.clone()), plan)
             };
-            run_scenario(&config, &build, &gear, options.iterations, options.seed).dps
+            let result = run_scenario(&config, &build, &gear, options.iterations, options.seed);
+            let landing = (1.0 - result.metrics.average_mitigation()).max(1e-3);
+            (result.dps, result.max_health / landing)
         };
         let base = (
             measure(BookPlan::default(), ST60),
-            measure(BookPlan::default(), AOE8),
+            measure(BookPlan::default(), AOE8).0,
         );
         // The talent the three talent books pay for, alone.
         let talent_only = BookPlan {
             nodes: Vec::new(),
             talent: shipped_plan(*class).talent,
         };
+        let talent = measure(talent_only.clone(), ST60);
         out.push(OptionMeasure {
             class: *class,
             book: "Talent books (3)".to_owned(),
             option: book_talent(*class).replace('_', " ").to_uppercase(),
             node: String::new(),
-            single: measure(talent_only.clone(), ST60) / base.0.max(1e-9) - 1.0,
-            area: measure(talent_only, AOE8) / base.1.max(1e-9) - 1.0,
+            single: talent.0 / base.0.0.max(1e-9) - 1.0,
+            area: measure(talent_only, AOE8).0 / base.1.max(1e-9) - 1.0,
+            health: talent.1 / base.0.1.max(1e-9) - 1.0,
         });
         let books: &HeroBooks = &engine_game::talent::catalog().books[hero.index()];
         for book in &books.enhancement {
@@ -148,15 +155,16 @@ pub fn study(options: &Options) -> Vec<OptionMeasure> {
                     nodes: vec![option.node.clone()],
                     talent: None,
                 };
-                let single = measure(plan.clone(), ST60) / base.0.max(1e-9) - 1.0;
-                let area = measure(plan, AOE8) / base.1.max(1e-9) - 1.0;
+                let single = measure(plan.clone(), ST60);
+                let area = measure(plan, AOE8).0 / base.1.max(1e-9) - 1.0;
                 out.push(OptionMeasure {
                     class: *class,
                     book: book.name.clone(),
                     option: option.name.clone(),
                     node: option.node.clone(),
-                    single,
+                    single: single.0 / base.0.0.max(1e-9) - 1.0,
                     area,
+                    health: single.1 / base.0.1.max(1e-9) - 1.0,
                 });
             }
         }
@@ -174,26 +182,27 @@ pub fn write_section(
     let _ = writeln!(
         out,
         "Every enhancement option alone, on the `Default` build in `p2_gems` gear, against the same \
-         build without it (damage per second; a negative number is a trade, not a mistake). The \
+         build without it (damage per second; a negative number is a trade, not a mistake; effective health is the section 7 measure on the single-target fight, so an option that slows a defensive ability shows there). The \
          `p2_books` tier wears the starred option of each book, plus the talent the three talent \
          books pay for, on top of `p2_gems`.\n"
     );
     let _ = writeln!(
         out,
-        "| Class | Book | Option | Single target | 8 targets | In `p2_books` |"
+        "| Class | Book | Option | Single target | 8 targets | Effective health | In `p2_books` |"
     );
-    let _ = writeln!(out, "|---|---|---|---:|---:|:-:|");
+    let _ = writeln!(out, "|---|---|---|---:|---:|---:|:-:|");
     for measure in measures {
         let starred =
             measure.node.is_empty() || shipped_plan(measure.class).nodes.contains(&measure.node);
         let _ = writeln!(
             out,
-            "| {} | {} | {} | {:+.1}% | {:+.1}% | {} |",
+            "| {} | {} | {} | {:+.1}% | {:+.1}% | {:+.1}% | {} |",
             measure.class.title(),
             measure.book,
             measure.option,
             measure.single * 100.0,
             measure.area * 100.0,
+            measure.health * 100.0,
             if starred { "*" } else { "" },
         );
     }
