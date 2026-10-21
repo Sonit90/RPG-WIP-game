@@ -387,6 +387,60 @@
       "item_level": 13,
       "icon": "necklace",
       "stats": { "stamina": 5, "main_stat": 7, "critical_strike": 6, "versatility": 6 }
+    },
+    {
+      "id": "pontiffs_ashplate_pauldrons",
+      "name": "Pontiff's Ashplate Pauldrons",
+      "slot": "shoulder",
+      "rarity": "epic",
+      "item_level": 14,
+      "icon": "shoulder",
+      "stats": { "stamina": 9, "armor": 11, "main_stat": 6, "haste": 4 }
+    },
+    {
+      "id": "cinderforged_greaves",
+      "name": "Cinderforged Greaves",
+      "slot": "legs",
+      "rarity": "epic",
+      "item_level": 14,
+      "icon": "legs",
+      "stats": { "stamina": 11, "armor": 13, "main_stat": 6, "critical_strike": 4 }
+    },
+    {
+      "id": "gauntlets_of_the_last_rite",
+      "name": "Gauntlets of the Last Rite",
+      "slot": "hands",
+      "rarity": "epic",
+      "item_level": 14,
+      "icon": "hands",
+      "stats": { "stamina": 7, "armor": 9, "main_stat": 6, "versatility": 5 }
+    },
+    {
+      "id": "ashwalker_sabatons",
+      "name": "Ashwalker Sabatons",
+      "slot": "feet",
+      "rarity": "epic",
+      "item_level": 14,
+      "icon": "feet",
+      "stats": { "stamina": 8, "armor": 10, "main_stat": 5, "haste": 5 }
+    },
+    {
+      "id": "censer_wardens_bracers",
+      "name": "Censer Warden's Bracers",
+      "slot": "wrist",
+      "rarity": "epic",
+      "item_level": 13,
+      "icon": "wrist",
+      "stats": { "stamina": 6, "armor": 8, "main_stat": 5, "versatility": 4 }
+    },
+    {
+      "id": "smouldering_censer_pendant",
+      "name": "Smouldering Censer Pendant",
+      "slot": "necklace",
+      "rarity": "epic",
+      "item_level": 13,
+      "icon": "necklace",
+      "stats": { "stamina": 5, "main_stat": 7, "versatility": 5, "spirit": 3 }
     }
   ],
   "boss_tables": {
@@ -527,6 +581,41 @@
       { "item": "emberlink_chain", "weight": 12 },
       { "item": "hourglass_of_the_patient_dead", "weight": 7 },
       { "item": "aegis_of_the_last_vigil", "weight": 7 }
+    ],
+    "ashen_pontiff": [
+      { "item": "gravewardens_cowl", "weight": 10 },
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "mourners_pauldrons", "weight": 10 },
+      { "item": "ossuary_vestment", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "shroud_of_quiet_vigil", "weight": 10 },
+      { "item": "gravediggers_grips", "weight": 10 },
+      { "item": "crypt_stitched_leggings", "weight": 10 },
+      { "item": "treads_of_the_still_hour", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "band_of_faded_vows", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "hollow_lantern_charm", "weight": 10 },
+      { "item": "ossified_heart", "weight": 10 },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "pontiffs_ashplate_pauldrons", "weight": 12 },
+      { "item": "cinderforged_greaves", "weight": 12 },
+      { "item": "gauntlets_of_the_last_rite", "weight": 12 },
+      { "item": "ashwalker_sabatons", "weight": 12 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 }
+    ],
+    "censer_warden": [
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "censer_wardens_bracers", "weight": 14 },
+      { "item": "smouldering_censer_pendant", "weight": 14 }
     ]
   },
   "mob_table": {
