@@ -46,7 +46,13 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
   1.25 so solo soaks), Conveyor lane, Overheat). Warded/Stoked not dispellable. Unverified 3D/online push.
 - Known bug: an engine-editor test fails while gitignored `assets/generated/` exists (baked minimaps) — fix later.
 - `p2-dungeon5` (worktree `../myGame-wt-dungeon5`): Sanctum of Ash (mini-boss + hardest final boss).
-- `p2-reforge` (worktree `../myGame-wt-reforge`): reforge gamble. Gems start after sets merges (both touch gear_stats).
+- MERGED `p2-sets`: sets.json (3 major 5-pc per class, 3 minor 2-pc), `character/sets.rs`, effects
+  damage_pct/cooldown_pct/resource_gen_pct, cached per player in refresh_character; tooltip + panel.
+  Warrior p2_set only +2.4 % over p2_max after Foundry ilvl13 epics (Gravewarden pieces buffed) —
+  revisit in power-scaling pass. Set piece drop rates untuned.
+- MERGED `p2-reforge`: `POST /characters/{id}/reforge {slot, request_id}`, bands EV 71.5, cost
+  50+10·ilvl+10·sharpening, broken refused; Workshop "Reforge items" mode. No HTTP/live test yet.
+- `p2-gems` (worktree `../myGame-wt-gems`): gems, sockets, routes, economy sim.
 - p2-core verified after sharpen+dungeon3 merges: workspace 4457, embedded 312, backend 120, DB 30, clippy clean.
   `engine-renderer` `instanced_scene_equivalence` crashed once (0xc0000005), not reproducible — flaky GPU test.
 - `p2-sets` (worktree `../myGame-wt-sets`): sets.json, active_sets, tooltip/panel UI, sim.
@@ -57,11 +63,8 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 
 ## Remaining P2 work (order)
 
-1. Sets (`sets.json`, `character/sets.rs`, effects via AbilityBook::adjust/TalentEffects) — P2_DESIGN §2.6.
-2. Gems (`gems.json`, `ItemProps.gems`, sockets, socket/unsocket/upgrade routes, ~100-run BIS) — §2.7.
-3. Books (talent-point + 3×3 enhancement books per class as hidden talent nodes) — §2.8.
-4. Reforge gamble (economy.json `reforge`, odds UI, idempotent) — §2.9.
-5. Dungeons 4 & 5 (Bone Foundry, Sanctum of Ash) using dungeon3's tooling/roster.
+1. (done) Sets. 2. Gems (in flight). 4. (done) Reforge. 5. Dungeon 4 done, dungeon 5 in flight.
+3. Books (talent-point + 3×3 enhancement books per class as hidden talent nodes) — §2.8. NEXT.
 6. Community publishing: Postgres tables, API, realm `community_map` table, `cm:<id>:<ver>` instances,
    editor dungeon-block inspector, client map browser, community boards — §2.10.
 7. Economy sim, power-scaling sim with gems/sets/books, audio cues, UI polish, perf check.
