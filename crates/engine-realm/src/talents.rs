@@ -181,6 +181,17 @@ pub fn parse(text: &str) -> Result<TalentCatalog, CatalogError> {
     catalog
         .validate()
         .map_err(|message| CatalogError(format!("talents.json: {message}")))?;
+    // An option shows what its node does, with the node's numbers filled in.
+    for hero in Hero::ALL {
+        let table = &catalog.heroes[hero.index()];
+        for book in &mut catalog.books[hero.index()].enhancement {
+            for option in &mut book.options {
+                if let Some(index) = table.index_of(&option.node) {
+                    option.description = table.talents[index].description.clone();
+                }
+            }
+        }
+    }
     // Book ids are item keys: unique across the heroes.
     let mut seen: Vec<&str> = Vec::new();
     for books in &catalog.books {
@@ -412,6 +423,8 @@ mod tests {
                     let row = table.index_of(&option.node).expect("the node exists");
                     assert!(table.talents[row].is_hidden(), "{}", option.node);
                     assert_eq!(table.talents[row].name, option.name);
+                    assert!(!option.description.contains('{'), "{}", option.description);
+                    assert_eq!(option.description, table.talents[row].description);
                 }
             }
             ids.extend(books.ids().map(str::to_owned));
