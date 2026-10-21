@@ -18,7 +18,7 @@ use crate::bot::{Bot, BotConfig};
 /// A scenario's outcome.
 pub type Outcome = Result<(), String>;
 
-fn check(condition: bool, what: &str) -> Outcome {
+pub(crate) fn check(condition: bool, what: &str) -> Outcome {
     if condition {
         log::info!("  ok: {what}");
         Ok(())
@@ -28,7 +28,7 @@ fn check(condition: bool, what: &str) -> Outcome {
 }
 
 /// A unique tag for this run's accounts.
-fn run_tag() -> String {
+pub(crate) fn run_tag() -> String {
     format!("{}", engine_net::clock::local_now() / 1000 % 10_000_000_000)
 }
 
@@ -46,7 +46,7 @@ fn trio(
 }
 
 /// [`trio`] queueing for `dungeon` (a community map at `difficulty`).
-fn trio_for(
+pub(crate) fn trio_for(
     tag: &str,
     prefix: &str,
     endpoints: &RealmEndpoints,
@@ -89,7 +89,7 @@ fn trio_for(
 }
 
 /// Ticks every bot until `done` holds or `timeout` passes.
-fn drive(bots: &mut [Bot], timeout: Duration, mut done: impl FnMut(&[Bot]) -> bool) -> bool {
+pub(crate) fn drive(bots: &mut [Bot], timeout: Duration, mut done: impl FnMut(&[Bot]) -> bool) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         for bot in bots.iter_mut() {
@@ -105,7 +105,7 @@ fn drive(bots: &mut [Bot], timeout: Duration, mut done: impl FnMut(&[Bot]) -> bo
 
 /// Completes `instance` with the owner-only `admin_finish_instance`, through the `spacetime`
 /// CLI (set `SPACETIME_CLI` if it is not on PATH).
-fn finish_instance(endpoints: &RealmEndpoints, instance: u64, success: bool) -> Outcome {
+pub(crate) fn finish_instance(endpoints: &RealmEndpoints, instance: u64, success: bool) -> Outcome {
     let cli = std::env::var("SPACETIME_CLI").unwrap_or_else(|_| "spacetime".into());
     let output = std::process::Command::new(&cli)
         .args([
@@ -123,20 +123,20 @@ fn finish_instance(endpoints: &RealmEndpoints, instance: u64, success: bool) -> 
 }
 
 /// Asks the API for every bot's characters again and lets the answers arrive.
-fn refetch(bots: &mut [Bot], wait: Duration) {
+pub(crate) fn refetch(bots: &mut [Bot], wait: Duration) {
     for bot in bots.iter() {
         bot.send(NetCommand::FetchCharacters);
     }
     drive(bots, wait, |_| false);
 }
 
-fn key_level_of(bot: &Bot) -> u32 {
+pub(crate) fn key_level_of(bot: &Bot) -> u32 {
     bot.character()
         .and_then(|c| c.key.as_ref())
         .map_or(0, |k| k.level)
 }
 
-fn resource_of(bot: &Bot, id: &str) -> u64 {
+pub(crate) fn resource_of(bot: &Bot, id: &str) -> u64 {
     // The freshly fetched character first: the list is only as new as the last sign-in.
     let fetched = bot
         .detail
@@ -149,7 +149,7 @@ fn resource_of(bot: &Bot, id: &str) -> u64 {
         .map_or(0, |(_, amount)| *amount)
 }
 
-fn all_active(bots: &[Bot]) -> bool {
+pub(crate) fn all_active(bots: &[Bot]) -> bool {
     bots.iter().all(|bot| {
         bot.mirror
             .instance
@@ -720,7 +720,7 @@ fn module_refused(status: u16) -> bool {
 }
 
 /// Calls the realm API directly.
-fn call_api(
+pub(crate) fn call_api(
     endpoints: &RealmEndpoints,
     token: &str,
     method: &str,
@@ -1659,7 +1659,7 @@ pub fn chat(endpoints: &RealmEndpoints) -> Outcome {
 }
 
 /// Asks the API for every bot's character in full (bag and mail included).
-fn fetch_details(bots: &mut [Bot], wait: Duration) {
+pub(crate) fn fetch_details(bots: &mut [Bot], wait: Duration) {
     for bot in bots.iter() {
         if let Some(character) = bot.character() {
             bot.send(NetCommand::FetchCharacter(character.id.clone()));
@@ -1670,7 +1670,7 @@ fn fetch_details(bots: &mut [Bot], wait: Duration) {
 
 /// Items of `bot`'s stored character that are chest or monster loot, as `(item, quality)`:
 /// everything in the bag and mailbox whose key is a dungeon catalog item.
-fn loot_held(bot: &Bot) -> Vec<(String, u8)> {
+pub(crate) fn loot_held(bot: &Bot) -> Vec<(String, u8)> {
     engine_realm::loot::ensure_items_registered();
     let Some(detail) = bot.detail.as_ref() else {
         return Vec::new();
@@ -1697,7 +1697,7 @@ fn loot_held(bot: &Bot) -> Vec<(String, u8)> {
 }
 
 /// Calls the owner-only `admin_clear_instance` once.
-fn clear_instance(endpoints: &RealmEndpoints, instance: u64) -> Outcome {
+pub(crate) fn clear_instance(endpoints: &RealmEndpoints, instance: u64) -> Outcome {
     let cli = std::env::var("SPACETIME_CLI").unwrap_or_else(|_| "spacetime".into());
     let output = std::process::Command::new(&cli)
         .args([
@@ -1847,7 +1847,7 @@ pub fn loot(endpoints: &RealmEndpoints) -> Outcome {
 
 /// Calls an owner-only reducer through the `spacetime` CLI (set `SPACETIME_CLI` if it is not
 /// on PATH).
-fn admin_call(endpoints: &RealmEndpoints, function: &str, args: &[String]) -> Outcome {
+pub(crate) fn admin_call(endpoints: &RealmEndpoints, function: &str, args: &[String]) -> Outcome {
     let cli = std::env::var("SPACETIME_CLI").unwrap_or_else(|_| "spacetime".into());
     let output = std::process::Command::new(&cli)
         .args([
@@ -2251,7 +2251,7 @@ pub fn history(endpoints: &RealmEndpoints) -> Outcome {
 }
 
 /// Calls the realm API directly, returning the status and the JSON body (`Null` if none).
-fn api_json(
+pub(crate) fn api_json(
     endpoints: &RealmEndpoints,
     token: &str,
     method: &str,
@@ -2283,7 +2283,7 @@ fn api_json(
 }
 
 /// Signs a throwaway bot in and returns it with its API token.
-fn signed_in_probe(
+pub(crate) fn signed_in_probe(
     endpoints: &RealmEndpoints,
     name: &str,
     tag: &str,
@@ -2336,10 +2336,20 @@ fn holdings(bot: &Bot) -> Holdings {
 pub fn community(endpoints: &RealmEndpoints) -> Outcome {
     log::info!("scenario: community");
     let tag = run_tag();
-    let fixture = include_str!("../../engine-realm/tests/fixtures/community/valid_small.json");
-    let map: serde_json::Value = serde_json::from_str(fixture).map_err(|e| e.to_string())?;
+    // `P2_COMMUNITY_MAP` names a community file to play instead of the fixture (the P2 final
+    // verification plays a map the editor exported).
+    let fixture = match std::env::var("P2_COMMUNITY_MAP") {
+        Ok(path) => {
+            log::info!("  community map from {path}");
+            std::fs::read_to_string(&path).map_err(|e| format!("could not read {path}: {e}"))?
+        }
+        Err(_) => include_str!("../../engine-realm/tests/fixtures/community/valid_small.json")
+            .to_owned(),
+    };
+    let map: serde_json::Value = serde_json::from_str(&fixture).map_err(|e| e.to_string())?;
     let (_author_bot, author) = signed_in_probe(endpoints, "cm-author", &tag)?;
     let (_other_bot, other) = signed_in_probe(endpoints, "cm-other", &tag)?;
+    let (_probe_bot, probe) = signed_in_probe(endpoints, "cm-hostile", &tag)?;
     let no_body = serde_json::Value::Null;
 
     // Upload, validate, and the refusals.
@@ -2359,6 +2369,7 @@ pub fn community(endpoints: &RealmEndpoints) -> Outcome {
     let publish_path = format!("/api/v1/community/maps/{id}/publish");
     let (status, _) = api_json(endpoints, &other, "POST", &publish_path, &serde_json::json!({}));
     check(status == 404, "someone else cannot publish the author's map")?;
+    hostile_content(endpoints, &author, &other, &probe, &id, &map, &tag)?;
     let mut broken = map.clone();
     broken["scene"]["objects"][0]["asset"] = "no_such_asset".into();
     let (status, bad) = api_json(
@@ -2538,8 +2549,215 @@ pub fn community(endpoints: &RealmEndpoints) -> Outcome {
     Ok(())
 }
 
+/// Step 30 of the P2 verification: content a hostile or careless author might send. Each case
+/// must be refused with its own code, store nothing publishable, and never reach a listing.
+fn hostile_content(
+    endpoints: &RealmEndpoints,
+    author: &str,
+    other: &str,
+    probe: &str,
+    id: &str,
+    map: &serde_json::Value,
+    tag: &str,
+) -> Outcome {
+    let create = "/api/v1/community/maps";
+    let no_body = serde_json::Value::Null;
+    let drafts = |token: &str| -> usize {
+        let (_, mine) = api_json(
+            endpoints,
+            token,
+            "GET",
+            "/api/v1/community/maps?mine=true",
+            &no_body,
+        );
+        mine["maps"].as_array().map_or(0, Vec::len)
+    };
+    let before = drafts(author);
+
+    // An oversized body: refused before it is parsed, nothing stored.
+    let mut huge = map.clone();
+    huge["meta"]["description"] = "x".repeat(2 * 1024 * 1024 + 4096).into();
+    for (what, who, method, path) in [
+        ("a new map", probe, "POST", create.to_owned()),
+        (
+            "an update of an existing map",
+            probe,
+            "PUT",
+            format!("/api/v1/community/maps/{id}"),
+        ),
+        (
+            "the validate endpoint",
+            other,
+            "POST",
+            "/api/v1/community/validate".to_owned(),
+        ),
+    ] {
+        let (status, _) = api_json(
+            endpoints,
+            who,
+            method,
+            &path,
+            &serde_json::json!({"data": huge}),
+        );
+        check(
+            status == 413 || status == 400,
+            &format!("an oversized body (over 2 MiB) is refused by {what} (HTTP {status})"),
+        )?;
+    }
+
+    // Each case: what, how to damage a good map, and the error code the report must carry.
+    type Mutation = Box<dyn Fn(&mut serde_json::Value)>;
+    let cases: Vec<(&str, Mutation, &str)> = vec![
+        (
+            "an unknown top-level key",
+            Box::new(|m| m["evil"] = serde_json::json!({"run": "calc.exe"})),
+            "unsupported_feature",
+        ),
+        (
+            "an unknown scene key (a script hook)",
+            Box::new(|m| m["scene"]["on_start"] = "do_something()".into()),
+            "unsupported_feature",
+        ),
+        (
+            "an unknown key on an object",
+            Box::new(|m| m["scene"]["objects"][0]["script"] = "x".into()),
+            "unsupported_feature",
+        ),
+        (
+            "a loot table",
+            Box::new(|m| {
+                m["scene"]["dungeon"]["loot"] = serde_json::json!({"item": "gem_main_stat_5"});
+            }),
+            "loot_not_allowed",
+        ),
+        (
+            "a timer of 5 seconds",
+            Box::new(|m| m["scene"]["dungeon"]["timer_seconds"] = 5.into()),
+            "bad_timer",
+        ),
+        (
+            "a timer of 100000 seconds",
+            Box::new(|m| m["scene"]["dungeon"]["timer_seconds"] = 100_000.into()),
+            "bad_timer",
+        ),
+        (
+            "a negative timer",
+            Box::new(|m| m["scene"]["dungeon"]["timer_seconds"] = (-60).into()),
+            "schema_error",
+        ),
+        (
+            "an asset that is not in the library",
+            Box::new(|m| m["scene"]["objects"][0]["asset"] = "../../secret".into()),
+            "missing_asset",
+        ),
+        (
+            "a monster that is not approved",
+            Box::new(|m| m["scene"]["monsters"][0]["monster"] = "dragon_of_doom".into()),
+            "unknown_monster",
+        ),
+        (
+            "terrain",
+            Box::new(|m| m["scene"]["terrain"] = serde_json::json!({"size": 64})),
+            "unsupported_feature",
+        ),
+    ];
+    for (n, (what, mutate, code)) in cases.into_iter().enumerate() {
+        let mut bad = map.clone();
+        mutate(&mut bad);
+        // Every case goes through the dry run (nothing stored) ...
+        let (status, body) = api_json(
+            endpoints,
+            probe,
+            "POST",
+            "/api/v1/community/validate",
+            &serde_json::json!({"data": bad}),
+        );
+        let codes: Vec<String> = body["report"]["errors"]
+            .as_array()
+            .map(|errors| {
+                errors
+                    .iter()
+                    .filter_map(|e| e["code"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        check(
+            status == 200 && codes.iter().any(|c| c == code),
+            &format!("{what} is rejected with `{code}` (HTTP {status}, codes {codes:?})"),
+        )?;
+        // ... and the first two kinds are also uploaded as drafts, which cannot be published
+        // (the author's write budget is ten).
+        if n == 0 || n == 4 {
+            let (status, stored) = api_json(
+                endpoints,
+                author,
+                "POST",
+                create,
+                &serde_json::json!({"request_id": uuid_like(&format!("{tag}{n}")), "data": bad}),
+            );
+            let draft = stored["map"]["summary"]["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            check(
+                status == 200 && !draft.is_empty(),
+                &format!("{what}: stored as a draft only (HTTP {status})"),
+            )?;
+            let (status, _) = api_json(
+                endpoints,
+                author,
+                "POST",
+                &format!("/api/v1/community/maps/{draft}/publish"),
+                &serde_json::json!({}),
+            );
+            check(
+                status == 422,
+                &format!("{what}: the draft cannot be published (HTTP {status})"),
+            )?;
+        }
+    }
+    let (status, _) = api_json(
+        endpoints,
+        probe,
+        "POST",
+        create,
+        &serde_json::json!({"data": "not a map"}),
+    );
+    check(
+        (400..500).contains(&status),
+        &format!("a body that is not a map object is refused (HTTP {status})"),
+    )?;
+    check(
+        drafts(author) >= before,
+        "the rejected uploads left only unpublishable drafts and no listing",
+    )?;
+
+    // Not the author: update, unpublish and the moderation routes all refuse.
+    let path = format!("/api/v1/community/maps/{id}");
+    for (what, method, route) in [
+        ("update", "PUT", path.clone()),
+        ("unpublish", "POST", format!("{path}/unpublish")),
+        ("hide", "POST", format!("{path}/hide")),
+        ("reject", "POST", format!("{path}/reject")),
+        ("restore", "POST", format!("{path}/restore")),
+    ] {
+        let (status, _) = api_json(
+            endpoints,
+            other,
+            method,
+            &route,
+            &serde_json::json!({"data": map, "reason": "because"}),
+        );
+        check(
+            status == 403 || status == 404,
+            &format!("a non-author cannot {what} the map (HTTP {status})"),
+        )?;
+    }
+    Ok(())
+}
+
 /// A UUID-shaped request id from the run tag.
-fn uuid_like(tag: &str) -> String {
+pub(crate) fn uuid_like(tag: &str) -> String {
     let digits: String = tag.chars().filter(char::is_ascii_digit).collect();
     format!("00000001-0000-4000-8000-{digits:0>12}")
 }

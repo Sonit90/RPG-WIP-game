@@ -865,6 +865,28 @@ fn export_needs_a_listing() {
     assert!(!path.exists());
 }
 
+/// Writes a map authored through the editor's panels to `$P2_EXPORT_PATH`, for the live
+/// verification (`realm-bot scenario community` uploads it). Ignored: it is a tool, not a check.
+#[test]
+#[ignore = "writes the file the live community verification uploads; set P2_EXPORT_PATH"]
+fn export_a_map_for_the_live_verification() {
+    let path = PathBuf::from(std::env::var("P2_EXPORT_PATH").expect("P2_EXPORT_PATH is set"));
+    let (mut editor, mut scene) = community_editor();
+    editor.execute(Command::SetTab(Tab::Dungeon), &mut scene);
+    click_button(&mut editor, &mut scene, Command::AddSpawnHere);
+    editor.select(Selected::Monster(0), false);
+    click_button(&mut editor, &mut scene, Command::AddPatrolPoint);
+    {
+        let meta = editor.community.meta.as_mut().expect("a listing");
+        meta.title = "Editor Exported Crypt".to_owned();
+        meta.description = "Authored in the editor, exported with Editor::export_community.".to_owned();
+    }
+    let report = editor
+        .export_community(&scene, &path)
+        .expect("a clean map exports");
+    assert!(report.errors.is_empty(), "{report}");
+}
+
 #[test]
 fn an_exported_map_validates_clean_and_loads_back_unchanged() {
     let (mut editor, mut scene) = community_editor();

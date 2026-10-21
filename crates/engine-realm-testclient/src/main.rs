@@ -1,7 +1,7 @@
 //! `realm-bot`: headless realm clients.
 //!
 //! ```text
-//! realm-bot scenario <slice|isolation|decline|reconnect|reconnect_party|security|results|combat|loop|chat|loot|modifiers|history|community|all>
+//! realm-bot scenario <slice|isolation|decline|reconnect|reconnect_party|security|results|combat|loop|chat|loot|modifiers|history|community|all|p2_full|p2_after>
 //! realm-bot bot --email E --password P --character warrior --role tank [--dungeon D] [--walk] [--lead]
 //! ```
 //!
@@ -11,6 +11,7 @@
 //! make a party for local multiplayer testing.
 
 mod bot;
+mod p2;
 mod scenarios;
 
 use std::process::ExitCode;
@@ -61,6 +62,13 @@ fn main() -> ExitCode {
                 ("history", scenarios::history),
                 ("community", scenarios::community),
             ];
+            // Not part of `all`: they need Docker (they seed Postgres), write a snapshot file,
+            // and `p2_after` only makes sense after the stack was restarted.
+            let list: Vec<(&str, Scenario)> = if which == "p2_full" || which == "p2_after" {
+                vec![("p2_full", p2::p2_full), ("p2_after", p2::p2_after)]
+            } else {
+                list
+            };
             let mut failed = false;
             for (name, run) in list {
                 if which != "all" && which != name {
@@ -115,7 +123,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: realm-bot scenario <slice|isolation|decline|reconnect|reconnect_party|security|results|combat|loop|chat|loot|modifiers|history|community|all>"
+                "usage: realm-bot scenario <slice|isolation|decline|reconnect|reconnect_party|security|results|combat|loop|chat|loot|modifiers|history|community|all|p2_full|p2_after>"
             );
             eprintln!(
                 "       realm-bot bot --email E --password P --character warrior --role tank [--walk] [--lead]"
