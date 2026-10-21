@@ -22,7 +22,12 @@ engine-assets = { workspace = true }
 engine-environment = { workspace = true }
 engine-presentation = { workspace = true }
 engine-render-data = { workspace = true }
+# The community-map validator the author checks a level against, and the format it exports.
+# Pure rules over text and data: no device, no network, no filesystem. It brings `engine-game`
+# with it for the monster table, which the editor still never simulates.
+engine-realm = { workspace = true }
 log = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

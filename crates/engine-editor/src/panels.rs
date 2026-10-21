@@ -14,6 +14,7 @@ use engine_render_data::ui::{UiColor, UiRect};
 
 use crate::browser::BrowserRow;
 use crate::commands::{BrowserView, Command, Pivot, Tool};
+use crate::community::{LevelField, Tab, TextTarget};
 use crate::icons::Icon;
 use crate::inspector::Property;
 use crate::layout::Layout;
@@ -493,6 +494,9 @@ pub fn menu_entries(kind: MenuKind, editor: &Editor, scene: &EnvironmentScene) -
         MenuKind::File => vec![
             MenuEntry::new("Save", "Ctrl+S", Command::Save),
             MenuEntry::new("Save As...", "Ctrl+Shift+S", Command::SaveAs),
+            MenuEntry::new("New Community Map", "", Command::NewCommunityMap).after_separator(),
+            MenuEntry::new("Export Community Map...", "", Command::ExportCommunity)
+                .enabled(editor.is_community()),
             MenuEntry::new("Bake Map", "", Command::BakeMap).after_separator(),
             MenuEntry::new("Back to the Game", "F6", Command::Play).after_separator(),
         ],
@@ -1068,6 +1072,65 @@ pub enum Element {
         /// What it says.
         text: String,
     },
+    /// One tab of the strip under the inspector's header.
+    Tab {
+        /// Where.
+        rect: UiRect,
+        /// Which page it shows.
+        tab: Tab,
+        /// Whether that page is showing.
+        active: bool,
+    },
+    /// The heading of a group of rows on a tab.
+    Heading {
+        /// Where.
+        rect: UiRect,
+        /// What it says.
+        text: &'static str,
+    },
+    /// The coloured letter in front of a typed number: a label, not a handle.
+    Letter {
+        /// Where.
+        rect: UiRect,
+        /// The letter.
+        letter: &'static str,
+        /// Its colour.
+        color: UiColor,
+    },
+    /// A number of the dungeon block or the listing, typed into.
+    Field {
+        /// Where.
+        rect: UiRect,
+        /// Which.
+        field: LevelField,
+    },
+    /// A line of text of the dungeon block or the listing, typed into.
+    Text {
+        /// Where.
+        rect: UiRect,
+        /// Which.
+        target: TextTarget,
+    },
+    /// A line that is good or bad news, in the colour that says so.
+    Notice {
+        /// Where.
+        rect: UiRect,
+        /// What it says.
+        text: String,
+        /// Its colour.
+        color: UiColor,
+    },
+    /// One issue the validator found.
+    Issue {
+        /// Where.
+        rect: UiRect,
+        /// Its number in the report: errors first, then warnings.
+        index: usize,
+        /// Whether it refuses the map.
+        error: bool,
+        /// Its code and message.
+        text: String,
+    },
 }
 
 impl Element {
@@ -1086,21 +1149,28 @@ impl Element {
             | Self::Info { rect, .. }
             | Self::Swatch { rect, .. }
             | Self::Button { rect, .. }
-            | Self::Note { rect, .. } => *rect,
+            | Self::Note { rect, .. }
+            | Self::Tab { rect, .. }
+            | Self::Heading { rect, .. }
+            | Self::Letter { rect, .. }
+            | Self::Field { rect, .. }
+            | Self::Text { rect, .. }
+            | Self::Notice { rect, .. }
+            | Self::Issue { rect, .. } => *rect,
         }
     }
 }
 
 /// Builds the inspector top to bottom.
-struct Column<'a> {
-    layout: &'a Layout,
-    body: UiRect,
-    y: f32,
-    out: Vec<Element>,
+pub(crate) struct Column<'a> {
+    pub(crate) layout: &'a Layout,
+    pub(crate) body: UiRect,
+    pub(crate) y: f32,
+    pub(crate) out: Vec<Element>,
 }
 
 impl Column<'_> {
-    fn row(&mut self, height: f32) -> UiRect {
+    pub(crate) fn row(&mut self, height: f32) -> UiRect {
         let pad = self.layout.px(metrics::PADDING + 2.0);
         let rect = UiRect::new(
             self.body.x + pad,
@@ -1172,12 +1242,12 @@ impl Column<'_> {
         }
     }
 
-    fn info(&mut self, label: &'static str, value: String) {
+    pub(crate) fn info(&mut self, label: &'static str, value: String) {
         let rect = self.row(self.layout.px(metrics::ROW_HEIGHT - 2.0));
         self.out.push(Element::Info { rect, label, value });
     }
 
-    fn check(&mut self, label: &'static str, checked: bool, command: Command) {
+    pub(crate) fn check(&mut self, label: &'static str, checked: bool, command: Command) {
         let rect = self.row(self.layout.px(metrics::ROW_HEIGHT));
         self.out.push(Element::Check {
             rect,
@@ -1188,10 +1258,30 @@ impl Column<'_> {
     }
 }
 
-/// Everything the inspector shows for the current selection, top to bottom, scrolled by
-/// `scroll` pixels. Elements that would fall outside the panel are left out.
+/// Everything the inspector shows, top to bottom, scrolled by the editor's scroll: the tab
+/// strip, and under it the page the editor is on. Elements that would fall outside the panel
+/// are left out.
 #[must_use]
 pub fn inspector(editor: &Editor, scene: &EnvironmentScene, layout: &Layout) -> Vec<Element> {
+    let mut elements = if editor.tab() == Tab::Inspector {
+        selection_page(editor, scene, layout)
+    } else {
+        crate::community_panel::page(editor, scene, layout)
+    };
+    let tabs = layout.inspector_tabs;
+    let width = (tabs.width / Tab::ALL.len() as f32).floor();
+    for (slot, tab) in Tab::ALL.into_iter().enumerate() {
+        elements.push(Element::Tab {
+            rect: UiRect::new(tabs.x + slot as f32 * width, tabs.y, width, tabs.height),
+            tab,
+            active: tab == editor.tab(),
+        });
+    }
+    elements
+}
+
+/// What the inspector shows for the current selection.
+fn selection_page(editor: &Editor, scene: &EnvironmentScene, layout: &Layout) -> Vec<Element> {
     let body = layout.inspector_body;
     let mut column = Column {
         layout,

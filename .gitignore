@@ -34,6 +34,8 @@ Desktop.ini
 # designer built, and losing it loses the level. Everything else under assets/ is binary
 # content that lives beside the repository.
 !/assets/scenes/
+# The starting map "New community map" copies: level data, compiled into the editor.
+!/assets/templates/
 # The character and dungeon catalogs are data the server, client and API compile in.
 !/assets/catalog/
 # Sound effects are small, generated once and tuned by ear: they ship with the game.
