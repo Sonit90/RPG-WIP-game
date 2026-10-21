@@ -92,7 +92,7 @@ fn advance(
 
 /// Builds a party's instance and starts its countdown.
 pub fn create(ctx: &ReducerContext, loaded: &Loaded) -> Result<(), RealmError> {
-    let dungeon = crate::level::dungeon(&loaded.party.dungeon_id)?;
+    let dungeon = crate::level::dungeon(ctx, &loaded.party.dungeon_id)?;
     // The key is checked again here: the party's state says it was inserted, the rules say
     // whether it still opens this dungeon.
     let owner = loaded
@@ -357,7 +357,7 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         transition(ctx, &party, next)?;
     }
     let duration = run_duration(ctx, &instance);
-    let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
+    let dungeon = crate::level::dungeon(ctx, &instance.dungeon_id)?;
     // How it ended against the timer, once, for everyone in the run.
     let timer_us = outcome::timer_us(&dungeon.definition);
     let outcome = outcome::classify(
@@ -378,7 +378,9 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         .and_then(|party| party.key_owner);
     // Each player's roll from the boss's chest, read before the fight can change. Nothing for
     // a failed run, or one ended without a chest (an admin finish).
-    let rolls: Vec<(String, Vec<RolledItem>)> = if success {
+    // A community map pays nothing: no chest roll, no rewards, no key progress, no drops.
+    let community = engine_realm::community::grants_nothing(&instance.dungeon_id);
+    let rolls: Vec<(String, Vec<RolledItem>)> = if success && !community {
         let accounts: Vec<String> = ctx
             .db
             .instance_player()
@@ -471,28 +473,40 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
         let is_owner = key_owner == Some(player.identity);
         let key_level = instance.key_level.max(1);
         let bonus_pct = crate::combat::reward_bonus(ctx, &instance);
-        let rewards =
+        let rewards = if community {
+            engine_realm::community::zero_rewards()
+        } else {
             engine_realm::rewards::run_rewards(&dungeon.definition, key_level, success, is_owner)
-                .with_bonus(bonus_pct);
+                .with_bonus(bonus_pct)
+        };
         let experience = rewards.experience;
         // A member whose own key was lower than the one used rises one level with the run.
         let own_level = member
             .as_ref()
             .filter(|m| m.key_dungeon_id == instance.dungeon_id)
             .map_or(0, |m| m.key_level);
-        let participant_bump = engine_realm::key::participant_progress(
-            &dungeon.definition.keys,
-            key_level,
-            own_level,
-            success,
-            is_owner,
-        );
+        let participant_bump = if community {
+            None
+        } else {
+            engine_realm::key::participant_progress(
+                &dungeon.definition.keys,
+                key_level,
+                own_level,
+                success,
+                is_owner,
+            )
+        };
         let key_level_after = rewards.key_level_after.or(participant_bump).unwrap_or(0);
         let currency_spent = take_spend(ctx, instance_id, &player.account_id);
         let resources =
             serde_json::to_string(&rewards.resources).unwrap_or_else(|_| "[]".to_owned());
         // What the player took from monsters is paid with the result, win or lose.
         let (mob_drops, looted) = crate::loot::take_haul(ctx, instance_id, &player.account_id);
+        let (mob_drops, looted) = if community {
+            (0, Vec::new())
+        } else {
+            (mob_drops, looted)
+        };
         let looted_text = haul::encode_currencies(&looted);
         ctx.db.pending_result().insert(PendingResult {
             result_id,
@@ -563,7 +577,9 @@ pub fn finish(ctx: &ReducerContext, instance_id: u64, success: bool) -> Result<(
                 NoticeLevel::Warning
             },
             if success {
-                if key_level_after > 0 {
+                if community {
+                    "Community map complete!".to_owned()
+                } else if key_level_after > 0 {
                     format!(
                         "Dungeon complete! +{experience} experience. Key upgraded to level {key_level_after}."
                     )
@@ -662,7 +678,7 @@ pub fn settle_abandoned(ctx: &ReducerContext, instance: &DungeonInstance, only: 
     } else {
         String::new()
     };
-    let timer = crate::level::dungeon(&instance.dungeon_id)
+    let timer = crate::level::dungeon(ctx, &instance.dungeon_id)
         .ok()
         .and_then(|dungeon| outcome::timer_us(&dungeon.definition))
         .unwrap_or(0);
@@ -686,6 +702,12 @@ pub fn settle_abandoned(ctx: &ReducerContext, instance: &DungeonInstance, only: 
         }
         let spent = take_spend(ctx, instance.id, &player.account_id);
         let (_, looted) = crate::loot::take_haul(ctx, instance.id, &player.account_id);
+        // A community map grants nothing, abandoned or not.
+        let looted = if engine_realm::community::grants_nothing(&instance.dungeon_id) {
+            Vec::new()
+        } else {
+            looted
+        };
         let character_id = ctx
             .db
             .party_member()
@@ -837,6 +859,7 @@ pub fn janitor(ctx: &ReducerContext, _timer: JanitorTimer) -> Result<(), String>
         ctx.db.player_notice().id().delete(id);
     }
     crate::chat::prune(ctx);
+    crate::community::prune(ctx);
     let idle_buckets: Vec<String> = ctx
         .db
         .rate_limit()

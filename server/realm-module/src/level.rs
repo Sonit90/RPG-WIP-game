@@ -12,6 +12,9 @@ use std::rc::Rc;
 use engine_environment::EnvironmentScene;
 use engine_realm::RealmError;
 use engine_realm::catalog::{Catalog, DungeonDefinition, embedded_scene};
+use spacetimedb::ReducerContext;
+
+use crate::schema::*;
 
 /// A dungeon's compiled data.
 pub struct Dungeon {
@@ -41,10 +44,15 @@ pub fn catalog() -> Result<Rc<Catalog>, RealmError> {
     })
 }
 
-/// A dungeon's compiled data, building it on first use.
-pub fn dungeon(id: &str) -> Result<Rc<Dungeon>, RealmError> {
+/// A dungeon's compiled data, building it on first use. `cm:` ids are community maps, built
+/// from the `community_map` table through the same mapcheck the API ran (a version never
+/// changes, so the cache is as good for them as for the official levels).
+pub fn dungeon(ctx: &ReducerContext, id: &str) -> Result<Rc<Dungeon>, RealmError> {
     if let Some(found) = DUNGEONS.with(|cell| cell.borrow().get(id).cloned()) {
         return Ok(found);
+    }
+    if engine_realm::community::is_community(id) {
+        return community(ctx, id);
     }
     let catalog = catalog()?;
     let definition = catalog
@@ -69,4 +77,46 @@ pub fn dungeon(id: &str) -> Result<Rc<Dungeon>, RealmError> {
     });
     log::info!("event=dungeon_compiled dungeon_id={id}");
     Ok(built)
+}
+
+/// A community map built from its stored text. Refused (and logged) if the text no longer
+/// validates: the realm never runs a map it has not checked.
+fn community(ctx: &ReducerContext, id: &str) -> Result<Rc<Dungeon>, RealmError> {
+    let row = ctx
+        .db
+        .community_map()
+        .id()
+        .find(id.to_owned())
+        .ok_or_else(|| RealmError::dungeon("That community map is not available on this realm."))?;
+    let catalog = catalog()?;
+    let template = catalog
+        .dungeon(engine_realm::community::TEMPLATE_DUNGEON)
+        .ok_or_else(|| RealmError::protocol("The realm's catalog has no template dungeon."))?;
+    let prepared = engine_realm::community::prepare(&row.data, id, template).map_err(|report| {
+        log::error!(
+            "event=community_invalid dungeon_id={id} errors={}",
+            report.errors.len()
+        );
+        RealmError::dungeon("That community map is not available on this realm.")
+    })?;
+    let built = Rc::new(Dungeon {
+        definition: prepared.definition,
+        scene: prepared.scene,
+    });
+    DUNGEONS.with(|cell| {
+        cell.borrow_mut().insert(id.to_owned(), Rc::clone(&built));
+    });
+    log::info!("event=community_compiled dungeon_id={id}");
+    Ok(built)
+}
+
+/// A dungeon's catalog row, official or community.
+pub fn definition(ctx: &ReducerContext, id: &str) -> Result<DungeonDefinition, RealmError> {
+    if engine_realm::community::is_community(id) {
+        return dungeon(ctx, id).map(|built| built.definition.clone());
+    }
+    catalog()?
+        .dungeon(id)
+        .cloned()
+        .ok_or_else(|| RealmError::matchmaking("That dungeon does not exist."))
 }

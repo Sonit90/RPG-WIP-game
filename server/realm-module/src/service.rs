@@ -74,9 +74,14 @@ pub fn svc_enqueue(
     crate::util::rate_limit_for(ctx, identity, Operation::Queue)?;
 
     let catalog = crate::level::catalog()?;
-    let dungeon = catalog
-        .dungeon(&dungeon_id)
-        .ok_or_else(|| RealmError::matchmaking("That dungeon does not exist.").to_wire())?;
+    // A community map must be one the bridge has published (and not withdrawn since).
+    if engine_realm::community::is_community(&dungeon_id)
+        && !crate::community::is_active(ctx, &dungeon_id)
+    {
+        return Err(RealmError::matchmaking("That community map is not available.").into());
+    }
+    let dungeon = crate::level::definition(ctx, &dungeon_id)
+        .map_err(|_| RealmError::matchmaking("That dungeon does not exist.").to_wire())?;
     let definition = catalog
         .character(&definition_id)
         .ok_or_else(|| RealmError::matchmaking("That character cannot queue.").to_wire())?;

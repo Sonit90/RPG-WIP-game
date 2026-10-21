@@ -56,6 +56,15 @@ fn uid_of(ctx: &ReducerContext, instance_id: u64) -> u128 {
         )
 }
 
+/// Whether the instance is a community-map run.
+pub fn is_community_run(ctx: &ReducerContext, instance_id: u64) -> bool {
+    ctx.db
+        .dungeon_instance()
+        .id()
+        .find(instance_id)
+        .is_some_and(|instance| engine_realm::community::grants_nothing(&instance.dungeon_id))
+}
+
 /// Records a chest item, if the player does not already have a row for that roll.
 pub fn roll(
     ctx: &ReducerContext,
@@ -66,6 +75,9 @@ pub fn roll(
     index: usize,
     item: &RolledItem,
 ) {
+    if is_community_run(ctx, instance_id) {
+        return;
+    }
     let loot_id = haul::chest_loot_id(uid, account_id, index);
     if ctx.db.pending_loot().loot_id().find(&loot_id).is_some() {
         return;
@@ -173,6 +185,11 @@ pub fn open_run(ctx: &ReducerContext, instance_id: u64, members: &[(String, Stri
 /// Call this *before* `finish` handles the same tick's completion: the boss's gold is in the
 /// batch that completes the run.
 pub fn record_drops(ctx: &ReducerContext, instance_id: u64, events: &[WireEvent]) {
+    // A community map grants no loot or currency: nothing is recorded, whatever the fight
+    // rolled (it is armed with rules that roll nothing; this is the second lock).
+    if is_community_run(ctx, instance_id) {
+        return;
+    }
     for drop in haul::drops_in(events) {
         match drop {
             Drop::Item {

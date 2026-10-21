@@ -54,6 +54,9 @@ pub fn modifier_reroll(ctx: &ReducerContext, index: u8) -> Result<(), String> {
             RealmError::dungeon("A key can only be rerolled while the run is under way.").into(),
         );
     }
+    if engine_realm::community::grants_nothing(&instance.dungeon_id) {
+        return Err(RealmError::dungeon("Keys cannot be rerolled on a community map.").into());
+    }
     let catalog = crate::level::catalog()?;
     let rules = catalog.modifiers();
     let spend = ctx

@@ -208,6 +208,17 @@ pub fn reward_bonus(_ctx: &ReducerContext, instance: &DungeonInstance) -> u32 {
 /// was built: see [`fight_seed`].)
 fn arm(ctx: &ReducerContext, instance: &DungeonInstance, fight: &mut CombatInstance) {
     fight.set_loot_dungeon(&instance.dungeon_id);
+    // A community map rolls nothing: the fight gets loot rules with every chance zeroed.
+    if engine_realm::community::grants_nothing(&instance.dungeon_id) {
+        match engine_realm::community::no_loot_rules() {
+            Some(rules) => fight.set_loot(rules, instance.key_level.max(1), 0),
+            None => log::error!(
+                "event=loot_rules_missing instance_id={} a community run would use the legacy chest",
+                instance.id
+            ),
+        }
+        return;
+    }
     match engine_realm::loot::builtin_rules() {
         Some(rules) => fight.set_loot(
             rules.clone(),
@@ -224,7 +235,7 @@ fn arm(ctx: &ReducerContext, instance: &DungeonInstance, fight: &mut CombatInsta
 /// Builds an instance's fight and writes its first rows. Called once, when the instance
 /// is created.
 pub fn start(ctx: &ReducerContext, instance: &DungeonInstance) -> Result<(), RealmError> {
-    let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
+    let dungeon = crate::level::dungeon(ctx, &instance.dungeon_id)?;
     let players = specs(ctx, instance, &dungeon);
     let barriers = barriers_of(&dungeon.scene, &dungeon.definition);
     let mut fight = CombatInstance::new_seeded(
@@ -328,7 +339,7 @@ fn rebuild(
     instance: &DungeonInstance,
     combat: &InstanceCombat,
 ) -> Result<CombatInstance, RealmError> {
-    let dungeon = crate::level::dungeon(&instance.dungeon_id)?;
+    let dungeon = crate::level::dungeon(ctx, &instance.dungeon_id)?;
     let players = specs(ctx, instance, &dungeon);
     let barriers = barriers_of(&dungeon.scene, &dungeon.definition);
     let state = Restore {

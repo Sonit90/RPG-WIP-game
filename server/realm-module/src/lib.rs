@@ -25,6 +25,7 @@
 mod admin;
 mod chat;
 mod combat;
+mod community;
 mod connection;
 mod instance;
 mod level;
