@@ -179,6 +179,12 @@ pub enum EnemyTarget {
     /// Marks, garrotes, slows: the abilities that exist to reach past the tank. Random from the
     /// simulation's own seeded generator, so a replay of the same seed marks the same player.
     Random,
+    /// The hostile in range with the least health left, as a fraction of their maximum.
+    ///
+    /// The hunter's pick: chosen when the ability starts, in sight and between the ability's
+    /// minimum range and its range. The answer is to keep the weakest player topped up, or to
+    /// make somebody else the weakest.
+    Weakest,
 }
 
 /// What an ability *does* when it resolves.
@@ -652,10 +658,56 @@ pub enum EnemyAbility {
     ConveyorSurge,
     /// The Foundry Overseer, red-hot: attacks much faster until he dies.
     Overheat,
+
+    // ---------------------------------------------------------------- the Sanctum of Ash
+    /// Mirror Penitent: wards its pack so a share of every hit it takes is sent back.
+    MirrorWard,
+    /// Mirror Penitent: a frontal cone.
+    PenitentBlade,
+    /// Mirror Penitent: the filler.
+    PenitentStrike,
+    /// Ash Cantor: a litany that leaves the dispellable Ashen Curse on two players.
+    LitanyOfAsh,
+    /// Ash Cantor: a heal for its most wounded ally.
+    AshenMend,
+    /// Ash Cantor: the filler bolt.
+    AshBolt,
+    /// Ash Stalker: a leap at the player with the least health left.
+    AmbushLeap,
+    /// Ash Stalker: a slash that leaves a bleed.
+    StalkerSlash,
+    /// Ash Stalker: the filler.
+    StalkerStab,
+    /// Pyre Immolator: a circle around itself.
+    PyreSlam,
+    /// Pyre Immolator: the filler.
+    ImmolatorFist,
+    /// Pyre Immolator: what its death leaves, a blast and a fire that spreads.
+    EmberCollapse,
+    /// Ember Pylon: an arena-wide pulse that line of sight stops.
+    AshTithe,
+    /// Censer Warden: a wide cone.
+    CenserSwing,
+    /// Censer Warden: smoke that lands on two players and burns where it fell.
+    SmokeVeil,
+    /// Censer Warden, burning: a circle around itself.
+    CenserBlaze,
+    /// Censer Warden: the filler.
+    WardenMace,
+    /// The Ashen Pontiff: a cone that brands whoever it catches.
+    BrandingStrike,
+    /// The Ashen Pontiff: a wide, heavy sweep.
+    PyreSweep,
+    /// The Ashen Pontiff: the filler.
+    PontiffMace,
+    /// The Ashen Pontiff: an arena-wide nova that only a pillar between him and you stops.
+    RiteOfCinders,
+    /// The Ashen Pontiff, desperate: attacks much faster until he dies.
+    LastRite,
 }
 
 /// How many enemy abilities exist.
-pub const ENEMY_ABILITY_COUNT: usize = 83;
+pub const ENEMY_ABILITY_COUNT: usize = 105;
 
 impl EnemyAbility {
     /// Every ability, in table order.
@@ -743,6 +795,28 @@ impl EnemyAbility {
         Self::MoltenLadle,
         Self::ConveyorSurge,
         Self::Overheat,
+        Self::MirrorWard,
+        Self::PenitentBlade,
+        Self::PenitentStrike,
+        Self::LitanyOfAsh,
+        Self::AshenMend,
+        Self::AshBolt,
+        Self::AmbushLeap,
+        Self::StalkerSlash,
+        Self::StalkerStab,
+        Self::PyreSlam,
+        Self::ImmolatorFist,
+        Self::EmberCollapse,
+        Self::AshTithe,
+        Self::CenserSwing,
+        Self::SmokeVeil,
+        Self::CenserBlaze,
+        Self::WardenMace,
+        Self::BrandingStrike,
+        Self::PyreSweep,
+        Self::PontiffMace,
+        Self::RiteOfCinders,
+        Self::LastRite,
     ];
 
     /// Its index into [`ENEMY_ABILITIES`].
@@ -2507,6 +2581,395 @@ pub static ENEMY_ABILITIES: [EnemyAbilityDef; ENEMY_ABILITY_COUNT] = [
         cue: EnemyCue::Heavy,
         ..EnemyAbilityDef::BASE
     },
+    // ======================================================================================
+    // The Sanctum of Ash. The questions this dungeon adds: what do I stop hitting (a mirror),
+    // who do I cleanse (a curse), who is the weakest (a hunter's leap), where do I kill it
+    // (a death that spreads), and what is between me and the pontiff (a pillar). See
+    // `docs/dungeon/SANCTUM_OF_ASH.md`.
+    // ======================================================================================
+
+    // ---------------------------------------------------------------- Mirror Penitent
+    // Half of everything its pack takes goes back at whoever dealt it, for six seconds in
+    // fifteen, if the cast is allowed to finish. The party's answers are a kick, a different
+    // target, or a pause: the reflection is capped, but the damage the party was dealing is not
+    // being dealt to the enemy.
+    EnemyAbilityDef {
+        name: "MIRROR WARD",
+        description: "Wards every ally around it, itself included, so half of all damage taken is sent back at whoever dealt it.",
+        counter: "Interrupt it; hit something else while it lasts",
+        range: 12.0,
+        cast_time: 1.6,
+        cooldown: 15.0,
+        damage_type: DamageType::Arcane,
+        effect: EnemyEffect::Bestow {
+            kind: StatusKind::Mirrored,
+            radius: 6.0,
+            duration: 6.0,
+        },
+        interruptible: true,
+        recovery: 0.8,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "PENITENT BLADE",
+        description: "A frontal cone, drawn on the floor for the whole cast.",
+        counter: "Tank faces it away from the party; step out of the cone",
+        range: 5.0,
+        cast_time: 1.4,
+        cooldown: 8.0,
+        damage: 85.0,
+        shape: TelegraphShape::Cone {
+            yaw: 0.0,
+            range: 6.0,
+            half_angle: CONE_HALF_ANGLE,
+        },
+        aim: EnemyAim::Caster,
+        recovery: 0.8,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "PENITENT STRIKE",
+        description: "The filler.",
+        range: 3.5,
+        cooldown: 2.4,
+        damage: 58.0,
+        recovery: 0.6,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Ash Cantor
+    // The curse to dispel: two players at a time, a stack each, five stacks of six per cent more
+    // damage taken and three per cent slower. A kick on the cast saves two stacks; a cleanse
+    // saves them all.
+    EnemyAbilityDef {
+        name: "LITANY OF ASH",
+        description: "Leaves the Ashen Curse on two random players: more damage taken and slower, stacking. Dispel it.",
+        counter: "Interrupt it; dispel the Ashen Curse",
+        range: 32.0,
+        cast_time: 2.0,
+        cooldown: 11.0,
+        damage: 28.0,
+        damage_type: DamageType::Arcane,
+        select: EnemyTarget::Random,
+        targets: 2,
+        rider: EnemyRider::Afflict {
+            kind: StatusKind::Ashen,
+            duration: 20.0,
+            max_stacks: 5,
+        },
+        interruptible: true,
+        recovery: 0.6,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "ASHEN MEND",
+        description: "A heal for its most wounded ally.",
+        counter: "Interrupt it, or kill the cantor",
+        range: 24.0,
+        cast_time: 2.2,
+        cooldown: 10.0,
+        damage_type: DamageType::Arcane,
+        select: EnemyTarget::WoundedAlly,
+        effect: EnemyEffect::Heal { amount: 420.0 },
+        interruptible: true,
+        recovery: 0.8,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "ASH BOLT",
+        description: "The filler bolt.",
+        range: 30.0,
+        cast_time: 1.2,
+        cooldown: 2.4,
+        damage: 30.0,
+        damage_type: DamageType::Fire,
+        interruptible: true,
+        recovery: 0.3,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Ash Stalker
+    // A leap at whoever has the least health left, not whoever it is fighting: the target is
+    // read off the health bars when it jumps, so a hurt healer is the one it goes for. A landing
+    // circle and a slow, a second and a half of each.
+    EnemyAbilityDef {
+        name: "AMBUSH LEAP",
+        description: "A leap at the player with the least health left, landing in a circle and slowing them.",
+        counter: "Keep the weakest player healthy; leave the landing circle",
+        range: 26.0,
+        cast_time: 0.0,
+        cooldown: 12.0,
+        damage: 90.0,
+        aim: EnemyAim::Caster,
+        select: EnemyTarget::Weakest,
+        effect: EnemyEffect::Charge {
+            speed: 28.0,
+            impact_radius: 3.5,
+            shockwave_radius: 0.0,
+            trail_damage_per_second: 0.0,
+            trail_duration: 0.0,
+            slow: 0.5,
+            slow_duration: 1.5,
+        },
+        recovery: 0.6,
+        min_range: 0.5,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "STALKER SLASH",
+        description: "A slash that leaves a stacking bleed.",
+        counter: "Heal through it; kill the stalker",
+        range: 3.2,
+        cooldown: 5.0,
+        damage: 40.0,
+        rider: EnemyRider::Bleed {
+            damage_per_stack: 9.0,
+            duration: 8.0,
+            stacks: 1,
+            max_stacks: 6,
+        },
+        recovery: 0.4,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "STALKER STAB",
+        description: "The filler.",
+        range: 3.0,
+        cooldown: 1.8,
+        damage: 38.0,
+        recovery: 0.4,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Pyre Immolator
+    EnemyAbilityDef {
+        name: "PYRE SLAM",
+        description: "A circle around the immolator, drawn for the whole cast.",
+        counter: "Step out of the circle",
+        range: 6.0,
+        cast_time: 1.7,
+        cooldown: 10.0,
+        damage: 95.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 6.0 },
+        aim: EnemyAim::Caster,
+        recovery: 0.9,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "IMMOLATOR FIST",
+        description: "The filler.",
+        range: 3.5,
+        cooldown: 2.2,
+        damage: 56.0,
+        damage_type: DamageType::Fire,
+        recovery: 0.5,
+        ..EnemyAbilityDef::BASE
+    },
+    // Not on any list: the immolator does not choose it, its death does. A blast where it fell,
+    // and a fire that starts small and spreads over fourteen seconds, so where it is killed is
+    // the decision - away from the party, away from the doorway, and not under the healer.
+    EnemyAbilityDef {
+        name: "EMBER COLLAPSE",
+        description: "When it dies: a blast where it fell, and a fire that spreads from there.",
+        counter: "Kill it away from the party; leave the fire before it grows",
+        range: 40.0,
+        damage: 60.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 3.5 },
+        aim: EnemyAim::Caster,
+        effect: EnemyEffect::Hazard {
+            duration: 14.0,
+            damage_per_second: 34.0,
+            grow_to: 8.0,
+            radius: 0.0,
+        },
+        recovery: 0.0,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Ember Pylon
+    // The whole sanctum, every eight seconds, from every pylon still standing: three seconds of
+    // warning, a kick (it is a cast), or a pillar between you and it (the blast goes nowhere
+    // through stone). The longer the pylons stand, the more of it the party has paid.
+    EnemyAbilityDef {
+        name: "ASH TITHE",
+        description: "A pulse that fills the sanctum. Stone stops it.",
+        counter: "Kill the pylons; interrupt it; stand behind a pillar",
+        range: 70.0,
+        cast_time: 3.0,
+        cooldown: 8.0,
+        damage: 30.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 90.0 },
+        aim: EnemyAim::Caster,
+        interruptible: true,
+        recovery: 0.6,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- Censer Warden
+    EnemyAbilityDef {
+        name: "CENSER SWING",
+        description: "A wide frontal cone, drawn on the floor for the whole cast.",
+        counter: "Tank faces it away from the party; step out of the cone",
+        range: 6.0,
+        cast_time: 1.8,
+        cooldown: 8.0,
+        damage: 120.0,
+        shape: TelegraphShape::Cone {
+            yaw: 0.0,
+            range: 8.0,
+            half_angle: WIDE_CONE_HALF_ANGLE,
+        },
+        aim: EnemyAim::Caster,
+        recovery: 1.0,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "SMOKE VEIL",
+        description: "Smoke lands on two players after a delay and burns where it fell.",
+        counter: "Move out of the circle, then stay out of the smoke; interrupt the cast",
+        range: 30.0,
+        cast_time: 1.5,
+        cooldown: 11.0,
+        damage: 40.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 3.8 },
+        select: EnemyTarget::Random,
+        targets: 2,
+        delay: 1.8,
+        effect: EnemyEffect::Hazard {
+            duration: 9.0,
+            damage_per_second: 30.0,
+            grow_to: 0.0,
+            radius: 0.0,
+        },
+        interruptible: true,
+        recovery: 0.6,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "CENSER BLAZE",
+        description: "The censer flares: a circle around the warden.",
+        counter: "Everyone out, including the tank",
+        range: 9.0,
+        cast_time: 2.2,
+        cooldown: 14.0,
+        damage: 150.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 8.5 },
+        aim: EnemyAim::Caster,
+        recovery: 1.0,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "WARDEN MACE",
+        description: "The filler.",
+        range: 4.0,
+        cooldown: 2.2,
+        damage: 66.0,
+        recovery: 0.5,
+        ..EnemyAbilityDef::BASE
+    },
+    // ---------------------------------------------------------------- The Ashen Pontiff
+    // The stack. A cone in front of him, drawn for the whole cast and a kick away from never
+    // happening: each strike that lands brands its victim for twenty seconds, and every stack
+    // is twelve per cent more damage taken. Tanks pass him between them, a cleanse takes the
+    // brand off, a solo player steps out of the cone.
+    EnemyAbilityDef {
+        name: "BRANDING STRIKE",
+        description: "A cone in front of the Pontiff that brands whoever it catches: more damage taken, stacking.",
+        counter: "Interrupt it; step out of the cone; dispel the brand; swap tanks",
+        range: 5.5,
+        cast_time: 1.4,
+        cooldown: 7.0,
+        damage: 80.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Cone {
+            yaw: 0.0,
+            range: 5.5,
+            half_angle: 0.7,
+        },
+        aim: EnemyAim::Caster,
+        rider: EnemyRider::Afflict {
+            kind: StatusKind::Branded,
+            duration: 20.0,
+            max_stacks: 8,
+        },
+        interruptible: true,
+        recovery: 0.7,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "PYRE SWEEP",
+        description: "A wide, heavy sweep in front of the Pontiff.",
+        counter: "Step out of the cone",
+        range: 8.0,
+        cast_time: 2.0,
+        cooldown: 10.0,
+        damage: 110.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Cone {
+            yaw: 0.0,
+            range: 9.0,
+            half_angle: WIDE_CONE_HALF_ANGLE,
+        },
+        aim: EnemyAim::Caster,
+        recovery: 1.0,
+        cue: EnemyCue::Sweep,
+        ..EnemyAbilityDef::BASE
+    },
+    EnemyAbilityDef {
+        name: "PONTIFF MACE",
+        description: "The filler.",
+        range: 4.0,
+        cooldown: 2.0,
+        damage: 72.0,
+        recovery: 0.4,
+        ..EnemyAbilityDef::BASE
+    },
+    // The sanctum is the telegraph, so there is nowhere to run to: the answer is stone. A circle
+    // of ninety metres is drawn for four and a half seconds; anyone with a pillar between them
+    // and the Pontiff when it lands is not in it. Alone or in a party, the same two steps.
+    EnemyAbilityDef {
+        name: "RITE OF CINDERS",
+        description: "A nova that fills the sanctum. Stone between you and the Pontiff stops it.",
+        counter: "Break line of sight: stand behind a pillar",
+        range: 80.0,
+        cast_time: 4.5,
+        cooldown: 26.0,
+        damage: 220.0,
+        damage_type: DamageType::Fire,
+        shape: TelegraphShape::Circle { radius: 90.0 },
+        aim: EnemyAim::Caster,
+        recovery: 1.0,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
+    // The hard enrage: once, for the rest of the fight. A rite he cannot finish is a rite he
+    // runs.
+    EnemyAbilityDef {
+        name: "LAST RITE",
+        description: "The Pontiff's last rite: attacks much faster until he dies.",
+        counter: "Burst him down",
+        range: 80.0,
+        cooldown: 30.0,
+        effect: EnemyEffect::Frenzy {
+            duration: 1200.0,
+            haste: 0.4,
+        },
+        recovery: 0.2,
+        once_per_phase: true,
+        cue: EnemyCue::Heavy,
+        ..EnemyAbilityDef::BASE
+    },
 ];
 
 /// How many abilities one enemy may own in one phase.
@@ -2623,10 +3086,26 @@ pub enum EnemyKind {
     FoundryForeman,
     /// The Bone Foundry's boss: the Foundry Overseer.
     FoundryOverseer,
+
+    // ---------------------------------------------------------------- the Sanctum of Ash
+    /// Reflector: wards its pack so a share of what they take is sent back; kick it or look away.
+    MirrorPenitent,
+    /// Caster: a dispellable curse on two players and a heal for its pack.
+    AshCantor,
+    /// Hunter: leaps at the player with the least health left.
+    AshStalker,
+    /// Brawler whose death leaves a fire that spreads.
+    PyreImmolator,
+    /// A boss's pylon: while it stands the boss cannot be hurt, and it pulses the whole sanctum.
+    EmberPylon,
+    /// The Sanctum of Ash's mid-dungeon guardian: the Censer Warden.
+    CenserWarden,
+    /// The Sanctum of Ash's boss: the Ashen Pontiff.
+    AshenPontiff,
 }
 
 /// How many enemy kinds there are.
-pub const ENEMY_KIND_COUNT: usize = 30;
+pub const ENEMY_KIND_COUNT: usize = 37;
 
 /// The six monsters the Graveyard Crypt is built from, in the order they are documented.
 ///
@@ -2674,6 +3153,13 @@ impl EnemyKind {
         Self::SlagThrower,
         Self::FoundryForeman,
         Self::FoundryOverseer,
+        Self::MirrorPenitent,
+        Self::AshCantor,
+        Self::AshStalker,
+        Self::PyreImmolator,
+        Self::EmberPylon,
+        Self::CenserWarden,
+        Self::AshenPontiff,
     ];
 
     /// Whether this kind is a boss, for the boss frame and the encounter readout.
@@ -2793,6 +3279,17 @@ pub struct EnemyArchetype {
     /// name, quality, slot and stats. Empty means no loot is configured, and the map says
     /// exactly that rather than inventing rewards.
     pub loot: &'static [LootEntry],
+    /// What it leaves where it dies: an ability the death itself resolves, as a zone at its
+    /// feet, at the damage scale it fought with.
+    ///
+    /// Never on its priority list and never chosen by the brain. An immolator's blast and the
+    /// fire that spreads from it, a bomber's last word: the decision is where the party kills it.
+    pub on_death: Option<EnemyAbility>,
+    /// Whether, while it stands among the allies a boss called, that boss cannot be hurt.
+    ///
+    /// The Ashen Pontiff's pylons. The called-in ally is the intermission: kill it, and the
+    /// fight goes on.
+    pub shields_boss: bool,
 }
 
 /// One item a monster can drop.
@@ -2931,6 +3428,8 @@ impl EnemyArchetype {
         look: MonsterLook::HOSTILE,
         empowered: None,
         loot: &[],
+        on_death: None,
+        shields_boss: false,
     };
 
     /// Its first phase's abilities, in preference order.
@@ -4032,6 +4531,236 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         },
         ..EnemyArchetype::BASE
     },
+    // ======================================================================================
+    // The Sanctum of Ash. Existing bodies once more, washed in ash and ember: bone white,
+    // charcoal, red-hot. See `docs/dungeon/SANCTUM_OF_ASH.md`.
+    // ======================================================================================
+    // Not a damage dealer either: the question is "what do we stop hitting". Under its ward a
+    // pack sends half of what it takes back at the party, for six seconds in every fifteen.
+    EnemyArchetype {
+        name: "MIRROR PENITENT",
+        max_health: 3600.0,
+        radius: 0.9,
+        height: 2.5,
+        speed: 5.6,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 2.6,
+        range_slack: 0.6,
+        alert_time: 0.6,
+        abilities: [
+            Some(EnemyAbility::MirrorWard),
+            Some(EnemyAbility::PenitentBlade),
+            Some(EnemyAbility::PenitentStrike),
+            None,
+            None,
+            None,
+        ],
+        id: "mirror_penitent",
+        role: MonsterRole::Melee,
+        summary: "Wards its pack so half of what they take comes back at you: kick the ward, or hit something else.",
+        completion: 6.0,
+        look: MonsterLook {
+            tint: [0.78, 0.82, 0.94],
+            glow: 0.2,
+            model: "skeleton_warrior",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // The curse to dispel and the pack's healer in one body, standing back. Two players, a
+    // stack each; the cleanse is the Druid's, the kick is anyone's.
+    EnemyArchetype {
+        name: "ASH CANTOR",
+        max_health: 1700.0,
+        radius: 0.5,
+        height: 2.0,
+        speed: 5.4,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 22.0,
+        range_slack: 3.0,
+        alert_time: 0.5,
+        abilities: [
+            Some(EnemyAbility::LitanyOfAsh),
+            Some(EnemyAbility::AshenMend),
+            Some(EnemyAbility::AshBolt),
+            None,
+            None,
+            None,
+        ],
+        id: "ash_cantor",
+        role: MonsterRole::Support,
+        summary: "Curses two players with stacking ash and mends its pack: kick the litany, cleanse the curse.",
+        retreat_below: 8.0,
+        completion: 5.0,
+        look: MonsterLook {
+            tint: [0.62, 0.60, 0.68],
+            glow: 0.25,
+            model: "grave_acolyte",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // Slower than a player's sprint by a hair, and it does not need to be faster: it jumps.
+    // Whoever has the least health left is who it jumps at.
+    EnemyArchetype {
+        name: "ASH STALKER",
+        max_health: 1900.0,
+        radius: 0.55,
+        height: 1.7,
+        speed: 6.9,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 2.2,
+        range_slack: 0.5,
+        alert_time: 0.3,
+        abilities: [
+            Some(EnemyAbility::AmbushLeap),
+            Some(EnemyAbility::StalkerSlash),
+            Some(EnemyAbility::StalkerStab),
+            None,
+            None,
+            None,
+        ],
+        id: "ash_stalker",
+        role: MonsterRole::Melee,
+        summary: "Leaps at whoever has the least health left: keep the weakest topped up, leave the landing.",
+        completion: 4.0,
+        look: MonsterLook {
+            tint: [0.42, 0.38, 0.40],
+            glow: 0.1,
+            model: "crypt_ghoul",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // A brawler like the others until it falls: where it dies is where the fire starts, and the
+    // fire spreads for fourteen seconds. Kill it in the open, and not on the healer.
+    EnemyArchetype {
+        name: "PYRE IMMOLATOR",
+        max_health: 3000.0,
+        radius: 0.9,
+        height: 2.4,
+        speed: 5.4,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 50.0,
+        preferred_range: 2.4,
+        range_slack: 0.6,
+        alert_time: 0.5,
+        abilities: [
+            Some(EnemyAbility::PyreSlam),
+            Some(EnemyAbility::ImmolatorFist),
+            None,
+            None,
+            None,
+            None,
+        ],
+        id: "pyre_immolator",
+        role: MonsterRole::Melee,
+        summary: "Its death leaves a fire that spreads: pull it into the open before it falls.",
+        completion: 5.0,
+        look: MonsterLook {
+            tint: [1.0, 0.40, 0.12],
+            glow: 0.7,
+            model: "grave_brute",
+        },
+        on_death: Some(EnemyAbility::EmberCollapse),
+        ..EnemyArchetype::BASE
+    },
+    // Rooted in the sanctum's corners, and never placed in the level: the Pontiff calls it. While
+    // one stands, he cannot be hurt; while one stands, every eight seconds the sanctum is
+    // pulsed. Cheap to kill and worth killing first.
+    EnemyArchetype {
+        name: "EMBER PYLON",
+        max_health: 1300.0,
+        radius: 0.9,
+        height: 3.2,
+        speed: 0.0,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 120.0,
+        preferred_range: 40.0,
+        range_slack: 30.0,
+        alert_time: 0.2,
+        abilities: [Some(EnemyAbility::AshTithe), None, None, None, None, None],
+        id: "ember_pylon",
+        role: MonsterRole::Ranged,
+        summary: "Holds the Pontiff immune and pulses the whole sanctum: break the pylons before the pulses add up.",
+        completion: 0.0,
+        look: MonsterLook {
+            tint: [1.0, 0.50, 0.15],
+            glow: 1.0,
+            model: "grave_acolyte",
+        },
+        shields_boss: true,
+        ..EnemyArchetype::BASE
+    },
+    // ---------------------------------------------------------------- the Censer Warden
+    // Halfway up the sanctum, and the party's first look at the curse and the smoke at a
+    // boss's weight. At half health the censer flares: a big circle to leave, on top of all of it.
+    EnemyArchetype {
+        name: "THE CENSER WARDEN",
+        max_health: 11000.0,
+        radius: 1.15,
+        height: 3.0,
+        speed: 5.8,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 70.0,
+        preferred_range: 2.8,
+        range_slack: 0.8,
+        alert_time: 0.8,
+        abilities: [
+            Some(EnemyAbility::SmokeVeil),
+            Some(EnemyAbility::CenserSwing),
+            Some(EnemyAbility::LitanyOfAsh),
+            Some(EnemyAbility::WardenMace),
+            None,
+            None,
+        ],
+        phases: &WARDEN_PHASES,
+        id: "censer_warden",
+        role: MonsterRole::Elite,
+        tier: MonsterTier::Boss,
+        summary: "Smoke on two players, a curse to cleanse, and a censer that flares at half health.",
+        completion: 20.0,
+        look: MonsterLook {
+            tint: [0.72, 0.46, 0.30],
+            glow: 0.4,
+            model: "grave_brute",
+        },
+        ..EnemyArchetype::BASE
+    },
+    // ---------------------------------------------------------------- the Ashen Pontiff
+    EnemyArchetype {
+        name: "THE ASHEN PONTIFF",
+        max_health: 22000.0,
+        radius: 1.3,
+        height: 3.4,
+        // Slower than a player in every phase, and a last rite does not change that: the cones
+        // are stepped out of.
+        speed: 6.0,
+        aggro_radius: AGGRO_RADIUS,
+        leash_radius: 80.0,
+        preferred_range: 3.2,
+        range_slack: 0.9,
+        alert_time: 0.8,
+        abilities: [
+            Some(EnemyAbility::BrandingStrike),
+            Some(EnemyAbility::PyreSweep),
+            Some(EnemyAbility::PontiffMace),
+            None,
+            None,
+            None,
+        ],
+        phases: &PONTIFF_PHASES,
+        id: "ashen_pontiff",
+        role: MonsterRole::Boss,
+        tier: MonsterTier::Boss,
+        summary: "Pass the brand, hide from the rite, break the pylons, burn him before his last rite.",
+        look: MonsterLook {
+            tint: [0.60, 0.16, 0.10],
+            glow: 0.6,
+            model: "grave_brute",
+        },
+        ..EnemyArchetype::BASE
+    },
 ];
 
 /// The Foundry Overseer. Each phase adds one idea to the last: the ladle at seventy, the lane and
@@ -4087,6 +4816,81 @@ static OVERSEER_PHASES: [EnemyPhaseDef; 3] = [
         cooldown_scale: 0.85,
         summon: Some(PhaseSummon {
             kind: EnemyKind::SlagThrower,
+            count: 2,
+        }),
+    },
+];
+
+/// The Censer Warden's one phase after the first: the censer flares at half health and its circle
+/// joins the smoke and the curse. A little faster to act, no faster to walk.
+static WARDEN_PHASES: [EnemyPhaseDef; 1] = [EnemyPhaseDef {
+    name: "THE CENSER BURNS",
+    at_or_below: 0.50,
+    abilities: [
+        Some(EnemyAbility::CenserBlaze),
+        Some(EnemyAbility::SmokeVeil),
+        Some(EnemyAbility::CenserSwing),
+        Some(EnemyAbility::LitanyOfAsh),
+        Some(EnemyAbility::WardenMace),
+        None,
+    ],
+    speed_scale: 1.0,
+    cooldown_scale: 0.85,
+    summon: None,
+}];
+
+/// The Ashen Pontiff. Each phase asks one new thing: the rite at seventy-five (find a pillar),
+/// the pylons at fifty (he cannot be hurt until they fall), the last rite at twenty-five (he is
+/// faster and the room has fire in it). The brand runs underneath all four.
+static PONTIFF_PHASES: [EnemyPhaseDef; 3] = [
+    EnemyPhaseDef {
+        name: "THE RITE",
+        at_or_below: 0.75,
+        abilities: [
+            Some(EnemyAbility::RiteOfCinders),
+            Some(EnemyAbility::BrandingStrike),
+            Some(EnemyAbility::PyreSweep),
+            Some(EnemyAbility::PontiffMace),
+            None,
+            None,
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.95,
+        summon: None,
+    },
+    EnemyPhaseDef {
+        name: "THE PYRES",
+        at_or_below: 0.50,
+        abilities: [
+            Some(EnemyAbility::BrandingStrike),
+            Some(EnemyAbility::RiteOfCinders),
+            Some(EnemyAbility::PyreSweep),
+            Some(EnemyAbility::PontiffMace),
+            None,
+            None,
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.95,
+        summon: Some(PhaseSummon {
+            kind: EnemyKind::EmberPylon,
+            count: 3,
+        }),
+    },
+    EnemyPhaseDef {
+        name: "THE LAST RITE",
+        at_or_below: 0.25,
+        abilities: [
+            Some(EnemyAbility::LastRite),
+            Some(EnemyAbility::RiteOfCinders),
+            Some(EnemyAbility::BrandingStrike),
+            Some(EnemyAbility::PyreSweep),
+            Some(EnemyAbility::PontiffMace),
+            None,
+        ],
+        speed_scale: 1.0,
+        cooldown_scale: 0.85,
+        summon: Some(PhaseSummon {
+            kind: EnemyKind::PyreImmolator,
             count: 2,
         }),
     },
@@ -4197,8 +5001,9 @@ mod tests {
                 "{kind:?} stands further away than it can reach"
             );
             assert!(archetype.aggro_radius < archetype.leash_radius, "{kind:?}");
+            // Everything walks, except what a boss roots in the floor and calls a pylon.
             assert!(
-                archetype.max_health > 0.0 && archetype.speed > 0.0,
+                archetype.max_health > 0.0 && (archetype.speed > 0.0 || archetype.shields_boss),
                 "{kind:?}"
             );
         }

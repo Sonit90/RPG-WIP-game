@@ -66,6 +66,9 @@ const CHARGE_CONTACT: f32 = 0.6;
 /// forever against it. The same safety the Warrior's own Shield Charge has.
 const CHARGE_SLACK: f32 = 0.6;
 
+/// The most one reflected hit can take from the attacker, as a share of their maximum health.
+const REFLECT_CAP_SHARE: f32 = 0.12;
+
 /// How many monsters may look for a new way in one tick. The rest follow the corners they
 /// have, and ask on a later tick: a pack pulled at once spreads its searches out.
 const MAX_SEARCHES_PER_TICK: u32 = 6;
@@ -440,6 +443,15 @@ impl Simulation {
             }
             if picked == 0 {
                 targets[0] = Some(cast.target);
+            }
+        } else if definition.select == EnemyTarget::Weakest {
+            // The one with the least health left, wherever they stand in range.
+            let weakest = self
+                .weakest_hostile(entity, (definition.min_range, definition.range))
+                .map_or(cast.target, |weakest| weakest.entity);
+            targets[0] = Some(weakest);
+            if wanted > 1 {
+                self.nearest_hostiles_into(entity, definition.range, &mut targets);
             }
         } else {
             targets[0] = Some(cast.target);
@@ -1289,6 +1301,128 @@ impl Simulation {
             .is_none()
     }
 
+    /// Whether `entity` is a boss held immune by the shield-bearing allies it called.
+    ///
+    /// The Ashen Pontiff's pylons: while any monster whose archetype
+    /// [`shields_boss`](crate::enemy::EnemyArchetype::shields_boss) stands among the boss's
+    /// called-in allies, nothing the party does to the boss lands. The allies themselves are
+    /// never shielded by each other.
+    pub(super) fn is_shielded(&self, entity: EntityId) -> bool {
+        let Some(Some(runtime)) = self.enemies.get(entity.index()) else {
+            return false;
+        };
+        if !runtime.brain.kind().is_boss() {
+            return false;
+        }
+        let Some(encounter) = self
+            .encounters
+            .iter()
+            .find(|encounter| encounter.contains(entity))
+        else {
+            return false;
+        };
+        encounter.summoned().iter().any(|&add| {
+            self.world.is_alive(add)
+                && self
+                    .enemies
+                    .get(add.index())
+                    .and_then(Option::as_ref)
+                    .is_some_and(|runtime| runtime.brain.archetype().shields_boss)
+        })
+    }
+
+    /// A share of `applied` damage, sent back at `source` if `target` wears a Mirror Ward.
+    ///
+    /// Capped at a share of the attacker's maximum health, so a big critical on a mirrored
+    /// monster hurts and never kills outright. A reflection is never itself reflected.
+    pub(super) fn reflect_damage(&mut self, source: EntityId, target: EntityId, applied: f32) {
+        if applied <= 0.0
+            || self.reflecting
+            || self.slaying
+            || source == target
+            || !self.world.is_alive(source)
+        {
+            return;
+        }
+        let hostile = match (self.world.faction(source), self.world.faction(target)) {
+            (Some(theirs), Some(ours)) => theirs.is_hostile_to(ours),
+            _ => false,
+        };
+        let fraction = self
+            .world
+            .statuses(target)
+            .map_or(0.0, crate::status::StatusSet::reflect_fraction);
+        if !hostile || fraction <= 0.0 {
+            return;
+        }
+        let cap = self
+            .world
+            .health(source)
+            .map_or(0.0, crate::combat::Health::max)
+            * REFLECT_CAP_SHARE;
+        let back = (applied * fraction).min(cap);
+        self.reflecting = true;
+        self.deal_damage(
+            target,
+            source,
+            back,
+            AbilityId::from_enemy(EnemyAbility::MirrorWard),
+            crate::combat::DamageType::Arcane,
+            false,
+        );
+        self.reflecting = false;
+    }
+
+    /// What a monster leaves where it died: its archetype's
+    /// [`on_death`](crate::enemy::EnemyArchetype::on_death) ability, resolved as a zone at its
+    /// feet (the blast, and the pool it spreads) at the damage scale it fought with.
+    ///
+    /// Only when the table is in hand (a kill by the party), and never for a development
+    /// [`Simulation::slay`], so arranging "this pack is dead" does not light fires.
+    pub(super) fn bequeath(&mut self, entity: EntityId, at: Vec3) {
+        if self.slaying {
+            return;
+        }
+        let Some(Some(runtime)) = self.enemies.get(entity.index()) else {
+            return;
+        };
+        let Some(ability) = runtime.brain.archetype().on_death else {
+            return;
+        };
+        let scale = runtime.damage_scale * runtime.modifier_damage;
+        let shape = ability.definition().shape;
+        self.resolve_zone(entity, ability, at, shape, at, scale);
+    }
+
+    /// The hostile in `range` (between its two bounds, in sight) with the least health left, as
+    /// a fraction of its maximum; the nearest of equals.
+    fn weakest_hostile(&self, entity: EntityId, range: (f32, f32)) -> Option<AiTarget> {
+        let mut best: Option<(f32, AiTarget)> = None;
+        for candidate in self.world.entities() {
+            if !self.is_hostile_combatant(entity, candidate) {
+                continue;
+            }
+            let Some(described) = self.describe_target(entity, candidate) else {
+                continue;
+            };
+            if !described.visible || described.distance < range.0 || described.distance > range.1 {
+                continue;
+            }
+            let fraction = self
+                .world
+                .health(candidate)
+                .map_or(1.0, crate::combat::Health::fraction);
+            let better = best.is_none_or(|(least, current)| {
+                fraction < least - 1e-4
+                    || ((fraction - least).abs() <= 1e-4 && described.distance < current.distance)
+            });
+            if better {
+                best = Some((fraction, described));
+            }
+        }
+        best.map(|(_, target)| target)
+    }
+
     /// Whether `candidate` is a living combatant `entity` may attack.
     fn is_hostile_combatant(&self, entity: EntityId, candidate: EntityId) -> bool {
         if candidate == entity
@@ -1416,6 +1550,12 @@ impl Simulation {
         percept: &AiPercept,
     ) -> Option<AiTarget> {
         let definition = ability.definition();
+        if definition.select == EnemyTarget::Weakest
+            && let Some(weakest) =
+                self.weakest_hostile(entity, (definition.min_range, definition.range))
+        {
+            return Some(weakest);
+        }
         if definition.select == EnemyTarget::Random {
             let exclude = percept.target.map(|target| target.entity);
             let chosen = self.random_hostile(
@@ -2433,7 +2573,7 @@ fn recipient_of(ability: EnemyAbility, percept: &AiPercept) -> Option<AiTarget> 
         EnemyTarget::Random if ability.definition().min_range > 0.0 => {
             percept.farthest.or_else(|| percept.victim())
         }
-        EnemyTarget::Victim | EnemyTarget::Random => percept.victim(),
+        EnemyTarget::Victim | EnemyTarget::Random | EnemyTarget::Weakest => percept.victim(),
         EnemyTarget::WoundedAlly => percept.wounded_ally,
         EnemyTarget::Farthest => percept.farthest.or_else(|| percept.victim()),
     }

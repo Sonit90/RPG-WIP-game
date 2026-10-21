@@ -611,6 +611,9 @@ pub struct Simulation {
     /// every multiplier, so "kill" is not turned into "nearly kill" by the target's Versatility
     /// or a damage reduction, and "5 % of your health" is 5 %.
     slaying: bool,
+    /// Set while a Mirror Ward's reflected hit is being applied, so a reflection is never itself
+    /// reflected (two wards facing each other would otherwise bounce one hit for ever).
+    reflecting: bool,
     /// Absorbs the authority reported, per entity, while it is the authority.
     ///
     /// A client under [`Simulation::set_remote_authority`] runs no Puncture Blood of its own;
@@ -749,6 +752,7 @@ impl Simulation {
             remote_authority: false,
             modifiers: crate::modifier::ModifierRuntime::new(),
             slaying: false,
+            reflecting: false,
             presented_absorbs: Vec::new(),
             remote_requests: Vec::new(),
         }
@@ -2676,7 +2680,7 @@ impl Simulation {
         // multiplier could never be.
         // A boss behind a sealed gate cannot be hurt: it is not in the fight yet, and a bolt
         // through the bars would start one the dungeon has not allowed.
-        if self.is_sealed(target) || self.remote_authority {
+        if self.is_sealed(target) || self.is_shielded(target) || self.remote_authority {
             return;
         }
         // With several players, the one being hit (their defences) or the one hitting (their
@@ -2763,6 +2767,9 @@ impl Simulation {
             runtime.brain.add_threat(source, threat);
         }
 
+        // **Mirror Ward.** A share of what landed on a mirrored monster goes back at whoever dealt it.
+        self.reflect_damage(source, target, result.applied);
+
         if result.killed {
             // A corpse does not burn: the burn, its ticks and the fire vulnerability go
             // with the target, which is what makes detonating a nearly dead pack a real
@@ -2816,6 +2823,8 @@ impl Simulation {
             self.clear_hazards_of(target);
             // And the marks it laid: killing the Bonecaster in time saves whoever it marked.
             self.clear_strikes_of(target);
+            // What it leaves behind when it dies: the fire an immolator spreads over its corpse.
+            self.bequeath(target, position);
             // What it was worth towards the dungeon.
             // Queued whoever died: during the AI's own step the enemy table is out, so
             // whether this was an enemy is answered when the queue is paid, not here.

@@ -254,6 +254,13 @@ impl Encounter {
         self.summons
     }
 
+    /// The members that were called in rather than spawned with the level.
+    #[must_use]
+    pub fn summoned(&self) -> &[EntityId] {
+        let keep = self.members.len().saturating_sub(self.summons);
+        &self.members[keep..]
+    }
+
     /// Removes and returns every called-in member.
     pub fn take_summons(&mut self) -> Vec<EntityId> {
         let keep = self.members.len().saturating_sub(self.summons);

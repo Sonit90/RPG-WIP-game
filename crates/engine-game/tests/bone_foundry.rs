@@ -254,7 +254,7 @@ fn every_new_ability_tells_the_player_what_it_is_and_what_to_do() {
 #[test]
 fn the_new_statuses_are_appended_last_and_are_buffs_the_registry_describes() {
     // Statuses travel the wire by index: the first thirty-four never move.
-    assert_eq!(STATUS_KIND_COUNT, 36);
+    assert!(STATUS_KIND_COUNT >= 36, "later dungeons only append");
     assert_eq!(StatusKind::Waterlogged.index(), 33);
     assert_eq!(StatusKind::Warded.index(), 34);
     assert_eq!(StatusKind::Stoked.index(), 35);

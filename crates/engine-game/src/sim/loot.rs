@@ -538,11 +538,12 @@ impl Simulation {
 
     /// Rolls what a dead monster drops, for every player.
     ///
-    /// A boss pays its gold; any other monster rolls the equipment chance, the currency chance
+    /// A boss pays its gold (and, if it is not the dungeon's last and has a boss table of its
+    /// own, one equipment roll from it); any other monster rolls the equipment chance, the currency chance
     /// (`elite` uses the elite one) and its gold. Nothing without [`LootRules`] and nothing
     /// under a remote authority, whose server rolls and sends the events. Every roll comes
     /// from the loot generator, in player order, so it is a function of the seed and the fight.
-    pub(super) fn drop_kill_loot(&mut self, boss: bool, elite: bool) {
+    pub(super) fn drop_kill_loot(&mut self, boss: bool, elite: bool, id: &'static str) {
         if self.remote_authority {
             return;
         }
@@ -550,6 +551,9 @@ impl Simulation {
             return;
         };
         let (tick, key_level, bonus) = (self.tick, self.loot_key_level, self.loot_bonus_pct);
+        // A boss that is not the dungeon's last (a mid-dungeon guardian) can have a table of its
+        // own: one roll each, where it fell. The last boss pays out through the chest.
+        let final_boss = self.boss_id();
         for player in self.player_entities() {
             if boss {
                 if let Some(gold) = loot::boss_gold(&rules, bonus) {
@@ -557,6 +561,24 @@ impl Simulation {
                         player,
                         resource: gold.resource,
                         amount: gold.amount,
+                        tick,
+                    });
+                }
+                if final_boss != Some(id)
+                    && let Some(table) = rules.boss_table(id)
+                    && let Some((item, props)) = loot::roll_equipment(
+                        table,
+                        &rules,
+                        loot::DropSource::Elite,
+                        &self.loot_dungeon,
+                        key_level,
+                        &mut self.loot_rng,
+                    )
+                {
+                    self.events.push(CombatEvent::MobLoot {
+                        player,
+                        item,
+                        props,
                         tick,
                     });
                 }

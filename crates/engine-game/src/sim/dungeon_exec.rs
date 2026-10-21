@@ -262,7 +262,7 @@ impl Simulation {
         }
         let mut pending = std::mem::take(&mut self.pending_credit);
         let mut open = false;
-        // What died and may drop loot, as `(boss, elite)`; rolled once the table is back.
+        // What died and may drop loot, as `(boss, elite, id)`; rolled once the table is back.
         let drops_loot = self.loot_rules.is_some() && !self.remote_authority;
         let mut kills = Vec::new();
         pending.retain(|entity| {
@@ -275,6 +275,7 @@ impl Simulation {
                 kills.push((
                     archetype.tier == crate::enemy::MonsterTier::Boss,
                     archetype.role == crate::enemy::MonsterRole::Elite,
+                    archetype.id,
                 ));
             }
             if runtime.credited || runtime.completion <= 0.0 {
@@ -299,8 +300,8 @@ impl Simulation {
             false
         });
         self.pending_credit = pending;
-        for (boss, elite) in kills {
-            self.drop_kill_loot(boss, elite);
+        for (boss, elite, id) in kills {
+            self.drop_kill_loot(boss, elite, id);
         }
         if open {
             self.open_gate();
