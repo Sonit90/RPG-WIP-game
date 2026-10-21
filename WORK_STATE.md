@@ -100,7 +100,7 @@ Perf (RTX 5080, 1080p hidden, autocast): ashen 0.93 ms CPU p50 / 1023 FPS; drown
 foundry 1.22 / 695 (1% low 329); sanctum 1.16 / 833. Raw: scratchpad/perf.
 P2 COMPLETE. §46 verification 30/30 PASS (docs/P2_VERIFICATION.md); final report
 docs/P2_FINAL_REPORT.md. Stack: API+SpacetimeDB down, Postgres up. `tools\realm-dev.ps1 restart` exists.
-Leftover unrelated worktree `.claude/worktrees/agent-a6dc99e9390f24845` (settings FPS limit, not in p2-core) — ask user.
+Worktree `.claude/worktrees/agent-a6dc99e9390f24845` (FPS limit, already in p2-core as c9b2490) removed with its branch.
 `p2-balance` (worktree `../myGame-wt-balance`): economy sim, set/druid survivability fixes, eternal wall, P2_BALANCE.md.
 `p2-editor` (worktree `../myGame-wt-editor`): dungeon-block inspector, community metadata, live mapcheck, export, template.
 p2-core verified after sets+reforge: workspace 4527, embedded 331, backend 121, DB 36, clippy clean.
