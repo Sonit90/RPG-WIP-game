@@ -690,6 +690,50 @@ const ICONS: &[IconEntry] = &[
         file: "modifier/plague_explosion.svg",
         constant: "MODIFIER_PLAGUE_EXPLOSION",
     },
+    IconEntry {
+        file: "gem/gem.svg",
+        constant: "GEM",
+    },
+    IconEntry {
+        file: "gem/gem_ruby.svg",
+        constant: "GEM_RUBY",
+    },
+    IconEntry {
+        file: "gem/gem_amber.svg",
+        constant: "GEM_AMBER",
+    },
+    IconEntry {
+        file: "gem/gem_topaz.svg",
+        constant: "GEM_TOPAZ",
+    },
+    IconEntry {
+        file: "gem/gem_emerald.svg",
+        constant: "GEM_EMERALD",
+    },
+    IconEntry {
+        file: "gem/gem_amethyst.svg",
+        constant: "GEM_AMETHYST",
+    },
+    IconEntry {
+        file: "gem/gem_onyx.svg",
+        constant: "GEM_ONYX",
+    },
+    IconEntry {
+        file: "gem/gem_opal.svg",
+        constant: "GEM_OPAL",
+    },
+    IconEntry {
+        file: "gem/book_talent.svg",
+        constant: "BOOK_TALENT",
+    },
+    IconEntry {
+        file: "gem/book_enhancement.svg",
+        constant: "BOOK_ENHANCEMENT",
+    },
+    IconEntry {
+        file: "aura/shielded.svg",
+        constant: "AURA_SHIELDED",
+    },
 ];
 
 /// One icon: a file under `assets/icons/` and the constant its texels are bound to.

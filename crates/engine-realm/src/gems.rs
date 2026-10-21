@@ -365,7 +365,7 @@ impl GemCatalog {
                     family: ItemFamily::Gem,
                     quality: qualities[(usize::from(level) - 1).min(qualities.len() - 1)],
                     item_level: u16::from(level),
-                    icon: ItemIcon::Trinket,
+                    icon: gem_icon(&kind.id),
                     stats: vec![(kind.stat, self.value(kind, level))],
                     active: None,
                     set: None,
@@ -807,6 +807,22 @@ pub fn upgrade(
     })
 }
 
+/// The picture a gem kind is drawn with: one cut stone per kind, so a bag of gems reads at a
+/// glance. A kind this table does not know wears the neutral gem.
+#[must_use]
+pub fn gem_icon(kind_id: &str) -> ItemIcon {
+    match kind_id {
+        "main_stat" => ItemIcon::GemRuby,
+        "stamina" => ItemIcon::GemAmber,
+        "critical_strike" => ItemIcon::GemTopaz,
+        "haste" => ItemIcon::GemEmerald,
+        "versatility" => ItemIcon::GemAmethyst,
+        "armor" => ItemIcon::GemOnyx,
+        "spirit" => ItemIcon::GemOpal,
+        _ => ItemIcon::Gem,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test code asserts on known-good values")]
 mod tests {
@@ -816,6 +832,22 @@ mod tests {
     use crate::loadout::{BagItem, EquippedItem, sheet_of};
     use engine_game::character::{EquipSlot, INVENTORY_SLOTS, Stat};
     use engine_game::hero::Hero;
+
+    #[test]
+    fn every_gem_kind_has_its_own_picture_and_none_is_the_trinket() {
+        use engine_game::character::ItemIcon;
+        let catalog = gems();
+        let mut icons: Vec<ItemIcon> = catalog.kinds.iter().map(|k| gem_icon(&k.id)).collect();
+        assert!(icons.iter().all(|icon| ![ItemIcon::Trinket, ItemIcon::Gem].contains(icon)));
+        let count = icons.len();
+        icons.sort_by_key(|icon| *icon as u8);
+        icons.dedup();
+        assert_eq!(icons.len(), count, "two gem kinds share a picture");
+        // The registered items carry them, at every level.
+        for item in catalog.items_for_registration() {
+            assert_ne!(item.icon, ItemIcon::Trinket, "{}", item.key);
+        }
+    }
 
     fn gems() -> &'static GemCatalog {
         builtin().expect("the shipped gem catalog parses")

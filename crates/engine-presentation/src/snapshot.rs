@@ -484,6 +484,9 @@ pub struct TargetView {
     pub phase: Option<(usize, &'static str)>,
     /// Whether it is a boss, so a frame can say so without knowing the roster.
     pub boss: bool,
+    /// Whether it is held immune by its pylons (carries the Pylon Shield status): the frame
+    /// tints its bar and outlines it.
+    pub immune: bool,
     /// Every buff and debuff on it, stacks and clocks included: what the target's buff and
     /// debuff blocks draw, read the same way its nameplate reads them.
     pub auras: crate::aura::AuraList,
@@ -1421,6 +1424,9 @@ fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> 
         boss: simulation
             .brain(entity)
             .is_some_and(|brain| brain.kind().is_boss()),
+        immune: world
+            .statuses(entity)
+            .is_some_and(|statuses| statuses.has(engine_game::status::StatusKind::Shielded)),
         auras: crate::aura::auras_of(simulation, entity),
     })
 }

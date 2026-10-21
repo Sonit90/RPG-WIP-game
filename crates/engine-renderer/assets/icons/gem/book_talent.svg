@@ -1,0 +1,25 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="book_talent_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(31,21,7)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(70,48,16)"></stop>
+	</linearGradient>
+	<radialGradient id="book_talent_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(176,120,40)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(176,120,40)"></stop>
+	</radialGradient>
+	<clipPath id="book_talent_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#book_talent_tile)">
+	<path fill="url(#book_talent_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#book_talent_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(105,72,24)" d="M 120 124 L 392 124 L 392 410 L 120 410 Z"></path>
+	<path fill="rgb(176,120,40)" d="M 108 110 L 380 110 L 380 396 L 108 396 Z"></path>
+	<path fill="rgb(199,160,104)" d="M 108 110 L 146 110 L 146 396 L 108 396 Z"></path>
+	<path fill="rgb(250,226,150)" d="M 380 128 L 396 128 L 396 380 L 380 380 Z"></path>
+	<path fill="rgb(250,226,150)" d="M 190 170 L 340 170 L 340 186 L 190 186 Z M 190 214 L 340 214 L 340 228 L 190 228 Z"></path>
+	<path fill="rgb(250,226,150)" d="M 264 262 L 290 316 L 346 322 L 304 358 L 316 412 L 264 384 L 212 412 L 224 358 L 182 322 L 238 316 Z" transform="translate(0,-36) scale(1)"></path>
+</g>
+</svg>

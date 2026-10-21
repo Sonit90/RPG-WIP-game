@@ -368,11 +368,31 @@ pub enum ItemIcon {
     TrinketHaste,
     /// A trinket with an active: the one that puts up a shield.
     TrinketAbsorb,
+    /// A gem of no particular kind.
+    Gem,
+    /// A ruby (the main-stat gem).
+    GemRuby,
+    /// An amber (the stamina gem).
+    GemAmber,
+    /// A topaz (the critical-strike gem).
+    GemTopaz,
+    /// An emerald (the haste gem).
+    GemEmerald,
+    /// An amethyst (the versatility gem).
+    GemAmethyst,
+    /// An onyx (the armor gem).
+    GemOnyx,
+    /// An opal (the spirit gem).
+    GemOpal,
+    /// A talent book.
+    BookTalent,
+    /// An enhancement book.
+    BookEnhancement,
 }
 
 impl ItemIcon {
     /// Every icon, in family order, then the trinkets that have a picture of their own.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 25] = [
         Self::Helm,
         Self::Shoulders,
         Self::Chestpiece,
@@ -388,6 +408,16 @@ impl ItemIcon {
         Self::TrinketDispel,
         Self::TrinketHaste,
         Self::TrinketAbsorb,
+        Self::Gem,
+        Self::GemRuby,
+        Self::GemAmber,
+        Self::GemTopaz,
+        Self::GemEmerald,
+        Self::GemAmethyst,
+        Self::GemOnyx,
+        Self::GemOpal,
+        Self::BookTalent,
+        Self::BookEnhancement,
     ];
 
     /// The icon authored under `key`, which is the key of the family it belongs to
@@ -401,6 +431,16 @@ impl ItemIcon {
                 "trinket_dispel" => Some(Self::TrinketDispel),
                 "trinket_haste" => Some(Self::TrinketHaste),
                 "trinket_absorb" => Some(Self::TrinketAbsorb),
+                "gem" => Some(Self::Gem),
+                "gem_ruby" => Some(Self::GemRuby),
+                "gem_amber" => Some(Self::GemAmber),
+                "gem_topaz" => Some(Self::GemTopaz),
+                "gem_emerald" => Some(Self::GemEmerald),
+                "gem_amethyst" => Some(Self::GemAmethyst),
+                "gem_onyx" => Some(Self::GemOnyx),
+                "gem_opal" => Some(Self::GemOpal),
+                "book_talent" => Some(Self::BookTalent),
+                "book_enhancement" => Some(Self::BookEnhancement),
                 _ => None,
             })
     }
@@ -419,8 +459,10 @@ impl ItemIcon {
             ItemFamily::Wrist => Self::Bracers,
             ItemFamily::Necklace => Self::Amulet,
             ItemFamily::Ring => Self::Ring,
-            // No art of its own yet: a book or a gem wears the trinket picture.
-            ItemFamily::Trinket | ItemFamily::Book | ItemFamily::Gem => Self::Trinket,
+            ItemFamily::Trinket => Self::Trinket,
+            // The family's own picture; a gem kind or a book kind picks a finer one.
+            ItemFamily::Book => Self::BookTalent,
+            ItemFamily::Gem => Self::Gem,
         }
     }
 }

@@ -112,6 +112,7 @@ impl AuraKind {
                 StatusKind::Mirrored => UiIcon::SpellReflect,
                 StatusKind::Ashen => UiIcon::AuraCurseOfWeakness,
                 StatusKind::Branded => UiIcon::AuraMagicVulnerability,
+                StatusKind::Shielded => UiIcon::AuraShielded,
             },
             Self::Ignite => UiIcon::AuraBurning,
             Self::Scorched => UiIcon::AuraScorched,

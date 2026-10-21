@@ -493,6 +493,8 @@ pub struct Nameplate {
     pub trail_fraction: f32,
     /// Whether the enemy has died and this is its plate fading out.
     pub dead: bool,
+    /// Whether it is held immune by its pylons: the bar is tinted and outlined.
+    pub immune: bool,
     /// What it is casting, if the plate is showing a cast.
     pub cast: Option<PlateCast>,
     /// Clip-space depth the plate would be drawn at, nearer smaller.
@@ -1087,6 +1089,10 @@ impl NameplateSet {
                 },
                 trail_fraction: health.fraction(),
                 dead: fading.is_some(),
+                immune: fading.is_none()
+                    && world.statuses(entity).is_some_and(|statuses| {
+                        statuses.has(engine_game::status::StatusKind::Shielded)
+                    }),
                 cast,
                 depth: depth_for(distance, max_distance),
                 auras,
@@ -2395,6 +2401,59 @@ mod tests {
             }
         }
         panic!("the adept never started a cast");
+    }
+
+    #[test]
+    fn a_boss_held_immune_shows_it_on_its_plate_aura_and_target_frame_until_it_is_not() {
+        use engine_game::ability::AbilityId;
+        use engine_game::status::{Status, StatusKind};
+        let (mut simulation, camera) = scene();
+        let origin = simulation.player_position();
+        let boss = simulation.spawn_enemy(
+            engine_game::enemy::EnemyKind::AshenPontiff,
+            origin + Vec3::new(0.0, 0.0, -10.0),
+            0.0,
+        );
+        let mut set = NameplateSet::new();
+        let immune = |simulation: &Simulation, set: &mut NameplateSet| {
+            build(simulation, &camera, set)
+                .iter()
+                .find(|plate| plate.entity == boss)
+                .map(|plate| plate.immune)
+        };
+        assert_eq!(immune(&simulation, &mut set), Some(false), "plain plate first");
+
+        let status = Status::new(StatusKind::Shielded, EntityId::INVALID, AbilityId::NONE, 600.0, 0.0);
+        simulation
+            .world_mut()
+            .statuses_mut(boss)
+            .expect("a boss has statuses")
+            .apply(status);
+        assert_eq!(immune(&simulation, &mut set), Some(true), "the plate is tinted");
+        // The aura row and the target frame say it too, through the same status.
+        let auras = crate::aura::auras_of(&simulation, boss);
+        let shield = auras
+            .iter()
+            .find(|aura| aura.kind == crate::aura::AuraKind::Status(StatusKind::Shielded))
+            .expect("the aura row lists the shield");
+        assert_eq!(shield.kind.icon(), engine_render_data::ui::UiIcon::AuraShielded);
+        assert!(shield.kind.description().contains("pylons"));
+        simulation.push_command(PlayerCommand::SelectTarget { entity: boss });
+        simulation.step_once();
+        // (A tick with no pylons standing clears the status, as it should: put it back.)
+        simulation
+            .world_mut()
+            .statuses_mut(boss)
+            .expect("statuses")
+            .apply(status);
+        let snapshot = crate::snapshot::UiSnapshot::build(&simulation);
+        assert!(snapshot.target.as_ref().is_some_and(|target| target.immune));
+
+        // And it goes when the status does.
+        simulation.world_mut().statuses_mut(boss).expect("statuses").consume(StatusKind::Shielded);
+        assert_eq!(immune(&simulation, &mut set), Some(false), "the tint is gone");
+        let auras = crate::aura::auras_of(&simulation, boss);
+        assert!(auras.iter().all(|aura| aura.kind != crate::aura::AuraKind::Status(StatusKind::Shielded)));
     }
 
     #[test]

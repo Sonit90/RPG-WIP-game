@@ -477,11 +477,33 @@ pub enum UiIcon {
     ModifierRotatingBeams,
     /// The Plague Explosion modifier: a skull in a green burst.
     ModifierPlagueExplosion,
+    /// A cut gem, neutral blue-grey.
+    Gem,
+    /// A ruby: red.
+    GemRuby,
+    /// An amber: orange.
+    GemAmber,
+    /// A topaz: yellow.
+    GemTopaz,
+    /// An emerald: green.
+    GemEmerald,
+    /// An amethyst: violet.
+    GemAmethyst,
+    /// An onyx: dark slate.
+    GemOnyx,
+    /// An opal: pale cyan.
+    GemOpal,
+    /// A talent book: a gold-bound tome with a star.
+    BookTalent,
+    /// An enhancement book: a blue-bound tome with a star.
+    BookEnhancement,
+    /// Pylon Shield: a shielded diamond, a boss immune while its pylons stand.
+    AuraShielded,
 }
 
 impl UiIcon {
     /// Every icon, in atlas order.
-    pub const ALL: [Self; 119] = [
+    pub const ALL: [Self; 130] = [
         Self::Firebolt,
         Self::Meteor,
         Self::FlameCone,
@@ -601,6 +623,17 @@ impl UiIcon {
         Self::AuraPlagued,
         Self::ModifierRotatingBeams,
         Self::ModifierPlagueExplosion,
+        Self::Gem,
+        Self::GemRuby,
+        Self::GemAmber,
+        Self::GemTopaz,
+        Self::GemEmerald,
+        Self::GemAmethyst,
+        Self::GemOnyx,
+        Self::GemOpal,
+        Self::BookTalent,
+        Self::BookEnhancement,
+        Self::AuraShielded,
     ];
 
     /// How many icons there are.

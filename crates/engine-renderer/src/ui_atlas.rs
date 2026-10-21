@@ -582,6 +582,17 @@ fn icon_texels(icon: UiIcon) -> [&'static [u8]; ICON_VARIANTS] {
         UiIcon::AuraPlagued => raster::AURA_PLAGUED,
         UiIcon::ModifierRotatingBeams => raster::MODIFIER_ROTATING_BEAMS,
         UiIcon::ModifierPlagueExplosion => raster::MODIFIER_PLAGUE_EXPLOSION,
+        UiIcon::Gem => raster::GEM,
+        UiIcon::GemRuby => raster::GEM_RUBY,
+        UiIcon::GemAmber => raster::GEM_AMBER,
+        UiIcon::GemTopaz => raster::GEM_TOPAZ,
+        UiIcon::GemEmerald => raster::GEM_EMERALD,
+        UiIcon::GemAmethyst => raster::GEM_AMETHYST,
+        UiIcon::GemOnyx => raster::GEM_ONYX,
+        UiIcon::GemOpal => raster::GEM_OPAL,
+        UiIcon::BookTalent => raster::BOOK_TALENT,
+        UiIcon::BookEnhancement => raster::BOOK_ENHANCEMENT,
+        UiIcon::AuraShielded => raster::AURA_SHIELDED,
     }
 }
 
@@ -703,6 +714,44 @@ mod tests {
                 // No two cells share an origin, across variants as well as within one: a
                 // wrong column count or band offset would silently overlap them.
                 assert!(seen.insert((x, y)), "{icon:?}/{variant} collides");
+            }
+        }
+    }
+
+    #[test]
+    fn gems_books_and_the_pylon_shield_have_art_of_their_own() {
+        // Each of these used to borrow another picture (the trinket's): their rasterized
+        // cells must all differ from one another and from the trinket's.
+        let atlas = UiAtlas::new();
+        let cell = icon_cell(0);
+        let pixels = |icon: UiIcon| {
+            let (x0, y0) = icon_origin(icon, 0);
+            let mut out = Vec::with_capacity(cell * cell * BYTES_PER_TEXEL);
+            for y in y0..y0 + cell {
+                let start = (y * ATLAS_WIDTH + x0) * BYTES_PER_TEXEL;
+                out.extend_from_slice(&atlas.texels()[start..start + cell * BYTES_PER_TEXEL]);
+            }
+            out
+        };
+        let icons = [
+            UiIcon::Trinket,
+            UiIcon::Gem,
+            UiIcon::GemRuby,
+            UiIcon::GemAmber,
+            UiIcon::GemTopaz,
+            UiIcon::GemEmerald,
+            UiIcon::GemAmethyst,
+            UiIcon::GemOnyx,
+            UiIcon::GemOpal,
+            UiIcon::BookTalent,
+            UiIcon::BookEnhancement,
+            UiIcon::AuraShielded,
+            UiIcon::AuraFrenzy,
+        ];
+        for (i, a) in icons.iter().enumerate() {
+            assert!(pixels(*a).iter().any(|byte| *byte != 0), "{a:?} is blank");
+            for b in &icons[i + 1..] {
+                assert_ne!(pixels(*a), pixels(*b), "{a:?} and {b:?} look the same");
             }
         }
     }

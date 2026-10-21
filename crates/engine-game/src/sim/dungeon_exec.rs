@@ -312,6 +312,7 @@ impl Simulation {
     ///
     /// Run once a tick, after the AI and the encounters have been brought up to date.
     pub(super) fn tick_dungeon(&mut self) {
+        self.sync_shield_status();
         if self.dungeon.is_none() {
             return;
         }
