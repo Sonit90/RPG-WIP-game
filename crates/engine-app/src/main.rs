@@ -12,6 +12,7 @@ mod benchmark;
 mod map_bake;
 mod online;
 mod online_audio;
+mod online_community;
 mod online_records;
 mod run_profile;
 #[cfg(feature = "standalone")]

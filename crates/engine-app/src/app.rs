@@ -4968,40 +4968,52 @@ impl App {
     /// level is the one up, parked if the hub is. A file that cannot be read keeps the level
     /// that was there, reported once.
     fn install_dungeon_level(&mut self, id: &str) {
-        let Some(online) = self.online.as_ref() else {
-            return;
-        };
-        let file = online.dungeon_scene_file(id);
-        // Asked for once whether or not it loads: a missing file is not retried every frame.
-        self.dungeon_level_id = id.to_owned();
-        let path = scene_asset_path(&file);
-        let scene = match engine_environment::scene_file::load(&path) {
-            Ok(scene) => scene,
-            Err(error) => {
-                log::error!(
-                    "online: dungeon level {} not loaded: {error}",
-                    path.display()
-                );
+        let (scene, source) = if engine_realm::community::is_community(id) {
+            // A community map: its data comes from the API (asked for once; this runs again
+            // next frame until it has arrived) and is built with the realm's own code.
+            let Some(online) = self.online.as_mut() else {
                 return;
-            }
+            };
+            let Some(scene) = online.community_level(id) else {
+                return;
+            };
+            self.dungeon_level_id = id.to_owned();
+            log::info!("online: community dungeon '{id}' plays in '{}'", scene.name);
+            (scene, None)
+        } else {
+            let Some(online) = self.online.as_ref() else {
+                return;
+            };
+            let file = online.dungeon_scene_file(id);
+            // Asked for once whether or not it loads: a missing file is not retried every frame.
+            self.dungeon_level_id = id.to_owned();
+            let path = scene_asset_path(&file);
+            let scene = match engine_environment::scene_file::load(&path) {
+                Ok(scene) => scene,
+                Err(error) => {
+                    log::error!(
+                        "online: dungeon level {} not loaded: {error}",
+                        path.display()
+                    );
+                    return;
+                }
+            };
+            log::info!(
+                "online: dungeon '{id}' plays in '{}' from {}",
+                scene.name,
+                path.display()
+            );
+            (scene, Some(path))
         };
-        log::info!(
-            "online: dungeon '{id}' plays in '{}' from {}",
-            scene.name,
-            path.display()
-        );
         if self.online_level == crate::online::OnlineLevel::Dungeon {
-            if let Err(error) = self.load_level(scene, Some(path)) {
+            if let Err(error) = self.load_level(scene, source) {
                 log::error!("online: could not load the dungeon level: {error}");
             }
             if let Some(online) = self.online.as_mut() {
                 online.level_rebuilt();
             }
         } else {
-            self.parked_level = Some(ParkedLevel {
-                scene,
-                source: Some(path),
-            });
+            self.parked_level = Some(ParkedLevel { scene, source });
         }
     }
 

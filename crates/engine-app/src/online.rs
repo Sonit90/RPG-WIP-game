@@ -401,6 +401,15 @@ pub struct OnlineSession {
     reforge_result: Option<ReforgeReveal>,
     /// The History and Leaderboards pages' fetched data and selections.
     records: crate::online_records::Records,
+    /// The community maps page.
+    community: crate::online_community::CommunityState,
+    /// Dungeon ids whose level data has been asked for and has not arrived.
+    community_fetching: BTreeSet<String>,
+    /// A community map the player chose to play: `(dungeon id, difficulty)`, set from the
+    /// community page and used by the next queue join.
+    community_play: Option<(String, u32)>,
+    /// Community maps' level data, by dungeon id, fetched from the API for an instance.
+    community_levels: BTreeMap<String, CommunityLevel>,
     /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
     /// reveal plays when the counter grows past it.
     seen_reroll: Option<(u64, u32)>,
@@ -507,6 +516,10 @@ impl OnlineSession {
             reforge_confirm: false,
             reforge_result: None,
             records: crate::online_records::Records::default(),
+            community: crate::online_community::CommunityState::default(),
+            community_play: None,
+            community_fetching: BTreeSet::new(),
+            community_levels: BTreeMap::new(),
             seen_reroll: None,
             sounds: crate::online_audio::NetSoundWatch::default(),
         })
@@ -530,6 +543,102 @@ impl OnlineSession {
             .instance
             .as_ref()
             .map(|instance| instance.dungeon_id.as_str())
+    }
+
+    /// A dungeon's catalog row: official from the catalog, a community map's from the data
+    /// fetched for it.
+    #[must_use]
+    pub fn dungeon_definition(
+        &self,
+        dungeon_id: &str,
+    ) -> Option<engine_realm::catalog::DungeonDefinition> {
+        match self.catalog.dungeon(dungeon_id) {
+            Some(dungeon) => Some(dungeon.clone()),
+            None => self
+                .community_levels
+                .get(dungeon_id)
+                .map(|level| level.definition.clone()),
+        }
+    }
+
+    /// A community map's level, built from the data fetched for `dungeon_id`. Until it has
+    /// arrived this asks for it (once) and returns `None`.
+    pub fn community_level(
+        &mut self,
+        dungeon_id: &str,
+    ) -> Option<engine_environment::EnvironmentScene> {
+        if let Some(level) = self.community_levels.get(dungeon_id) {
+            return Some(level.scene.clone());
+        }
+        let (map_id, version) = engine_realm::community::parse_dungeon_id(dungeon_id)?;
+        if self.community_fetching.insert(dungeon_id.to_owned()) {
+            self.client.send(NetCommand::CommunityData {
+                map_id: map_id.to_owned(),
+                version,
+            });
+        }
+        None
+    }
+
+    /// The text of a community map version arrived: validated and built with the same code the
+    /// realm runs. A map that does not validate is never run.
+    fn community_data_arrived(&mut self, map_id: &str, version: u32, text: &str) {
+        let dungeon_id = engine_realm::community::dungeon_id(map_id, version);
+        self.community_fetching.remove(&dungeon_id);
+        let Some(template) = self
+            .catalog
+            .dungeon(engine_realm::community::TEMPLATE_DUNGEON)
+        else {
+            return;
+        };
+        match engine_realm::community::prepare(text, &dungeon_id, template) {
+            Ok(prepared) => {
+                self.community_levels.insert(
+                    dungeon_id,
+                    CommunityLevel {
+                        scene: prepared.scene,
+                        definition: prepared.definition,
+                    },
+                );
+            }
+            Err(report) => {
+                log::error!("online: community map {dungeon_id} does not validate:\n{report}");
+                self.error = Some("That community map cannot be loaded.".into());
+            }
+        }
+    }
+
+    /// A press on the community page.
+    fn on_community(&mut self, action: engine_presentation::ui::frontend::CommunityAction) {
+        use crate::online_community::Step;
+        match self.community.act(action) {
+            Step::None => {}
+            Step::Net(commands) => {
+                for command in commands {
+                    self.client.send(command);
+                }
+            }
+            Step::Play {
+                dungeon_id,
+                difficulty,
+            } => {
+                self.community_play = Some((dungeon_id, difficulty));
+                self.selected_dungeon = None;
+                self.stage = Screen::Roles;
+                self.error = None;
+                if let Some(character) = self.selected_character_summary()
+                    && character.roles.len() == 1
+                {
+                    self.selected_role = character.roles.first().copied();
+                }
+            }
+            Step::Upload { path, map_id } => {
+                match read_level_file(&path) {
+                    Ok(text) => self.client.send(NetCommand::CommunitySave { map_id, text }),
+                    Err(message) => self.community.note(message),
+                }
+            }
+        }
     }
 
     /// The level file a dungeon plays in: the catalog's `scene` for `dungeon_id`, or the
@@ -1310,6 +1419,27 @@ impl OnlineSession {
                 self.clear_busy(BusyKind::Workshop);
                 self.check_saving();
             }
+            NetEvent::CommunityPage(page) => self.community.list_arrived(*page),
+            NetEvent::CommunityMap(detail) => self.community.detail_arrived(*detail),
+            NetEvent::CommunitySaved(response) => {
+                let reload = self.community.saved(&response);
+                self.client.send(reload);
+            }
+            NetEvent::CommunityChecked(_) => {}
+            NetEvent::CommunityData {
+                map_id,
+                version,
+                text,
+            } => self.community_data_arrived(&map_id, version, &text),
+            NetEvent::Failed {
+                action: Action::Community,
+                error,
+            } => {
+                // A level that could not be fetched is retried by the level loader; the page
+                // shows the sentence either way.
+                self.community.failed(&error.message);
+                self.community_fetching.clear();
+            }
             NetEvent::History { before, page } => self.records.history_arrived(before, *page),
             NetEvent::Leaderboard(page) => self.records.board_arrived(*page),
             // A run opened on its own is not used by the pages (the history rows carry it).
@@ -1511,6 +1641,14 @@ impl OnlineSession {
                     self.client.send(command);
                 }
             }
+            FrontEndAction::OpenCommunity => {
+                self.stage = Screen::Community;
+                self.error = None;
+                self.community_play = None;
+                let command = self.community.open();
+                self.client.send(command);
+            }
+            FrontEndAction::Community(action) => self.on_community(action),
             FrontEndAction::HistorySelect(index) => self.records.select(index),
             FrontEndAction::HistoryOlder => {
                 if let Some(command) = self.records.older() {
@@ -1555,7 +1693,8 @@ impl OnlineSession {
                     self.selected_character_summary().map(|c| c.id.clone()),
                     self.selected_dungeon
                         .and_then(|i| self.catalog.dungeons().get(i))
-                        .map(|d| d.id.clone()),
+                        .map(|d| d.id.clone())
+                        .or_else(|| self.community_play.as_ref().map(|(id, _)| id.clone())),
                     self.selected_role,
                 ) else {
                     return;
@@ -1564,17 +1703,23 @@ impl OnlineSession {
                 self.set_busy(BusyKind::JoinQueue, "Joining the queue...");
                 // Back to the hub: the queue panel shows once the ticket exists.
                 self.stage = Screen::Hub;
+                let (dungeon_id, difficulty) = match self.community_play.clone() {
+                    Some((id, difficulty)) => (id, Some(difficulty)),
+                    None => (dungeon, None),
+                };
                 self.client.send(NetCommand::JoinQueue {
                     character_id: character,
-                    dungeon_id: dungeon,
+                    dungeon_id,
                     role,
-                    difficulty: None,
+                    difficulty,
                 });
             }
             FrontEndAction::Back => {
                 self.error = None;
                 self.salvage_tray.clear();
                 self.stage = match self.stage {
+                    Screen::Roles if self.community_play.is_some() => Screen::Community,
+                    Screen::Community => Screen::Dungeons,
                     Screen::Roles => Screen::Dungeons,
                     Screen::Dungeons
                     | Screen::Workshop
@@ -2030,7 +2175,7 @@ impl OnlineSession {
             return None;
         }
         let started = instance.countdown_ends_at?;
-        let timer = engine_realm::outcome::timer_us(self.catalog.dungeon(&instance.dungeon_id)?)?;
+        let timer = engine_realm::outcome::timer_us(&self.dungeon_definition(&instance.dungeon_id)?)?;
         let elapsed = (self.server_now() - started).max(0);
         let remaining = engine_realm::outcome::remaining_us(timer, elapsed);
         Some(engine_presentation::ui::run_timer::RunTimerView {
@@ -2676,6 +2821,20 @@ impl OnlineSession {
             workshop: (screen == Screen::Workshop).then(|| self.workshop_card()),
             history: (screen == Screen::History).then(|| self.records.history_card(&self.catalog)),
             board: (screen == Screen::Leaderboards).then(|| self.records.board_card(&self.catalog)),
+            community: (screen == Screen::Community).then(|| {
+                self.community.card(
+                    self.mirror.my_account_id().unwrap_or_default(),
+                    self.selected_character.is_some(),
+                )
+            }),
+            queue_target: self.community_play.as_ref().map(|(id, difficulty)| {
+                format!(
+                    "{} (community, level {difficulty})",
+                    self.community
+                        .title_of(id)
+                        .unwrap_or_else(|| "Community map".to_owned())
+                )
+            }),
             completion,
             dungeons,
             selected_dungeon: self.selected_dungeon,
@@ -2882,7 +3041,7 @@ impl OnlineSession {
         // The barrier.
         let closed = !instance.barrier_open;
         if closed && self.world.barrier.is_none() {
-            if let Some(dungeon) = self.catalog.dungeon(&instance.dungeon_id).cloned() {
+            if let Some(dungeon) = self.dungeon_definition(&instance.dungeon_id) {
                 let scene = engine_environment::EnvironmentScene::empty("barrier");
                 let start = barriers_of(&scene, &dungeon)
                     .into_iter()
@@ -3724,6 +3883,25 @@ fn unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// A community map's level and dungeon row, built from the data the API served.
+#[derive(Debug, Clone)]
+struct CommunityLevel {
+    scene: engine_environment::EnvironmentScene,
+    definition: engine_realm::catalog::DungeonDefinition,
+}
+
+/// Reads a level file for upload: an editor-exported scene with `dungeon` and `community`
+/// blocks, or a file already in the community format. The server validates it again.
+fn read_level_file(path: &str) -> Result<String, String> {
+    let path = path.trim().trim_matches('"');
+    let metadata = std::fs::metadata(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+    if metadata.len() > engine_realm::community::MAX_BODY_BYTES as u64 {
+        return Err("That file is larger than 2 MiB.".into());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+    engine_realm::community::wrap_editor_scene(&text)
 }
 
 #[cfg(test)]

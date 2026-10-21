@@ -23,6 +23,7 @@
 //! Layout is a pure function of the view, the viewport and the UI scale; `update` and `draw`
 //! both call it, so what is clicked is always what was drawn.
 
+pub mod community;
 pub mod records;
 pub mod text_field;
 
@@ -33,6 +34,9 @@ use engine_realm::instance::CountdownDisplay;
 use engine_render_data::font::UiFont;
 use engine_render_data::ui::{TextAlign, TextStyle, UiColor, UiDrawList, UiRect, UiScale};
 
+pub use community::{
+    CommunityAction, CommunityCard, IssueLine, MAP_ROWS, MapDetailCard, MapRowCard,
+};
 pub use records::{
     BOARD_ROWS, BoardCard, BoardRow, HISTORY_ROWS, HistoryCard, HistoryDetail, HistoryRow,
     OutcomeTag,
@@ -65,6 +69,8 @@ pub enum Screen {
     History,
     /// The leaderboards.
     Leaderboards,
+    /// Community maps: browse, play, upload.
+    Community,
     /// "Dungeon found": accept or decline.
     ReadyCheck,
     /// The party is choosing whose key to use.
@@ -574,6 +580,11 @@ pub struct FrontEndView {
     pub history: Option<HistoryCard>,
     /// The leaderboards screen.
     pub board: Option<BoardCard>,
+    /// The community maps screen.
+    pub community: Option<CommunityCard>,
+    /// The dungeon the player is about to queue for when it is not one of the catalog's
+    /// (a community map), for the role page's heading.
+    pub queue_target: Option<String>,
     /// The panel over the world once a run has ended.
     pub completion: Option<CompletionCard>,
     /// The dungeon catalog.
@@ -636,6 +647,10 @@ pub enum FrontEndAction {
     OpenHistory,
     /// Open the leaderboards (fetches the board shown).
     OpenLeaderboards,
+    /// Open the community maps page (fetches the list).
+    OpenCommunity,
+    /// Something on the community maps page.
+    Community(CommunityAction),
     /// Open the detail of the history row.
     HistorySelect(usize),
     /// Fetch the next older page of the history.
@@ -765,6 +780,8 @@ enum Hit {
     BoardKey(i32),
     BoardKind(bool),
     BoardPage(i32),
+    CommunityButton,
+    Community(community::CommunityHit),
     ChangeCharacter,
     Dungeon(usize),
     Role(Role),
@@ -828,6 +845,11 @@ pub struct FrontEndUi {
     confirm: Option<KeyChange>,
     /// Disconnect prompts the player answered "Wait" to, by drop key.
     waited: Vec<String>,
+    /// The community page's title search.
+    search: TextField,
+    /// The community page's level file path.
+    path: TextField,
+    community_focus: Option<community::CommunityField>,
 }
 
 impl Default for FrontEndUi {
@@ -982,6 +1004,9 @@ impl FrontEndUi {
             clock: 0.0,
             confirm: None,
             waited: Vec::new(),
+            search: TextField::new(48),
+            path: TextField::new(260),
+            community_focus: None,
         }
     }
 
@@ -999,7 +1024,8 @@ impl FrontEndUi {
     /// Whether a text field has the keyboard (the app then sends no keys to gameplay).
     #[must_use]
     pub fn wants_keyboard(&self, view: &FrontEndView) -> bool {
-        view.screen == Screen::Login && self.focus.is_some()
+        (view.screen == Screen::Login && self.focus.is_some())
+            || (view.screen == Screen::Community && self.community_focus.is_some())
     }
 
     /// Whether the pointer is over front-end interface (the app then keeps it from the camera).
@@ -1088,6 +1114,36 @@ impl FrontEndUi {
             }
         }
 
+        // Typing, on the community page (search and file path).
+        if view.screen == Screen::Community
+            && let Some(focus) = self.community_focus
+        {
+            let field = match focus {
+                community::CommunityField::Search => &mut self.search,
+                community::CommunityField::Path => &mut self.path,
+            };
+            let outcome = field.apply(input.typed, input.keys);
+            if outcome.paste_requested
+                && let Some(text) = (input.clipboard)()
+            {
+                field.paste(&text);
+            }
+            if outcome.submitted {
+                match focus {
+                    community::CommunityField::Search => {
+                        actions.push(FrontEndAction::Community(CommunityAction::Search(
+                            self.search.text().trim().to_owned(),
+                        )));
+                    }
+                    community::CommunityField::Path => {
+                        actions.push(FrontEndAction::Community(CommunityAction::Upload(
+                            self.path.text().trim().to_owned(),
+                        )));
+                    }
+                }
+            }
+        }
+
         if view.screen == Screen::Title
             && input.typed.iter().any(|c| matches!(c, '\r' | '\n' | ' '))
         {
@@ -1114,10 +1170,14 @@ impl FrontEndUi {
         // Escape closes the topmost thing: a pending confirmation, then a prompt, then the page.
         if input.escape {
             match view.screen {
+                Screen::Community if self.community_focus.is_some() => {
+                    self.community_focus = None;
+                }
                 Screen::Dungeons
                 | Screen::Roles
                 | Screen::Workshop
                 | Screen::History
+                | Screen::Community
                 | Screen::Leaderboards => {
                     actions.push(FrontEndAction::Back);
                 }
@@ -1150,6 +1210,7 @@ impl FrontEndUi {
             if view.screen == Screen::Login {
                 self.focus = None;
             }
+            self.community_focus = None;
             return actions;
         };
         match hit {
@@ -1186,6 +1247,8 @@ impl FrontEndUi {
             Hit::BoardKey(step) => actions.push(FrontEndAction::BoardKey(step)),
             Hit::BoardKind(fastest) => actions.push(FrontEndAction::BoardKind(fastest)),
             Hit::BoardPage(step) => actions.push(FrontEndAction::BoardPage(step)),
+            Hit::CommunityButton => actions.push(FrontEndAction::OpenCommunity),
+            Hit::Community(hit) => self.community_hit(hit, &mut actions),
             Hit::ChangeCharacter => actions.push(FrontEndAction::ChangeCharacter),
             Hit::InsertKey => actions.push(FrontEndAction::InsertKey),
             Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
@@ -1268,6 +1331,34 @@ impl FrontEndUi {
             Hit::Kick(account) => actions.push(FrontEndAction::Kick(account)),
         }
         actions
+    }
+
+    fn community_hit(&mut self, hit: community::CommunityHit, actions: &mut Vec<FrontEndAction>) {
+        use community::CommunityHit as H;
+        let action = match hit {
+            H::SearchField => {
+                self.community_focus = Some(community::CommunityField::Search);
+                return;
+            }
+            H::PathField => {
+                self.community_focus = Some(community::CommunityField::Path);
+                return;
+            }
+            H::Tab(mine) => CommunityAction::Tab(mine),
+            H::Row(index) => CommunityAction::Select(index),
+            H::Sort => CommunityAction::Sort,
+            H::Filter => CommunityAction::Filter,
+            H::Page(step) => CommunityAction::Page(step),
+            H::Refresh => CommunityAction::Refresh,
+            H::Difficulty(step) => CommunityAction::Difficulty(step),
+            H::Play => CommunityAction::Play,
+            H::Publish => CommunityAction::Publish,
+            H::Unpublish => CommunityAction::Unpublish,
+            H::Upload => CommunityAction::Upload(self.path.text().trim().to_owned()),
+            H::UploadVersion => CommunityAction::UploadVersion(self.path.text().trim().to_owned()),
+        };
+        self.community_focus = None;
+        actions.push(FrontEndAction::Community(action));
     }
 
     // --- layout -----------------------------------------------------------------------
@@ -1397,6 +1488,7 @@ impl FrontEndUi {
                     );
                     layout.add(Hit::Dungeon(index), row);
                 }
+                layout.add(Hit::CommunityButton, community_button(w, scale));
                 let (back, next) = footer_buttons(w, h, scale);
                 layout.add(Hit::Back, back);
                 if view.selected_dungeon.is_some() {
@@ -1532,6 +1624,11 @@ impl FrontEndUi {
                     records::board_hits(&mut layout, card, w, h, scale);
                 }
             }
+            Screen::Community => {
+                if let Some(card) = &view.community {
+                    community::hits(&mut layout, card, w, h, scale);
+                }
+            }
             Screen::ReadyCheck => {
                 let panel = ready_panel(w, h, scale);
                 let answered = view.party.as_ref().is_some_and(|p| p.i_answered);
@@ -1665,6 +1762,22 @@ impl FrontEndUi {
             Screen::Leaderboards => {
                 let empty = BoardCard::default();
                 records::draw_boards(&mut ctx, view.board.as_ref().unwrap_or(&empty), w, h);
+            }
+            Screen::Community => {
+                let empty = CommunityCard::default();
+                let fields = community::FieldView {
+                    focus: self.community_focus,
+                    search: (self.search.text(), &self.search.display_before_caret()),
+                    path: (self.path.text(), &self.path.display_before_caret()),
+                    clock: self.clock,
+                };
+                community::draw(
+                    &mut ctx,
+                    view.community.as_ref().unwrap_or(&empty),
+                    &fields,
+                    w,
+                    h,
+                );
             }
             Screen::ReadyCheck => draw_ready_check(&mut ctx, view, w, h),
             Screen::KeySelect => draw_key_select(&mut ctx, view, w, h),
@@ -2303,6 +2416,12 @@ fn character_cards(count: usize, w: f32, h: f32, scale: UiScale) -> Vec<UiRect> 
             )
         })
         .collect()
+}
+
+/// The Dungeon Finder's link to the community maps page, top right under the account bar.
+fn community_button(w: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(w - px(260.0), px(64.0), px(230.0), px(36.0))
 }
 
 fn dungeon_panels(w: f32, h: f32, scale: UiScale) -> (UiRect, UiRect) {
@@ -2971,6 +3090,13 @@ fn draw_characters(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
 fn draw_dungeons(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let scale = ctx.scale;
     let px = move |v: f32| scale.px(v);
+    ctx.button(
+        community_button(w, scale),
+        "Community maps",
+        ButtonKind::Secondary,
+        &Hit::CommunityButton,
+        true,
+    );
     ctx.heading(
         "DUNGEON FINDER",
         "Choose a dungeon. The realm finds a Tank, a Healer and a DPS of similar gear.",
@@ -3167,7 +3293,10 @@ fn draw_roles(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let dungeon = view
         .selected_dungeon
         .and_then(|i| view.dungeons.get(i))
-        .map_or("", |d| d.name.as_str());
+        .map_or_else(
+            || view.queue_target.as_deref().unwrap_or(""),
+            |d| d.name.as_str(),
+        );
     ctx.heading(
         "CHOOSE YOUR ROLE",
         &format!(
