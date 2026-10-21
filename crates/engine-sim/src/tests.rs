@@ -432,7 +432,7 @@ fn the_validation_names_every_talent_and_flags_what_it_finds() {
     let text = matrix_report(&matrix, &options, Some(&validation), None);
     assert!(text.contains("## 6. Talent validation"));
     for talent in engine_game::talent::hero_talents(Class::Warrior.hero())
-        .talents
+        .visible()
         .iter()
     {
         assert!(text.contains(&talent.name), "{} is missing", talent.name);

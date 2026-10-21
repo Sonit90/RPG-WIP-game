@@ -1227,7 +1227,7 @@ impl UiSnapshot {
         self.mail_unread = u32::try_from(simulation.mailbox().unread_count()).unwrap_or(u32::MAX);
         self.talents.clear();
         for (index, talent) in engine_game::talent::hero_talents(simulation.hero())
-            .talents
+            .visible()
             .iter()
             .enumerate()
         {
@@ -1860,8 +1860,7 @@ mod tests {
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
             snapshot.talents.len(),
-            engine_game::talent::hero_talents(Hero::FireMage)
-                .talents
+            engine_game::talent::hero_talents(Hero::FireMage).visible()
                 .len()
         );
         assert!(snapshot.talents.iter().all(|talent| !talent.purchased));
@@ -1911,8 +1910,7 @@ mod tests {
         assert_eq!(snapshot.talents.capacity(), capacity, "the snapshot grew");
         assert_eq!(
             snapshot.talents.len(),
-            engine_game::talent::hero_talents(Hero::FireMage)
-                .talents
+            engine_game::talent::hero_talents(Hero::FireMage).visible()
                 .len()
         );
     }

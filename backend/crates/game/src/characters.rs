@@ -13,9 +13,21 @@ fn hero_of(row: &CharacterRow) -> engine_game::hero::Hero {
         .unwrap_or_default()
 }
 
-/// Talent points the character has earned from runs.
+/// Talent points the character has earned: from runs, plus one for each talent book it learned.
+/// Added to the starting points this is the whole budget (`engine_realm::talents::total_points`),
+/// the one number the save, queue and detail paths all check against.
 pub fn earned_points(row: &CharacterRow) -> u32 {
-    u32::try_from(row.talent_points_earned).unwrap_or(0)
+    u32::try_from(row.talent_points_earned)
+        .unwrap_or(0)
+        .saturating_add(row.books.0.point_bonus(hero_of(row)))
+}
+
+/// The talents a run snapshots: the bought ones plus the hidden nodes of the active book options.
+/// The realm's grid accepts the nodes for free and rejects them anywhere a player could send them.
+pub fn snapshot_talents(row: &CharacterRow) -> Vec<String> {
+    let mut keys = row.talents.0.clone();
+    keys.extend(row.books.0.active_nodes(hero_of(row)));
+    keys
 }
 
 /// Talent points its stored talents cost. A stored set that no longer parses costs nothing.
@@ -83,6 +95,7 @@ pub fn detail(
         talent_points_total: engine_realm::talents::total_points(earned_points(row)),
         talent_points_available: engine_realm::talents::total_points(earned_points(row))
             .saturating_sub(spent_points(row, hero)),
+        books: row.books.0.clone(),
         stats: stats_of(&sheet),
         completions,
     }
@@ -107,6 +120,7 @@ mod tests {
             )),
             talents: Json(talents.iter().map(|key| (*key).to_owned()).collect()),
             talent_points_earned: earned,
+            books: Json(Default::default()),
         }
     }
 
@@ -117,6 +131,40 @@ mod tests {
         assert_eq!(detail.talent_points_total, 5 + 2);
         assert_eq!(detail.talent_points_available, 5 + 2 - 3);
         assert_eq!(detail.talents, ["swift_wrath"]);
+    }
+
+    #[test]
+    fn learned_talent_books_raise_the_budget_and_active_options_ride_the_snapshot() {
+        use engine_game::hero::Hero;
+        let mut row = druid(&["swift_wrath"], 1);
+        let books = engine_realm::books::books_of(Hero::Druid);
+        let learn = |row: &mut CharacterRow, id: &str| {
+            row.books.0.learn(Hero::Druid, id).expect("learn");
+        };
+        learn(&mut row, &books.talent[0].id);
+        learn(&mut row, &books.talent[1].id);
+        let sunfire = &books.enhancement[0];
+        learn(&mut row, &sunfire.id);
+        row.books
+            .0
+            .set_active(Hero::Druid, &sunfire.id, &sunfire.options[1].id)
+            .expect("set");
+        let detail = detail(&row, vec![], None);
+        assert_eq!(detail.talent_points_total, 5 + 1 + 2);
+        assert_eq!(detail.talent_points_available, 5 + 1 + 2 - 3);
+        assert_eq!(detail.books, row.books.0);
+        assert_eq!(detail.talents, ["swift_wrath"], "a hidden node is not a bought talent");
+        let snapshot = snapshot_talents(&row);
+        assert_eq!(snapshot, ["swift_wrath", sunfire.options[1].node.as_str()]);
+        // The realm's grid takes the snapshot and charges only the visible talent.
+        let grid = engine_game::talent::TalentGrid::from_keys_with_nodes(
+            Hero::Druid,
+            &snapshot,
+            detail.talent_points_total,
+        )
+        .expect("fits");
+        assert_eq!(grid.purchased_keys(), ["swift_wrath"]);
+        assert_eq!(grid.granted_keys(), [sunfire.options[1].node.clone()]);
     }
 
     #[test]

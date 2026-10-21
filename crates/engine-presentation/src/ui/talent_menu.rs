@@ -810,7 +810,7 @@ mod tests {
         let drawn = texts(&render(&menu, &snapshot));
 
         assert!(drawn.contains(&"FIREMAGE TALENTS".to_owned()), "{drawn:?}");
-        for talent in &hero_talents(Hero::FireMage).talents {
+        for talent in hero_talents(Hero::FireMage).visible() {
             assert!(
                 drawn.contains(&talent.name),
                 "{} is missing from the menu",
@@ -1001,7 +1001,7 @@ mod tests {
         let druid = UiSnapshot::build(&simulation);
         let drawn = texts(&render(&menu, &druid));
         assert!(drawn.contains(&"DRUID TALENTS".to_owned()), "{drawn:?}");
-        for talent in &hero_talents(Hero::Druid).talents {
+        for talent in hero_talents(Hero::Druid).visible() {
             assert!(drawn.contains(&talent.name), "{}", talent.name);
         }
 
@@ -1010,7 +1010,7 @@ mod tests {
         let warrior = UiSnapshot::build(&simulation);
         let drawn = texts(&render(&menu, &warrior));
         assert!(drawn.contains(&"WARRIOR TALENTS".to_owned()), "{drawn:?}");
-        for talent in &hero_talents(Hero::Warrior).talents {
+        for talent in hero_talents(Hero::Warrior).visible() {
             assert!(drawn.contains(&talent.name), "{}", talent.name);
         }
         assert!(
@@ -1022,7 +1022,7 @@ mod tests {
     #[test]
     fn every_description_fits_its_node() {
         for hero in Hero::ALL {
-            for talent in &hero_talents(hero).talents {
+            for talent in hero_talents(hero).visible() {
                 assert!(
                     talent.description.len() <= DESCRIPTION_COLUMNS * DESCRIPTION_LINES - 26,
                     "{} is too long for a node: {}",
@@ -1067,7 +1067,7 @@ mod tests {
     #[test]
     fn every_talent_of_every_hero_has_an_icon() {
         for hero in engine_game::hero::Hero::ALL {
-            for talent in &engine_game::talent::hero_talents(hero).talents {
+            for talent in engine_game::talent::hero_talents(hero).visible() {
                 assert!(
                     talent_icon(&talent.key).is_some(),
                     "{} has no icon",

@@ -12,6 +12,8 @@
 //! | `POST /characters/{id}/sharpen` | one sharpening attempt: the server rolls, the locked row pays |
 //! | `POST /characters/{id}/enhance` | alias of `/sharpen` (P1 name), kept for one release |
 //! | `POST /characters/{id}/reforge` | re-roll an item's base quality from the published table: the server rolls, the locked row pays |
+//! | `POST /characters/{id}/books/use` | read a book from the bag: the item is consumed, the book learned (409 for a duplicate or another class's book) |
+//! | `PUT  /characters/{id}/books/active` | choose the active option of an enhancement book (hub only: 409 while engaged) |
 //! | `GET  /economy` | the economy catalog: resources, salvage rule, exchanges |
 //! | `POST /characters/{id}/key/downgrade` | key one level lower, extra modifiers dropped (hub only) |
 //! | `POST /characters/{id}/key/cleanse` | strip a key's modifiers for gold (hub only) |
@@ -54,7 +56,8 @@ use axum::{
 use engine_realm::api::{
     CharacterDetail, CharacterSummary, HistoryPage, LeaderboardPage, RunDetail, EconomyInfo, SharpenOutcomeName, SharpenRequest,
     SharpenResponse, ExchangeInfo, ExchangeRequest, MoveItemRequest, QueueRequest, ResourceInfo,
-    ReforgeRequest, ReforgeResponse, RequestIdBody, SalvageInfo, SalvageRequest, SettingsDocument, TalentsRequest,
+    ReforgeRequest, ReforgeResponse, RequestIdBody, SalvageInfo, SalvageRequest, SettingsDocument, SetActiveBookRequest, TalentsRequest,
+    UseBookRequest, UseBookResponse,
 };
 use generic_auth_core::AppError;
 use realm_game::bridge::{BridgeError, Snapshot};
@@ -79,6 +82,8 @@ pub fn router() -> Router<AppState> {
         // P1 name, kept as an alias for one release.
         .route("/characters/{id}/enhance", post(sharpen))
         .route("/characters/{id}/reforge", post(reforge))
+        .route("/characters/{id}/books/use", post(use_book))
+        .route("/characters/{id}/books/active", put(set_active_book))
         .route("/economy", get(get_economy))
         .route("/characters/{id}/key/downgrade", post(downgrade_key))
         .route("/characters/{id}/key/cleanse", post(cleanse_key))
@@ -593,6 +598,69 @@ async fn reforge(
     Ok(Json(response))
 }
 
+/// Reads a book from the bag: the item is consumed and the book learned, in one transaction
+/// ([`store::use_book_character`]). The request id is required. A duplicate or another class's
+/// book is a 409 and the item stays. Which key level a book needs is decided at the drop, not here.
+async fn use_book(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<UseBookRequest>,
+) -> ApiResult<Json<UseBookResponse>> {
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let character = character_id(&id)?;
+    let request_id = request_id_of(Some(&body.request_id))?.ok_or_else(|| {
+        ApiError(AppError::BadRequest("Reading a book needs a request id.".into()))
+    })?;
+    let response =
+        store::use_book_character(&state.db, user.user_id, character, request_id, &body.slot)
+            .await
+            .map_err(ApiError)?
+            .ok_or(ApiError(AppError::NotFound))?;
+    Ok(Json(response))
+}
+
+/// Chooses the option in force for an enhancement book. Hub only: the realm holds a snapshot of
+/// the talents, so this is a 409 while the character is queued, in a party or in a dungeon
+/// ([`store::set_active_book`] asks with the row locked, before it writes).
+async fn set_active_book(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<SetActiveBookRequest>,
+) -> ApiResult<Json<CharacterDetail>> {
+    state
+        .limits
+        .check(
+            &format!("character:{}", user.user_id),
+            rate_limit::CHARACTER_WRITES_PER_ACCOUNT,
+        )
+        .map_err(ApiError)?;
+    let character = character_id(&id)?;
+    let request_id = request_id_of(Some(&body.request_id))?.ok_or_else(|| {
+        ApiError(AppError::BadRequest("Choosing an option needs a request id.".into()))
+    })?;
+    let detail = store::set_active_book(
+        &state.db,
+        user.user_id,
+        character,
+        request_id,
+        &body.book_id,
+        &body.option_id,
+        || async { ensure_unlocked(&state, &user).await.map_err(|e| e.0) },
+    )
+    .await
+    .map_err(ApiError)?
+    .ok_or(ApiError(AppError::NotFound))?;
+    Ok(Json(detail))
+}
+
 /// A refused salvage or exchange as the HTTP error: the request was wrong (400) or the state
 /// it needs is not there (409); the message is the player-facing sentence.
 fn economy_error(error: engine_realm::economy::EconomyError) -> AppError {
@@ -864,7 +932,7 @@ async fn queue(
             .as_ref()
             .map(|key| key.modifiers.clone())
             .unwrap_or_default(),
-        talents: row.talents.0.clone(),
+        talents: characters::snapshot_talents(&row),
         talent_points: engine_realm::talents::total_points(characters::earned_points(&row)),
     };
     match state
@@ -971,6 +1039,23 @@ mod tests {
         let ask = body.find("ensure_unlocked()").expect("asks the realm");
         let write = body.find("hub.save_loadout").expect("writes");
         assert!(begin < ask && ask < write, "lock, ask, then write");
+    }
+
+    /// Choosing an option asks the realm inside the store, after the row lock and before the
+    /// write; reading a book does not ask (it changes no combat number until the next queue).
+    #[test]
+    fn choosing_a_book_option_asks_the_realm_with_the_row_locked() {
+        let text = handler("set_active_book");
+        assert!(text.contains("store::set_active_book("));
+        assert!(text.contains("ensure_unlocked(&state, &user)"));
+        let source = include_str!("../../../game/src/store.rs");
+        let start = source.find("pub async fn set_active_book").expect("the store function");
+        let body = &source[start..];
+        let begin = body.find("HubTx::begin(").expect("takes the row lock");
+        let ask = body.find("ensure_unlocked()").expect("asks the realm");
+        let write = body.find("hub.save_books").expect("writes");
+        assert!(begin < ask && ask < write, "lock, ask, then write");
+        assert!(!handler("use_book").contains("ensure_unlocked"));
     }
 
     /// [`handler`] without whitespace, so a call matches however rustfmt wrapped it.

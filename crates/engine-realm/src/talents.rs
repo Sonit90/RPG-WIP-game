@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use engine_game::hero::Hero;
+use engine_game::talent::books::{BookOption, EnhancementBook, HeroBooks, TalentBook};
 use engine_game::talent::{
     HeroTalents, TalentCatalog, TalentGrid, TalentProgression, TalentSpec, TalentValues,
     hero_talents, progression,
@@ -45,6 +46,35 @@ struct ProgressionRecord {
 #[derive(Deserialize)]
 struct HeroRecord {
     talents: Vec<TalentRecord>,
+    #[serde(default)]
+    books: Vec<BookRecord>,
+    #[serde(default)]
+    enhancement_books: Vec<EnhancementBookRecord>,
+}
+
+#[derive(Deserialize)]
+struct BookRecord {
+    id: String,
+    name: String,
+    min_key_level: u32,
+}
+
+#[derive(Deserialize)]
+struct EnhancementBookRecord {
+    id: String,
+    name: String,
+    ability: String,
+    min_key_level: u32,
+    options: Vec<OptionRecord>,
+}
+
+#[derive(Deserialize)]
+struct OptionRecord {
+    id: String,
+    name: String,
+    description: String,
+    /// The key of the hidden node in the hero's `talents`.
+    node: String,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +115,7 @@ pub fn parse(text: &str) -> Result<TalentCatalog, CatalogError> {
             HeroTalents::default(),
             HeroTalents::default(),
         ],
+        books: Default::default(),
     };
     for (name, record) in file.heroes {
         let hero = Hero::from_config_name(&name).ok_or_else(|| {
@@ -92,6 +123,37 @@ pub fn parse(text: &str) -> Result<TalentCatalog, CatalogError> {
                 "talents.json names hero {name:?}, which does not exist"
             ))
         })?;
+        catalog.books[hero.index()] = HeroBooks {
+            talent: record
+                .books
+                .into_iter()
+                .map(|book| TalentBook {
+                    id: book.id,
+                    name: book.name,
+                    min_key_level: book.min_key_level,
+                })
+                .collect(),
+            enhancement: record
+                .enhancement_books
+                .into_iter()
+                .map(|book| EnhancementBook {
+                    id: book.id,
+                    name: book.name,
+                    ability: book.ability,
+                    min_key_level: book.min_key_level,
+                    options: book
+                        .options
+                        .into_iter()
+                        .map(|option| BookOption {
+                            id: option.id,
+                            name: option.name,
+                            description: option.description,
+                            node: option.node,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
         catalog.heroes[hero.index()] = HeroTalents {
             talents: record
                 .talents
@@ -119,6 +181,18 @@ pub fn parse(text: &str) -> Result<TalentCatalog, CatalogError> {
     catalog
         .validate()
         .map_err(|message| CatalogError(format!("talents.json: {message}")))?;
+    // Book ids are item keys: unique across the heroes.
+    let mut seen: Vec<&str> = Vec::new();
+    for books in &catalog.books {
+        for id in books.ids() {
+            if seen.contains(&id) {
+                return Err(CatalogError(format!(
+                    "talents.json: book id {id:?} is used by two heroes"
+                )));
+            }
+            seen.push(id);
+        }
+    }
     Ok(catalog)
 }
 
@@ -144,11 +218,43 @@ pub fn install_builtin() -> Result<(), CatalogError> {
         .map_err(|message| CatalogError(format!("talents.json: {message}")))
 }
 
+/// The book items, one per book of every hero, as `engine-game` registers them after the loot
+/// file's items. A book's item key is its id; the family is `Book` and it never stacks.
+#[must_use]
+pub fn book_items() -> Vec<engine_game::character::CatalogItem> {
+    use engine_game::character::{CatalogItem, ItemFamily, ItemIcon, ItemQuality};
+    let Ok(catalog) = builtin() else {
+        return Vec::new();
+    };
+    let item = |id: &str, name: &str, quality| CatalogItem {
+        key: id.to_owned(),
+        name: name.to_owned(),
+        family: ItemFamily::Book,
+        quality,
+        item_level: 1,
+        icon: ItemIcon::of_family(ItemFamily::Book),
+        stats: Vec::new(),
+        active: None,
+        set: None,
+    };
+    let mut items = Vec::new();
+    for hero in Hero::ALL {
+        let books = &catalog.books[hero.index()];
+        for book in &books.talent {
+            items.push(item(&book.id, &book.name, ItemQuality::Rare));
+        }
+        for book in &books.enhancement {
+            items.push(item(&book.id, &book.name, ItemQuality::Epic));
+        }
+    }
+    items
+}
+
 /// Every talent `hero` can buy, with its key.
 #[must_use]
 pub fn talents_for(hero: Hero) -> Vec<(String, &'static TalentSpec)> {
     hero_talents(hero)
-        .talents
+        .visible()
         .iter()
         .map(|spec| (spec.key.clone(), spec))
         .collect()
@@ -157,7 +263,9 @@ pub fn talents_for(hero: Hero) -> Vec<(String, &'static TalentSpec)> {
 /// Whether `key` names a talent `hero` can have.
 #[must_use]
 pub fn is_valid(hero: Hero, key: &str) -> bool {
-    hero_talents(hero).index_of(key).is_some()
+    hero_talents(hero)
+        .index_of(key)
+        .is_some_and(|index| !hero_talents(hero).talents[index].is_hidden())
 }
 
 /// Talent points a character that has earned `earned` has in all.
@@ -214,7 +322,10 @@ mod tests {
     #[test]
     fn the_shipped_json_is_exactly_the_numbers_the_code_defaults_to() {
         // The data move changes nothing: same names, tiers, costs, descriptions and values.
-        assert_eq!(builtin().expect("parses"), TalentCatalog::default());
+        let shipped = builtin().expect("parses");
+        let defaults = TalentCatalog::default();
+        assert_eq!(shipped.progression, defaults.progression);
+        assert_eq!(shipped.heroes, defaults.heroes);
     }
 
     #[test]
@@ -222,7 +333,7 @@ mod tests {
         let catalog = builtin().expect("parses");
         for hero in Hero::ALL {
             let table = &catalog.heroes[hero.index()];
-            for (index, spec) in table.talents.iter().enumerate() {
+            for (index, spec) in table.visible().iter().enumerate() {
                 assert!(!spec.description.contains('{'), "{}", spec.description);
                 let mut grid = TalentGrid::with_points(hero, 999);
                 grid.purchase_index(index).expect("buys");
@@ -283,6 +394,93 @@ mod tests {
         ] {
             let spec = &catalog.heroes[Hero::Warrior.index()].talents[TalentKey::index(talent)];
             assert_eq!((spec.tier, spec.cost), (tier, cost), "{}", spec.key);
+        }
+    }
+
+    #[test]
+    fn every_class_ships_three_talent_books_and_three_enhancement_books_of_three_options() {
+        let catalog = builtin().expect("parses");
+        let mut ids = Vec::new();
+        for hero in Hero::ALL {
+            let books = &catalog.books[hero.index()];
+            let table = &catalog.heroes[hero.index()];
+            assert_eq!(books.talent.len(), 3, "{hero:?}");
+            assert_eq!(books.enhancement.len(), 3, "{hero:?}");
+            for book in &books.enhancement {
+                assert_eq!(book.options.len(), 3, "{}", book.id);
+                for option in &book.options {
+                    let row = table.index_of(&option.node).expect("the node exists");
+                    assert!(table.talents[row].is_hidden(), "{}", option.node);
+                    assert_eq!(table.talents[row].name, option.name);
+                }
+            }
+            ids.extend(books.ids().map(str::to_owned));
+        }
+        let count = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "book ids are unique across the heroes");
+        assert_eq!(count, 18);
+        // Hidden nodes are never offered for purchase or accepted in a saved set.
+        assert!(!is_valid(Hero::Warrior, "bk_wide_quake"));
+        assert!(talents_for(Hero::Warrior).iter().all(|(key, _)| !key.starts_with("bk_")));
+        assert_eq!(
+            validate(Hero::Warrior, &["bk_wide_quake".to_owned()], 99),
+            Err(TalentError::UnknownTalent)
+        );
+    }
+
+    #[test]
+    fn broken_book_data_is_refused() {
+        let first_option = "\"id\": \"wide_quake\"";
+        assert!(TALENTS_JSON.contains(first_option));
+        // An option with a duplicate id.
+        let dup = TALENTS_JSON.replace(first_option, "\"id\": \"crushing_quake\"");
+        assert!(parse(&dup).is_err());
+        // A node that does not exist, and one that is a visible talent.
+        let missing = TALENTS_JSON.replacen("\"node\": \"bk_wide_quake\"", "\"node\": \"bk_nope\"", 1);
+        assert!(parse(&missing).is_err());
+        let visible = TALENTS_JSON.replacen("\"node\": \"bk_wide_quake\"", "\"node\": \"shockwave\"", 1);
+        assert!(parse(&visible).is_err());
+        // An ability of another class.
+        let ability = TALENTS_JSON.replacen("\"ability\": \"war_stomp\"", "\"ability\": \"firebolt\"", 1);
+        assert!(parse(&ability).is_err());
+        // A book id used by two heroes.
+        let twice = TALENTS_JSON.replacen("\"id\": \"lore_of_the_grove\"", "\"id\": \"codex_of_iron_will\"", 1);
+        assert!(parse(&twice).is_err());
+        // A gate of zero.
+        let gate = TALENTS_JSON.replacen("\"min_key_level\": 8", "\"min_key_level\": 0", 1);
+        assert!(parse(&gate).is_err());
+        // A fourth option.
+        let value = serde_json::from_str::<serde_json::Value>(TALENTS_JSON).expect("json");
+        let mut extra = value.clone();
+        let options = extra["heroes"]["warrior"]["enhancement_books"][0]["options"]
+            .as_array_mut()
+            .expect("options");
+        let copy = options[0].clone();
+        options.push(copy);
+        assert!(parse(&extra.to_string()).is_err());
+        // A hidden node no option uses.
+        let mut orphan = value;
+        let talents = orphan["heroes"]["warrior"]["talents"].as_array_mut().expect("talents");
+        let mut extra_node = talents.last().expect("a node").clone();
+        extra_node["key"] = "bk_orphan".into();
+        talents.push(extra_node);
+        assert!(parse(&orphan.to_string()).is_err());
+    }
+
+    #[test]
+    fn book_items_are_registered_books_that_never_stack() {
+        use engine_game::character::{ItemFamily, item_by_key};
+        install_builtin().expect("installs");
+        crate::loot::ensure_items_registered();
+        for hero in Hero::ALL {
+            for id in crate::books::books_of(hero).ids() {
+                let def = item_by_key(id).expect("registered");
+                assert_eq!(def.family, ItemFamily::Book);
+                assert_eq!(def.max_stack, 1);
+                assert_eq!(def.family.slots().count(), 0);
+            }
         }
     }
 
