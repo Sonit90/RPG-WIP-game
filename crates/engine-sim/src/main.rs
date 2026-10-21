@@ -6,6 +6,7 @@
 //! engine-sim --iterations 20 --seed 7 --out docs/balance/sim-report.md
 //! engine-sim --search [--budget N]            the FireMage talent combination search
 //! engine-sim --loot-sim [--samples N]         how often drops are pre-sharpened (loot.json)
+//! engine-sim --gem-sim [--samples N]          runs to a max-level gem (gems.json)
 //! ```
 //!
 //! It drives the game's own [`engine_game::sim::Simulation`]: the same ability table, the
@@ -20,6 +21,7 @@
 //! matrix.rs   every combination          report.rs   markdown
 //! study.rs    the FireMage talent search (--search)
 //! loot_sim.rs the sharpening-drop distribution (--loot-sim)
+//! gem_sim.rs  runs to a max-level gem (--gem-sim, section 8)
 //! validation.rs  is any talent mandatory or worthless (the report's section 6)
 //! scaling.rs  does each gear tier beat the one below it (section 7)
 //! ```
@@ -29,6 +31,7 @@ mod balance;
 mod build;
 mod class;
 mod gear;
+mod gem_sim;
 mod loot_sim;
 mod matrix;
 mod metrics;
@@ -56,6 +59,8 @@ pub struct Options {
     pub search: bool,
     /// Run the loot-sharpening distribution instead of the combat matrix.
     pub loot_sim: bool,
+    /// Run the gem economy simulation instead of the combat matrix.
+    pub gem_sim: bool,
     /// Items rolled per source and key level by `--loot-sim`.
     pub samples: u32,
     /// Fights averaged per scenario.
@@ -83,6 +88,7 @@ impl Default for Options {
         Self {
             search: false,
             loot_sim: false,
+            gem_sim: false,
             samples: 100_000,
             iterations: 10,
             sweep_iterations: 8,
@@ -121,6 +127,17 @@ fn main() {
         };
         let cells = loot_sim::run(rules, options.samples, options.seed);
         loot_sim::report(rules, &cells, options.seed)
+    } else if options.gem_sim {
+        let (Some(rules), Some(gems)) = (
+            engine_realm::loot::builtin_rules(),
+            engine_realm::gems::builtin(),
+        ) else {
+            eprintln!("the shipped gem rules did not build");
+            std::process::exit(2);
+        };
+        let players = options.samples.min(5_000);
+        let cells = gem_sim::run(rules, gems, players, options.seed);
+        gem_sim::report(rules, gems, &cells, options.seed)
     } else if options.search {
         study::run(&options)
     } else {
@@ -179,6 +196,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
         match argument.as_str() {
             "--search" => options.search = true,
             "--loot-sim" => options.loot_sim = true,
+            "--gem-sim" => options.gem_sim = true,
             "--samples" => options.samples = parse_number("--samples", &value("--samples")?)?,
             "--no-validation" => options.validate = false,
             "--iterations" => {
@@ -210,13 +228,13 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Option<Options>, 
                     GearTier::ALL.to_vec()
                 } else {
                     vec![GearTier::parse(&text).ok_or_else(|| {
-                        format!("unknown gear {text}; expected none, low, medium, high, p2_max, p2_set (alias top) or all")
+                        format!("unknown gear {text}; expected none, low, medium, high, p2_max, p2_set, p2_gems (alias top) or all")
                     })?]
                 };
             }
             "--help" | "-h" => {
                 println!(
-                    "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|p2_set|all]\n\
+                    "engine-sim [--class warrior|druid|mage|all] [--gear none|low|medium|high|p2_max|p2_set|p2_gems|all]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH] [--no-validation]\n\
                      engine-sim --search [--budget N] [--sweep-iterations N] [--finalists N]\n\
                      \x20          [--iterations N] [--seed N] [--out PATH]

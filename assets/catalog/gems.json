@@ -4,13 +4,13 @@
   "max_level": 5,
   "level_names": ["Chipped", "Flawed", "Cut", "Flawless", "Perfect"],
   "kinds": [
-    { "id": "main_stat", "name": "Ruby", "stat": "main_stat", "values": [1.0, 2.0, 3.0, 4.5, 6.0] },
-    { "id": "stamina", "name": "Amber", "stat": "stamina", "values": [2.0, 3.0, 5.0, 7.0, 10.0] },
-    { "id": "critical_strike", "name": "Topaz", "stat": "critical_strike", "values": [1.0, 2.0, 3.0, 4.5, 6.0] },
-    { "id": "haste", "name": "Emerald", "stat": "haste", "values": [1.0, 2.0, 3.0, 4.5, 6.0] },
-    { "id": "versatility", "name": "Amethyst", "stat": "versatility", "values": [1.0, 2.0, 3.0, 4.5, 6.0] },
-    { "id": "armor", "name": "Onyx", "stat": "armor", "values": [3.0, 5.0, 8.0, 11.0, 16.0] },
-    { "id": "spirit", "name": "Opal", "stat": "spirit", "values": [1.0, 2.0, 3.0, 4.5, 6.0] }
+    { "id": "main_stat", "name": "Ruby", "stat": "main_stat", "values": [0.25, 0.5, 0.75, 1.0, 1.5] },
+    { "id": "stamina", "name": "Amber", "stat": "stamina", "values": [1.0, 1.5, 2.5, 3.5, 5.0] },
+    { "id": "critical_strike", "name": "Topaz", "stat": "critical_strike", "values": [0.25, 0.5, 0.75, 1.0, 1.5] },
+    { "id": "haste", "name": "Emerald", "stat": "haste", "values": [0.25, 0.5, 0.75, 1.0, 1.5] },
+    { "id": "versatility", "name": "Amethyst", "stat": "versatility", "values": [0.25, 0.5, 0.75, 1.0, 1.5] },
+    { "id": "armor", "name": "Onyx", "stat": "armor", "values": [1.5, 2.5, 4.0, 5.5, 8.0] },
+    { "id": "spirit", "name": "Opal", "stat": "spirit", "values": [0.25, 0.5, 0.75, 1.0, 1.5] }
   ],
   "drops": {
     "key_bonus_per_level": 0.04,
