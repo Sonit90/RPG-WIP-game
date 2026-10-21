@@ -19,6 +19,11 @@ pub enum Charset {
     Number,
     /// Lower-case letters, digits, `-` and `_` (`SHIFT` with `-`).
     FileName,
+    /// Prose: letters (`SHIFT` for capitals), digits, space, `-` and `.`, up to `max` characters.
+    ByKey {
+        /// The most characters the field holds.
+        max: usize,
+    },
 }
 
 /// What a frame of typing came to.
@@ -139,6 +144,16 @@ impl TextField {
             (Charset::FileName, key) if (KeyCode::A..=KeyCode::Z).contains(&key) => {
                 Some(char::from(b'a' + (key.index() - KeyCode::A.index()) as u8))
             }
+            (Charset::ByKey { .. }, key) if (KeyCode::A..=KeyCode::Z).contains(&key) => {
+                let letter = char::from(b'a' + (key.index() - KeyCode::A.index()) as u8);
+                Some(if shift {
+                    letter.to_ascii_uppercase()
+                } else {
+                    letter
+                })
+            }
+            (Charset::ByKey { .. }, KeyCode::Space) => Some(' '),
+            (Charset::ByKey { .. }, KeyCode::Period) => Some('.'),
             _ => None,
         }
     }
@@ -147,6 +162,7 @@ impl TextField {
     fn accepts(&self, character: char) -> bool {
         match self.charset {
             Charset::FileName => self.text.len() < 48,
+            Charset::ByKey { max } => self.text.chars().count() < max,
             Charset::Number => match character {
                 '-' => self.text.is_empty(),
                 '.' => !self.text.contains('.'),
@@ -232,5 +248,23 @@ mod tests {
             "cave-",
             "a point is not part of a level's name"
         );
+    }
+
+    #[test]
+    fn prose_takes_capitals_with_shift_spaces_and_stops_at_its_limit() {
+        let mut field = TextField::new("", Charset::ByKey { max: 5 });
+        let mut shifted = InputState::new();
+        shifted.begin_frame();
+        for key in [KeyCode::LeftShift, KeyCode::C] {
+            shifted.apply(InputEvent::KeyDown { key, repeat: false });
+        }
+        field.update(&shifted);
+        press(
+            &mut field,
+            &[KeyCode::R, KeyCode::Space, KeyCode::Period, KeyCode::Digit9],
+        );
+        assert_eq!(field.text(), "Cr .9");
+        press(&mut field, &[KeyCode::A]);
+        assert_eq!(field.text(), "Cr .9", "the limit holds");
     }
 }

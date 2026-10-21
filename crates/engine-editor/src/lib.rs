@@ -54,9 +54,12 @@
 //! # It edits data, and nothing else
 //!
 //! The editor's whole world is an [`EnvironmentScene`]. It never touches a mesh, a device, a
-//! render entity or a collision world, and it cannot: this crate depends on neither
-//! `engine-renderer` nor `engine-game`. What it returns is an [`EditorOutcome`], and the
-//! application answers that by re-placing the scene it already knows how to place.
+//! render entity or a collision world, and it cannot: this crate depends on no renderer and
+//! no `windows`. What it returns is an [`EditorOutcome`], and the application answers that by
+//! re-placing the scene it already knows how to place.
+//!
+//! The one gameplay-side crate it links is `engine-realm`, for [`community`]: the community-map
+//! validator is pure rules over text, and the editor asks it rather than keeping a second copy.
 //!
 //! It does read a *directory*: [`browser::AssetBrowser`] lists what is under `assets/` so an
 //! author can pick from it. That is names and extensions, not meshes — see that module.
@@ -88,6 +91,8 @@
 pub mod browser;
 pub mod camera;
 pub mod commands;
+pub mod community;
+mod community_panel;
 pub mod field;
 pub mod gizmo;
 pub mod icons;
@@ -144,12 +149,20 @@ struct Snapshot {
     spawn_points: Vec<SpawnPoint>,
     lights: Vec<SceneLight>,
     monsters: Vec<MonsterPlacement>,
+    /// The dungeon block, which the community panels edit.
+    dungeon: Option<engine_environment::monster::DungeonSettings>,
+    /// The community metadata, which lives beside the scene rather than in it.
+    community: Option<engine_realm::mapcheck::Meta>,
     flags: Vec<u8>,
 }
 
 impl Snapshot {
-    /// The scene as it is now.
-    fn of(scene: &EnvironmentScene, flags: &[u8]) -> Self {
+    /// The scene as it is now, with the editor's own `flags` and community `meta`.
+    fn of(
+        scene: &EnvironmentScene,
+        flags: &[u8],
+        community: Option<&engine_realm::mapcheck::Meta>,
+    ) -> Self {
         Self {
             objects: scene.objects.clone(),
             terrain: scene.terrain.clone(),
@@ -157,19 +170,26 @@ impl Snapshot {
             spawn_points: scene.spawn_points.clone(),
             lights: scene.lights.clone(),
             monsters: scene.monsters.clone(),
+            dungeon: scene.dungeon.clone(),
+            community: community.cloned(),
             flags: flags.to_vec(),
         }
     }
 
-    /// Puts this snapshot back into `scene`, and returns the flags it carried.
-    fn restore(self, scene: &mut EnvironmentScene) -> Vec<u8> {
+    /// Puts this snapshot back into `scene`, and returns the flags and the community
+    /// metadata it carried.
+    fn restore(
+        self,
+        scene: &mut EnvironmentScene,
+    ) -> (Vec<u8>, Option<engine_realm::mapcheck::Meta>) {
         scene.objects = self.objects;
         scene.terrain = self.terrain;
         scene.water = self.water;
         scene.spawn_points = self.spawn_points;
         scene.lights = self.lights;
         scene.monsters = self.monsters;
-        self.flags
+        scene.dungeon = self.dungeon;
+        (self.flags, self.community)
     }
 }
 
@@ -704,6 +724,8 @@ pub struct Editor {
     settings_scale: UiScale,
     /// The scale the editor is laid out at this frame.
     scale: UiScale,
+    /// Community-map authoring: the metadata, the validation and the panels' state.
+    community: community::State,
 }
 
 impl Default for Editor {
@@ -803,6 +825,7 @@ impl Editor {
             last_seconds: 1.0 / 60.0,
             settings_scale: UiScale::default(),
             scale: UiScale::default(),
+            community: community::State::default(),
         }
     }
 
@@ -1393,6 +1416,10 @@ impl Editor {
     /// back to the file it was opened from rather than to one named after the scene.
     pub fn set_save_path(&mut self, path: PathBuf) {
         self.status = format!("editing {}", path.display());
+        if let Some(meta) = community::read_sidecar(&path) {
+            self.community.meta = Some(meta);
+            self.community.dirty_at = Some(self.clock);
+        }
         self.save_path = path;
     }
 
@@ -1413,6 +1440,12 @@ impl Editor {
         self.cancel_manipulation();
         self.hierarchy_scroll = 0;
         self.status = format!("opened {}", path.display());
+        // The listing lives beside the level; a level with none is an ordinary one.
+        self.community.meta = community::read_sidecar(&path);
+        self.community.report = None;
+        self.community.edit = None;
+        self.community.warning = None;
+        self.community.dirty_at = self.community.meta.is_some().then_some(self.clock);
         self.save_path = path;
         if let Some(pivot) = scene.objects.first().map(|object| object.position()) {
             self.camera = FlyCamera::overlooking(pivot);
@@ -1498,6 +1531,8 @@ impl Editor {
         self.active = false;
         self.cancel_manipulation();
         self.inspector_edit = None;
+        self.community.edit = None;
+        self.community.export_prompt = false;
         self.save_as = None;
         self.hierarchy_typing = None;
         self.menu = None;
@@ -1540,7 +1575,27 @@ impl Editor {
     /// being dragged, then the toolbar and the three panels, and only then the viewport. Each
     /// layer that answers the pointer stops it reaching the layers under it, which is what
     /// keeps a click on a menu item from also selecting the rock behind the menu.
+    ///
+    /// After the frame, a community map that changed is validated once it has stopped
+    /// changing — see [`Editor::track_validation`].
     pub fn update(
+        &mut self,
+        input: &InputState,
+        ui_input: &UiInput,
+        scene: &mut EnvironmentScene,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        seconds: f32,
+    ) -> EditorOutcome {
+        let revision = self.revision;
+        let outcome = self.update_frame(input, ui_input, scene, view_projection, viewport, seconds);
+        let edited = outcome != EditorOutcome::Idle || self.revision != revision;
+        self.track_validation(scene, edited);
+        outcome
+    }
+
+    /// One frame of input, before the validation bookkeeping.
+    fn update_frame(
         &mut self,
         input: &InputState,
         ui_input: &UiInput,
@@ -1631,9 +1686,11 @@ impl Editor {
         let mut changed = false;
         // A number being typed owns the keyboard; the pointer carries on, and a click that
         // lands anywhere else commits it first.
-        let field_took_the_keys = self.inspector_edit.is_some();
-        if field_took_the_keys {
+        let field_took_the_keys = self.inspector_edit.is_some() || self.community.edit.is_some();
+        if self.inspector_edit.is_some() {
             changed |= self.update_inspector_edit(input, scene);
+        } else if self.community.edit.is_some() {
+            changed |= self.update_level_edit(input, scene);
         }
 
         // The browser reads the keyboard next, because while its filter is open every key
@@ -1808,13 +1865,23 @@ impl Editor {
             field::FieldAnswer::Editing => {}
             field::FieldAnswer::Cancel => {
                 self.save_as = None;
-                self.status = "save as: cancelled".to_owned();
+                let exporting = std::mem::take(&mut self.community.export_prompt);
+                self.status = if exporting {
+                    "export: cancelled".to_owned()
+                } else {
+                    "save as: cancelled".to_owned()
+                };
             }
             field::FieldAnswer::Commit | field::FieldAnswer::CommitNext => {
                 let name = field.text().trim_matches(['-', '_']).to_owned();
                 self.save_as = None;
+                let exporting = std::mem::take(&mut self.community.export_prompt);
                 if name.is_empty() {
                     self.status = "save as: a level needs a name".to_owned();
+                    return;
+                }
+                if exporting {
+                    self.finish_export_prompt(scene, &name);
                     return;
                 }
                 let directory = self
@@ -1984,6 +2051,7 @@ impl Editor {
             .push(Selected::Monster(scene.monsters.len() - 1));
         self.water_touched = true;
         self.status = format!("Placed {} in {pack}", theme::display_name(&id));
+        self.check_monster_approved(&id);
         true
     }
 
@@ -2168,8 +2236,7 @@ impl Editor {
             self.modal = Some(Modal::Unsaved { path });
             return;
         }
-        self.status = format!("Opening {}", path.display());
-        self.open_request = Some(path);
+        self.queue_open(path);
     }
 
     /// One frame of typing into the inspector. Returns whether the scene changed.
@@ -2226,7 +2293,7 @@ impl Editor {
             self.status = format!("'{}' is not a number", edit.field.text());
             return false;
         };
-        let before = Snapshot::of(scene, &self.flags);
+        let before = self.capture(scene);
         let selection = self.selected.clone();
         if !inspector::set(
             scene,
@@ -2904,7 +2971,7 @@ impl Editor {
         if !drag.moved {
             // Taken on the first movement rather than on the press: a click on a handle that
             // does not drag it must not fill the undo stack.
-            let before = Snapshot::of(scene, &self.flags);
+            let before = self.capture(scene);
             self.push_undo(before);
             drag.moved = true;
         }
@@ -3154,6 +3221,7 @@ impl Editor {
             theme::display_name(self.browser.selected_name()),
             stroke.spacing
         );
+        self.check_chosen_approved();
         changed
     }
 
@@ -3235,6 +3303,7 @@ impl Editor {
         self.selected
             .push(Selected::Object(scene.objects.len() - 1));
         self.status = format!("Placed {}", theme::display_name(asset.name()));
+        self.check_asset_approved(asset.name());
         true
     }
 
@@ -3274,9 +3343,14 @@ impl Editor {
         )
     }
 
+    /// Everything an edit can change, as it is now.
+    fn capture(&self, scene: &EnvironmentScene) -> Snapshot {
+        Snapshot::of(scene, &self.flags, self.community.meta.as_ref())
+    }
+
     /// Remembers the scene as it is now, for `CTRL+Z`.
     fn snapshot(&mut self, scene: &EnvironmentScene) {
-        let snapshot = Snapshot::of(scene, &self.flags);
+        let snapshot = self.capture(scene);
         self.push_undo(snapshot);
     }
 
@@ -3299,8 +3373,8 @@ impl Editor {
             self.status = "nothing to undo".to_owned();
             return false;
         };
-        self.redo.push(Snapshot::of(scene, &self.flags));
-        self.flags = snapshot.restore(scene);
+        self.redo.push(self.capture(scene));
+        (self.flags, self.community.meta) = snapshot.restore(scene);
         self.after_history_step(scene);
         self.status = format!("undone ({} more)", self.undo.len());
         true
@@ -3312,8 +3386,8 @@ impl Editor {
             self.status = "nothing to redo".to_owned();
             return false;
         };
-        self.undo.push(Snapshot::of(scene, &self.flags));
-        self.flags = snapshot.restore(scene);
+        self.undo.push(self.capture(scene));
+        (self.flags, self.community.meta) = snapshot.restore(scene);
         self.after_history_step(scene);
         self.status = format!("redone ({} more)", self.redo.len());
         true
@@ -3346,6 +3420,12 @@ impl Editor {
                 self.saved_revision = self.revision;
                 self.autosaved_revision = self.revision;
                 self.status = format!("saved {}", self.save_path.display());
+                if let Some(meta) = &self.community.meta
+                    && let Err(error) = community::write_sidecar(&self.save_path, meta)
+                {
+                    log::error!("editor: could not save the listing: {error}");
+                    self.status = format!("COULD NOT SAVE THE LISTING: {error}");
+                }
                 // The autosave is older than what was just written, and an autosave that is
                 // older than the level is a trap for whoever finds it next.
                 let autosave = self.autosave_path();
@@ -3728,6 +3808,9 @@ pub fn wants_to_enter(input: &InputState) -> bool {
 pub fn owns_pointer(input: &InputState) -> bool {
     input.is_mouse_button_down(MouseButton::Right)
 }
+
+#[cfg(test)]
+mod community_tests;
 
 #[cfg(test)]
 #[allow(

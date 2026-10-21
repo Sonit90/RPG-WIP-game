@@ -81,6 +81,68 @@ Official content uses `Rules::official()`: any non-blank asset name, terrain/wat
 larger limits (20000 objects, 1000 monsters, 1000 lights, half extent 2000, scale up to 1000 for
 ground planes).
 
+## Authoring in the editor
+
+The level editor (F6 in a development build) builds a community map end to end: place the level, edit
+the dungeon block, write the listing, watch the validator, export a file the client's "Upload level
+file" accepts. Nothing in the editor re-implements a rule; it writes the map out as the community
+file it would be and runs `mapcheck::check_str` on that text, the same call the server makes.
+
+The inspector has four tabs under its header.
+
+| Tab | What it edits |
+|---|---|
+| **Selection** | the selected thing, as before |
+| **Dungeon** | the `dungeon` block: objective, boss pack, gate, start points, boss adds, patrols |
+| **Listing** | the `meta` block: title, description, difficulty, tags |
+| **Validate** | the validator's issues, the *Validate* and *Export...* buttons |
+
+**Dungeon.** *Placed* is the sum of completion over every enabled, non-boss monster, computed by
+`mapcheck::monster_credit` (the validator's own rule), against *Needed*, the dungeon's
+`required_completion`; the panel says when it falls short (`impossible_objective`). The boss pack is
+picked with the arrows from the packs that exist, or by selecting a monster and *Mark Selected Pack*;
+*Move Selected Into Boss Pack* assigns monsters to it. The gate is placed at the middle of the view and
+then typed into (centre, size, turn). *Add Spawn At Centre* adds a start point (`P` in the world does
+too); select one to move it with the gizmo or its position fields. *Boss Adds* edits `add_count`,
+duplicates and the pool (*Add Selected Type* takes the selected monster's type; bosses are refused).
+Select a monster to give it a patrol: *Add Waypoint At Centre* appends an `[x, z]`, up to the
+validator's limit. Every edit is one undo step, and so is every listing edit.
+
+`timer_seconds` is not part of the community format (the dungeon block's whitelisted keys are in
+`mapcheck::DUNGEON_KEYS`), so the editor has no field for it; the server sets the timer.
+
+**Listing.** *Make Community Map* gives the level a listing; until then the level is an ordinary one
+and is never validated behind its author's back. Fields hold the validator's limits as constants
+exported from `mapcheck` (`TITLE_MAX`, `DESCRIPTION_MAX`, `TAGS_MAX`, `TAG_MAX`, `NAME_MAX`,
+`DIFFICULTY_RANGE`). Text is typed with the keyboard: letters (shift for capitals), digits, space,
+`-` and `.`. Tags are separated by spaces. The listing is saved beside the level as
+`<level>.meta.json` by every save, and read back when the level is opened.
+
+**Validate.** In a community map the validator runs once after the level has stopped changing for
+about 0.8 s (and not while a drag or a typed number is in progress), or immediately on *Validate*.
+Never per frame. Each issue is a row: red for errors, amber for warnings, `code: message`. Clicking a
+row selects and frames what the issue's `path` names (`mapcheck::Issue::target` reads it: objects,
+monsters, spawn points, lights); dungeon and gate issues open the Dungeon tab, listing issues the
+Listing tab. A row whose target no longer exists says so and selects nothing.
+
+**Approved library only.** Placing an asset or a monster that `Rules::default_community()` does not
+allow (`Rules::allows_asset`, `Rules::allowed_monster`, the same functions the validator calls) puts
+an "Approved library only" warning in the status line and on the Listing and Validate tabs. It is
+shown in community maps only.
+
+**Export.** *Validate > Export...* (or *File > Export Community Map...*) asks for a name and writes
+`<level folder>/<name>.community.json`. If the validator reports any error nothing is written, the
+Validate tab opens on the issue list, and the status line says so; warnings do not refuse. The file
+is exactly `{format, meta, scene}`: what `map_check` and the server accept. Opening a
+`*.community.json` from the asset browser (double-click) makes a working copy as an ordinary level
+plus its `.meta.json` and opens that, so an exported map loads back unchanged and the export itself
+is never overwritten.
+
+**New community map.** *File > New Community Map* (or the Listing tab) writes the template,
+`assets/templates/community_blank.json`, as a working copy and opens it: a floor, walls, a spawn, one
+pack of skeletons, a boss pack, a gate and an add. It is data; edit the file to change the starting
+point. A test keeps it valid.
+
 ## Publishing and playing
 
 ### Lifecycle

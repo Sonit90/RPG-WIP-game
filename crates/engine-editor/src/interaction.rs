@@ -15,6 +15,7 @@ use engine_presentation::ui::targeting::cursor_ray;
 
 use crate::browser::BrowserRow;
 use crate::commands::{BrowserView, Command};
+use crate::community::EditTarget;
 use crate::layout::{Layout, Splitter};
 use crate::panels::{
     self, DialogButton, DialogKind, Element, Group, HierarchyRow, MenuKind, OpenMenu, Tile,
@@ -107,12 +108,10 @@ impl Editor {
                     // the work the author just asked to keep.
                     return false;
                 }
-                self.status = format!("Opening {}", path.display());
-                self.open_request = Some(path);
+                self.queue_open(path);
             }
             (Modal::Unsaved { path }, DialogButton::Discard) => {
-                self.status = format!("Opening {}", path.display());
-                self.open_request = Some(path);
+                self.queue_open(path);
             }
             _ => {}
         }
@@ -880,6 +879,9 @@ impl Editor {
             if ui_input.pointer_pressed && self.inspector_edit.is_some() {
                 changed |= self.commit_inspector_edit(scene);
             }
+            if ui_input.pointer_pressed && self.community.edit.is_some() {
+                changed |= self.commit_level_edit(scene);
+            }
             return changed;
         }
 
@@ -896,9 +898,29 @@ impl Editor {
             if self.inspector_edit.is_some() {
                 changed |= self.commit_inspector_edit(scene);
             }
+            let was_typing = self.community.edit.as_ref().map(|edit| edit.target);
+            if self.community.edit.is_some() {
+                changed |= self.commit_level_edit(scene);
+            }
             match under {
                 Some(Element::Section { section, .. }) => {
                     self.collapsed_sections ^= section.bit();
+                }
+                Some(Element::Tab { tab, .. }) => {
+                    changed |= self.execute(Command::SetTab(tab), scene);
+                }
+                Some(Element::Field { field, .. })
+                    if was_typing != Some(EditTarget::Number(field)) =>
+                {
+                    self.begin_level_edit(scene, EditTarget::Number(field));
+                }
+                Some(Element::Text { target, .. })
+                    if was_typing != Some(EditTarget::Text(target)) =>
+                {
+                    self.begin_level_edit(scene, EditTarget::Text(target));
+                }
+                Some(Element::Issue { index, .. }) => {
+                    changed |= self.execute(Command::SelectIssue(index), scene);
                 }
                 Some(Element::Value { property, .. }) if was_editing != Some(property) => {
                     self.begin_inspector_edit(scene, property);
