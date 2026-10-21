@@ -371,7 +371,10 @@ const DUNGEON_KEYS: &[&str] = &[
     "add_count",
     "add_pool",
     "allow_duplicate_adds",
+    "timer_seconds",
 ];
+/// The clock a community map may set, in seconds: five minutes to an hour.
+pub const TIMER_RANGE: std::ops::RangeInclusive<u32> = 300..=3600;
 const GATE_KEYS: &[&str] = &["center", "half_extents", "yaw"];
 const MAP_KEYS: &[&str] = &["floor", "ceiling", "padding", "texels_per_metre", "bounds"];
 
@@ -1246,6 +1249,19 @@ fn check_dungeon(
             spawn.position,
             true,
             report,
+        );
+    }
+    if let Some(seconds) = dungeon.timer_seconds
+        && !TIMER_RANGE.contains(&seconds)
+    {
+        report.error(
+            "bad_timer",
+            format!("{path}.timer_seconds"),
+            format!(
+                "timer_seconds must be between {} and {} (leave it out for an untimed map)",
+                TIMER_RANGE.start(),
+                TIMER_RANGE.end()
+            ),
         );
     }
     if dungeon.add_count > 16 {

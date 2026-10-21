@@ -180,8 +180,9 @@ pub fn definition(
             ..template.keys
         },
         reward_table: RewardTable::default(),
-        // No clock: a completion is timed, and the leaderboards rank by speed.
-        timer_seconds: None,
+        // The map's own clock, if it sets one (validated 300-3600 s). Without one a completion
+        // is always timed and the boards show it as untimed.
+        timer_seconds: map.scene.dungeon.as_ref().and_then(|dungeon| dungeon.timer_seconds),
         spawn_points: if spawn_points.is_empty() {
             template.spawn_points.clone()
         } else {
@@ -793,6 +794,38 @@ mod tests {
         assert!(crate::key::validate_key(definition, &id, MAX_DIFFICULTY).is_ok());
         assert!(crate::key::validate_key(definition, &id, MAX_DIFFICULTY + 1).is_err());
         assert!(crate::key::validate_key(definition, "graveyard_crypt", 1).is_err());
+    }
+
+    #[test]
+    fn a_map_timer_reaches_the_run_outcome() {
+        use crate::SECOND;
+        use crate::outcome::{RunEnd, RunOutcome, classify, timer_us};
+        let id = dungeon_id("ab", 1);
+        // No timer in the file: untimed, so every completion is timed.
+        let untimed = prepare(FIXTURE, &id, &template()).expect("valid").definition;
+        assert_eq!(timer_us(&untimed), None);
+        assert_eq!(
+            classify(RunEnd::Completed, 99_999 * SECOND, timer_us(&untimed)),
+            RunOutcome::Timed
+        );
+        // A timer in the dungeon block becomes the definition's clock.
+        let mut value: serde_json::Value = serde_json::from_str(FIXTURE).expect("json");
+        value["scene"]["dungeon"]["timer_seconds"] = serde_json::json!(600);
+        let timed = prepare(&value.to_string(), &id, &template())
+            .expect("valid")
+            .definition;
+        assert_eq!(timed.timer_seconds, Some(600));
+        let clock = timer_us(&timed);
+        assert_eq!(clock, Some(600 * SECOND));
+        assert_eq!(classify(RunEnd::Completed, 600 * SECOND, clock), RunOutcome::Timed);
+        assert_eq!(classify(RunEnd::Completed, 600 * SECOND + 1, clock), RunOutcome::Overtime);
+        // A timer outside the range never prepares.
+        value["scene"]["dungeon"]["timer_seconds"] = serde_json::json!(5);
+        assert!(
+            prepare(&value.to_string(), &id, &template())
+                .expect_err("refused")
+                .has_error("bad_timer")
+        );
     }
 
     #[test]

@@ -21,6 +21,15 @@ collision_shapes, spawn_points, lights, monsters, dungeon, map`. Monsters additi
 `patrol: [[x, z], ...]`. Anything else is rejected (`terrain` and `water` are known but not
 supported for community maps).
 
+## The run timer
+
+The dungeon block takes an optional `"timer_seconds"` (integer, 300 to 3600). It is the run's clock:
+a completion inside it is **timed**, after it **overtime**, and the in-run timer HUD shows it. Leave it
+out for an untimed map: the clock never runs, every completion counts as timed for ranking, and
+History/Boards label those runs `UNTIMED`. `engine_realm::community::prepare` copies the value into
+the dungeon row the realm classifies runs with (`outcome::timer_us`), so `cm:` runs are classified
+exactly like official ones.
+
 ## Validating locally
 
 ```text
@@ -64,6 +73,7 @@ the map; warnings do not.
 | `impossible_objective` | sum of enabled non-boss monster completion credit < `required_completion` |
 | `bad_add_pool` | `add_pool` empty with `add_count > 0`, unknown id, or a boss |
 | `bad_patrol` | patrol not a list of `[x, z]`, over 16 points, or out of bounds |
+| `bad_timer` | `dungeon.timer_seconds` outside 300-3600 (a fractional or negative value is a `schema_error`) |
 
 Warnings: `no_monsters`, `boss_pack_without_boss`.
 

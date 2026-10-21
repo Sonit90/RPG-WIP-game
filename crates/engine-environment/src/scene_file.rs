@@ -430,6 +430,10 @@ pub struct DungeonRecord {
     /// Whether one monster may be chosen twice.
     #[serde(default)]
     pub allow_duplicate_adds: bool,
+    /// The run's clock in seconds; a run that finishes inside it is timed. Absent means no
+    /// clock (a community map shows as untimed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timer_seconds: Option<u32>,
 }
 
 impl DungeonRecord {
@@ -456,6 +460,7 @@ impl DungeonRecord {
             add_count: settings.add_count,
             add_pool: settings.add_pool.clone(),
             allow_duplicate_adds: settings.allow_duplicate_adds,
+            timer_seconds: settings.timer_seconds,
         }
     }
 
@@ -482,6 +487,7 @@ impl DungeonRecord {
             add_count: self.add_count,
             add_pool: self.add_pool.clone(),
             allow_duplicate_adds: self.allow_duplicate_adds,
+            timer_seconds: self.timer_seconds,
         }
     }
 }
