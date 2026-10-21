@@ -899,8 +899,13 @@ impl Worker {
             } => {
                 let Some(token) = self.access() else { return };
                 let result = with_request_id(|request_id| {
-                    self.api
-                        .set_active_book(&token, &character_id, &book_id, &option_id, request_id)
+                    self.api.set_active_book(
+                        &token,
+                        &character_id,
+                        &book_id,
+                        &option_id,
+                        request_id,
+                    )
                 });
                 match result {
                     Ok(detail) => self.emit(NetEvent::Character(Box::new(detail))),

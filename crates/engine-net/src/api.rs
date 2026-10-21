@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use engine_realm::api::{
-    CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, LoginRequest,
-    GemSlotResponse, GemSocketRequest, GemUnsocketRequest, GemUpgradeRequest, GemUpgradeResponse,
+    CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, GemSlotResponse,
+    GemSocketRequest, GemUnsocketRequest, GemUpgradeRequest, GemUpgradeResponse, LoginRequest,
     MoveItemRequest, QueueRequest, ReforgeRequest, ReforgeResponse, RefreshRequest,
     RegisterRequest, RequestIdBody, SalvageRequest, SetActiveBookRequest, SettingsDocument,
     SharpenRequest, SharpenResponse, TokenPair, UseBookRequest, UseBookResponse, UserProfile,
