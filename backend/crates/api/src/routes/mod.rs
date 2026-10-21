@@ -4,6 +4,7 @@ use crate::state::AppState;
 
 pub mod admin;
 pub mod auth;
+pub mod community;
 pub mod game;
 pub mod oidc;
 pub mod ops;
@@ -15,6 +16,7 @@ pub fn router(state: AppState) -> Router {
         .nest("/users", users::router())
         .nest("/admin", admin::router())
         .merge(game::router())
+        .merge(community::router())
         .with_state(state.clone());
 
     Router::new()

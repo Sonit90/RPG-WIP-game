@@ -784,6 +784,41 @@ async fn put_settings(
     }))
 }
 
+/// A community map a queue request names, checked and made ready to play.
+struct CommunityPlay {
+    /// `cm:<map id>:<version>`.
+    dungeon_id: String,
+    /// The key level the run is played at, 1 to 10.
+    difficulty: u32,
+}
+
+/// Checks a `cm:` queue request: a plausible id, a difficulty within the community scale, a map
+/// that is published at exactly that version, and (self-healing) present in the realm.
+async fn community_play(state: &AppState, body: &QueueRequest) -> Result<CommunityPlay, ApiError> {
+    use engine_realm::community;
+    let bad = |message: &str| ApiError(AppError::BadRequest(message.into()));
+    let (map, version) = community::parse_dungeon_id(&body.dungeon_id)
+        .ok_or_else(|| bad("That community map does not exist."))?;
+    let id = Uuid::parse_str(map).map_err(|_| bad("That community map does not exist."))?;
+    let difficulty = body.difficulty.unwrap_or(1);
+    if !(1..=community::MAX_DIFFICULTY).contains(&difficulty) {
+        return Err(bad("Community maps are played at difficulty 1 to 10."));
+    }
+    let playable = realm_game::community::playable(&state.db, id, version)
+        .await
+        .map_err(ApiError)?
+        .ok_or_else(|| {
+            ApiError(AppError::Conflict(
+                "That map is not available: it was updated or taken down. Refresh the list.".into(),
+            ))
+        })?;
+    super::community::ensure_live(state, id, version, &playable.data).await;
+    Ok(CommunityPlay {
+        dungeon_id: community::dungeon_id(map, version),
+        difficulty,
+    })
+}
+
 /// The queue join. It holds the character row lock from the snapshot until the realm has
 /// answered, so a hub write (which takes the same lock, then asks the realm) cannot change the
 /// character between the snapshot and the enqueue.
@@ -825,10 +860,25 @@ async fn queue(
             body.role.name()
         ))));
     }
-    let dungeon = catalog
-        .dungeon(&body.dungeon_id)
-        .ok_or_else(|| ApiError(AppError::BadRequest("That dungeon does not exist.".into())))?;
-    let key = hub.key().await?;
+    // A community map is played with a key made for the run (its difficulty); the character's
+    // own key is neither read nor changed, and the run grants nothing (docs/community-maps.md).
+    let community_play = if engine_realm::community::is_community(&body.dungeon_id) {
+        Some(community_play(&state, &body).await?)
+    } else {
+        None
+    };
+    let dungeon = if community_play.is_some() {
+        None
+    } else {
+        Some(catalog.dungeon(&body.dungeon_id).ok_or_else(|| {
+            ApiError(AppError::BadRequest("That dungeon does not exist.".into()))
+        })?)
+    };
+    let key = if community_play.is_some() {
+        None
+    } else {
+        hub.key().await?
+    };
     let summary = characters::summary(&row, key.as_ref());
     // The snapshot is checked once more here: a set that no longer fits (the starting points
     // changed, or a talent was retired) is refused before it reaches the realm.
@@ -839,9 +889,14 @@ async fn queue(
                 "Your talents are not valid. Reset them in the talent window.".into(),
             ))
         })?;
-    dungeon
-        .admits(summary.level, summary.gear_score)
-        .map_err(|e| ApiError(AppError::BadRequest(e.message)))?;
+    if let Some(dungeon) = dungeon {
+        dungeon
+            .admits(summary.level, summary.gear_score)
+            .map_err(|e| ApiError(AppError::BadRequest(e.message)))?;
+    }
+    let queue_dungeon = community_play
+        .as_ref()
+        .map_or_else(|| body.dungeon_id.clone(), |play| play.dungeon_id.clone());
 
     let token = state
         .jwt
@@ -855,21 +910,30 @@ async fn queue(
         level: summary.level,
         gear_score: summary.gear_score,
         loadout: serde_json::to_string(&row.loadout.0).unwrap_or_default(),
-        key_dungeon_id: key
-            .as_ref()
-            .map(|key| key.dungeon_id.clone())
-            .unwrap_or_default(),
-        key_level: key.as_ref().map_or(0, |key| key.level),
-        key_modifiers: key
-            .as_ref()
-            .map(|key| key.modifiers.clone())
-            .unwrap_or_default(),
+        key_dungeon_id: match &community_play {
+            Some(play) => play.dungeon_id.clone(),
+            None => key
+                .as_ref()
+                .map(|key| key.dungeon_id.clone())
+                .unwrap_or_default(),
+        },
+        key_level: match &community_play {
+            Some(play) => play.difficulty,
+            None => key.as_ref().map_or(0, |key| key.level),
+        },
+        key_modifiers: if community_play.is_some() {
+            Vec::new()
+        } else {
+            key.as_ref()
+                .map(|key| key.modifiers.clone())
+                .unwrap_or_default()
+        },
         talents: row.talents.0.clone(),
         talent_points: engine_realm::talents::total_points(characters::earned_points(&row)),
     };
     match state
         .realm
-        .enqueue(&token, &snapshot, &dungeon.id, body.role)
+        .enqueue(&token, &snapshot, &queue_dungeon, body.role)
         .await
     {
         Ok(()) => {
@@ -878,7 +942,7 @@ async fn queue(
             tracing::info!(
                 account_id = %user.user_id,
                 character_id = %row.id,
-                dungeon_id = %dungeon.id,
+                dungeon_id = %queue_dungeon,
                 role = body.role.key(),
                 gear_score = summary.gear_score,
                 "queue join relayed"

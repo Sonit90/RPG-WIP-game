@@ -4,6 +4,7 @@ use axum::Json;
 use generic_auth_core::AppError;
 use serde_json::json;
 
+#[derive(Debug)]
 pub struct ApiError(pub AppError);
 
 impl From<AppError> for ApiError {

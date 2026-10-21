@@ -20,6 +20,7 @@ pub async fn collect_results(state: AppState) {
     let mut interval = tokio::time::interval(period);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut unavailable = false;
+    let mut last_sync = std::time::Instant::now() - COMMUNITY_SYNC_EVERY;
     loop {
         interval.tick().await;
         let token = match state
@@ -54,6 +55,72 @@ pub async fn collect_results(state: AppState) {
         };
         persist_results(&state, &token, &results).await;
         collect_loot(&state, &token).await;
+        if last_sync.elapsed() >= COMMUNITY_SYNC_EVERY {
+            last_sync = std::time::Instant::now();
+            sync_community(&state, &token).await;
+        }
+    }
+}
+
+/// How often the realm's community maps are compared with the database's published ones.
+const COMMUNITY_SYNC_EVERY: Duration = Duration::from_secs(30);
+
+/// Makes the realm's community maps match the database: publishes what the realm lost (a schema
+/// publish wipes its data) and drops what is no longer published (a withdraw that failed).
+async fn sync_community(state: &AppState, token: &str) {
+    use std::collections::BTreeSet;
+    let live = match state.realm.community_list(token).await {
+        Ok(live) => live,
+        // A realm module without community maps yet, or a blip: the next pass tries again.
+        Err(e) => {
+            tracing::debug!(error = %e, "community sync: cannot list the realm's maps");
+            return;
+        }
+    };
+    let published = match realm_game::community::published(&state.db).await {
+        Ok(published) => published,
+        Err(e) => {
+            tracing::warn!(error = %e, "community sync: cannot read the published maps");
+            return;
+        }
+    };
+    let wanted: BTreeSet<String> = published
+        .iter()
+        .map(|(id, version)| engine_realm::community::dungeon_id(&id.to_string(), *version))
+        .collect();
+    let mut present: BTreeSet<String> = live.iter().cloned().collect();
+    // Stale entries (a version that is no longer the published one, or a map that is not
+    // published at all) go first, so a newer version can then be put.
+    let mut dropped = BTreeSet::new();
+    for key in live.iter().filter(|key| !wanted.contains(*key)) {
+        let Some((id, _)) = engine_realm::community::parse_dungeon_id(key) else {
+            continue;
+        };
+        if dropped.insert(id.to_owned()) {
+            if let Err(e) = state.realm.community_remove(token, id).await {
+                tracing::warn!(map_id = id, error = %e, "community sync: cannot drop a map");
+            }
+        }
+    }
+    present.retain(|key| {
+        engine_realm::community::parse_dungeon_id(key).is_none_or(|(id, _)| !dropped.contains(id))
+    });
+    for (id, version) in &published {
+        let key = engine_realm::community::dungeon_id(&id.to_string(), *version);
+        if present.contains(&key) {
+            continue;
+        }
+        match realm_game::community::playable(&state.db, *id, *version).await {
+            Ok(Some(playable)) => {
+                if let Err(e) = state.realm.community_put(token, &key, &playable.data).await {
+                    tracing::warn!(%key, error = %e, "community sync: the realm did not take a map");
+                } else {
+                    tracing::info!(%key, "community sync: map put in the realm");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(%key, error = %e, "community sync: cannot read a map"),
+        }
     }
 }
 

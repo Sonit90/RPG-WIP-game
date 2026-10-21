@@ -6,7 +6,7 @@
 //! reaches those tables, and nothing here asks the realm.
 
 use engine_realm::api::{
-    DungeonResult, HistoryEntry, HistoryPage, LeaderboardPage, LeaderboardRow, RunDetail, RunLoot,
+    CompletionRow, DungeonResult, HistoryEntry, HistoryPage, LeaderboardPage, LeaderboardRow, RunDetail, RunLoot,
     RunMember, HISTORY_MAX_LIMIT,
 };
 use engine_realm::leaderboard::{Board, LeaderboardConfig};
@@ -313,7 +313,7 @@ pub async fn leaderboard(
     let offset = i64::from(query.page) * i64::from(page_size);
     let key = match query.board {
         Board::Fastest => query.key_level,
-        Board::Highest => None,
+        Board::Highest | Board::Completions => None,
     };
     // The order is a constant chosen by the configured rule and the board; the eligible
     // outcomes are the rule's too.
@@ -322,6 +322,9 @@ pub async fn leaderboard(
         .filter(|outcome| config.score().eligible(*outcome))
         .map(RunOutcome::key)
         .collect();
+    if query.board == Board::Completions {
+        return completions(pool, config, query, &eligible, page_size, offset).await;
+    }
     let sql = format!(
         "SELECT run_uid, key_level, outcome, duration_us, timer_us,
                 (EXTRACT(EPOCH FROM finished_at) * 1000000)::bigint AS finished_at_us, party
@@ -367,6 +370,76 @@ pub async fn leaderboard(
         page_size,
         rows,
         has_more,
+        completions: Vec::new(),
+    })
+}
+
+#[derive(sqlx::FromRow)]
+struct CompletionRecord {
+    character_id: String,
+    name: String,
+    hero: String,
+    completions: i64,
+    best_key: i32,
+    best_us: i64,
+}
+
+/// The completions board: one row per character, ranked by how many completed runs of the
+/// dungeon they were in (the party lives in `dungeon_runs.party`).
+async fn completions(
+    pool: &PgPool,
+    config: &LeaderboardConfig,
+    query: &BoardQuery<'_>,
+    eligible: &[&str],
+    page_size: u32,
+    offset: i64,
+) -> Result<LeaderboardPage, AppError> {
+    let sql = format!(
+        "SELECT m->>'character_id' AS character_id, max(m->>'name') AS name,
+                max(m->>'hero') AS hero, count(*) AS completions,
+                max(r.key_level) AS best_key, min(r.duration_us) AS best_us
+         FROM game.dungeon_runs r, jsonb_array_elements(r.party) m
+         WHERE r.season_id = $1 AND r.dungeon_id = $2 AND r.outcome = ANY($3)
+           AND COALESCE(m->>'character_id', '') <> ''
+         GROUP BY m->>'character_id'
+         ORDER BY {}
+         LIMIT $4 OFFSET $5",
+        config.score().order_by_completions()
+    );
+    let rows: Vec<CompletionRecord> = sqlx::query_as(&sql)
+        .bind(query.season_id)
+        .bind(query.dungeon_id)
+        .bind(eligible)
+        .bind(i64::from(page_size) + 1)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+    let has_more = rows.len() > page_size as usize;
+    let completions = rows
+        .into_iter()
+        .take(page_size as usize)
+        .enumerate()
+        .map(|(index, row)| CompletionRow {
+            rank: u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(index as u32 + 1),
+            character_id: row.character_id,
+            name: row.name,
+            hero: row.hero,
+            completions: u32::try_from(row.completions).unwrap_or(u32::MAX),
+            best_key_level: u32::try_from(row.best_key).unwrap_or(0),
+            best_duration_us: row.best_us,
+        })
+        .collect();
+    Ok(LeaderboardPage {
+        board: Board::Completions.key().to_owned(),
+        dungeon_id: query.dungeon_id.to_owned(),
+        key_level: None,
+        season_id: query.season_id.to_owned(),
+        page: query.page,
+        page_size,
+        rows: Vec::new(),
+        has_more,
+        completions,
     })
 }
 
