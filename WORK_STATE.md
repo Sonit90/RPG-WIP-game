@@ -79,6 +79,13 @@ MERGED `p2-books`: 3 talent books + 3×3 enhancement books per class as hidden t
 u64 bitset + granted mask), `characters.books` (0014), /books/use, /books/active, Books page toggle,
 book_drops (gate on drop: talent key 8, enhancement key 6). Tiers now …p2_set, p2_gems, p2_books.
 Verified on merge branch: workspace 4627, embedded 364, backend 124, DB 53.
+MERGED `p2-community`: migration 0015 (community_maps, versions, community_requests, perm
+community.moderate→admin), /api/v1/community/*, realm private `community_map` table + svc reducers +
+30 s reconciler, `cm:<id>:<ver>` instances, 4-layer no-loot isolation, client browser (via Dungeon
+Finder), realm-bot `community`; live `scenario all` 14/14. Dev DB `realm` had 0015 before 0014 —
+applied 0014 manually with sqlx checksum. Verified: workspace 4645, embedded 375, backend 127, DB 62.
+`p2-polish` (worktree `../myGame-wt-polish`): audio audit, pylon-immunity indicator, gem/book icons,
+hub entry for community, community timer_seconds, terminology sweep.
 `p2-balance` (worktree `../myGame-wt-balance`): economy sim, set/druid survivability fixes, eternal wall, P2_BALANCE.md.
 `p2-editor` (worktree `../myGame-wt-editor`): dungeon-block inspector, community metadata, live mapcheck, export, template.
 p2-core verified after sets+reforge: workspace 4527, embedded 331, backend 121, DB 36, clippy clean.
