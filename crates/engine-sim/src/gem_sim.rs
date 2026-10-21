@@ -336,8 +336,14 @@ mod tests {
         let (rules, gems) = setup();
         let low = run_cell(rules, gems, 1, 300, 3).median();
         let high = run_cell(rules, gems, 20, 300, 3).median();
-        assert!(high <= low, "a higher key must not slow gems down: {high} vs {low}");
-        assert!((40..=250).contains(&low) && (40..=250).contains(&high), "{low} {high}");
+        assert!(
+            high <= low,
+            "a higher key must not slow gems down: {high} vs {low}"
+        );
+        assert!(
+            (40..=250).contains(&low) && (40..=250).contains(&high),
+            "{low} {high}"
+        );
     }
 
     #[test]

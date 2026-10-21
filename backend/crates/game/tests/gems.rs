@@ -72,9 +72,7 @@ async fn stocked(
         loadout.equipment.push(worn);
         loadout.inventory.clear();
         for (cell, item, quantity) in &bag {
-            loadout
-                .inventory
-                .push(BagItem::new(*cell, item, *quantity));
+            loadout.inventory.push(BagItem::new(*cell, item, *quantity));
         }
         loadout.resources.remove("gold");
         if gold > 0 {
@@ -115,7 +113,9 @@ async fn unlocked() -> Result<(), AppError> {
 }
 
 async fn engaged() -> Result<(), AppError> {
-    Err(AppError::Conflict(engine_realm::api::ENGAGED_MESSAGE.into()))
+    Err(AppError::Conflict(
+        engine_realm::api::ENGAGED_MESSAGE.into(),
+    ))
 }
 
 fn socket_request(request: Uuid, socket: u8, gem_slot: u32) -> GemSocketRequest {
@@ -203,7 +203,10 @@ async fn socketing_consumes_one_gem_and_fills_the_socket() {
     let id = stocked(&pool, account, None, &[(3, "gem_haste_2", 2)], 0).await;
     let request = Uuid::new_v4();
     let response = socket(&pool, account, id, request, 0, 3).await.expect("ok");
-    assert_eq!((response.item.as_str(), response.gem.as_str()), (RING, "gem_haste_2"));
+    assert_eq!(
+        (response.item.as_str(), response.gem.as_str()),
+        (RING, "gem_haste_2")
+    );
     let after = loadout(&pool, account, id).await;
     assert_eq!(socketed(&after), vec!["gem_haste_2".to_owned()]);
     assert_eq!(count(&after, "gem_haste_2"), 1);
@@ -225,7 +228,9 @@ async fn an_occupied_or_missing_socket_or_a_non_gem_is_refused_and_records_nothi
     )
     .await;
     let before = loadout(&pool, account, id).await;
-    for (socket_index, cell, expect_conflict) in [(0, 0, true), (1, 0, false), (0, 1, false), (0, 8, false)] {
+    for (socket_index, cell, expect_conflict) in
+        [(0, 0, true), (1, 0, false), (0, 1, false), (0, 8, false)]
+    {
         let request = Uuid::new_v4();
         let error = socket(&pool, account, id, request, socket_index, cell)
             .await
@@ -246,7 +251,9 @@ async fn an_occupied_or_missing_socket_or_a_non_gem_is_refused_and_records_nothi
 async fn unsocketing_pays_gold_and_returns_the_gem_and_replays_identically() {
     let pool = pool().await;
     let account = new_account(&pool).await;
-    let cost = engine_realm::gems::builtin().expect("gems").unsocket_cost(3);
+    let cost = engine_realm::gems::builtin()
+        .expect("gems")
+        .unsocket_cost(3);
     let id = stocked(&pool, account, Some("gem_haste_3"), &[], cost + 9).await;
     let request = Uuid::new_v4();
     let first = unsocket(&pool, account, id, request, 0).await.expect("ok");
@@ -254,7 +261,9 @@ async fn unsocketing_pays_gold_and_returns_the_gem_and_replays_identically() {
     let after = loadout(&pool, account, id).await;
     assert!(socketed(&after).is_empty());
     assert_eq!((count(&after, "gem_haste_3"), gold(&after)), (1, 9));
-    let again = unsocket(&pool, account, id, request, 0).await.expect("replay");
+    let again = unsocket(&pool, account, id, request, 0)
+        .await
+        .expect("replay");
     assert_eq!(first, again);
     assert_eq!(loadout(&pool, account, id).await, after, "one charge");
     drop_account(&pool, account).await;
@@ -267,17 +276,22 @@ async fn unsocketing_refuses_without_gold_and_with_a_full_bag() {
     let account = new_account(&pool).await;
     let id = stocked(&pool, account, Some("gem_haste_5"), &[], 1).await;
     let request = Uuid::new_v4();
-    let error = unsocket(&pool, account, id, request, 0).await.expect_err("poor");
+    let error = unsocket(&pool, account, id, request, 0)
+        .await
+        .expect_err("poor");
     assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
     assert_eq!(socketed(&loadout(&pool, account, id).await).len(), 1);
     assert_eq!(recorded(&pool, request).await, 0);
 
-    let full: Vec<(u32, &str, u16)> = (0..u32::try_from(engine_game::character::INVENTORY_SLOTS).expect("small"))
+    let full: Vec<(u32, &str, u16)> = (0..u32::try_from(engine_game::character::INVENTORY_SLOTS)
+        .expect("small"))
         .map(|cell| (cell, "gravewardens_cowl", 1))
         .collect();
     let id = stocked(&pool, account, Some("gem_haste_1"), &full, 1000).await;
     let before = loadout(&pool, account, id).await;
-    let error = unsocket(&pool, account, id, Uuid::new_v4(), 0).await.expect_err("full");
+    let error = unsocket(&pool, account, id, Uuid::new_v4(), 0)
+        .await
+        .expect_err("full");
     assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
     assert_eq!(loadout(&pool, account, id).await, before);
     drop_account(&pool, account).await;
@@ -292,18 +306,28 @@ async fn an_upgrade_success_consumes_the_gems_and_gold_and_a_failure_keeps_one()
     let step = catalog.upgrade.steps[0].gold;
     let id = stocked(&pool, account, None, &[(0, "gem_haste_1", 5)], step * 2 + 4).await;
 
-    let win = upgrade(&pool, account, id, Uuid::new_v4(), 0, true).await.expect("rolled");
+    let win = upgrade(&pool, account, id, Uuid::new_v4(), 0, true)
+        .await
+        .expect("rolled");
     assert!(win.success);
     assert_eq!((win.consumed, win.returned, win.cost), (2, 0, step));
     let after = loadout(&pool, account, id).await;
-    assert_eq!((count(&after, "gem_haste_1"), count(&after, "gem_haste_2")), (3, 1));
+    assert_eq!(
+        (count(&after, "gem_haste_1"), count(&after, "gem_haste_2")),
+        (3, 1)
+    );
     assert_eq!(gold(&after), step + 4);
 
-    let lose = upgrade(&pool, account, id, Uuid::new_v4(), 0, false).await.expect("rolled");
+    let lose = upgrade(&pool, account, id, Uuid::new_v4(), 0, false)
+        .await
+        .expect("rolled");
     assert!(!lose.success);
     assert_eq!((lose.consumed, lose.returned), (2, 1));
     let after = loadout(&pool, account, id).await;
-    assert_eq!((count(&after, "gem_haste_1"), count(&after, "gem_haste_2")), (2, 1));
+    assert_eq!(
+        (count(&after, "gem_haste_1"), count(&after, "gem_haste_2")),
+        (2, 1)
+    );
     assert_eq!(gold(&after), 4);
     drop_account(&pool, account).await;
 }
@@ -315,13 +339,17 @@ async fn an_upgrade_without_gems_or_gold_is_refused_and_nothing_is_recorded() {
     let account = new_account(&pool).await;
     let id = stocked(&pool, account, None, &[(0, "gem_haste_1", 1)], 1000).await;
     let request = Uuid::new_v4();
-    let error = upgrade(&pool, account, id, request, 0, true).await.expect_err("one gem");
+    let error = upgrade(&pool, account, id, request, 0, true)
+        .await
+        .expect_err("one gem");
     assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
     assert_eq!(recorded(&pool, request).await, 0);
 
     let id = stocked(&pool, account, None, &[(0, "gem_haste_1", 4)], 1).await;
     let before = loadout(&pool, account, id).await;
-    let error = upgrade(&pool, account, id, Uuid::new_v4(), 0, true).await.expect_err("poor");
+    let error = upgrade(&pool, account, id, Uuid::new_v4(), 0, true)
+        .await
+        .expect_err("poor");
     assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
     assert_eq!(loadout(&pool, account, id).await, before);
     drop_account(&pool, account).await;
@@ -335,14 +363,22 @@ async fn the_same_request_id_twice_is_one_roll_one_charge_and_the_identical_resp
     let step = engine_realm::gems::builtin().expect("gems").upgrade.steps[0].gold;
     let id = stocked(&pool, account, None, &[(0, "gem_haste_1", 8)], step * 3).await;
     let request = Uuid::new_v4();
-    let first = upgrade(&pool, account, id, request, 0, false).await.expect("first");
+    let first = upgrade(&pool, account, id, request, 0, false)
+        .await
+        .expect("first");
     // A retry whose bits would have succeeded: the stored answer comes back.
-    let again = upgrade(&pool, account, id, request, 0, true).await.expect("replay");
+    let again = upgrade(&pool, account, id, request, 0, true)
+        .await
+        .expect("replay");
     assert_eq!(first, again);
     assert!(!again.success);
     let after = loadout(&pool, account, id).await;
     assert_eq!(gold(&after), step * 2, "one charge");
-    assert_eq!(count(&after, "gem_haste_1"), 7, "one failed roll: 8 - 2 + 1");
+    assert_eq!(
+        count(&after, "gem_haste_1"),
+        7,
+        "one failed roll: 8 - 2 + 1"
+    );
 
     // Two copies in flight at once: the row lock makes the second a replay.
     let racing = Uuid::new_v4();
@@ -364,7 +400,14 @@ async fn the_same_request_id_twice_is_one_roll_one_charge_and_the_identical_resp
 async fn an_engaged_character_is_refused_before_any_change() {
     let pool = pool().await;
     let account = new_account(&pool).await;
-    let id = stocked(&pool, account, Some("gem_haste_1"), &[(0, "gem_haste_1", 4)], 1000).await;
+    let id = stocked(
+        &pool,
+        account,
+        Some("gem_haste_1"),
+        &[(0, "gem_haste_1", 4)],
+        1000,
+    )
+    .await;
     let before = loadout(&pool, account, id).await;
     let request = Uuid::new_v4();
     let body = socket_request(request, 0, 0);
@@ -372,9 +415,16 @@ async fn an_engaged_character_is_refused_before_any_change() {
         .await
         .expect_err("engaged");
     assert!(matches!(error, AppError::Conflict(_)));
-    let error = store::unsocket_gem(&pool, account, id, request, &unsocket_request(request, 0), engaged)
-        .await
-        .expect_err("engaged");
+    let error = store::unsocket_gem(
+        &pool,
+        account,
+        id,
+        request,
+        &unsocket_request(request, 0),
+        engaged,
+    )
+    .await
+    .expect_err("engaged");
     assert!(matches!(error, AppError::Conflict(_)));
     let error = store::upgrade_gem(&pool, account, id, request, 0, &mut || 0, engaged)
         .await
@@ -409,7 +459,14 @@ async fn racing_upgrades_with_different_ids_never_spend_gold_or_gems_twice() {
     let account = new_account(&pool).await;
     let step = engine_realm::gems::builtin().expect("gems").upgrade.steps[0].gold;
     // Gold for one attempt only: exactly one is charged, the other refused.
-    let id = stocked(&pool, account, None, &[(0, "gem_haste_1", 6)], step + step / 2).await;
+    let id = stocked(
+        &pool,
+        account,
+        None,
+        &[(0, "gem_haste_1", 6)],
+        step + step / 2,
+    )
+    .await;
     let (a, b) = tokio::join!(
         upgrade(&pool, account, id, Uuid::new_v4(), 0, true),
         upgrade(&pool, account, id, Uuid::new_v4(), 0, true),
@@ -417,7 +474,10 @@ async fn racing_upgrades_with_different_ids_never_spend_gold_or_gems_twice() {
     assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1);
     let after = loadout(&pool, account, id).await;
     assert_eq!(gold(&after), step / 2);
-    assert_eq!((count(&after, "gem_haste_1"), count(&after, "gem_haste_2")), (4, 1));
+    assert_eq!(
+        (count(&after, "gem_haste_1"), count(&after, "gem_haste_2")),
+        (4, 1)
+    );
 
     // Gems for one socketing only (a single gem, one socket): one wins.
     let id = stocked(&pool, account, None, &[(0, "gem_haste_1", 1)], 0).await;

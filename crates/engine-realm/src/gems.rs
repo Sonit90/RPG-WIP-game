@@ -188,7 +188,10 @@ impl GemCatalog {
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
             {
-                return Err(err(format!("kind id {:?} must be lower snake_case", record.id)));
+                return Err(err(format!(
+                    "kind id {:?} must be lower snake_case",
+                    record.id
+                )));
             }
             if kinds.iter().any(|kind| kind.id == id) {
                 return Err(err(format!("kind {id:?} is listed twice")));
@@ -254,7 +257,10 @@ impl GemCatalog {
             let source = DropSource::from_key(&record.source)
                 .ok_or_else(|| err(format!("unknown drop source {:?}", record.source)))?;
             if seen.contains(&source) {
-                return Err(err(format!("drop source {:?} is listed twice", record.source)));
+                return Err(err(format!(
+                    "drop source {:?} is listed twice",
+                    record.source
+                )));
             }
             seen.push(source);
             if !(record.chance.is_finite() && record.chance > 0.0 && record.chance <= 1.0) {
@@ -384,7 +390,10 @@ impl GemCatalog {
                     .collect()
             })
             .collect();
-        if items.iter().any(|levels| levels.len() != usize::from(self.max_level)) {
+        if items
+            .iter()
+            .any(|levels| levels.len() != usize::from(self.max_level))
+        {
             return GemDrops::none();
         }
         GemDrops {
@@ -897,7 +906,11 @@ mod tests {
         }
         // Harder and dearer as the gem gets better.
         let steps = &catalog.upgrade.steps;
-        assert!(steps.windows(2).all(|p| p[0].success_chance >= p[1].success_chance));
+        assert!(
+            steps
+                .windows(2)
+                .all(|p| p[0].success_chance >= p[1].success_chance)
+        );
         assert!(steps.windows(2).all(|p| p[0].gold < p[1].gold));
         let stats: Vec<_> = catalog.kinds.iter().map(|kind| kind.stat).collect();
         for stat in [
@@ -1088,8 +1101,7 @@ mod tests {
     fn a_successful_upgrade_consumes_n_and_yields_the_next_level() {
         let mut loadout = worn(1000);
         put(&mut loadout, 2, "gem_haste_1", 5);
-        let outcome =
-            upgrade(&mut loadout, 2, &mut succeed, gems(), &economy()).expect("rolled");
+        let outcome = upgrade(&mut loadout, 2, &mut succeed, gems(), &economy()).expect("rolled");
         assert!(outcome.success);
         assert_eq!((outcome.consumed, outcome.returned), (2, 0));
         assert_eq!(outcome.result, "gem_haste_2");
@@ -1201,8 +1213,8 @@ mod tests {
         for (quality, sharpening) in [(100, 0), (60, 0), (110, 9)] {
             let mut socketed = base(quality, sharpening);
             socketed.equipment[0].gems = vec!["gem_haste_4".to_owned()];
-            let gained =
-                stats(&socketed).get(Stat::Haste) - stats(&base(quality, sharpening)).get(Stat::Haste);
+            let gained = stats(&socketed).get(Stat::Haste)
+                - stats(&base(quality, sharpening)).get(Stat::Haste);
             assert!(
                 (gained - value).abs() < 1e-4,
                 "{quality}/{sharpening}: {gained} vs {value}"
@@ -1250,11 +1262,19 @@ mod tests {
         assert_eq!(rules.items.len(), gems().kinds.len());
         assert!(rules.items.iter().all(|levels| levels.len() == 5));
         assert_eq!(rules.sources.len(), 4);
-        for source in [DropSource::Mob, DropSource::Elite, DropSource::Boss, DropSource::Chest] {
+        for source in [
+            DropSource::Mob,
+            DropSource::Elite,
+            DropSource::Boss,
+            DropSource::Chest,
+        ] {
             assert!(rules.chance_at(source, 1, 0) > 0.0);
         }
         // The key level raises the chance, up to the cap.
         assert!(rules.chance_at(DropSource::Boss, 10, 0) > rules.chance_at(DropSource::Boss, 1, 0));
-        assert!(rules.chance_at(DropSource::Mob, 1000, 0) <= 2.0 * rules.chance_at(DropSource::Mob, 1, 0) + 1e-6);
+        assert!(
+            rules.chance_at(DropSource::Mob, 1000, 0)
+                <= 2.0 * rules.chance_at(DropSource::Mob, 1, 0) + 1e-6
+        );
     }
 }

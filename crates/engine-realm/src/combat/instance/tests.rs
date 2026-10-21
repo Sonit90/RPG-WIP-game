@@ -656,7 +656,15 @@ fn gold_of(events: &[WireEvent], account: &str) -> u32 {
 fn a_cleared_run_with_loot_rules_rolls_two_items_per_player_and_pays_gold() {
     let (fight, events) = cleared_with_loot(0);
     for account in ["tank", "healer", "dps"] {
-        let items = fight.loot_items_of(account);
+        // The chest may also hold a gem; the equipment is two rolls.
+        let items: Vec<_> = fight
+            .loot_items_of(account)
+            .into_iter()
+            .filter(|item| {
+                engine_game::character::item_by_key(item.key)
+                    .is_some_and(|def| def.family != engine_game::character::ItemFamily::Gem)
+            })
+            .collect();
         assert_eq!(items.len(), 2, "{account} gets two chest items");
         for item in &items {
             assert!(

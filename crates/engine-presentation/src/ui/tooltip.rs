@@ -1858,7 +1858,7 @@ Effective Quality: 89%"
         gems[0] = gem.id.0;
         let filled = text(ItemProps::STANDARD.with_gems(gems));
         assert!(filled.starts_with("(*) Cut Emerald"), "{filled}");
-        assert!(filled.contains("+3 Haste"), "{filled}");
+        assert!(filled.contains("+0.8 Haste"), "{filled}");
     }
 
     #[test]

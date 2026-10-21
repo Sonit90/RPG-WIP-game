@@ -52,7 +52,7 @@ and unique, level weights are non-negative with a positive sum. Gem item keys us
 which `loot.json` rows may not.
 
 Shipped values (stat per level 1..5): main stat / crit / haste / versatility / spirit
-0.25, 0.5, 0.75, 1, 1.5; stamina 1, 1.5, 2.5, 3.5, 5; armor 1.5, 2.5, 4, 5.5, 8. They are small on
+0.2, 0.5, 0.8, 1, 1.5; stamina 1, 1.5, 2.5, 3.5, 5; armor 1.5, 2.5, 4, 5.5, 8. They are small on
 purpose: a full set of max gems (about 20 sockets' worth across a character's epics) must be worth
 about +9-10 % damage, not a second item slot's worth. Upgrade: 2 gems; gold 10 / 25 / 60 /
 150 at 90 / 75 / 60 / 45 %. Unsocket: 5 / 12 / 30 / 70 / 150 gold. Drops (key 1): mob 0.4 %, elite
