@@ -141,7 +141,10 @@ pub(crate) enum Place {
 }
 
 /// Finds the item at `slot` and checks it is sharpenable equipment.
-pub(crate) fn locate(loadout: &Loadout, slot: &SlotRef) -> Result<(ItemProps, Place), SharpenError> {
+pub(crate) fn locate(
+    loadout: &Loadout,
+    slot: &SlotRef,
+) -> Result<(ItemProps, Place), SharpenError> {
     let (key, props, place) = match slot {
         SlotRef::Equipment { slot } => {
             let index = loadout

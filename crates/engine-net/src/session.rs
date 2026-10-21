@@ -136,6 +136,13 @@ pub enum NetCommand {
         /// The worn slot or bag cell.
         slot: SlotRef,
     },
+    /// Pay gold to re-roll the base quality of the item in a slot; the server rolls.
+    Reforge {
+        /// Which character.
+        character_id: String,
+        /// The worn slot or bag cell.
+        slot: SlotRef,
+    },
     /// Load the economy catalog.
     FetchEconomy,
     /// Load a page of a character's run history (fetched when the screen opens or pages).
@@ -240,6 +247,8 @@ pub enum Action {
     Exchange,
     /// Sharpening an item.
     Sharpen,
+    /// Reforging an item.
+    Reforge,
     /// Loading the economy catalog.
     Economy,
     /// Loading run history or a run.
@@ -325,6 +334,8 @@ pub enum NetEvent {
     Character(Box<CharacterDetail>),
     /// A sharpening attempt was made; the character is the server's copy afterwards.
     Sharpened(Box<engine_realm::api::SharpenResponse>),
+    /// An item was reforged; the character is the server's copy afterwards.
+    Reforged(Box<engine_realm::api::ReforgeResponse>),
     /// The economy catalog.
     Economy(Box<EconomyInfo>),
     /// A page of run history; `before` echoes the request (`None`: the first page).
@@ -721,6 +732,16 @@ impl Worker {
                 match result {
                     Ok(response) => self.emit(NetEvent::Sharpened(Box::new(response))),
                     Err(error) => self.fail(Action::Sharpen, error),
+                }
+            }
+            NetCommand::Reforge { character_id, slot } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api.reforge(&token, &character_id, &slot, request_id)
+                });
+                match result {
+                    Ok(response) => self.emit(NetEvent::Reforged(Box::new(response))),
+                    Err(error) => self.fail(Action::Reforge, error),
                 }
             }
             NetCommand::DowngradeKey { character_id } => {

@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use engine_realm::api::{
     CharacterDetail, CharacterSummary, EconomyInfo, ErrorBody, ExchangeRequest, LoginRequest,
-    MoveItemRequest, QueueRequest, RefreshRequest, RegisterRequest, RequestIdBody, SalvageRequest,
-    SettingsDocument, SharpenRequest, SharpenResponse, TokenPair, UserProfile,
+    MoveItemRequest, QueueRequest, ReforgeRequest, ReforgeResponse, RefreshRequest,
+    RegisterRequest, RequestIdBody, SalvageRequest, SettingsDocument, SharpenRequest,
+    SharpenResponse, TokenPair, UserProfile,
 };
 use engine_realm::loadout::SlotRef;
 use engine_realm::{ErrorCategory, RealmError};
@@ -302,6 +303,34 @@ impl ApiClient {
             &SharpenRequest {
                 slot: slot.clone(),
                 request_id: Some(request_id.to_owned()),
+            },
+            Category::Persistence,
+        )
+    }
+
+    /// Pays gold to re-roll the base quality of the item in `slot` from the published table.
+    /// The server rolls; the new quality replaces the old one, better or worse. `request_id`
+    /// is the one id of this user action: a retry carries the same id and gets the first
+    /// answer back without a second roll or charge.
+    ///
+    /// # Errors
+    ///
+    /// The item is broken or not equipment, the gold is short, the character is engaged in a
+    /// dungeon or queue, it is not the caller's, or the server is unreachable.
+    pub fn reforge(
+        &self,
+        token: &str,
+        id: &str,
+        slot: &SlotRef,
+        request_id: &str,
+    ) -> Result<ReforgeResponse, RealmError> {
+        self.post(
+            &self.persistence,
+            &format!("/api/v1/characters/{}/reforge", path_segment(id)),
+            Some(token),
+            &ReforgeRequest {
+                slot: slot.clone(),
+                request_id: request_id.to_owned(),
             },
             Category::Persistence,
         )

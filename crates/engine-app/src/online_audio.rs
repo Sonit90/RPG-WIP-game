@@ -35,6 +35,7 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::Quit
         | A::ChangeCharacter
         | A::UnstageSalvage(_)
+        | A::ReforgeCancel
         | A::WithdrawKey
         | A::Kick(_) => SoundId::UiCancel,
         A::Login { .. }
@@ -49,6 +50,7 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::StartDungeon
         | A::Exchange(_)
         | A::Sharpen
+        | A::Reforge
         | A::SalvageTray => SoundId::UiSelect,
         A::JoinQueue
         | A::InsertKey
@@ -67,6 +69,8 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::ReturnToHub
         | A::StageSalvage(_)
         | A::WorkshopMode(_)
+        | A::ReforgeMode
+        | A::ReforgeAsk
         | A::DowngradeKey
         | A::CleanseKey => SoundId::UiClick,
     }
