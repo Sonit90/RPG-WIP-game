@@ -260,6 +260,64 @@ fn a_typed_required_completion_sets_the_block_and_one_undo_takes_it_back() {
 }
 
 #[test]
+fn the_timer_field_is_optional_clamped_undoable_and_exports() {
+    let (mut editor, mut scene) = community_editor();
+    editor.execute(Command::SetTab(Tab::Dungeon), &mut scene);
+    assert_eq!(scene.dungeon.as_ref().unwrap().timer_seconds, None);
+    let before = scene.dungeon.clone();
+    let revision = editor.history_depth();
+
+    click(&mut editor, &mut scene, |element| {
+        matches!(
+            element,
+            Element::Field {
+                field: LevelField::TimerSeconds,
+                ..
+            }
+        )
+    });
+    type_keys(
+        &mut editor,
+        &mut scene,
+        &[
+            KeyCode::Digit9,
+            KeyCode::Digit0,
+            KeyCode::Digit0,
+            KeyCode::Enter,
+        ],
+    );
+    assert_eq!(scene.dungeon.as_ref().unwrap().timer_seconds, Some(900));
+    assert_eq!(editor.history_depth().0, revision.0 + 1, "one undo step");
+    undo(&mut editor, &mut scene);
+    assert_eq!(scene.dungeon, before);
+    redo(&mut editor, &mut scene);
+    assert_eq!(scene.dungeon.as_ref().unwrap().timer_seconds, Some(900));
+
+    // Below the range is lifted to it, zero removes the clock, and the file validates.
+    assert!(community::set_field(
+        &mut scene,
+        &mut None,
+        LevelField::TimerSeconds,
+        10.0
+    ));
+    assert_eq!(scene.dungeon.as_ref().unwrap().timer_seconds, Some(300));
+    let text = community::export_text(&scene, editor.community_meta().expect("listing"));
+    assert!(text.contains("\"timer_seconds\": 300") || text.contains("\"timer_seconds\":300"));
+    assert!(
+        mapcheck::check_str(&text, &Rules::default_community())
+            .errors
+            .is_empty()
+    );
+    assert!(community::set_field(
+        &mut scene,
+        &mut None,
+        LevelField::TimerSeconds,
+        0.0
+    ));
+    assert_eq!(scene.dungeon.as_ref().unwrap().timer_seconds, None);
+}
+
+#[test]
 fn the_boss_pack_is_picked_from_the_placed_packs_or_taken_from_the_selection() {
     let (mut editor, mut scene) = community_editor();
     editor.execute(Command::SetTab(Tab::Dungeon), &mut scene);

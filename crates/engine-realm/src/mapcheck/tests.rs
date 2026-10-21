@@ -243,6 +243,41 @@ fn numeric_sanity_is_enforced() {
 }
 
 #[test]
+fn the_timer_is_optional_and_range_checked() {
+    // Missing: untimed, valid, silent.
+    assert!(
+        typed()
+            .scene
+            .dungeon
+            .expect("block")
+            .timer_seconds
+            .is_none()
+    );
+    for good in [300, 1500, 3600] {
+        let mut v = fixture();
+        v["scene"]["dungeon"]["timer_seconds"] = json!(good);
+        let report = check(&v);
+        assert!(
+            report.is_valid() && report.warnings.is_empty(),
+            "{good}: {report}"
+        );
+    }
+    for bad in [0, 1, 299, 3601, 100_000] {
+        let mut v = fixture();
+        v["scene"]["dungeon"]["timer_seconds"] = json!(bad);
+        let report = check(&v);
+        assert_error(&report, "bad_timer");
+        assert_eq!(report.errors[0].path, "scene.dungeon.timer_seconds");
+    }
+    // A negative or fractional clock is not a number of seconds at all.
+    for bad in [json!(-5), json!(12.5), json!("soon")] {
+        let mut v = fixture();
+        v["scene"]["dungeon"]["timer_seconds"] = bad;
+        assert!(!check(&v).is_valid());
+    }
+}
+
+#[test]
 fn limits_are_enforced() {
     let mut v = fixture();
     let object = v["scene"]["objects"][0].clone();

@@ -1331,6 +1331,56 @@ impl Simulation {
         })
     }
 
+    /// Keeps the Pylon Shield status in step with [`Self::is_shielded`], so the immunity is
+    /// something the party can see (aura, frame, callout, sound) and not only a refused hit.
+    ///
+    /// Applied the tick a pylon is up beside the boss, removed (and announced) the tick the
+    /// last one falls or the boss dies.
+    pub(super) fn sync_shield_status(&mut self) {
+        use crate::ability::AbilityId;
+        use crate::status::{Status, StatusEnd, StatusKind};
+        for slot in 0..self.enemies.len() {
+            let Some(entity) = self.world.id_at(slot) else {
+                continue;
+            };
+            let boss = self
+                .enemies
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|runtime| runtime.brain.kind().is_boss());
+            if !boss {
+                continue;
+            }
+            let has = self
+                .world
+                .statuses(entity)
+                .is_some_and(|statuses| statuses.has(StatusKind::Shielded));
+            let want = self.world.is_alive(entity) && self.is_shielded(entity);
+            if want && !has {
+                let duration = StatusKind::Shielded.definition().generic.duration;
+                let status = Status::new(
+                    StatusKind::Shielded,
+                    EntityId::INVALID,
+                    AbilityId::NONE,
+                    duration,
+                    0.0,
+                );
+                self.apply_status(entity, status, duration);
+            } else if !want && has {
+                if let Some(statuses) = self.world.statuses_mut(entity) {
+                    statuses.consume(StatusKind::Shielded);
+                }
+                let tick = self.tick;
+                self.events.push(CombatEvent::StatusRemoved {
+                    target: entity,
+                    status: StatusKind::Shielded,
+                    reason: StatusEnd::Cleared,
+                    tick,
+                });
+            }
+        }
+    }
+
     /// A share of `applied` damage, sent back at `source` if `target` wears a Mirror Ward.
     ///
     /// Capped at a share of the attacker's maximum health, so a big critical on a mirrored

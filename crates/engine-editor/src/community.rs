@@ -42,7 +42,7 @@ use engine_environment::scene_file::{self, SceneDocument};
 use engine_environment::spawn::SpawnPoint;
 use engine_realm::mapcheck::{
     self, ADD_COUNT_MAX, COMMUNITY_FORMAT, CommunityMap, DESCRIPTION_MAX, DIFFICULTY_RANGE, Meta,
-    NAME_MAX, Report, Rules, TAG_MAX, TAGS_MAX, TITLE_MAX, Target,
+    NAME_MAX, Report, Rules, TAG_MAX, TAGS_MAX, TIMER_RANGE, TITLE_MAX, Target,
 };
 
 use crate::commands::Command;
@@ -111,6 +111,8 @@ pub enum LevelField {
     RequiredCompletion,
     /// How many adds the boss calls.
     AddCount,
+    /// The run's clock in seconds; zero is no clock (untimed).
+    TimerSeconds,
     /// The boss gate's centre along X.
     GateX,
     /// The boss gate's centre along Y.
@@ -134,7 +136,7 @@ impl LevelField {
     #[must_use]
     pub fn decimals(self) -> usize {
         match self {
-            Self::AddCount | Self::Difficulty => 0,
+            Self::AddCount | Self::TimerSeconds | Self::Difficulty => 0,
             _ => 1,
         }
     }
@@ -145,6 +147,7 @@ impl LevelField {
         match self {
             Self::RequiredCompletion => (0.1, 10_000.0),
             Self::AddCount => (0.0, f32::from(ADD_COUNT_MAX)),
+            Self::TimerSeconds => (0.0, *TIMER_RANGE.end() as f32),
             Self::GateX | Self::GateY | Self::GateZ => (-2000.0, 2000.0),
             Self::GateWidth | Self::GateHeight | Self::GateDepth => (0.1, 200.0),
             Self::GateYaw => (-360.0, 360.0),
@@ -438,6 +441,7 @@ pub fn field_value(
     match field {
         F::RequiredCompletion => Some(dungeon.required_completion),
         F::AddCount => Some(f32::from(dungeon.add_count)),
+        F::TimerSeconds => Some(dungeon.timer_seconds.unwrap_or(0) as f32),
         F::Difficulty => None,
         _ => {
             let gate = dungeon.boss_gate?;
@@ -491,6 +495,16 @@ pub fn set_field(
             let next = value.round() as u8;
             let changed = dungeon.add_count != next;
             dungeon.add_count = next;
+            changed
+        }
+        F::TimerSeconds => {
+            // Zero is "no clock"; anything else is held to the validator's range.
+            let next = match value.round() as u32 {
+                0 => None,
+                seconds => Some(seconds.clamp(*TIMER_RANGE.start(), *TIMER_RANGE.end())),
+            };
+            let changed = dungeon.timer_seconds != next;
+            dungeon.timer_seconds = next;
             changed
         }
         F::Difficulty => false,

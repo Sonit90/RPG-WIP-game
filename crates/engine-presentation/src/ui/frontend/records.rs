@@ -25,6 +25,8 @@ const DETAIL_LINES: usize = 5;
 pub enum OutcomeTag {
     /// Completed inside the timer.
     Timed,
+    /// Completed on a map with no clock (a community map that sets none).
+    Untimed,
     /// Completed after the timer.
     Overtime,
     /// Wiped or failed.
@@ -39,6 +41,7 @@ impl OutcomeTag {
     pub fn label(self) -> &'static str {
         match self {
             Self::Timed => "TIMED",
+            Self::Untimed => "UNTIMED",
             Self::Overtime => "OVERTIME",
             Self::Failed => "FAILED",
             Self::Abandoned => "ABANDONED",
@@ -48,6 +51,7 @@ impl OutcomeTag {
     fn color(self) -> UiColor {
         match self {
             Self::Timed => GOOD,
+            Self::Untimed => DIM,
             Self::Overtime => GOLD,
             Self::Failed => BAD,
             Self::Abandoned => DIM,

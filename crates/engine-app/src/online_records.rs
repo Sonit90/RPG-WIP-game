@@ -219,7 +219,7 @@ impl Records {
             .map(|run| HistoryRow {
                 dungeon: dungeon_name(catalog, &run.dungeon_id),
                 key_level: run.key_level,
-                outcome: tag(run.outcome),
+                outcome: tag(run.outcome, run.timer_us),
                 duration: format_duration_us(run.duration_us),
                 when: format_date_utc(run.applied_at_us),
             })
@@ -267,7 +267,7 @@ impl Records {
             .map(|row| BoardRow {
                 rank: row.rank,
                 key_level: row.key_level,
-                outcome: tag(row.outcome),
+                outcome: tag(row.outcome, row.timer_us),
                 time: format_duration_us(row.duration_us),
                 party: row
                     .party
@@ -289,8 +289,11 @@ impl Records {
     }
 }
 
-fn tag(outcome: RunOutcome) -> OutcomeTag {
+/// The label a run wears. A completion with no clock (`timer_us` zero: a community map that set
+/// none) is "untimed" rather than the "timed" a clock would have earned.
+fn tag(outcome: RunOutcome, timer_us: i64) -> OutcomeTag {
     match outcome {
+        RunOutcome::Timed if timer_us <= 0 => OutcomeTag::Untimed,
         RunOutcome::Timed => OutcomeTag::Timed,
         RunOutcome::Overtime => OutcomeTag::Overtime,
         RunOutcome::Failed => OutcomeTag::Failed,
@@ -320,7 +323,7 @@ fn detail_of(run: &HistoryEntry, catalog: &Catalog) -> HistoryDetail {
             dungeon_name(catalog, &run.dungeon_id),
             run.key_level
         ),
-        outcome: tag(run.outcome),
+        outcome: tag(run.outcome, run.timer_us),
         stats: vec![
             ("Time".to_owned(), timer),
             ("Deaths".to_owned(), run.deaths.to_string()),
@@ -494,6 +497,32 @@ mod tests {
         assert_eq!(detail.party, ["Ash (Fire Mage)"]);
         records.select(9);
         assert!(records.history_card(&catalog).detail.is_none());
+    }
+
+    #[test]
+    fn a_completion_with_no_clock_is_untimed_everywhere_it_is_listed() {
+        assert_eq!(tag(RunOutcome::Timed, 0), OutcomeTag::Untimed);
+        assert_eq!(
+            tag(RunOutcome::Timed, 600 * engine_realm::SECOND),
+            OutcomeTag::Timed
+        );
+        assert_eq!(
+            tag(RunOutcome::Overtime, 600 * engine_realm::SECOND),
+            OutcomeTag::Overtime
+        );
+        assert_eq!(tag(RunOutcome::Failed, 0), OutcomeTag::Failed);
+        let catalog = catalog();
+        let mut records = Records::default();
+        records.open_board(&catalog);
+        // The page helper builds rows with no timer: those are untimed.
+        records.board_arrived(board_page(2, false));
+        let card = records.board_card(&catalog);
+        assert!(
+            card.rows
+                .iter()
+                .all(|row| row.outcome == OutcomeTag::Untimed)
+        );
+        assert_eq!(OutcomeTag::Untimed.label(), "UNTIMED");
     }
 
     fn board_page(rows: usize, has_more: bool) -> LeaderboardPage {

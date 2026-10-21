@@ -237,13 +237,13 @@ pub fn book_items() -> Vec<engine_game::character::CatalogItem> {
     let Ok(catalog) = builtin() else {
         return Vec::new();
     };
-    let item = |id: &str, name: &str, quality| CatalogItem {
+    let item = |id: &str, name: &str, quality, icon| CatalogItem {
         key: id.to_owned(),
         name: name.to_owned(),
         family: ItemFamily::Book,
         quality,
         item_level: 1,
-        icon: ItemIcon::of_family(ItemFamily::Book),
+        icon,
         stats: Vec::new(),
         active: None,
         sockets: 0,
@@ -254,10 +254,20 @@ pub fn book_items() -> Vec<engine_game::character::CatalogItem> {
     for hero in Hero::ALL {
         let books = &catalog.books[hero.index()];
         for book in &books.talent {
-            items.push(item(&book.id, &book.name, ItemQuality::Rare));
+            items.push(item(
+                &book.id,
+                &book.name,
+                ItemQuality::Rare,
+                ItemIcon::BookTalent,
+            ));
         }
         for book in &books.enhancement {
-            items.push(item(&book.id, &book.name, ItemQuality::Epic));
+            items.push(item(
+                &book.id,
+                &book.name,
+                ItemQuality::Epic,
+                ItemIcon::BookEnhancement,
+            ));
         }
     }
     items
@@ -486,7 +496,7 @@ mod tests {
 
     #[test]
     fn book_items_are_registered_books_that_never_stack() {
-        use engine_game::character::{ItemFamily, item_by_key};
+        use engine_game::character::{ItemFamily, ItemIcon, item_by_key};
         install_builtin().expect("installs");
         crate::loot::ensure_items_registered();
         for hero in Hero::ALL {
@@ -495,8 +505,28 @@ mod tests {
                 assert_eq!(def.family, ItemFamily::Book);
                 assert_eq!(def.max_stack, 1);
                 assert_eq!(def.family.slots().count(), 0);
+                // Their own pictures, never the trinket's; the two kinds differ.
+                assert!(matches!(
+                    def.icon,
+                    ItemIcon::BookTalent | ItemIcon::BookEnhancement
+                ));
             }
         }
+    }
+
+    #[test]
+    fn the_two_book_kinds_have_different_icons() {
+        let items = book_items();
+        let talent = items
+            .iter()
+            .find(|i| i.quality == engine_game::character::ItemQuality::Rare);
+        let enhancement = items
+            .iter()
+            .find(|i| i.quality == engine_game::character::ItemQuality::Epic);
+        assert_ne!(
+            talent.expect("a talent book").icon,
+            enhancement.expect("an enhancement book").icon
+        );
     }
 
     #[test]

@@ -15,6 +15,13 @@ use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
 
 use crate::game_ui::{PlateTheme, cap_centred_top, faded, plate_text_style};
 
+/// The health fill (top, bottom) of a boss held immune by its pylons: steel blue instead of
+/// the hostile red, so "hitting it does nothing" is readable before a single number is.
+pub const IMMUNE_FILL: (UiColor, UiColor) = ([0.55, 0.80, 1.0, 1.0], [0.20, 0.42, 0.80, 1.0]);
+
+/// The outline an immune boss's bar wears.
+pub const IMMUNE_OUTLINE: UiColor = [0.75, 0.92, 1.0, 1.0];
+
 /// The panel a frame sits on: rounded, near-black, bordered.
 pub fn frame_panel(list: &mut UiDrawList, rect: UiRect, theme: &PlateTheme, factor: f32) {
     let radius = (4.0 * factor).round().max(2.0);

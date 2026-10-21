@@ -177,6 +177,10 @@ fn dungeon(editor: &Editor, scene: &EnvironmentScene, column: &mut Column<'_>) {
         return;
     };
     column.fields("Required", &[(LevelField::RequiredCompletion, "%", dim)]);
+    column.fields(
+        "Timer (s, 0 = none)",
+        &[(LevelField::TimerSeconds, "s", dim)],
+    );
     column.text_line("Name", TextTarget::DungeonName);
 
     column.heading("Boss");

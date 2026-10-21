@@ -816,6 +816,16 @@ pub fn icon_for_item(icon: ItemIcon) -> UiIcon {
         ItemIcon::TrinketDispel => UiIcon::TrinketDispel,
         ItemIcon::TrinketHaste => UiIcon::TrinketHaste,
         ItemIcon::TrinketAbsorb => UiIcon::TrinketAbsorb,
+        ItemIcon::Gem => UiIcon::Gem,
+        ItemIcon::GemRuby => UiIcon::GemRuby,
+        ItemIcon::GemAmber => UiIcon::GemAmber,
+        ItemIcon::GemTopaz => UiIcon::GemTopaz,
+        ItemIcon::GemEmerald => UiIcon::GemEmerald,
+        ItemIcon::GemAmethyst => UiIcon::GemAmethyst,
+        ItemIcon::GemOnyx => UiIcon::GemOnyx,
+        ItemIcon::GemOpal => UiIcon::GemOpal,
+        ItemIcon::BookTalent => UiIcon::BookTalent,
+        ItemIcon::BookEnhancement => UiIcon::BookEnhancement,
     }
 }
 

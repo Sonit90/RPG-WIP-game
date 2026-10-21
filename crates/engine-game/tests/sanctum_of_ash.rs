@@ -337,7 +337,9 @@ fn every_new_ability_tells_the_player_what_it_is_and_what_to_do() {
 #[test]
 fn the_new_statuses_are_appended_last_and_the_curses_can_be_dispelled() {
     // Statuses travel the wire by index: the first thirty-six never move.
-    assert_eq!(STATUS_KIND_COUNT, 39);
+    assert_eq!(STATUS_KIND_COUNT, 40);
+    assert_eq!(StatusKind::Shielded.index(), 39);
+    assert!(!StatusKind::Shielded.is_purgeable() && !StatusKind::Shielded.is_dispellable());
     assert_eq!(StatusKind::Stoked.index(), 35);
     assert_eq!(StatusKind::Mirrored.index(), 36);
     assert_eq!(StatusKind::Ashen.index(), 37);
@@ -1741,4 +1743,36 @@ fn the_ember_pylon_is_never_placed_and_effects_table_covers_it() {
         EnemyAbility::AshTithe.definition().effect,
         EnemyEffect::Damage
     ));
+}
+
+#[test]
+fn the_pylon_immunity_is_a_status_that_appears_and_disappears_with_the_pylons() {
+    let (mut simulation, pontiff, _players, pylons) = pylon_fight();
+    // The tick the pylons rose, the boss was marked, and the start was announced once.
+    assert!(has_status(&simulation, pontiff, StatusKind::Shielded));
+    let events = run(&mut simulation, 60);
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            CombatEvent::StatusApplied {
+                status: StatusKind::Shielded,
+                ..
+            }
+        )),
+        "the shield is announced once, not every tick"
+    );
+    // Still held while any pylon stands.
+    for pylon in &pylons[..2] {
+        simulation.slay(*pylon);
+    }
+    run(&mut simulation, 5);
+    assert!(has_status(&simulation, pontiff, StatusKind::Shielded));
+    // The last one falls: the status goes, with an event the interface and audio read.
+    simulation.slay(pylons[2]);
+    let events = run(&mut simulation, 5);
+    assert!(!has_status(&simulation, pontiff, StatusKind::Shielded));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        CombatEvent::StatusRemoved { target, status: StatusKind::Shielded, .. } if *target == pontiff
+    )));
 }

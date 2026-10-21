@@ -702,7 +702,9 @@ pub fn push_target_frame(
             max_health: target.max_health,
             absorb: target.absorb,
             alive: target.alive,
-            fill: if hostile {
+            fill: if target.immune && target.alive {
+                super::frame_style::IMMUNE_FILL
+            } else if hostile {
                 hostile_fill(plate, fraction)
             } else {
                 friendly_fill(plate, fraction)
@@ -712,6 +714,15 @@ pub fn push_target_frame(
             phase: target.phase.map(|(phase, _)| phase),
         },
     );
+    if target.immune && target.alive {
+        let radius = (size::RADIUS * factor).round().max(2.0);
+        list.panel_stroke(
+            rect,
+            radius,
+            (2.0 * factor).max(1.5),
+            super::frame_style::IMMUNE_OUTLINE,
+        );
+    }
 }
 
 /// Draws the party: one row per member, in roster order, local player first.

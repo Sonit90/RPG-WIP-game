@@ -214,6 +214,8 @@ pub struct DungeonSettings {
     pub add_pool: Vec<String>,
     /// Whether the same monster may be chosen twice.
     pub allow_duplicate_adds: bool,
+    /// The run's clock in seconds, if the level sets one. `None` is untimed.
+    pub timer_seconds: Option<u32>,
 }
 
 impl DungeonSettings {
@@ -229,6 +231,7 @@ impl DungeonSettings {
             add_count: 0,
             add_pool: Vec::new(),
             allow_duplicate_adds: false,
+            timer_seconds: None,
         }
     }
 

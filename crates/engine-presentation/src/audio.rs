@@ -513,6 +513,24 @@ impl AudioDirector {
                 status: engine_game::status::StatusKind::Burning,
                 ..
             } => self.ignite(target, simulation, audio),
+            // The pylons' shield on a boss going up, and coming down: glass catching the light,
+            // then a struck sheet of metal.
+            CombatEvent::StatusApplied {
+                target,
+                status: engine_game::status::StatusKind::Shielded,
+                ..
+            } => {
+                let origin = self.chest_of(target, simulation);
+                self.request(SoundCue::at(shield_sound(true), origin), audio);
+            }
+            CombatEvent::StatusRemoved {
+                target,
+                status: engine_game::status::StatusKind::Shielded,
+                ..
+            } => {
+                let origin = self.chest_of(target, simulation);
+                self.request(SoundCue::at(shield_sound(false), origin), audio);
+            }
             CombatEvent::StatusApplied { .. } => {}
             CombatEvent::StatusRemoved { target, .. } => self.extinguish(target, audio),
             // The Warrior's defensive stream: a block rings, a parry strikes sparks off the
@@ -740,6 +758,11 @@ impl AudioDirector {
             audio,
         ) {
             self.enemy_casts.push(Held { key, handle });
+        }
+        // A boss mechanic announces itself over the generic wind-up, so it is heard as the
+        // thing it is (the hymn, the undertow, the conveyor) and not as one more heavy cast.
+        if let Some(sound) = mechanic_sound(ability) {
+            self.request(SoundCue::at(sound, origin), audio);
         }
     }
 
@@ -1062,6 +1085,35 @@ pub fn enemy_cast_sound(cue: EnemyCue, boss: bool) -> SoundId {
     }
 }
 
+/// The sound a boss mechanic makes when its cast begins, over the generic wind-up bed, for the
+/// mechanics the three newer dungeons introduced. Existing recipes where one fits (a calm bowl
+/// for the Hymn, a warm sweep for the Ladle, the roar of power for Overheat, the defiant swell
+/// for the Last Rite, the swelling hum for the pylon pulse) and two new ones (Undertow,
+/// Conveyor).
+#[must_use]
+pub fn mechanic_sound(ability: EnemyAbility) -> Option<SoundId> {
+    match ability {
+        EnemyAbility::DrowningHymn => Some(SoundId::Tranquility),
+        EnemyAbility::Undertow => Some(SoundId::BossUndertow),
+        EnemyAbility::MoltenLadle => Some(SoundId::SunfireCast),
+        EnemyAbility::ConveyorSurge => Some(SoundId::BossConveyor),
+        EnemyAbility::Overheat => Some(SoundId::BattleFervor),
+        EnemyAbility::AshTithe => Some(SoundId::ModifierBeamsStart),
+        EnemyAbility::LastRite => Some(SoundId::LastStand),
+        _ => None,
+    }
+}
+
+/// The sound of a boss pylon shield going up (`applied`) or coming down.
+#[must_use]
+pub fn shield_sound(applied: bool) -> SoundId {
+    if applied {
+        SoundId::SpellReflect
+    } else {
+        SoundId::ShieldBash
+    }
+}
+
 /// What a hit sounds like: physical blows thud, magic crackles, and a critical rings.
 #[must_use]
 pub fn hit_sound(school: DamageType, critical: bool, amount: f32) -> SoundId {
@@ -1307,6 +1359,125 @@ mod tests {
         );
         let almost = ItemProps::new(JACKPOT_QUALITY - 1, 0, false);
         assert_eq!(loot_sounds(ItemQuality::Epic, almost).1, None);
+    }
+
+    #[test]
+    fn each_new_boss_mechanic_has_its_own_cue_and_ordinary_attacks_have_none() {
+        let cues = [
+            (EnemyAbility::DrowningHymn, SoundId::Tranquility),
+            (EnemyAbility::Undertow, SoundId::BossUndertow),
+            (EnemyAbility::MoltenLadle, SoundId::SunfireCast),
+            (EnemyAbility::ConveyorSurge, SoundId::BossConveyor),
+            (EnemyAbility::Overheat, SoundId::BattleFervor),
+            (EnemyAbility::AshTithe, SoundId::ModifierBeamsStart),
+            (EnemyAbility::LastRite, SoundId::LastStand),
+        ];
+        let mut seen = Vec::new();
+        for (ability, sound) in cues {
+            assert_eq!(mechanic_sound(ability), Some(sound), "{ability:?}");
+            assert!(!seen.contains(&sound), "{ability:?} repeats {sound:?}");
+            seen.push(sound);
+        }
+        assert_eq!(mechanic_sound(EnemyAbility::Swing), None);
+        assert_eq!(mechanic_sound(EnemyAbility::TidalSlam), None);
+    }
+
+    /// An arena with an Ashen Pontiff in it.
+    fn pontiff_world() -> (engine_game::Simulation, EntityId) {
+        use engine_game::arena::{self, ArenaConfig};
+        let mut simulation = arena::training_arena(&ArenaConfig::default());
+        let origin = simulation.player_position();
+        let boss = simulation.spawn_enemy(
+            engine_game::enemy::EnemyKind::AshenPontiff,
+            origin + engine_core::math::Vec3::new(0.0, 0.0, -10.0),
+            0.0,
+        );
+        simulation.step_once();
+        (simulation, boss)
+    }
+
+    #[test]
+    fn starting_a_mechanic_cast_plays_its_cue_over_the_bed() {
+        let (simulation, boss) = pontiff_world();
+        for (ability, sound) in [
+            (EnemyAbility::Undertow, SoundId::BossUndertow),
+            (EnemyAbility::ConveyorSurge, SoundId::BossConveyor),
+            (EnemyAbility::LastRite, SoundId::LastStand),
+        ] {
+            let mut audio = runtime();
+            let mut director = AudioDirector::new();
+            director.observe_one(
+                &CombatEvent::CastStarted {
+                    source: boss,
+                    ability: engine_game::ability::AbilityId::from_enemy(ability),
+                    duration: 2.0,
+                    tick: 1,
+                },
+                &simulation,
+                &mut audio,
+            );
+            assert_eq!(audio.playing(sound), 1, "{ability:?}");
+        }
+    }
+
+    #[test]
+    fn the_pylon_shield_is_heard_going_up_and_coming_down() {
+        use engine_game::status::{StatusEnd, StatusKind};
+        let (simulation, boss) = pontiff_world();
+        let mut audio = runtime();
+        let mut director = AudioDirector::new();
+        director.observe_one(
+            &CombatEvent::StatusApplied {
+                source: EntityId::INVALID,
+                target: boss,
+                status: StatusKind::Shielded,
+                duration: 600.0,
+                tick: 1,
+            },
+            &simulation,
+            &mut audio,
+        );
+        assert_eq!(audio.playing(shield_sound(true)), 1);
+        assert_eq!(audio.playing(shield_sound(false)), 0);
+        director.observe_one(
+            &CombatEvent::StatusRemoved {
+                target: boss,
+                status: StatusKind::Shielded,
+                reason: StatusEnd::Cleared,
+                tick: 2,
+            },
+            &simulation,
+            &mut audio,
+        );
+        assert_eq!(audio.playing(shield_sound(false)), 1);
+        assert_ne!(shield_sound(true), shield_sound(false));
+    }
+
+    #[test]
+    fn the_new_interface_cues_are_all_on_the_interface_bus_and_play() {
+        let mut audio = runtime();
+        let mut director = AudioDirector::new();
+        for sound in [
+            SoundId::SharpenSuccess,
+            SoundId::ItemBreak,
+            SoundId::GemSocket,
+            SoundId::GemUnsocket,
+            SoundId::GemUpgrade,
+            SoundId::BookRead,
+            SoundId::BookSwitch,
+            SoundId::SetBonus,
+            SoundId::TimerWarning,
+            SoundId::RunTimed,
+            SoundId::RunOvertime,
+        ] {
+            assert_eq!(
+                sound.desc().category,
+                engine_audio::AudioCategory::Ui,
+                "{sound:?}"
+            );
+            director.play_ui(sound, &mut audio);
+            assert_eq!(audio.playing(sound), 1, "{sound:?}");
+        }
     }
 
     #[test]

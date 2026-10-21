@@ -181,6 +181,11 @@ pub enum StatusKind {
     /// making the next blows heavier. Passed to another tank, dispelled or kicked off the cast.
     /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
     Branded,
+    /// A boss held immune by the pylons it called: nothing the party does to it lands. Applied
+    /// and removed by the simulation itself (never by an ability), so the aura row, the frame
+    /// and the sound see the immunity begin and end like any other status.
+    /// **Appended last**: statuses travel the wire by their index in [`StatusKind::ALL`].
+    Shielded,
 }
 
 /// How a harmful effect is classified for dispelling.
@@ -389,7 +394,7 @@ impl GenericApplication {
 }
 
 /// How many effects exist.
-pub const STATUS_KIND_COUNT: usize = 39;
+pub const STATUS_KIND_COUNT: usize = 40;
 
 impl StatusKind {
     /// Every effect, in registry order.
@@ -433,6 +438,7 @@ impl StatusKind {
         Self::Mirrored,
         Self::Ashen,
         Self::Branded,
+        Self::Shielded,
     ];
 
     /// Its row in [`STATUS_DEFS`].
@@ -1086,6 +1092,17 @@ pub static STATUS_DEFS: [StatusDef; STATUS_KIND_COUNT] = [
         }],
         generic: GenericApplication::new(20.0, 0.0, 0.0),
         ..DEBUFF
+    },
+    StatusDef {
+        kind: StatusKind::Shielded,
+        id: "shielded",
+        overlay_name: "IMMUNE",
+        name: "Pylon Shield",
+        description: "Immune to all damage while its pylons stand. Destroy the pylons.",
+        // Held by the simulation while a pylon stands: not applied, stripped or dispelled.
+        applicable: false,
+        generic: GenericApplication::new(600.0, 0.0, 0.0),
+        ..BUFF
     },
 ];
 

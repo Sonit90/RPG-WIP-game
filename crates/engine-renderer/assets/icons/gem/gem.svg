@@ -1,0 +1,27 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="gem_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(27,30,36)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,68,80)"></stop>
+	</linearGradient>
+	<radialGradient id="gem_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(150,170,200)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(150,170,200)"></stop>
+	</radialGradient>
+	<clipPath id="gem_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#gem_tile)">
+	<path fill="url(#gem_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#gem_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(150,170,200)" d="M 166 118 L 346 118 L 420 210 L 256 430 L 92 210 Z"></path>
+	<path fill="rgb(218,225,235)" d="M 166 118 L 346 118 L 320 210 L 192 210 Z"></path>
+	<path fill="rgb(181,195,216)" d="M 166 118 L 192 210 L 92 210 Z"></path>
+	<path fill="rgb(97,110,130)" d="M 346 118 L 420 210 L 320 210 Z"></path>
+	<path fill="rgb(181,195,216)" d="M 92 210 L 192 210 L 256 430 Z"></path>
+	<path fill="rgb(150,170,200)" d="M 192 210 L 320 210 L 256 430 Z"></path>
+	<path fill="rgb(60,68,80)" d="M 320 210 L 420 210 L 256 430 Z"></path>
+	<path fill="rgb(255,255,255)" fill-opacity="0.85" d="M 214 142 L 262 142 L 244 178 L 206 178 Z"></path>
+</g>
+</svg>

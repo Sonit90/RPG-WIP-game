@@ -18,7 +18,7 @@ use engine_render_data::ui::{
     TextAlign, TextStyle, UiClip, UiColor, UiDrawList, UiIcon, UiRect, UiScale,
 };
 
-use crate::damage_numbers::{Avoidance, CombatTextKind, FloatingNumber, FloatingNumbers};
+use crate::damage_numbers::{Avoidance, Callout, CombatTextKind, FloatingNumber, FloatingNumbers};
 use crate::nameplate::{Nameplate, NameplateConfig, PlateCastState, PlateRank, project};
 use crate::snapshot::{AbilitySlotView, SlotAvailability, UiSnapshot};
 use engine_game::event::AggroChange;
@@ -1063,7 +1063,9 @@ impl GameUi {
             self.list
                 .rect(inner, faded(theme.health_dead, alpha * 0.35));
         } else if fraction > 0.0 {
-            let (top, bottom) = if fraction <= theme.low_health {
+            let (top, bottom) = if plate.immune {
+                crate::ui::frame_style::IMMUNE_FILL
+            } else if fraction <= theme.low_health {
                 (theme.health_low_top, theme.health_low_bottom)
             } else {
                 (theme.health_top, theme.health_bottom)
@@ -1087,7 +1089,9 @@ impl GameUi {
             };
             crate::ui::frame_style::push_absorb_layer(&mut self.list, inner, layers, &theme, alpha);
         }
-        let border_color = if plate.is_target {
+        let border_color = if plate.immune {
+            crate::ui::frame_style::IMMUNE_OUTLINE
+        } else if plate.is_target {
             theme.border_target
         } else {
             match plate.rank {
@@ -2984,6 +2988,8 @@ impl GameUi {
                 self.theme.aggro_gain_text
             }
             CombatTextKind::Aggro(_) => self.theme.aggro_loss_text,
+            CombatTextKind::Callout(Callout::Immune) => theme.absorbed,
+            CombatTextKind::Callout(Callout::Vulnerable) => self.theme.aggro_gain_text,
         };
         number.write_text(&mut self.title);
         // Numbers are drawn heavier than words: a digit is read by its shape at a glance, and

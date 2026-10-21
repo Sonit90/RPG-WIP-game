@@ -116,6 +116,26 @@ impl Avoidance {
     }
 }
 
+/// A word a boss mechanic puts over its unit when its state flips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Callout {
+    /// The boss became immune (its pylons stand).
+    Immune,
+    /// The boss can be hurt again (the last pylon fell).
+    Vulnerable,
+}
+
+impl Callout {
+    /// The word drawn.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Immune => "IMMUNE - break the pylons",
+            Self::Vulnerable => "VULNERABLE",
+        }
+    }
+}
+
 /// What a floating entry reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatTextKind {
@@ -131,6 +151,8 @@ pub enum CombatTextKind {
     Avoided(Avoidance),
     /// The local player gained or lost an enemy's attention, or is about to.
     Aggro(AggroChange),
+    /// A boss mechanic's state change, said to everyone.
+    Callout(Callout),
 }
 
 impl CombatTextKind {
@@ -320,6 +342,7 @@ impl FloatingNumber {
         match self.kind {
             CombatTextKind::Periodic => 46.0,
             CombatTextKind::Aggro(_) => 40.0,
+            CombatTextKind::Callout(_) => 64.0,
             CombatTextKind::Avoided(_) => 56.0,
             _ if self.critical => 58.0,
             _ => 72.0,
@@ -332,6 +355,7 @@ impl FloatingNumber {
         match self.kind {
             CombatTextKind::Periodic => 14.0,
             CombatTextKind::Avoided(_) | CombatTextKind::Aggro(_) => -18.0,
+            CombatTextKind::Callout(_) => -34.0,
             _ => 0.0,
         }
     }
@@ -341,6 +365,7 @@ impl FloatingNumber {
         let peak = match self.kind {
             CombatTextKind::Periodic => 1.08,
             CombatTextKind::Aggro(_) => 1.10,
+            CombatTextKind::Callout(_) => 1.25,
             _ if self.critical => 1.55,
             _ => 1.22,
         };
@@ -399,6 +424,7 @@ impl FloatingNumber {
             CombatTextKind::Heal => 25.0,
             CombatTextKind::Avoided(_) => 23.0,
             CombatTextKind::Aggro(_) => 20.0,
+            CombatTextKind::Callout(_) => 26.0,
         }
     }
 
@@ -426,6 +452,7 @@ impl FloatingNumber {
             }
             CombatTextKind::Avoided(avoided) => out.push_str(avoided.as_str()),
             CombatTextKind::Aggro(change) => out.push_str(aggro_words(change)),
+            CombatTextKind::Callout(callout) => out.push_str(callout.as_str()),
         }
     }
 
@@ -453,6 +480,7 @@ fn lifetime_of(kind: CombatTextKind, critical: bool) -> f32 {
     match kind {
         CombatTextKind::Periodic => 0.95,
         CombatTextKind::Aggro(_) => 1.5,
+        CombatTextKind::Callout(_) => 2.6,
         CombatTextKind::Avoided(_) => 1.1,
         CombatTextKind::Heal if critical => 1.35,
         CombatTextKind::Heal => 1.15,
@@ -729,7 +757,7 @@ impl FloatingNumbers {
             (0, 0)
         };
         let lane = match spawn.kind {
-            CombatTextKind::Aggro(_) | CombatTextKind::Avoided(_) => 0,
+            CombatTextKind::Aggro(_) | CombatTextKind::Avoided(_) | CombatTextKind::Callout(_) => 0,
             // The centre belongs to criticals: the number that matters most is where the eye
             // already is.
             _ if spawn.critical => 0,
@@ -989,6 +1017,33 @@ fn classify(
                 false,
             )
         }),
+        // A boss's immunity beginning or ending is said to the whole party, over the boss.
+        CombatEvent::StatusApplied {
+            target,
+            status: engine_game::status::StatusKind::Shielded,
+            ..
+        } => Some(spawn(
+            target,
+            EntityId::INVALID,
+            AbilityId::NONE,
+            0.0,
+            CombatTextKind::Callout(Callout::Immune),
+            false,
+            false,
+        )),
+        CombatEvent::StatusRemoved {
+            target,
+            status: engine_game::status::StatusKind::Shielded,
+            ..
+        } => Some(spawn(
+            target,
+            EntityId::INVALID,
+            AbilityId::NONE,
+            0.0,
+            CombatTextKind::Callout(Callout::Vulnerable),
+            false,
+            false,
+        )),
         _ => None,
     }
 }
@@ -1040,6 +1095,58 @@ mod tests {
         numbers.observe_combat(events, local(), CombatTextFilter::default(), now, |_| {
             Some(Vec3::ZERO)
         });
+    }
+
+    #[test]
+    fn a_boss_immunity_beginning_and_ending_is_called_out_to_everyone() {
+        use engine_game::status::{StatusEnd, StatusKind};
+        let boss = EntityId::new(7, 1);
+        let mut numbers = FloatingNumbers::new();
+        observe(
+            &mut numbers,
+            &[CombatEvent::StatusApplied {
+                source: EntityId::INVALID,
+                target: boss,
+                status: StatusKind::Shielded,
+                duration: 600.0,
+                tick: 1,
+            }],
+            0.0,
+        );
+        let mut text = String::new();
+        numbers.numbers()[0].write_text(&mut text);
+        assert!(text.starts_with("IMMUNE"), "{text}");
+        assert_eq!(
+            numbers.numbers()[0].kind,
+            CombatTextKind::Callout(Callout::Immune)
+        );
+        observe(
+            &mut numbers,
+            &[CombatEvent::StatusRemoved {
+                target: boss,
+                status: StatusKind::Shielded,
+                reason: StatusEnd::Cleared,
+                tick: 2,
+            }],
+            1.0,
+        );
+        let last = numbers.numbers().last().expect("the end is called out too");
+        last.write_text(&mut text);
+        assert_eq!(text, "VULNERABLE");
+        // Other statuses are not called out.
+        let before = numbers.numbers().len();
+        observe(
+            &mut numbers,
+            &[CombatEvent::StatusApplied {
+                source: EntityId::INVALID,
+                target: boss,
+                status: StatusKind::Stoked,
+                duration: 5.0,
+                tick: 3,
+            }],
+            2.0,
+        );
+        assert_eq!(numbers.numbers().len(), before);
     }
 
     #[test]
