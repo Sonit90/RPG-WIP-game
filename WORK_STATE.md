@@ -64,7 +64,9 @@ all clippy clean. History branch alone: 4463 / backend 120 / DB 30.
 ## Remaining P2 work (order)
 
 1. (done) Sets. 2. Gems (in flight). 4. (done) Reforge. 5. Dungeon 4 done, dungeon 5 in flight.
-3. Books (talent-point + 3×3 enhancement books per class as hidden talent nodes) — §2.8. NEXT.
+3. Books — in flight (`p2-books`, worktree `../myGame-wt-books`, migration 0014_books).
+   Gems + books may both bump loadout CURRENT_VERSION → resolve at merge.
+p2-core verified after sets+reforge: workspace 4527, embedded 331, backend 121, DB 36, clippy clean.
 6. Community publishing: Postgres tables, API, realm `community_map` table, `cm:<id>:<ver>` instances,
    editor dungeon-block inspector, client map browser, community boards — §2.10.
 7. Economy sim, power-scaling sim with gems/sets/books, audio cues, UI polish, perf check.
