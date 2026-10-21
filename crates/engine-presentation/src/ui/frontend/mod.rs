@@ -34,7 +34,8 @@ use engine_render_data::font::UiFont;
 use engine_render_data::ui::{TextAlign, TextStyle, UiColor, UiDrawList, UiRect, UiScale};
 
 pub use records::{
-    BOARD_ROWS, BoardCard, BoardRow, HISTORY_ROWS, HistoryCard, HistoryDetail, HistoryRow, OutcomeTag,
+    BOARD_ROWS, BoardCard, BoardRow, HISTORY_ROWS, HistoryCard, HistoryDetail, HistoryRow,
+    OutcomeTag,
 };
 pub use text_field::{FieldKeys, FieldOutcome, TextField};
 
@@ -298,6 +299,58 @@ pub struct SharpenCard {
     pub detail: Option<SharpenDetail>,
 }
 
+/// One band of the reforge outcome table, as the panel prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReforgeOdds {
+    /// The quality range: `100-104%`.
+    pub range: String,
+    /// The chance of landing in it: `4.0%`.
+    pub chance: String,
+}
+
+/// What reforging the selected item would cost and risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReforgeDetail {
+    /// The item's name.
+    pub name: String,
+    /// Its rank, for the name's colour.
+    pub quality: ItemQuality,
+    /// Its current state: `Base 87%  Sharpening +3%  Effective Quality 90%`.
+    pub current: String,
+    /// Why it cannot be reforged (broken, not equipment), if it cannot.
+    pub blocked: Option<String>,
+    /// The whole outcome table, lowest band first.
+    pub odds: Vec<ReforgeOdds>,
+    /// The table's mean and top chances, as one line.
+    pub expected: String,
+    /// The price, in gold.
+    pub cost: Vec<SharpenCost>,
+}
+
+/// The last reforge's result, shown until another item is picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReforgeReveal {
+    /// `Ashgrave Seal: 87% -> 62%`.
+    pub text: String,
+    /// Whether the new base quality is better (`Some(true)`), worse (`Some(false)`) or the same.
+    pub improved: Option<bool>,
+}
+
+/// The reforge half of the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReforgeCard {
+    /// The worn items, in slot order.
+    pub worn: Vec<SharpenWorn>,
+    /// The selected item, if one is.
+    pub selected: Option<SharpenTarget>,
+    /// Its price and odds.
+    pub detail: Option<ReforgeDetail>,
+    /// Whether the player pressed Reforge and is being asked to confirm.
+    pub confirming: bool,
+    /// What the last reforge did.
+    pub result: Option<ReforgeReveal>,
+}
+
 /// The salvage and exchange screen.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkshopCard {
@@ -315,6 +368,8 @@ pub struct WorkshopCard {
     pub exchanges: Vec<ExchangeRow>,
     /// The sharpen panel, while it is the one showing (instead of the tray and exchanges).
     pub sharpen: Option<SharpenCard>,
+    /// The reforge panel, while it is the one showing.
+    pub reforge: Option<ReforgeCard>,
 }
 
 /// One chest item on the completion panel.
@@ -643,6 +698,14 @@ pub enum FrontEndAction {
     SelectSharpen(SharpenTarget),
     /// Try to sharpen the selected item one level.
     Sharpen,
+    /// Show the reforge panel.
+    ReforgeMode,
+    /// The Reforge button was pressed: ask the player to confirm.
+    ReforgeAsk,
+    /// The player backed out of the reforge confirmation.
+    ReforgeCancel,
+    /// Reforge the selected item (confirmed).
+    Reforge,
     /// Lower the character's key one level (confirmed).
     DowngradeKey,
     /// Strip the character's key of its modifiers for gold (confirmed).
@@ -728,6 +791,16 @@ enum Hit {
     SharpenWorn(usize),
     /// The Sharpen button.
     SharpenGo,
+    /// The switch to the reforge panel.
+    ReforgeMode,
+    /// A worn item in the reforge row, by position.
+    ReforgeWorn(usize),
+    /// The Reforge button (asks to confirm).
+    ReforgeGo,
+    /// Confirms the reforge.
+    ReforgeConfirm,
+    /// Backs out of the reforge confirmation.
+    ReforgeCancel,
     /// The hub key panel's Downgrade button (asks to confirm).
     KeyDowngrade,
     /// The hub key panel's Cleanse button (asks to confirm).
@@ -1118,7 +1191,11 @@ impl FrontEndUi {
             Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
             Hit::ReturnToHub => actions.push(FrontEndAction::ReturnToHub),
             Hit::BagCell(index) => {
-                if view.workshop.as_ref().is_some_and(|w| w.sharpen.is_some()) {
+                if view
+                    .workshop
+                    .as_ref()
+                    .is_some_and(|w| w.sharpen.is_some() || w.reforge.is_some())
+                {
                     actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Bag(index)));
                 } else {
                     actions.push(FrontEndAction::StageSalvage(index));
@@ -1126,6 +1203,22 @@ impl FrontEndUi {
             }
             Hit::SharpenMode(on) => actions.push(FrontEndAction::WorkshopMode(on)),
             Hit::SharpenGo => actions.push(FrontEndAction::Sharpen),
+            Hit::ReforgeMode => actions.push(FrontEndAction::ReforgeMode),
+            Hit::ReforgeGo => actions.push(FrontEndAction::ReforgeAsk),
+            Hit::ReforgeConfirm => actions.push(FrontEndAction::Reforge),
+            Hit::ReforgeCancel => actions.push(FrontEndAction::ReforgeCancel),
+            Hit::ReforgeWorn(position) => {
+                if let Some(worn) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|w| w.reforge.as_ref())
+                    .and_then(|r| r.worn.get(position))
+                {
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                        worn.slot.clone(),
+                    )));
+                }
+            }
             Hit::SharpenWorn(position) => {
                 if let Some(worn) = view
                     .workshop
@@ -1337,6 +1430,7 @@ impl FrontEndUi {
                     let panel = sharpen_panel(&panels);
                     layout.add(Hit::Panel, panel);
                     layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
+                    layout.add(Hit::ReforgeMode, second_mode_button(panel, scale));
                     for row in &workshop.bag {
                         layout.add(
                             Hit::BagCell(row.index),
@@ -1356,9 +1450,42 @@ impl FrontEndUi {
                     {
                         layout.add(Hit::SharpenGo, sharpen_button(panel, scale));
                     }
+                } else if let Some(workshop) = &view.workshop
+                    && let Some(reforge) = &workshop.reforge
+                {
+                    let idle = view.busy.is_none();
+                    let panel = sharpen_panel(&panels);
+                    layout.add(Hit::Panel, panel);
+                    layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
+                    layout.add(Hit::SharpenMode(true), second_mode_button(panel, scale));
+                    for row in &workshop.bag {
+                        layout.add(
+                            Hit::BagCell(row.index),
+                            bag_cell_rect(panels.bag, row.index as usize, scale),
+                        );
+                    }
+                    for position in 0..reforge.worn.len() {
+                        layout.add(
+                            Hit::ReforgeWorn(position),
+                            sharpen_worn_rect(panel, position, scale),
+                        );
+                    }
+                    if idle
+                        && reforge.detail.as_ref().is_some_and(|d| {
+                            d.blocked.is_none() && d.cost.iter().all(|c| c.owned >= c.needed)
+                        })
+                    {
+                        if reforge.confirming {
+                            layout.add(Hit::ReforgeConfirm, sharpen_button(panel, scale));
+                            layout.add(Hit::ReforgeCancel, reforge_cancel_button(panel, scale));
+                        } else {
+                            layout.add(Hit::ReforgeGo, sharpen_button(panel, scale));
+                        }
+                    }
                 } else if let Some(workshop) = &view.workshop {
                     let idle = view.busy.is_none();
                     layout.add(Hit::SharpenMode(true), mode_button(panels.salvage, scale));
+                    layout.add(Hit::ReforgeMode, mode_button(panels.exchange, scale));
                     if idle {
                         for row in &workshop.bag {
                             if !workshop.tray.contains(&row.index) {
@@ -2561,6 +2688,28 @@ fn mode_button(panel: UiRect, scale: UiScale) -> UiRect {
     )
 }
 
+/// The second switch on a big panel's title row, left of [`mode_button`].
+fn second_mode_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let first = mode_button(panel, scale);
+    UiRect::new(
+        first.x - scale.px(150.0),
+        first.y,
+        first.width,
+        first.height,
+    )
+}
+
+/// The reforge confirmation's Cancel button, left of the (Confirm) button.
+fn reforge_cancel_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let button = sharpen_button(panel, scale);
+    UiRect::new(
+        button.x - scale.px(160.0),
+        button.y,
+        scale.px(140.0),
+        button.height,
+    )
+}
+
 /// Worn item `position` in the sharpen panel's row.
 fn sharpen_worn_rect(panel: UiRect, position: usize, scale: UiScale) -> UiRect {
     let origin = (panel.x + scale.px(20.0), panel.y + scale.px(46.0));
@@ -3732,8 +3881,11 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     let panels = workshop_panels(w, h, scale);
     let (bag, salvage, exchange) = (panels.bag, panels.salvage, panels.exchange);
     let sharpening = workshop.sharpen.is_some();
+    let reforging = workshop.reforge.is_some();
     let big = sharpen_panel(&panels);
-    let shown: Vec<(UiRect, &str)> = if sharpening {
+    let shown: Vec<(UiRect, &str)> = if reforging {
+        vec![(bag, "BAG"), (big, "REFORGE")]
+    } else if sharpening {
         vec![(bag, "BAG"), (big, "SHARPEN")]
     } else {
         vec![(bag, "BAG"), (salvage, "SALVAGE"), (exchange, "EXCHANGE")]
@@ -3755,7 +3907,8 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
     // but dimmed, so the player sees where it came from.
     for index in 0..INVENTORY_SLOTS {
         let row = find(u32::try_from(index).unwrap_or(u32::MAX));
-        let staged = !sharpening && row.is_some_and(|row| workshop.tray.contains(&row.index));
+        let staged =
+            !sharpening && !reforging && row.is_some_and(|row| workshop.tray.contains(&row.index));
         let hit = row.map(|row| Hit::BagCell(row.index));
         draw_item_cell(
             ctx,
@@ -3786,6 +3939,7 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
             )
         }
         None if workshop.bag.is_empty() => "Your bag is empty.".to_owned(),
+        None if reforging => "Click an item to reforge it.".to_owned(),
         None if sharpening => "Click an item to sharpen it.".to_owned(),
         None => "Click an item to put it in the salvage tray.".to_owned(),
     };
@@ -3800,6 +3954,10 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
 
     if let Some(sharpen) = &workshop.sharpen {
         draw_sharpen(ctx, view, sharpen, big);
+    } else if let Some(reforge) = &workshop.reforge {
+        draw_reforge(ctx, view, reforge, big);
+    }
+    if sharpening || reforging {
         let (back, _) = footer_buttons(w, h, scale);
         ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
         if let Some(busy) = &view.busy {
@@ -3819,6 +3977,13 @@ fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
         "Sharpen items",
         ButtonKind::Secondary,
         &Hit::SharpenMode(true),
+        true,
+    );
+    ctx.button(
+        mode_button(exchange, scale),
+        "Reforge items",
+        ButtonKind::Secondary,
+        &Hit::ReforgeMode,
         true,
     );
 
@@ -3918,6 +4083,13 @@ fn draw_sharpen(ctx: &mut Painter<'_>, view: &FrontEndView, sharpen: &SharpenCar
         "Salvage & Exchange",
         ButtonKind::Secondary,
         &Hit::SharpenMode(false),
+        true,
+    );
+    ctx.button(
+        second_mode_button(panel, scale),
+        "Reforge items",
+        ButtonKind::Secondary,
+        &Hit::ReforgeMode,
         true,
     );
     let selected_slot = match &sharpen.selected {
@@ -4045,6 +4217,188 @@ fn draw_sharpen(ctx: &mut Painter<'_>, view: &FrontEndView, sharpen: &SharpenCar
         &Hit::SharpenGo,
         affordable && view.busy.is_none(),
     );
+}
+
+/// The reforge panel's contents: the worn items, then the selected item's state, the whole
+/// outcome table, its mean, the price, and the button (which asks to confirm). The warning that
+/// the new roll replaces the old one is always red; the last result is shown until another
+/// item is picked.
+fn draw_reforge(ctx: &mut Painter<'_>, view: &FrontEndView, reforge: &ReforgeCard, panel: UiRect) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.button(
+        mode_button(panel, scale),
+        "Salvage & Exchange",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(false),
+        true,
+    );
+    ctx.button(
+        second_mode_button(panel, scale),
+        "Sharpen items",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(true),
+        true,
+    );
+    let selected_slot = match &reforge.selected {
+        Some(SharpenTarget::Worn(slot)) => Some(slot.as_str()),
+        _ => None,
+    };
+    for (position, worn) in reforge.worn.iter().enumerate() {
+        let row = BagRow {
+            index: 0,
+            name: String::new(),
+            quantity: 1,
+            item_level: 0,
+            icon: worn.icon,
+            quality: worn.quality,
+            yields: String::new(),
+        };
+        let rect = sharpen_worn_rect(panel, position, scale);
+        let hit = Hit::ReforgeWorn(position);
+        draw_item_cell(ctx, rect, Some(&row), false, Some(&hit));
+        if selected_slot == Some(worn.slot.as_str()) {
+            ctx.list
+                .panel_stroke(rect, 6.0 * px(1.0), 2.5 * px(1.0), SELECTED);
+        }
+    }
+    let rows = reforge.worn.len().div_ceil(INVENTORY_COLUMNS).max(1);
+    let mut y = sharpen_worn_rect(panel, 0, scale).y
+        + (sharpen_worn_rect(panel, INVENTORY_COLUMNS, scale).y
+            - sharpen_worn_rect(panel, 0, scale).y)
+            * rows as f32
+        + px(8.0);
+    let x = panel.x + px(20.0);
+    let Some(detail) = &reforge.detail else {
+        let line = match &reforge.result {
+            Some(result) => result.text.as_str(),
+            None => "Select a worn item above or an item in your bag.",
+        };
+        let color = match reforge.result.as_ref().and_then(|r| r.improved) {
+            Some(true) => GOOD,
+            Some(false) => BAD,
+            None => DIM,
+        };
+        ctx.text((x, y), line, color, UiFont::SemiBold, 16.0, TextAlign::Left);
+        return;
+    };
+    ctx.text(
+        (x, y),
+        &detail.name,
+        super::character_menu::quality_color(detail.quality),
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    y += px(26.0);
+    ctx.text(
+        (x, y),
+        &detail.current,
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    if let Some(blocked) = &detail.blocked {
+        ctx.text(
+            (x, y),
+            blocked,
+            BAD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Left,
+        );
+        return;
+    }
+    if let Some(result) = &reforge.result {
+        let color = match result.improved {
+            Some(true) => GOOD,
+            Some(false) => BAD,
+            None => TEXT,
+        };
+        ctx.text(
+            (x, y),
+            &result.text,
+            color,
+            UiFont::SemiBold,
+            16.0,
+            TextAlign::Left,
+        );
+        y += px(24.0);
+    }
+    // The whole table, in two columns: nothing hidden before the player confirms.
+    let half = detail.odds.len().div_ceil(2).max(1);
+    let column = px(190.0);
+    for (index, odds) in detail.odds.iter().enumerate() {
+        let (col, row) = (index / half, index % half);
+        let at = (x + column * col as f32, y + px(18.0) * row as f32);
+        ctx.text(
+            at,
+            &format!("{}   {}", odds.range, odds.chance),
+            TEXT,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+    }
+    y += px(18.0) * half as f32 + px(4.0);
+    ctx.text(
+        (x, y),
+        &detail.expected,
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    for cost in &detail.cost {
+        let color = if cost.owned >= cost.needed { TEXT } else { BAD };
+        ctx.text(
+            (x, y),
+            &format!("{}: {} / {}", cost.name, cost.owned, cost.needed),
+            color,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        y += px(20.0);
+    }
+    ctx.text(
+        (x, y),
+        "The new roll REPLACES the old one. It can be worse.",
+        BAD,
+        UiFont::SemiBold,
+        14.0,
+        TextAlign::Left,
+    );
+    let affordable = detail.cost.iter().all(|c| c.owned >= c.needed);
+    let idle = view.busy.is_none();
+    if reforge.confirming {
+        let needed = detail.cost.first().map_or(0, |c| c.needed);
+        ctx.button(
+            sharpen_button(panel, scale),
+            &format!("Confirm ({needed} gold)"),
+            ButtonKind::Primary,
+            &Hit::ReforgeConfirm,
+            affordable && idle,
+        );
+        ctx.button(
+            reforge_cancel_button(panel, scale),
+            "Cancel",
+            ButtonKind::Secondary,
+            &Hit::ReforgeCancel,
+            true,
+        );
+    } else {
+        ctx.button(
+            sharpen_button(panel, scale),
+            "Reforge",
+            ButtonKind::Primary,
+            &Hit::ReforgeGo,
+            affordable && idle,
+        );
+    }
 }
 
 fn ready_label(state: ReadyState) -> (&'static str, UiColor) {
@@ -5696,6 +6050,154 @@ mod tests {
         assert!(has("Sharpen").is_some());
     }
 
+    fn reforge_view(confirming: bool, affordable: bool, blocked: Option<&str>) -> FrontEndView {
+        let mut view = workshop_view(vec![]);
+        if let Some(workshop) = view.workshop.as_mut() {
+            let odds = [
+                ("50-59%", "25.0%"),
+                ("60-69%", "25.0%"),
+                ("70-79%", "22.0%"),
+                ("80-89%", "15.0%"),
+                ("90-99%", "8.0%"),
+                ("100-104%", "4.0%"),
+                ("105-109%", "0.9%"),
+                ("110%", "0.1%"),
+            ];
+            workshop.reforge = Some(ReforgeCard {
+                worn: vec![SharpenWorn {
+                    slot: "ring1".into(),
+                    icon: ItemIcon::Helm,
+                    quality: ItemQuality::Epic,
+                    level: 4,
+                    broken: false,
+                }],
+                selected: Some(SharpenTarget::Worn("ring1".into())),
+                detail: Some(ReforgeDetail {
+                    name: "Ashgrave's Seal".into(),
+                    quality: ItemQuality::Epic,
+                    current: "Base Quality 87%   Sharpening +4%   Effective Quality 91%".into(),
+                    blocked: blocked.map(str::to_owned),
+                    odds: odds
+                        .iter()
+                        .map(|(range, chance)| ReforgeOdds {
+                            range: (*range).into(),
+                            chance: (*chance).into(),
+                        })
+                        .collect(),
+                    expected: "Expected new base: 71.5%".into(),
+                    cost: vec![SharpenCost {
+                        name: "Gold".into(),
+                        needed: 140,
+                        owned: if affordable { 500 } else { 10 },
+                    }],
+                }),
+                confirming,
+                result: Some(ReforgeReveal {
+                    text: "Ashgrave's Seal: 87% -> 62%".into(),
+                    improved: Some(false),
+                }),
+            });
+        }
+        view
+    }
+
+    #[test]
+    fn the_reforge_panel_asks_to_confirm_before_it_reforges() {
+        let mut ui = FrontEndUi::new();
+        let view = reforge_view(false, true, None);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::ReforgeWorn(0)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                "ring1".into()
+            ))]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Bag(4))]
+        );
+        // The first press only asks; there is no confirm button yet.
+        assert_eq!(
+            click(&mut ui, &view, &Hit::ReforgeGo),
+            vec![FrontEndAction::ReforgeAsk]
+        );
+        assert!(rect_of(&ui, &view, &Hit::ReforgeConfirm).is_none());
+        let asking = reforge_view(true, true, None);
+        assert!(rect_of(&ui, &asking, &Hit::ReforgeGo).is_none());
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::ReforgeConfirm),
+            vec![FrontEndAction::Reforge]
+        );
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::ReforgeCancel),
+            vec![FrontEndAction::ReforgeCancel]
+        );
+        // Not affordable or blocked: nothing to press.
+        for view in [
+            reforge_view(false, false, None),
+            reforge_view(false, true, Some("A broken item cannot be reforged.")),
+        ] {
+            assert!(rect_of(&ui, &view, &Hit::ReforgeGo).is_none());
+        }
+        // The other two modes offer the way in, and the way out.
+        assert_eq!(
+            click(&mut ui, &workshop_view(vec![]), &Hit::ReforgeMode),
+            vec![FrontEndAction::ReforgeMode]
+        );
+        assert_eq!(
+            click(&mut ui, &sharpen_view(true, true, None), &Hit::ReforgeMode),
+            vec![FrontEndAction::ReforgeMode]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SharpenMode(true)),
+            vec![FrontEndAction::WorkshopMode(true)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SharpenMode(false)),
+            vec![FrontEndAction::WorkshopMode(false)]
+        );
+    }
+
+    #[test]
+    fn the_reforge_panel_draws_every_odds_row_the_price_and_a_red_warning() {
+        let view = reforge_view(true, true, None);
+        let mut list = UiDrawList::new();
+        let mut ctx = Painter {
+            list: &mut list,
+            scale: scale(),
+            hovered: None,
+            pointer: (0.0, 0.0),
+            hint: None,
+        };
+        draw_workshop(&mut ctx, &view, 1280.0, 720.0);
+        let drawn: Vec<(String, UiColor)> = list
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Label { range, color, .. } => {
+                    Some((list.text_of(*range).to_owned(), *color))
+                }
+                _ => None,
+            })
+            .collect();
+        let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
+        assert!(has("REFORGE").is_some());
+        for row in ["50-59%   25.0%", "100-104%   4.0%", "110%   0.1%"] {
+            assert!(has(row).is_some(), "{row}");
+        }
+        assert!(has("Expected new base: 71.5%").is_some());
+        assert_eq!(has("Gold: 500 / 140").map(|(_, c)| *c), Some(TEXT));
+        assert_eq!(
+            has("The new roll REPLACES the old one. It can be worse.").map(|(_, c)| *c),
+            Some(BAD)
+        );
+        assert_eq!(
+            has("Ashgrave's Seal: 87% -> 62%").map(|(_, c)| *c),
+            Some(BAD)
+        );
+        assert!(has("Confirm (140 gold)").is_some());
+        assert!(has("Cancel").is_some());
+    }
+
     fn rusty_sword(index: u32) -> BagRow {
         BagRow {
             index,
@@ -5733,6 +6235,7 @@ mod tests {
                 },
             ],
             sharpen: None,
+            reforge: None,
         });
         view
     }
@@ -5879,7 +6382,9 @@ mod tests {
                     .into_iter()
                     .map(|label| (label.to_owned(), "123,456".to_owned()))
                     .collect(),
-                party: (0..5).map(|i| format!("Hero number {i} (Fire Mage)")).collect(),
+                party: (0..5)
+                    .map(|i| format!("Hero number {i} (Fire Mage)"))
+                    .collect(),
                 modifiers: vec!["Rotating Beams +17%".into(); 8],
                 loot: vec!["Ashgraves Seal 104% +3".into(); 9],
             }),
@@ -5967,7 +6472,11 @@ mod tests {
             (Hit::BoardKind(false), FrontEndAction::BoardKind(false)),
             (Hit::BoardPage(1), FrontEndAction::BoardPage(1)),
         ] {
-            assert_eq!(press(&mut ui, &board, hit.clone()), Some(vec![action]), "{hit:?}");
+            assert_eq!(
+                press(&mut ui, &board, hit.clone()),
+                Some(vec![action]),
+                "{hit:?}"
+            );
         }
     }
 

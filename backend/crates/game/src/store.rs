@@ -5,6 +5,7 @@
 use crate::history;
 use engine_realm::api::{CharacterDetail, DungeonCompletion, DungeonResult, LootDelivery};
 use engine_realm::economy::{add_resources, debit_resources, spend_resource};
+use engine_realm::reforge::{reforge, ReforgeError, ReforgeOutcome};
 use engine_realm::sharpen::{sharpen, SharpenError, SharpenOutcome};
 use engine_realm::loadout::{
     add_stack_to_bag, add_stack_to_mail, migrate_removed_slots, starting_loadout, BagError,
@@ -666,6 +667,82 @@ pub async fn sharpen_character(
     hub.save_loadout(&changed).await?;
     hub.release().await?;
     Ok(Some(outcome))
+}
+
+/// A refused reforge as the HTTP error: the request named nothing reforgeable (400), or the
+/// item or purse is not in a state that allows it (409). The message is the sentence the
+/// player reads.
+#[must_use]
+pub fn reforge_error(error: ReforgeError) -> AppError {
+    let message = error.to_string();
+    match error {
+        ReforgeError::EmptySlot | ReforgeError::NotEquipment => AppError::BadRequest(message),
+        ReforgeError::Disabled | ReforgeError::Broken | ReforgeError::Insufficient(_) => {
+            AppError::Conflict(message)
+        }
+    }
+}
+
+/// One reforge of the item in `slot` of one of the account's characters, atomic and idempotent.
+///
+/// Inside one transaction holding the character row's lock: a replayed `request_id` returns the
+/// stored response (nothing re-rolled, nothing re-charged); otherwise `ensure_unlocked` is
+/// awaited (the engagement question; it fails the reforge while the character is queued, in a
+/// party or in a dungeon), then the gold is checked and deducted, the new base quality is
+/// rolled from `draw` and written, and the response is recorded under the request id before the
+/// commit. A refusal at any point rolls everything back, so a refused request charges nothing
+/// and can be retried. `draw` must be the server's own random source, never derived from the
+/// request. `Ok(None)` if the character is not the account's.
+///
+/// # Errors
+///
+/// The refusals of [`engine_realm::reforge::reforge`] as [`reforge_error`] maps them, the error
+/// of `ensure_unlocked`, a request id that belongs to another action, or a database failure.
+pub async fn reforge_character<Fut>(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    request_id: Uuid,
+    slot: &SlotRef,
+    draw: &mut (dyn FnMut() -> u64 + Send),
+    ensure_unlocked: impl FnOnce() -> Fut,
+) -> Result<Option<engine_realm::api::ReforgeResponse>, AppError>
+where
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    let mut hub = match HubTx::begin(pool, account_id, id, Some(request_id), "reforge").await? {
+        HubStart::Missing => return Ok(None),
+        HubStart::Replay(response) => {
+            return serde_json::from_value(response).map(Some).map_err(|_| {
+                AppError::internal("The earlier answer to that request could not be read.")
+            });
+        }
+        HubStart::Locked(hub) => hub,
+    };
+    ensure_unlocked().await?;
+    let mut changed = hub.row.loadout.0.clone();
+    let outcome: ReforgeOutcome = reforge(&mut changed, slot, draw, crate::catalog().economy())
+        .map_err(reforge_error)?;
+    hub.save_loadout(&changed).await?;
+    tracing::info!(
+        account_id = %account_id,
+        character_id = %id,
+        item = %outcome.item,
+        old_quality = outcome.old_quality,
+        new_quality = outcome.new_quality,
+        cost = outcome.cost,
+        "item reforged"
+    );
+    let response = engine_realm::api::ReforgeResponse {
+        item: outcome.item,
+        old_quality: outcome.old_quality,
+        new_quality: outcome.new_quality,
+        cost: outcome.cost,
+        gold_left: outcome.gold_left,
+        character: hub.detail().await?,
+    };
+    hub.commit(&response).await?;
+    Ok(Some(response))
 }
 
 /// Replaces a character's talents under the character's row lock. `false` if it is not the

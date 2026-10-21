@@ -333,6 +333,55 @@ impl SharpeningRule {
     }
 }
 
+/// One band of the reforge outcome table: the new base quality is uniform in `min..=max`.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct ReforgeBand {
+    /// Lowest quality of the band, per cent of the base stats.
+    pub min: u8,
+    /// Highest quality of the band.
+    pub max: u8,
+    /// The chance a reforge lands in this band, `0..=1`.
+    pub chance: f64,
+}
+
+/// What a reforge costs, in gold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub struct ReforgeCost {
+    /// Paid for any item.
+    #[serde(default)]
+    pub gold: u64,
+    /// Added per item level of the item.
+    #[serde(default)]
+    pub per_item_level: u64,
+    /// Added per sharpening level the item carries.
+    #[serde(default)]
+    pub per_sharpening_level: u64,
+}
+
+/// Which items may be reforged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub struct ReforgeEligible {
+    /// Whether a broken item may be reforged (it keeps its penalty either way).
+    #[serde(default)]
+    pub allow_broken: bool,
+}
+
+/// The reforge gamble: pay gold, re-roll an item's base quality from a published table.
+///
+/// The default (no bands) switches reforging off.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct ReforgeRule {
+    /// The price.
+    #[serde(default)]
+    pub cost: ReforgeCost,
+    /// Which items may be reforged.
+    #[serde(default)]
+    pub eligible: ReforgeEligible,
+    /// The outcome table, lowest first. Chances sum to 1.
+    #[serde(default)]
+    pub bands: Vec<ReforgeBand>,
+}
+
 /// Resources, salvage and exchanges.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Economy {
@@ -344,6 +393,9 @@ pub struct Economy {
     /// How equipment is sharpened.
     #[serde(default, alias = "enhancement")]
     pub sharpening: SharpeningRule,
+    /// The reforge gamble.
+    #[serde(default)]
+    pub reforge: ReforgeRule,
     /// Every trade on offer.
     pub exchanges: Vec<ExchangeRule>,
 }
@@ -377,6 +429,7 @@ impl Economy {
             )));
         }
         self.validate_sharpening()?;
+        self.validate_reforge()?;
         for (index, exchange) in self.exchanges.iter().enumerate() {
             if self.exchanges[..index].iter().any(|e| e.id == exchange.id) {
                 return Err(CatalogError(format!(
@@ -398,6 +451,53 @@ impl Economy {
                     exchange.id
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_reforge(&self) -> Result<(), CatalogError> {
+        let rule = &self.reforge;
+        if rule.bands.is_empty() {
+            return Ok(());
+        }
+        let bad = |what: String| Err(CatalogError(format!("reforge {what}")));
+        if rule.cost.gold == 0 {
+            return bad("must cost gold".to_owned());
+        }
+        let mut previous_max: Option<u8> = None;
+        let mut total = 0.0;
+        for band in &rule.bands {
+            if band.min > band.max {
+                return bad(format!("band {}..={} is backwards", band.min, band.max));
+            }
+            if band.min < engine_game::character::QUALITY_MIN
+                || band.max > engine_game::character::QUALITY_MAX
+            {
+                return bad(format!(
+                    "band {}..={} leaves {}..={}",
+                    band.min,
+                    band.max,
+                    engine_game::character::QUALITY_MIN,
+                    engine_game::character::QUALITY_MAX
+                ));
+            }
+            if previous_max.is_some_and(|max| band.min <= max) {
+                return bad(format!(
+                    "band {}..={} overlaps the one before it (bands run lowest first)",
+                    band.min, band.max
+                ));
+            }
+            if !(band.chance.is_finite() && band.chance > 0.0 && band.chance <= 1.0) {
+                return bad(format!(
+                    "band {}..={} has a chance outside (0, 1]",
+                    band.min, band.max
+                ));
+            }
+            previous_max = Some(band.max);
+            total += band.chance;
+        }
+        if (total - 1.0).abs() > 1e-9 {
+            return bad(format!("chances sum to {total}, not 1"));
         }
         Ok(())
     }
@@ -891,6 +991,28 @@ mod tests {
             edit("\"resource\": \"bone_shard\"", "\"resource\": \"nothing\""),
             edit("\"to\": \"steward_ember\"", "\"to\": \"nothing\""),
             edit("\"from_amount\": 20", "\"from_amount\": 0"),
+        ] {
+            assert_ne!(bad, ECONOMY_JSON);
+            assert!(Catalog::parse(CHARACTERS_JSON, DUNGEONS_JSON, &bad).is_err());
+        }
+    }
+
+    #[test]
+    fn the_reforge_table_is_read_and_checked() {
+        let catalog = Catalog::builtin().expect("the shipped catalog parses");
+        assert_eq!(catalog.economy().reforge.bands.len(), 8);
+        let edit = |from: &str, to: &str| ECONOMY_JSON.replacen(from, to, 1);
+        for bad in [
+            // Chances that do not sum to one.
+            edit("\"chance\": 0.25", "\"chance\": 0.3"),
+            // A band below, and one above, the quality range.
+            edit("\"min\": 50,", "\"min\": 40,"),
+            edit("\"max\": 110,", "\"max\": 120,"),
+            // Overlapping and backwards bands.
+            edit("\"min\": 60,", "\"min\": 59,"),
+            edit("\"min\": 50, \"max\": 59", "\"min\": 60, \"max\": 59"),
+            // A reforge that is free is not a sink.
+            edit("\"gold\": 50", "\"gold\": 0"),
         ] {
             assert_ne!(bad, ECONOMY_JSON);
             assert!(Catalog::parse(CHARACTERS_JSON, DUNGEONS_JSON, &bad).is_err());

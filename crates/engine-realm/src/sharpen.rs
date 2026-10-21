@@ -135,13 +135,16 @@ pub struct SharpenPreview {
 }
 
 /// A sharpenable item's props and where it is stored.
-enum Place {
+pub(crate) enum Place {
     Worn(usize),
     Bag(usize),
 }
 
 /// Finds the item at `slot` and checks it is sharpenable equipment.
-fn locate(loadout: &Loadout, slot: &SlotRef) -> Result<(ItemProps, Place), SharpenError> {
+pub(crate) fn locate(
+    loadout: &Loadout,
+    slot: &SlotRef,
+) -> Result<(ItemProps, Place), SharpenError> {
     let (key, props, place) = match slot {
         SlotRef::Equipment { slot } => {
             let index = loadout

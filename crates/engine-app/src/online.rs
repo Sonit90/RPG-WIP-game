@@ -64,8 +64,9 @@ use engine_presentation::ui::chat::{ChatEvent, ChatInput, ChatLineView, ChatPane
 use engine_presentation::ui::frontend::{
     AwayMember, BagRow, CharacterCard, CompletionCard, CompletionItem, DungeonCard, ExchangeRow,
     FieldKeys, FrontEndAction, FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard,
-    MemberRow, PartyCard, QueueCard, ReadyState, Screen, SharpenCard, SharpenCost, SharpenDetail,
-    SharpenTarget, SharpenWorn, StatusLevel, Toast, WorkshopCard,
+    MemberRow, PartyCard, QueueCard, ReadyState, ReforgeCard, ReforgeDetail, ReforgeOdds,
+    ReforgeReveal, Screen, SharpenCard, SharpenCost, SharpenDetail, SharpenTarget, SharpenWorn,
+    StatusLevel, Toast, WorkshopCard,
 };
 use engine_presentation::ui::modifiers::{ModifierLine, ModifierPanelView, Reveal};
 use engine_presentation::ui::recount::{RecountRow, RecountScope};
@@ -390,8 +391,14 @@ pub struct OnlineSession {
     loot_watch: Option<LootWatch>,
     /// Whether the Workshop shows the sharpen panel instead of the tray and exchanges.
     sharpen_mode: bool,
-    /// The item selected in the sharpen panel.
+    /// The item selected in the sharpen (or reforge) panel.
     sharpen_target: Option<SharpenTarget>,
+    /// Whether the Workshop shows the reforge panel.
+    reforge_mode: bool,
+    /// Whether the player pressed Reforge and is being asked to confirm.
+    reforge_confirm: bool,
+    /// What the last reforge did, shown until another item is picked.
+    reforge_result: Option<ReforgeReveal>,
     /// The History and Leaderboards pages' fetched data and selections.
     records: crate::online_records::Records,
     /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
@@ -496,6 +503,9 @@ impl OnlineSession {
             loot_watch: None,
             sharpen_mode: false,
             sharpen_target: None,
+            reforge_mode: false,
+            reforge_confirm: false,
+            reforge_result: None,
             records: crate::online_records::Records::default(),
             seen_reroll: None,
             sounds: crate::online_audio::NetSoundWatch::default(),
@@ -1204,6 +1214,45 @@ impl OnlineSession {
                 }
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
+            NetEvent::Reforged(response) => {
+                let response = *response;
+                let name = engine_game::character::item_by_key(&response.item)
+                    .map_or_else(|| response.item.clone(), |def| def.name.to_owned());
+                let improved = match response.new_quality.cmp(&response.old_quality) {
+                    std::cmp::Ordering::Greater => Some(true),
+                    std::cmp::Ordering::Less => Some(false),
+                    std::cmp::Ordering::Equal => None,
+                };
+                let text = format!(
+                    "{name}: {}% -> {}%",
+                    response.old_quality, response.new_quality
+                );
+                self.reforge_confirm = false;
+                self.reforge_result = Some(ReforgeReveal {
+                    text: text.clone(),
+                    improved,
+                });
+                // The reveal is heard: the jackpot and the 100s ring, a better roll is a
+                // lesser chime, a worse one is the error tone (the toast plays it).
+                let cue = match response.new_quality {
+                    110 => Some(engine_audio::SoundId::LootJackpot),
+                    100.. => Some(engine_audio::SoundId::LootEpic),
+                    _ if improved == Some(true) => Some(engine_audio::SoundId::LootRare),
+                    _ => None,
+                };
+                if let Some(cue) = cue {
+                    self.directives.push(Directive::PlaySound(cue));
+                }
+                self.toast(
+                    if improved == Some(false) {
+                        StatusLevel::Bad
+                    } else {
+                        StatusLevel::Good
+                    },
+                    text,
+                );
+                self.on_event(NetEvent::Character(Box::new(response.character)));
+            }
             NetEvent::Settings(document) => {
                 self.settings_version = Some(document.version);
                 if document.version > 0 && document.settings.is_object() {
@@ -1436,6 +1485,9 @@ impl OnlineSession {
                 self.salvage_tray.clear();
                 self.sharpen_mode = false;
                 self.sharpen_target = None;
+                self.reforge_mode = false;
+                self.reforge_confirm = false;
+                self.reforge_result = None;
                 // The bag as the server has it, and the catalog if it never arrived.
                 if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
                     self.client.send(NetCommand::FetchCharacter(id));
@@ -1564,6 +1616,7 @@ impl OnlineSession {
             FrontEndAction::StageSalvage(_)
             | FrontEndAction::SalvageTray
             | FrontEndAction::Sharpen
+            | FrontEndAction::Reforge
             | FrontEndAction::DowngradeKey
             | FrontEndAction::CleanseKey
                 if self.refuse_while_engaged() => {}
@@ -1591,9 +1644,43 @@ impl OnlineSession {
             }
             FrontEndAction::WorkshopMode(on) => {
                 self.sharpen_mode = on;
+                self.reforge_mode = false;
                 self.sharpen_target = None;
+                self.reforge_confirm = false;
+                self.reforge_result = None;
             }
-            FrontEndAction::SelectSharpen(target) => self.sharpen_target = Some(target),
+            FrontEndAction::ReforgeMode => {
+                self.reforge_mode = true;
+                self.sharpen_mode = false;
+                self.sharpen_target = None;
+                self.reforge_confirm = false;
+                self.reforge_result = None;
+            }
+            FrontEndAction::SelectSharpen(target) => {
+                self.sharpen_target = Some(target);
+                self.reforge_confirm = false;
+                self.reforge_result = None;
+            }
+            FrontEndAction::ReforgeAsk => self.reforge_confirm = true,
+            FrontEndAction::ReforgeCancel => self.reforge_confirm = false,
+            FrontEndAction::Reforge => {
+                // One confirmation, one attempt.
+                let confirmed = std::mem::take(&mut self.reforge_confirm);
+                let (true, Some(target), Some(character_id)) = (
+                    confirmed,
+                    self.sharpen_target.clone(),
+                    self.selected_character_summary().map(|c| c.id.clone()),
+                ) else {
+                    return;
+                };
+                let slot = match target {
+                    SharpenTarget::Worn(slot) => SlotRef::Equipment { slot },
+                    SharpenTarget::Bag(index) => SlotRef::Inventory { index },
+                };
+                self.set_busy(BusyKind::Workshop, "Reforging...");
+                // The server rolls: nothing about the outcome is decided here.
+                self.client.send(NetCommand::Reforge { character_id, slot });
+            }
             FrontEndAction::Sharpen => {
                 let (Some(target), Some(character_id)) = (
                     self.sharpen_target.clone(),
@@ -2084,7 +2171,116 @@ impl OnlineSession {
             resources: self.named_resources(&character.resources),
             exchanges,
             sharpen: self.sharpen_mode.then(|| self.sharpen_card(character)),
+            reforge: self.reforge_mode.then(|| self.reforge_card(character)),
         }
+    }
+
+    /// The reforge panel: the worn items, and the selected item's state, odds and price from the
+    /// rules the server applies (the server alone rolls).
+    fn reforge_card(&self, character: &CharacterSummary) -> ReforgeCard {
+        let Some((_, loadout)) = self.stored_loadout.as_ref() else {
+            return ReforgeCard::default();
+        };
+        let worn = loadout
+            .equipment
+            .iter()
+            .filter_map(|entry| {
+                let def = engine_game::character::item_by_key(&entry.item)?;
+                Some(SharpenWorn {
+                    slot: entry.slot.clone(),
+                    icon: def.icon,
+                    quality: def.quality,
+                    level: if entry.broken { 0 } else { entry.sharpening },
+                    broken: entry.broken,
+                })
+            })
+            .collect();
+        let detail = self
+            .sharpen_target
+            .as_ref()
+            .and_then(|target| self.reforge_detail(character, loadout, target));
+        ReforgeCard {
+            worn,
+            selected: self.sharpen_target.clone(),
+            confirming: self.reforge_confirm && detail.is_some(),
+            detail,
+            result: self.reforge_result.clone(),
+        }
+    }
+
+    fn reforge_detail(
+        &self,
+        character: &CharacterSummary,
+        loadout: &engine_realm::loadout::Loadout,
+        target: &SharpenTarget,
+    ) -> Option<ReforgeDetail> {
+        let (slot, key, props) = match target {
+            SharpenTarget::Worn(slot) => {
+                let entry = loadout.equipment.iter().find(|e| e.slot == *slot)?;
+                (
+                    SlotRef::Equipment { slot: slot.clone() },
+                    &entry.item,
+                    entry.props(),
+                )
+            }
+            SharpenTarget::Bag(index) => {
+                let entry = loadout.inventory.iter().find(|e| e.index == *index)?;
+                (
+                    SlotRef::Inventory { index: *index },
+                    &entry.item,
+                    entry.props(),
+                )
+            }
+        };
+        let def = engine_game::character::item_by_key(key)?;
+        let mut detail = ReforgeDetail {
+            name: def.name.to_owned(),
+            quality: def.quality,
+            current: format!(
+                "Base Quality {}%   Sharpening +{}%   Effective Quality {}%",
+                props.quality,
+                props.sharpening_pct().round(),
+                props.total_pct().round()
+            ),
+            blocked: None,
+            odds: Vec::new(),
+            expected: String::new(),
+            cost: Vec::new(),
+        };
+        match engine_realm::reforge::quote(loadout, &slot, self.catalog.economy()) {
+            Ok(quote) => {
+                detail.odds = quote
+                    .table
+                    .bands()
+                    .iter()
+                    .map(|band| ReforgeOdds {
+                        range: if band.min == band.max {
+                            format!("{}%", band.min)
+                        } else {
+                            format!("{}-{}%", band.min, band.max)
+                        },
+                        chance: format!("{:.1}%", band.chance * 100.0),
+                    })
+                    .collect();
+                detail.expected = format!(
+                    "Expected new base: {:.1}%   100% or better: {:.1}%   Worse than now: {:.1}%",
+                    quote.table.expected_value(),
+                    quote.table.chance_at_least(100) * 100.0,
+                    quote.table.chance_below(props.quality) * 100.0
+                );
+                detail.cost = vec![SharpenCost {
+                    name: self.resource_name(engine_realm::reforge::GOLD),
+                    needed: quote.gold,
+                    owned: character
+                        .resources
+                        .iter()
+                        .find(|(resource, _)| resource == engine_realm::reforge::GOLD)
+                        .map_or(0, |(_, amount)| *amount),
+                }];
+            }
+            Err(error) => detail.blocked = Some(error.to_string()),
+        }
+        Some(detail)
     }
 
     /// The sharpen panel: the worn items, and the selected item's price and risk from the
@@ -2478,8 +2674,7 @@ impl OnlineSession {
             hub: (screen == Screen::Hub).then(|| self.hub_card()).flatten(),
             workshop: (screen == Screen::Workshop).then(|| self.workshop_card()),
             history: (screen == Screen::History).then(|| self.records.history_card(&self.catalog)),
-            board: (screen == Screen::Leaderboards)
-                .then(|| self.records.board_card(&self.catalog)),
+            board: (screen == Screen::Leaderboards).then(|| self.records.board_card(&self.catalog)),
             completion,
             dungeons,
             selected_dungeon: self.selected_dungeon,
