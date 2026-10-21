@@ -93,8 +93,14 @@ epic chance 6 % +0.5 %/key max 20 %, set weights 24, one major set per boss tabl
 +20·sharp, Gravewarden/Tidebloom/Emberwake retuned; no monotonic violations. Eternal wall key 24
 (Warrior) / 20 (Druid, Mage). Known risks for final report: dust glut past +4, idle gold after BIS
 (~171 runs at run 900), quality 100+ lottery. Perf check (runner) in flight.
-`p2-polish` (worktree `../myGame-wt-polish`): audio audit, pylon-immunity indicator, gem/book icons,
-hub entry for community, community timer_seconds, terminology sweep.
+MERGED `p2-polish`: 13 procedural sounds (docs/audio-p2.md), StatusKind::Shielded (count 40) pylon
+immunity indicator, gem/book SVG icons, hub "Community Maps" row, community `dungeon.timer_seconds`
+300–3600 (`bad_timer`) + editor field, UNTIMED label, terminology scans. Unseen/unheard.
+Perf (RTX 5080, 1080p hidden, autocast): ashen 0.93 ms CPU p50 / 1023 FPS; drowned 1.19 / 784;
+foundry 1.22 / 695 (1% low 329); sanctum 1.16 / 833. Raw: scratchpad/perf.
+ALL P2 STREAMS MERGED. Final §46 verification agent running on main tree (only stack user) →
+docs/P2_VERIFICATION.md. Then write docs/P2_FINAL_REPORT.md (§47).
+Leftover unrelated worktree `.claude/worktrees/agent-a6dc99e9390f24845` (settings FPS limit, not in p2-core) — ask user.
 `p2-balance` (worktree `../myGame-wt-balance`): economy sim, set/druid survivability fixes, eternal wall, P2_BALANCE.md.
 `p2-editor` (worktree `../myGame-wt-editor`): dungeon-block inspector, community metadata, live mapcheck, export, template.
 p2-core verified after sets+reforge: workspace 4527, embedded 331, backend 121, DB 36, clippy clean.
