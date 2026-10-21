@@ -45,7 +45,7 @@
 
 use engine_core::math::Vec3;
 
-use crate::character::{ItemId, ItemStack, MailReason, MailSender, TakeMailError, loot_pool};
+use crate::character::{ItemId, ItemProps, ItemStack, MailReason, MailSender, TakeMailError, loot_pool};
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
 use crate::hero::Hero;
@@ -263,7 +263,7 @@ impl Simulation {
             if bonus > 0.0 && self.loot_rng.chance(bonus.min(1.0)) {
                 rolls += 1;
             }
-            let items = (0..rolls)
+            let mut items = (0..rolls)
                 .filter_map(|_| {
                     loot::roll_equipment(
                         table,
@@ -275,7 +275,17 @@ impl Simulation {
                     )
                 })
                 .map(|(item, props)| ItemStack::with_props(item, props))
-                .collect();
+                .collect::<Vec<_>>();
+            // A chest may hold a gem too; none without gem rules.
+            if let Some(gem) = loot::roll_gem(
+                rules,
+                loot::DropSource::Chest,
+                key_level,
+                self.loot_bonus_pct,
+                &mut self.loot_rng,
+            ) {
+                items.push(ItemStack::one(gem));
+            }
             shares.push((player, items));
         }
         shares
@@ -586,6 +596,20 @@ impl Simulation {
                         tick,
                     });
                 }
+                if let Some(gem) = loot::roll_gem(
+                    &rules,
+                    loot::DropSource::Boss,
+                    key_level,
+                    bonus,
+                    &mut self.loot_rng,
+                ) {
+                    self.events.push(CombatEvent::MobLoot {
+                        player,
+                        item: gem,
+                        props: ItemProps::STANDARD,
+                        tick,
+                    });
+                }
                 continue;
             }
             let source = if elite {
@@ -619,6 +643,15 @@ impl Simulation {
                     player,
                     resource: drop.resource,
                     amount: drop.amount,
+                    tick,
+                });
+            }
+            if let Some(gem) = loot::roll_gem(&rules, source, key_level, bonus, &mut self.loot_rng)
+            {
+                self.events.push(CombatEvent::MobLoot {
+                    player,
+                    item: gem,
+                    props: ItemProps::STANDARD,
                     tick,
                 });
             }

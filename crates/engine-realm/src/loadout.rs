@@ -18,8 +18,9 @@ use std::collections::BTreeMap;
 
 use engine_game::character::MailItem as SimMail;
 use engine_game::character::{
-    CharacterSheet, EquipSlot, INVENTORY_SLOTS, Inventory, ItemProps, ItemSlot, ItemStack,
-    MailReason, MailSender, MoveError, QUALITY_DEFAULT, item_by_key,
+    CharacterSheet, EquipSlot, GEM_SOCKETS_MAX, INVENTORY_SLOTS, Inventory, ItemFamily, ItemId,
+    ItemProps, ItemSlot, ItemStack, MailReason, MailSender, MoveError, QUALITY_DEFAULT, item,
+    item_by_key,
 };
 use engine_game::hero::Hero;
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,48 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// The numeric gem ids of stored gem keys, in socket order. An empty or unknown key is an
+/// empty socket.
+pub fn gem_ids_of(keys: &[String]) -> [u16; GEM_SOCKETS_MAX] {
+    let mut ids = [0; GEM_SOCKETS_MAX];
+    for (id, key) in ids.iter_mut().zip(keys) {
+        ensure_items_registered();
+        if let Some(def) = item_by_key(key).filter(|def| def.family == ItemFamily::Gem) {
+            *id = def.id.0;
+        }
+    }
+    ids
+}
+
+/// The stored keys of gem ids, trailing empty sockets trimmed (empty sockets in the middle are
+/// the empty string).
+pub fn gem_keys_of(ids: [u16; GEM_SOCKETS_MAX]) -> Vec<String> {
+    let mut keys: Vec<String> = ids
+        .into_iter()
+        .map(|id| {
+            if id == 0 {
+                String::new()
+            } else {
+                item(ItemId(id)).map_or_else(String::new, |def| def.key.to_owned())
+            }
+        })
+        .collect();
+    while keys.last().is_some_and(String::is_empty) {
+        keys.pop();
+    }
+    keys
+}
+
+/// `props` with the gems an item of `key` cannot hold removed: a forged row cannot socket an
+/// item that has no socket, nor more gems than it has.
+fn fit_sockets(key: &str, mut props: ItemProps) -> ItemProps {
+    let sockets = item_by_key(key).map_or(0, |def| usize::from(def.sockets));
+    for gem in props.gems.iter_mut().skip(sockets) {
+        *gem = 0;
+    }
+    props
+}
+
 /// One worn item, by name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EquippedItem {
@@ -64,6 +107,9 @@ pub struct EquippedItem {
     /// Whether it broke. Absent in older rows: false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub broken: bool,
+    /// The key of the gem in each socket, `""` for an empty one. Absent in older rows: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gems: Vec<String>,
 }
 
 impl EquippedItem {
@@ -82,11 +128,13 @@ impl EquippedItem {
     #[must_use]
     pub fn props(&self) -> ItemProps {
         ItemProps::new(self.quality, self.sharpening, self.broken)
+            .with_gems(gem_ids_of(&self.gems))
     }
 
     fn set_props(&mut self, props: ItemProps) {
         (self.quality, self.sharpening, self.broken) =
             (props.quality, props.sharpening, props.broken);
+        self.gems = gem_keys_of(props.gems);
     }
 }
 
@@ -112,6 +160,9 @@ pub struct BagItem {
     /// Whether it broke. Absent in older rows: false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub broken: bool,
+    /// The key of the gem in each socket, `""` for an empty one. Absent in older rows: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gems: Vec<String>,
 }
 
 impl BagItem {
@@ -131,11 +182,13 @@ impl BagItem {
     #[must_use]
     pub fn props(&self) -> ItemProps {
         ItemProps::new(self.quality, self.sharpening, self.broken)
+            .with_gems(gem_ids_of(&self.gems))
     }
 
     fn set_props(&mut self, props: ItemProps) {
         (self.quality, self.sharpening, self.broken) =
             (props.quality, props.sharpening, props.broken);
+        self.gems = gem_keys_of(props.gems);
     }
 }
 
@@ -162,6 +215,9 @@ pub struct MailItem {
     /// Whether the attachment is broken. Absent in older rows: false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub broken: bool,
+    /// The key of the gem in each of the attachment's sockets. Absent in older rows: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gems: Vec<String>,
     /// Who it is from.
     pub sender: String,
     /// The subject line.
@@ -172,6 +228,15 @@ pub struct MailItem {
     pub received_at: i64,
     /// Whether the player has opened it.
     pub read: bool,
+}
+
+impl MailItem {
+    /// The attachment's instance properties, clamped into the legal ranges.
+    #[must_use]
+    pub fn props(&self) -> ItemProps {
+        ItemProps::new(self.quality, self.sharpening, self.broken)
+            .with_gems(gem_ids_of(&self.gems))
+    }
 }
 
 fn mail_subject(item_name: &str) -> String {
@@ -205,9 +270,10 @@ pub const MAIL_SENDER_SYSTEM: &str = "System";
 /// The version [`Loadout`] is written with. Reading accepts every older one through [`migrate`].
 ///
 /// 0 and 1 are the P1 shape (rows that never said); 2 is the same shape stamped, the starting
-/// point for the field additions that follow (sharpening, gems): each bumps this and adds an
-/// arm to [`migrate`], with a test over a captured row of the version before.
-pub const CURRENT_VERSION: u32 = 2;
+/// point for the field additions that follow; 3 adds gems (`gems` on worn, carried and mailed
+/// items): each bump adds an arm to [`migrate`], with a test over a captured row of the version
+/// before.
+pub const CURRENT_VERSION: u32 = 3;
 
 /// Everything a character wears and carries, in stored form.
 ///
@@ -305,7 +371,9 @@ pub fn migrate(value: serde_json::Value) -> Result<Loadout, LoadoutError> {
     if version > u64::from(CURRENT_VERSION) {
         return Err(LoadoutError::NewerThanKnown(version));
     }
-    // 0 and 1: the P1 shape. Later versions add an arm here that lifts the one before.
+    // 0 and 1: the P1 shape. 2 differs from 3 only in lacking `gems`, which every item row
+    // defaults to none, so an old save loads with empty sockets and nothing else changes.
+    // Later versions add an arm here that lifts the one before.
     let stored: StoredLoadout =
         serde_json::from_value(value).map_err(|e| LoadoutError::Malformed(e.to_string()))?;
     Ok(Loadout {
@@ -379,6 +447,7 @@ pub fn loadout_of(sheet: &CharacterSheet) -> Loadout {
             quality: letter.props.quality,
             sharpening: letter.props.sharpening,
             broken: letter.props.broken,
+            gems: gem_keys_of(letter.props.gems),
             sender: letter.sender.name().to_owned(),
             subject: match letter.reason {
                 MailReason::SlotRemoved => removed_slot_subject(def.name),
@@ -424,7 +493,10 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
         };
         if sheet
             .equipment_mut()
-            .equip(slot, ItemStack::with_props(def.id, entry.props()))
+            .equip(
+                slot,
+                ItemStack::with_props(def.id, fit_sockets(def.key, entry.props())),
+            )
             .is_err()
         {
             log::warn!("loadout: {} does not fit {}", def.key, slot.key());
@@ -445,7 +517,7 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
         }
         let quantity = entry.quantity.clamp(1, def.max_stack.max(1));
         let mut stack = ItemStack::new(def.id, quantity);
-        stack.props = entry.props();
+        stack.props = fit_sockets(def.key, entry.props());
         inventory.put(index, Some(stack));
     }
     *sheet.inventory_mut() = inventory;
@@ -461,7 +533,7 @@ pub fn sheet_of(hero: Hero, loadout: &Loadout) -> CharacterSheet {
         sheet.mailbox_mut().restore(SimMail {
             id: letter.id,
             item: def.id,
-            props: ItemProps::new(letter.quality, letter.sharpening, letter.broken),
+            props: fit_sockets(&letter.item, letter.props()),
             sender: match letter.sender.as_str() {
                 MAIL_SENDER_SYSTEM => MailSender::System,
                 MAIL_SENDER_DUNGEON => MailSender::Dungeon,
@@ -573,6 +645,15 @@ pub fn add_stack_to_bag(
 ) -> Result<u32, BagError> {
     ensure_items_registered();
     let def = item_by_key(key).ok_or(BagError::UnknownItem)?;
+    // A stackable item joins a stack of the same item and props that has room.
+    if def.max_stack > 1
+        && let Some(entry) = loadout.inventory.iter_mut().find(|entry| {
+            entry.item == def.key && entry.props() == props && entry.quantity < def.max_stack
+        })
+    {
+        entry.quantity += 1;
+        return Ok(entry.index);
+    }
     let free = (0..INVENTORY_SLOTS)
         .filter_map(|cell| u32::try_from(cell).ok())
         .find(|cell| loadout.inventory.iter().all(|entry| entry.index != *cell))
@@ -658,6 +739,7 @@ fn push_mail(
         quality: props.quality,
         sharpening: props.sharpening,
         broken: props.broken,
+        gems: gem_keys_of(props.gems),
         sender: sender.to_owned(),
         subject,
         reason: reason.to_owned(),
@@ -727,7 +809,7 @@ pub fn take_mail(loadout: &mut Loadout, mail_id: u64) -> Result<u32, TakeMailErr
         .ok_or(TakeMailError::NotFound)?;
     let key = loadout.mail[index].item.clone();
     let letter = &loadout.mail[index];
-    let props = ItemProps::new(letter.quality, letter.sharpening, letter.broken);
+    let props = letter.props();
     match add_stack_to_bag(loadout, &key, props) {
         Ok(cell) => {
             loadout.mail.remove(index);
@@ -856,6 +938,42 @@ mod tests {
         assert_eq!(written["version"], CURRENT_VERSION);
         // And what was written reads back identical.
         assert_eq!(migrate(written).expect("current"), zero);
+    }
+
+    #[test]
+    fn a_version_two_row_loads_with_empty_sockets_and_keeps_everything() {
+        let v2 = serde_json::json!({
+            "version": 2,
+            "equipment": [{"slot": "ring1", "item": "ashgraves_seal", "quality": 104, "enhancement": 3}],
+            "inventory": [{"index": 4, "item": "gravewardens_cowl", "quantity": 1}],
+            "mail": [],
+            "resources": {"gold": 77}
+        });
+        let loadout = migrate(v2).expect("v2 reads");
+        assert_eq!(loadout.version, CURRENT_VERSION);
+        assert_eq!(loadout.equipment[0].quality, 104);
+        assert_eq!(loadout.equipment[0].sharpening, 3);
+        assert!(loadout.equipment[0].gems.is_empty());
+        assert_eq!(loadout.resources.get("gold"), Some(&77));
+        assert_eq!(loadout.inventory.len(), 1);
+        let props = loadout.equipment[0].props();
+        assert_eq!(props.gems, [0, 0]);
+    }
+
+    #[test]
+    fn socketed_gems_round_trip_through_json_and_the_sheet() {
+        let mut loadout = Loadout::default();
+        let mut ring = EquippedItem::new("ring1", "ashgraves_seal");
+        ring.gems = vec!["gem_haste_2".to_owned()];
+        loadout.equipment.push(ring);
+        let written = serde_json::to_value(&loadout).expect("serializes");
+        assert_eq!(written["equipment"][0]["gems"][0], "gem_haste_2");
+        assert_eq!(migrate(written).expect("reads"), loadout);
+        let sheet = sheet_of(Hero::Warrior, &loadout);
+        assert_eq!(loadout_of(&sheet), loadout);
+        // Without gems the key is not written at all.
+        let plain = serde_json::to_value(Loadout::default()).expect("serializes");
+        assert!(plain.to_string().find("gems").is_none());
     }
 
     #[test]

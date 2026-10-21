@@ -64,7 +64,8 @@ use engine_presentation::ui::chat::{ChatEvent, ChatInput, ChatLineView, ChatPane
 use engine_presentation::ui::frontend::{
     AwayMember, BagRow, CharacterCard, CompletionCard, CompletionItem, DungeonCard, ExchangeRow,
     FieldKeys, FrontEndAction, FrontEndUi, FrontEndView, FrontInput, HubCard, IntroCard, KeyCard,
-    MemberRow, PartyCard, QueueCard, ReadyState, ReforgeCard, ReforgeDetail, ReforgeOdds,
+    GemItemDetail, GemPickDetail, GemSocketRow, GemUpgradeView, GemsCard, MemberRow, PartyCard,
+    QueueCard, ReadyState, ReforgeCard, ReforgeDetail, ReforgeOdds,
     ReforgeReveal, Screen, SharpenCard, SharpenCost, SharpenDetail, SharpenTarget, SharpenWorn,
     StatusLevel, Toast, WorkshopCard,
 };
@@ -399,6 +400,14 @@ pub struct OnlineSession {
     reforge_confirm: bool,
     /// What the last reforge did, shown until another item is picked.
     reforge_result: Option<ReforgeReveal>,
+    /// Whether the Workshop shows the gems panel.
+    gems_mode: bool,
+    /// The bag cell of the gem picked in the gems panel.
+    gem_pick: Option<u32>,
+    /// Whether the player pressed Upgrade and is being asked to confirm.
+    gem_confirm: bool,
+    /// What the last gem action did, shown until another item is picked.
+    gem_result: Option<ReforgeReveal>,
     /// The History and Leaderboards pages' fetched data and selections.
     records: crate::online_records::Records,
     /// The latest key reroll this client has seen, as `(instance id, reroll counter)`: the
@@ -506,6 +515,10 @@ impl OnlineSession {
             reforge_mode: false,
             reforge_confirm: false,
             reforge_result: None,
+            gems_mode: false,
+            gem_pick: None,
+            gem_confirm: false,
+            gem_result: None,
             records: crate::online_records::Records::default(),
             seen_reroll: None,
             sounds: crate::online_audio::NetSoundWatch::default(),
@@ -1253,6 +1266,68 @@ impl OnlineSession {
                 );
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
+            NetEvent::GemSlotted(response) => {
+                let response = *response;
+                let name_of = |key: &str| {
+                    engine_game::character::item_by_key(key)
+                        .map_or_else(|| key.to_owned(), |def| def.name.to_owned())
+                };
+                let text = if response.cost > 0 {
+                    format!(
+                        "{} taken out of {} ({} gold)",
+                        name_of(&response.gem),
+                        name_of(&response.item),
+                        response.cost
+                    )
+                } else {
+                    format!(
+                        "{} socketed into {}",
+                        name_of(&response.gem),
+                        name_of(&response.item)
+                    )
+                };
+                self.gem_result = Some(ReforgeReveal {
+                    text: text.clone(),
+                    improved: Some(true),
+                });
+                self.toast(StatusLevel::Good, text);
+                self.on_event(NetEvent::Character(Box::new(response.character)));
+            }
+            NetEvent::GemUpgraded(response) => {
+                let response = *response;
+                let name_of = |key: &str| {
+                    engine_game::character::item_by_key(key)
+                        .map_or_else(|| key.to_owned(), |def| def.name.to_owned())
+                };
+                self.gem_confirm = false;
+                let text = if response.success {
+                    format!("Upgrade succeeded: {}", name_of(&response.result))
+                } else {
+                    format!(
+                        "Upgrade failed: {} lost, {} returned",
+                        response.consumed.saturating_sub(response.returned),
+                        response.returned
+                    )
+                };
+                self.gem_result = Some(ReforgeReveal {
+                    text: text.clone(),
+                    improved: Some(response.success),
+                });
+                if response.success {
+                    // An existing cue: the reveal of a good roll.
+                    self.directives
+                        .push(Directive::PlaySound(engine_audio::SoundId::LootRare));
+                }
+                self.toast(
+                    if response.success {
+                        StatusLevel::Good
+                    } else {
+                        StatusLevel::Bad
+                    },
+                    text,
+                );
+                self.on_event(NetEvent::Character(Box::new(response.character)));
+            }
             NetEvent::Settings(document) => {
                 self.settings_version = Some(document.version);
                 if document.version > 0 && document.settings.is_object() {
@@ -1488,6 +1563,10 @@ impl OnlineSession {
                 self.reforge_mode = false;
                 self.reforge_confirm = false;
                 self.reforge_result = None;
+                self.gems_mode = false;
+                self.gem_pick = None;
+                self.gem_confirm = false;
+                self.gem_result = None;
                 // The bag as the server has it, and the catalog if it never arrived.
                 if let Some(id) = self.selected_character_summary().map(|c| c.id.clone()) {
                     self.client.send(NetCommand::FetchCharacter(id));
@@ -1617,6 +1696,9 @@ impl OnlineSession {
             | FrontEndAction::SalvageTray
             | FrontEndAction::Sharpen
             | FrontEndAction::Reforge
+            | FrontEndAction::SocketGem(_)
+            | FrontEndAction::UnsocketGem(_)
+            | FrontEndAction::GemUpgrade
             | FrontEndAction::DowngradeKey
             | FrontEndAction::CleanseKey
                 if self.refuse_while_engaged() => {}
@@ -1645,11 +1727,88 @@ impl OnlineSession {
             FrontEndAction::WorkshopMode(on) => {
                 self.sharpen_mode = on;
                 self.reforge_mode = false;
+                self.leave_gems();
                 self.sharpen_target = None;
                 self.reforge_confirm = false;
                 self.reforge_result = None;
             }
+            FrontEndAction::GemsMode => {
+                self.leave_gems();
+                self.gems_mode = true;
+                self.sharpen_mode = false;
+                self.reforge_mode = false;
+                self.reforge_confirm = false;
+                self.reforge_result = None;
+                self.sharpen_target = None;
+            }
+            FrontEndAction::GemsPick(index) => {
+                let is_gem = self.stored_loadout.as_ref().is_some_and(|(_, loadout)| {
+                    loadout
+                        .inventory
+                        .iter()
+                        .find(|entry| entry.index == index)
+                        .and_then(|entry| engine_game::character::item_by_key(&entry.item))
+                        .is_some_and(|def| def.family == engine_game::character::ItemFamily::Gem)
+                });
+                self.gem_confirm = false;
+                self.gem_result = None;
+                if is_gem {
+                    self.gem_pick = Some(index);
+                } else {
+                    self.sharpen_target = Some(SharpenTarget::Bag(index));
+                }
+            }
+            FrontEndAction::GemUpgradeAsk => self.gem_confirm = true,
+            FrontEndAction::GemUpgradeCancel => self.gem_confirm = false,
+            FrontEndAction::SocketGem(socket) => {
+                let (Some(item_slot), Some(gem_slot), Some(character_id)) = (
+                    self.sharpen_target.clone().map(slot_of),
+                    self.gem_pick,
+                    self.selected_character_summary().map(|c| c.id.clone()),
+                ) else {
+                    return;
+                };
+                self.set_busy(BusyKind::Workshop, "Socketing...");
+                self.client.send(NetCommand::SocketGem {
+                    character_id,
+                    item_slot,
+                    socket,
+                    gem_slot,
+                });
+            }
+            FrontEndAction::UnsocketGem(socket) => {
+                let (Some(item_slot), Some(character_id)) = (
+                    self.sharpen_target.clone().map(slot_of),
+                    self.selected_character_summary().map(|c| c.id.clone()),
+                ) else {
+                    return;
+                };
+                self.set_busy(BusyKind::Workshop, "Taking the gem out...");
+                self.client.send(NetCommand::UnsocketGem {
+                    character_id,
+                    item_slot,
+                    socket,
+                });
+            }
+            FrontEndAction::GemUpgrade => {
+                // One confirmation, one attempt.
+                let confirmed = std::mem::take(&mut self.gem_confirm);
+                let (true, Some(gem_slot), Some(character_id)) = (
+                    confirmed,
+                    self.gem_pick,
+                    self.selected_character_summary().map(|c| c.id.clone()),
+                ) else {
+                    return;
+                };
+                self.set_busy(BusyKind::Workshop, "Upgrading...");
+                // The server rolls: nothing about the outcome is decided here.
+                self.client.send(NetCommand::UpgradeGem {
+                    character_id,
+                    gem_slot,
+                });
+            }
             FrontEndAction::ReforgeMode => {
+                self.leave_gems();
                 self.reforge_mode = true;
                 self.sharpen_mode = false;
                 self.sharpen_target = None;
@@ -2172,6 +2331,140 @@ impl OnlineSession {
             exchanges,
             sharpen: self.sharpen_mode.then(|| self.sharpen_card(character)),
             reforge: self.reforge_mode.then(|| self.reforge_card(character)),
+            gems: self.gems_mode.then(|| self.gems_card(character)),
+        }
+    }
+
+    /// Leaves the gems panel: nothing picked, nothing to confirm, nothing to show.
+    fn leave_gems(&mut self) {
+        self.gems_mode = false;
+        self.gem_pick = None;
+        self.gem_confirm = false;
+        self.gem_result = None;
+    }
+
+    /// The gems panel: the worn items, the selected item's sockets, and the picked gem's
+    /// upgrade, from the rules the server applies (the server alone rolls).
+    fn gems_card(&self, character: &CharacterSummary) -> GemsCard {
+        let (Some((_, loadout)), Some(catalog)) = (
+            self.stored_loadout.as_ref(),
+            engine_realm::gems::builtin(),
+        ) else {
+            return GemsCard::default();
+        };
+        let gold = engine_realm::gems::GOLD;
+        let owned = character
+            .resources
+            .iter()
+            .find(|(resource, _)| resource == gold)
+            .map_or(0, |(_, amount)| *amount);
+        let gold_name = self.resource_name(gold);
+        let worn = loadout
+            .equipment
+            .iter()
+            .filter_map(|entry| {
+                let def = engine_game::character::item_by_key(&entry.item)?;
+                Some(SharpenWorn {
+                    slot: entry.slot.clone(),
+                    icon: def.icon,
+                    quality: def.quality,
+                    level: if entry.broken { 0 } else { entry.sharpening },
+                    broken: entry.broken,
+                })
+            })
+            .collect();
+        let gem_line = |key: &str| -> Option<(String, ItemQuality)> {
+            let (kind, level) = catalog.parse_key(key)?;
+            let def = engine_game::character::item_by_key(key)?;
+            let stat = kind.stat.key().replace('_', " ");
+            Some((
+                format!(
+                    "{}  +{} {}",
+                    catalog.display_name(kind, level),
+                    catalog.value(kind, level),
+                    title_case(&stat)
+                ),
+                def.quality,
+            ))
+        };
+        // The picked gem, if its cell still holds one.
+        let picked = self
+            .gem_pick
+            .and_then(|cell| loadout.inventory.iter().find(|entry| entry.index == cell))
+            .filter(|entry| catalog.parse_key(&entry.item).is_some());
+        let pick = picked.and_then(|entry| {
+            let (name, quality) = gem_line(&entry.item)?;
+            let (kind, level) = catalog.parse_key(&entry.item)?;
+            let upgrade = catalog.step(level).map(|step| GemUpgradeView {
+                consume: catalog.upgrade.consume,
+                result: catalog.display_name(kind, level + 1),
+                chance: format!("{:.0}%", step.success_chance * 100.0),
+                on_fail: match catalog.upgrade.on_fail {
+                    engine_realm::gems::OnFail::KeepOne => {
+                        "On failure one gem is returned and the rest are lost.".to_owned()
+                    }
+                },
+                cost: SharpenCost {
+                    name: gold_name.clone(),
+                    needed: step.gold,
+                    owned,
+                },
+                enough_gems: entry.quantity >= catalog.upgrade.consume,
+            });
+            Some(GemPickDetail {
+                name,
+                quality,
+                quantity: entry.quantity,
+                upgrade,
+            })
+        });
+        // The selected item and its sockets.
+        let item = self.sharpen_target.as_ref().and_then(|target| {
+            let (key, gems) = match target {
+                SharpenTarget::Worn(slot) => {
+                    let entry = loadout.equipment.iter().find(|e| e.slot == *slot)?;
+                    (&entry.item, &entry.gems)
+                }
+                SharpenTarget::Bag(index) => {
+                    let entry = loadout.inventory.iter().find(|e| e.index == *index)?;
+                    (&entry.item, &entry.gems)
+                }
+            };
+            let def = engine_game::character::item_by_key(key)?;
+            let sockets = (0..usize::from(def.sockets))
+                .map(|socket| {
+                    let stored = gems.get(socket).filter(|gem| !gem.is_empty());
+                    let line = stored.and_then(|gem| gem_line(gem));
+                    let unsocket = stored.and_then(|gem| {
+                        let (_, level) = catalog.parse_key(gem)?;
+                        Some(SharpenCost {
+                            name: gold_name.clone(),
+                            needed: catalog.unsocket_cost(level),
+                            owned,
+                        })
+                    });
+                    GemSocketRow {
+                        quality: line.as_ref().map_or(ItemQuality::Common, |(_, q)| *q),
+                        filled: line.map(|(text, _)| text),
+                        unsocket,
+                        can_socket: stored.is_none() && pick.is_some(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            Some(GemItemDetail {
+                name: def.name.to_owned(),
+                quality: def.quality,
+                blocked: sockets.is_empty().then(|| "This item has no sockets.".to_owned()),
+                sockets,
+            })
+        });
+        GemsCard {
+            worn,
+            selected: self.sharpen_target.clone(),
+            item,
+            pick,
+            confirming: self.gem_confirm && picked.is_some(),
+            result: self.gem_result.clone(),
         }
     }
 
@@ -3723,6 +4016,27 @@ fn unix_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// The stored address of a panel selection.
+fn slot_of(target: SharpenTarget) -> SlotRef {
+    match target {
+        SharpenTarget::Worn(slot) => SlotRef::Equipment { slot },
+        SharpenTarget::Bag(index) => SlotRef::Inventory { index },
+    }
+}
+
+/// `critical strike` as `Critical Strike`.
+fn title_case(text: &str) -> String {
+    text.split(' ')
+        .map(|word| {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

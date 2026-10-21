@@ -34,7 +34,7 @@ use engine_game::character::{
 use engine_game::enemy::EnemyKind;
 use engine_game::loot::{
     BossTable, CurrencyRules, DropSource, EpicRules, GoldRules, LootRules, LootTable, MobLootRules,
-    QualityBucket, QualityRules, SharpeningDrops, WeightedItem,
+    GemDrops, QualityBucket, QualityRules, SharpeningDrops, WeightedItem,
 };
 use engine_game::sharpen_drops::{SharpenCurve, validate_weights};
 use engine_game::trinket::{TrinketActive, TrinketEffect};
@@ -69,6 +69,9 @@ pub struct LootItem {
     /// The id of the equipment set (`sets.json`) this item is a piece of, if any.
     #[serde(default)]
     pub set: Option<String>,
+    /// How many gem sockets it has, `0..=2`. Absent: none.
+    #[serde(default)]
+    pub sockets: u8,
 }
 
 /// A trinket's active as written: `{ "effect": "group_absorb", "cooldown_s": 120, ... }`.
@@ -333,6 +336,19 @@ impl LootCatalog {
                     row.id
                 )));
             }
+            if row.id.starts_with("gem_") {
+                return Err(err(format!(
+                    "item {:?} uses the gem key prefix, which belongs to gems.json",
+                    row.id
+                )));
+            }
+            if usize::from(row.sockets) > engine_game::character::GEM_SOCKETS_MAX {
+                return Err(err(format!(
+                    "item {:?} has more than {} sockets",
+                    row.id,
+                    engine_game::character::GEM_SOCKETS_MAX
+                )));
+            }
             if ItemFamily::from_key(&row.slot).is_none() {
                 return Err(err(format!(
                     "item {:?} has unknown slot {:?}",
@@ -533,6 +549,8 @@ impl LootCatalog {
                         .collect(),
                     active: row.active.as_ref().and_then(LootActive::parsed),
                     set: row.set.clone(),
+                    sockets: row.sockets,
+                    gem_level: 0,
                 })
             })
             .collect()
@@ -541,7 +559,12 @@ impl LootCatalog {
     /// Registers the items with `engine-game` (idempotent; the first registration in the
     /// process wins).
     pub fn register_items(&self) {
-        register_catalog_items(self.items_for_registration());
+        // The gems follow the dungeon items, so their ids are positions after the file's own.
+        let mut items = self.items_for_registration();
+        if let Some(gems) = crate::gems::builtin() {
+            items.extend(gems.items_for_registration());
+        }
+        register_catalog_items(items);
         // The interface marks highly sharpened copies from the same number the file states.
         engine_game::character::set_sharpen_highlight_from(self.sharpening_rules().highlight_from);
         // The sets name these items, so they travel together: whoever can resolve an item key
@@ -627,6 +650,7 @@ impl LootCatalog {
                 boss_amount: self.gold.boss_amount,
             },
             sharpening: self.sharpening_rules(),
+            gems: crate::gems::builtin().map_or_else(GemDrops::none, |gems| gems.drop_rules()),
         })
     }
 }

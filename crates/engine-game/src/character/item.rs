@@ -202,10 +202,13 @@ pub enum ItemFamily {
     Ring,
     /// A trinket. Either trinket slot takes one.
     Trinket,
+    /// A gem: socketed into a piece of equipment, worn in no slot. Not in [`ItemFamily::ALL`],
+    /// which lists the families that have a slot.
+    Gem,
 }
 
 impl ItemFamily {
-    /// Every family, in slot order.
+    /// Every family that is worn, in slot order. Excludes [`ItemFamily::Gem`].
     pub const ALL: [Self; 11] = [
         Self::Head,
         Self::Shoulder,
@@ -251,6 +254,7 @@ impl ItemFamily {
             Self::Necklace => "NECK",
             Self::Ring => "FINGER",
             Self::Trinket => "TRINKET",
+            Self::Gem => "GEM",
         }
     }
 }
@@ -410,7 +414,8 @@ impl ItemIcon {
             ItemFamily::Wrist => Self::Bracers,
             ItemFamily::Necklace => Self::Amulet,
             ItemFamily::Ring => Self::Ring,
-            ItemFamily::Trinket => Self::Trinket,
+            // No picture of its own yet: a gem borrows the trinket's.
+            ItemFamily::Trinket | ItemFamily::Gem => Self::Trinket,
         }
     }
 }
@@ -471,6 +476,12 @@ pub struct ItemDef {
     /// that is part of no set. Set bonuses are not scaled by quality or enhancement, so this is
     /// identity only.
     pub set: Option<&'static str>,
+    /// How many gems it can hold, `0..=`[`GEM_SOCKETS_MAX`]. Zero for anything that is not
+    /// equipment with sockets.
+    pub sockets: u8,
+    /// For a [`ItemFamily::Gem`], its level (`1..=max`); zero for everything else. The stat it
+    /// grants when socketed is the row's own `stats`.
+    pub gem_level: u8,
 }
 
 impl ItemDef {
@@ -522,6 +533,8 @@ const fn white(
         max_stack: 1,
         active: None,
         set: None,
+        sockets: 0,
+        gem_level: 0,
     }
 }
 
@@ -629,6 +642,8 @@ pub const ITEMS: [ItemDef; 12] = [
         max_stack: 1,
         active: None,
         set: None,
+        sockets: 0,
+        gem_level: 0,
     },
 ];
 
@@ -714,6 +729,12 @@ pub fn sharpen_highlight_from() -> u8 {
     SHARPEN_HIGHLIGHT_FROM.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The most gems one piece of equipment can hold.
+pub const GEM_SOCKETS_MAX: usize = 2;
+
+/// How many gems fit in one inventory cell.
+pub const GEM_STACK_MAX: u16 = 99;
+
 /// What makes one copy of an item different from another.
 ///
 /// **Naming.** The mechanic is *sharpening* (P1 called it enhancement). Persisted and wire names
@@ -727,9 +748,14 @@ pub fn sharpen_highlight_from() -> u8 {
 /// sharpening add; the broken penalty is the only multiplicative factor and replaces the
 /// sharpening (a broken item has none).
 ///
-/// `Copy` and three bytes of payload, so it rides inside every [`ItemStack`] for free. The
-/// default is the legacy item: quality 100, not sharpened, not broken, which is exactly the
-/// item's base stats - so every item that predates this type is unchanged by it.
+/// **Gems.** `gems` holds the [`ItemId`] numbers of the gems socketed in each of the item's
+/// sockets, zero for an empty one. A socketed gem's stat is added to the wearer unscaled: not by
+/// quality, not by sharpening (see [`ItemProps::gem_stats`]). The numeric ids are runtime
+/// positions; persistence stores the gems' keys.
+///
+/// `Copy` and a handful of bytes of payload, so it rides inside every [`ItemStack`] for free. The
+/// default is the legacy item: quality 100, not sharpened, not broken, no gems, which is exactly
+/// the item's base stats - so every item that predates this type is unchanged by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ItemProps {
     /// Rolled quality, `QUALITY_MIN..=QUALITY_MAX` per cent of the base stats.
@@ -738,6 +764,8 @@ pub struct ItemProps {
     pub sharpening: u8,
     /// Whether a failed sharpening broke it.
     pub broken: bool,
+    /// The gem in each socket (an [`ItemId`] number), zero for an empty socket.
+    pub gems: [u16; GEM_SOCKETS_MAX],
 }
 
 impl Default for ItemProps {
@@ -752,6 +780,7 @@ impl ItemProps {
         quality: QUALITY_DEFAULT,
         sharpening: 0,
         broken: false,
+        gems: [0; GEM_SOCKETS_MAX],
     };
 
     /// Props from stored or rolled numbers, clamped into the legal ranges: a forged row can
@@ -766,7 +795,36 @@ impl ItemProps {
                 sharpening.min(SHARPENING_CEILING)
             },
             broken,
+            gems: [0; GEM_SOCKETS_MAX],
         }
+    }
+
+    /// These props with `gems` in the sockets.
+    #[must_use]
+    pub fn with_gems(mut self, gems: [u16; GEM_SOCKETS_MAX]) -> Self {
+        self.gems = gems;
+        self
+    }
+
+    /// The socketed gems' rows, in socket order. Empty sockets and ids this build does not know
+    /// are skipped.
+    pub fn socketed(self) -> impl Iterator<Item = &'static ItemDef> {
+        self.gems
+            .into_iter()
+            .filter(|id| *id != 0)
+            .filter_map(|id| item(ItemId(id)))
+            .filter(|def| def.family == ItemFamily::Gem)
+    }
+
+    /// What the socketed gems grant, **unscaled**: a gem is worth its level whatever the piece's
+    /// quality or sharpening. Added to the wearer by [`super::CharacterSheet::gear_stats`].
+    #[must_use]
+    pub fn gem_stats(self) -> StatBlock {
+        let mut total = StatBlock::zero();
+        for def in self.socketed() {
+            total.add_block(&def.stats);
+        }
+        total
     }
 
     /// Props of a freshly rolled item: this quality, nothing else.
@@ -1021,6 +1079,8 @@ static LOOT: LazyLock<Vec<ItemDef>> = LazyLock::new(|| {
                     max_stack: 1,
                     active: None,
                     set: None,
+                    sockets: 0,
+                    gem_level: 0,
                 });
                 pair_index += 1;
             }
@@ -1067,6 +1127,10 @@ pub struct CatalogItem {
     pub active: Option<TrinketActive>,
     /// The id of the equipment set it belongs to, if any (`sets.json`).
     pub set: Option<String>,
+    /// How many gem sockets it has (equipment), `0..=`[`GEM_SOCKETS_MAX`].
+    pub sockets: u8,
+    /// A gem's level; zero for anything else.
+    pub gem_level: u8,
 }
 
 /// The registered catalog rows, in registration order. Set once.
@@ -1105,12 +1169,18 @@ pub fn register_catalog_items(items: Vec<CatalogItem>) -> bool {
                     item_level: row.item_level,
                     icon: row.icon,
                     stats,
-                    max_stack: 1,
+                    max_stack: if row.family == ItemFamily::Gem {
+                        GEM_STACK_MAX
+                    } else {
+                        1
+                    },
                     active: row.active,
                     set: row
                         .set
                         .as_deref()
                         .map(|id| &*Box::leak(id.to_owned().into_boxed_str())),
+                    sockets: row.sockets.min(GEM_SOCKETS_MAX as u8),
+                    gem_level: row.gem_level,
                 }
             })
             .collect()

@@ -50,6 +50,8 @@ fn register() {
         stats: vec![(Stat::Stamina, 5.0)],
         active,
         set: None,
+        sockets: 0,
+        gem_level: 0,
     };
     register_catalog_items(vec![
         row(

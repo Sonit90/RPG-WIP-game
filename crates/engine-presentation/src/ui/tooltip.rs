@@ -89,6 +89,9 @@ pub enum SectionKind {
     SetPiece,
     /// Set bonus tiers: the active ones (green) then the ones still to earn (muted).
     SetBonus,
+    /// An item's gem sockets: a hollow marker for an empty one, the gem and its stat for a
+    /// filled one.
+    Sockets,
 }
 
 impl SectionKind {
@@ -103,7 +106,8 @@ impl SectionKind {
             | Self::Quality
             | Self::SetName
             | Self::SetPiece
-            | Self::SetBonus => None,
+            | Self::SetBonus
+            | Self::Sockets => None,
             Self::Numbers => Some("WHAT IT DOES FOR YOU"),
             Self::Comparison => Some("COMPARED TO EQUIPPED"),
             Self::Resource => Some("RESOURCE"),
@@ -138,7 +142,8 @@ impl SectionKind {
             | Self::Quality
             | Self::SetName
             | Self::SetPiece
-            | Self::SetBonus => tokens::TOOLTIP_META,
+            | Self::SetBonus
+            | Self::Sockets => tokens::TOOLTIP_META,
             _ => tokens::TOOLTIP_BODY,
         }
     }
@@ -1063,8 +1068,20 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
         super::map_style::push_title_case(&mut stats.text, stat.display_for(hero));
     }
 
+    // Gem sockets: a hollow marker when empty, the gem and its stat when filled. A gem itself
+    // is not equipment: it says where it goes instead.
+    let is_gem = def.family == engine_game::character::ItemFamily::Gem;
+    if is_gem {
+        let note = model.section(SectionKind::Description);
+        note.color = color::TEXT_SECONDARY;
+        note.text
+            .push_str("Socket it into equipment, or combine two into a better one, at the Workshop.");
+    } else {
+        write_socket_lines(model, def.sockets, stack.props, hero);
+    }
+
     // This copy's quality: what it rolled, what sharpening added, what it is worth in all.
-    if !granted.is_empty() {
+    if !granted.is_empty() && !is_gem {
         write_quality_lines(model, stack.props);
     }
 
@@ -1084,7 +1101,7 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
             swapped(&context.total, &StatBlock::zero(), &mine),
         ),
     };
-    if !granted.is_empty() {
+    if !granted.is_empty() && !is_gem {
         let numbers = model.section(SectionKind::Numbers);
         numbers.color = color::TEXT_SECONDARY;
         for stat in Stat::ALL {
@@ -1119,7 +1136,8 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
     }
 
     // Against what it would replace.
-    if !matches!(context.place, ItemPlace::Equipped(_))
+    if !is_gem
+        && !matches!(context.place, ItemPlace::Equipped(_))
         && let Some(worn_stack) = context.replaces
         && let Some(worn) = worn_stack.def()
     {
@@ -1146,6 +1164,7 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
 
     model.footer.push_str(match context.place {
         ItemPlace::Equipped(_) => "Right-click to unequip - drag to move",
+        ItemPlace::Bag if is_gem => "Drag to move - socket it at the Workshop",
         ItemPlace::Bag => "Right-click to equip - drag to move",
         ItemPlace::Loose => "Added to your bag",
         ItemPlace::Mailed => "Sent to your mail",
@@ -1282,6 +1301,40 @@ fn fill_set(model: &mut TooltipModel, set: &SetDef, hero: Hero, context: &ItemCo
 
 /// Writes the quality sections of an item copy: `Base Quality: 106%`, `Sharpening: +7%`,
 /// `Effective Quality: 113%`, and for a broken one a red line saying so.
+/// The item's sockets, one line each: `( ) Empty socket`, or `(*) Perfect Ruby +6 Main Stat`.
+/// Nothing for an item with none.
+fn write_socket_lines(model: &mut TooltipModel, sockets: u8, props: ItemProps, hero: Hero) {
+    if sockets == 0 {
+        return;
+    }
+    let section = model.section(SectionKind::Sockets);
+    section.color = color::TEXT_SECONDARY;
+    for socket in 0..usize::from(sockets) {
+        if socket > 0 {
+            section.text.push('\n');
+        }
+        let gem = props
+            .gems
+            .get(socket)
+            .filter(|id| **id != 0)
+            .and_then(|id| engine_game::character::item(engine_game::character::ItemId(*id)))
+            .filter(|def| def.family == engine_game::character::ItemFamily::Gem);
+        match gem {
+            Some(gem) => {
+                section.text.push_str("(*) ");
+                super::map_style::push_title_case(&mut section.text, gem.name);
+                for (stat, value) in gem.stats.entries() {
+                    section.text.push(' ');
+                    write_signed(&mut section.text, value);
+                    section.text.push(' ');
+                    super::map_style::push_title_case(&mut section.text, stat.display_for(hero));
+                }
+            }
+            None => section.text.push_str("( ) Empty socket"),
+        }
+    }
+}
+
 fn write_quality_lines(model: &mut TooltipModel, props: ItemProps) {
     let section = model.section(SectionKind::Quality);
     section.color = color::TEXT_SECONDARY;
@@ -1786,6 +1839,40 @@ Effective Quality: 89%"
     }
 
     /// An epic from the registered catalog items, if the catalog registered any.
+    #[test]
+    fn sockets_show_a_hollow_marker_when_empty_and_the_gem_with_its_stat_when_filled() {
+        use engine_game::character::{ItemProps, ItemStack};
+        let epic = engine_realm_epic();
+        assert!(epic.sockets > 0, "the sample epic has a socket");
+        let gem = engine_game::character::item_by_key("gem_haste_3").expect("a gem");
+        let text = |props: ItemProps| {
+            let stack = ItemStack::with_props(epic.id, props);
+            let model = tooltip_of(stack);
+            model
+                .find(SectionKind::Sockets)
+                .map(|section| section.text.clone())
+                .unwrap_or_default()
+        };
+        assert!(text(ItemProps::STANDARD).starts_with("( ) Empty socket"));
+        let mut gems = [0; engine_game::character::GEM_SOCKETS_MAX];
+        gems[0] = gem.id.0;
+        let filled = text(ItemProps::STANDARD.with_gems(gems));
+        assert!(filled.starts_with("(*) Cut Emerald"), "{filled}");
+        assert!(filled.contains("+0.8 Haste"), "{filled}");
+    }
+
+    #[test]
+    fn a_gem_item_says_where_it_goes_and_prints_no_quality_lines() {
+        use engine_game::character::ItemStack;
+        engine_realm::loot::ensure_items_registered();
+        let gem = engine_game::character::item_by_key("gem_haste_3").expect("a gem");
+        let model = tooltip_of(ItemStack::one(gem.id));
+        assert!(model.find(SectionKind::Stats).is_some());
+        assert!(model.find(SectionKind::Quality).is_none());
+        assert!(model.find(SectionKind::Sockets).is_none());
+        assert!(model.footer.contains("Workshop"));
+    }
+
     fn engine_realm_epic() -> &'static engine_game::character::ItemDef {
         engine_realm::loot::ensure_items_registered();
         engine_game::character::catalog_items()
