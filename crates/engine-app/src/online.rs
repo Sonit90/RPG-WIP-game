@@ -427,6 +427,8 @@ pub struct OnlineSession {
     seen_reroll: Option<(u64, u32)>,
     /// What the realm's state changing is worth in sound.
     sounds: crate::online_audio::NetSoundWatch,
+    /// The run whose personal best has been announced.
+    pb_announced: Option<String>,
 }
 
 /// Re-fetching the character after chest loot, until the item shows up in the bag or mailbox.
@@ -539,6 +541,7 @@ impl OnlineSession {
             community_levels: BTreeMap::new(),
             seen_reroll: None,
             sounds: crate::online_audio::NetSoundWatch::default(),
+            pb_announced: None,
         })
     }
 
@@ -1037,6 +1040,18 @@ impl OnlineSession {
                 .is_some_and(|party| party.key_owner.is_some()),
             instance: self.mirror.instance.as_ref().map(|i| i.state),
             countdown: self.view.countdown,
+            timer: self.run_timer().map_or(
+                crate::online_audio::TimerPhase::None,
+                |timer| {
+                    if timer.overtime {
+                        crate::online_audio::TimerPhase::Overtime
+                    } else if timer.urgent {
+                        crate::online_audio::TimerPhase::Urgent
+                    } else {
+                        crate::online_audio::TimerPhase::Running
+                    }
+                },
+            ),
         };
         let mut sounds = Vec::new();
         self.sounds.observe(snapshot, &mut sounds);
@@ -1335,6 +1350,11 @@ impl OnlineSession {
             self.directives
                 .push(Directive::PlaySound(engine_audio::SoundId::UiError));
         }
+        self.toast_quiet(level, message);
+    }
+
+    /// A toast whose caller has already chosen the sound that goes with it.
+    fn toast_quiet(&mut self, level: StatusLevel, message: impl Into<String>) {
         self.toasts.push_back((
             Toast {
                 level,
@@ -1412,12 +1432,15 @@ impl OnlineSession {
             NetEvent::Economy(economy) => self.economy = Some(*economy),
             NetEvent::Sharpened(response) => {
                 let response = *response;
+                self.directives.push(Directive::PlaySound(
+                    crate::online_audio::sharpen_sound(response.outcome),
+                ));
                 match response.outcome {
-                    SharpenOutcomeName::Success => self.toast(
+                    SharpenOutcomeName::Success => self.toast_quiet(
                         StatusLevel::Good,
                         format!("Success: +{}", response.new_level),
                     ),
-                    SharpenOutcomeName::Broken => self.toast(StatusLevel::Bad, "BROKEN"),
+                    SharpenOutcomeName::Broken => self.toast_quiet(StatusLevel::Bad, "BROKEN"),
                 }
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
@@ -1440,17 +1463,13 @@ impl OnlineSession {
                     improved,
                 });
                 // The reveal is heard: the jackpot and the 100s ring, a better roll is a
-                // lesser chime, a worse one is the error tone (the toast plays it).
-                let cue = match response.new_quality {
-                    110 => Some(engine_audio::SoundId::LootJackpot),
-                    100.. => Some(engine_audio::SoundId::LootEpic),
-                    _ if improved == Some(true) => Some(engine_audio::SoundId::LootRare),
-                    _ => None,
-                };
-                if let Some(cue) = cue {
+                // lesser chime, a worse one is the error tone.
+                if let Some(cue) =
+                    crate::online_audio::reforge_sound(response.old_quality, response.new_quality)
+                {
                     self.directives.push(Directive::PlaySound(cue));
                 }
-                self.toast(
+                self.toast_quiet(
                     if improved == Some(false) {
                         StatusLevel::Bad
                     } else {
@@ -1465,8 +1484,8 @@ impl OnlineSession {
                 let name = engine_game::character::item_by_key(&response.book)
                     .map_or_else(|| response.book.clone(), |def| def.name.to_owned());
                 self.directives
-                    .push(Directive::PlaySound(engine_audio::SoundId::LootRare));
-                self.toast(StatusLevel::Good, format!("Learned: {name}"));
+                    .push(Directive::PlaySound(engine_audio::SoundId::BookRead));
+                self.toast_quiet(StatusLevel::Good, format!("Learned: {name}"));
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
             NetEvent::GemSlotted(response) => {
@@ -1493,7 +1512,10 @@ impl OnlineSession {
                     text: text.clone(),
                     improved: Some(true),
                 });
-                self.toast(StatusLevel::Good, text);
+                self.directives.push(Directive::PlaySound(
+                    crate::online_audio::gem_slot_sound(response.cost),
+                ));
+                self.toast_quiet(StatusLevel::Good, text);
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
             NetEvent::GemUpgraded(response) => {
@@ -1516,12 +1538,10 @@ impl OnlineSession {
                     text: text.clone(),
                     improved: Some(response.success),
                 });
-                if response.success {
-                    // An existing cue: the reveal of a good roll.
-                    self.directives
-                        .push(Directive::PlaySound(engine_audio::SoundId::LootRare));
-                }
-                self.toast(
+                self.directives.push(Directive::PlaySound(
+                    crate::online_audio::gem_upgrade_sound(response.success),
+                ));
+                self.toast_quiet(
                     if response.success {
                         StatusLevel::Good
                     } else {
@@ -1594,9 +1614,14 @@ impl OnlineSession {
                 self.check_saving();
             }
             NetEvent::CommunityPage(page) => self.community.list_arrived(*page),
-            NetEvent::CommunityMap(detail) => self.community.detail_arrived(*detail),
+            NetEvent::CommunityMap(detail) => {
+                if let Some(cue) = self.community.detail_arrived(*detail) {
+                    self.directives.push(Directive::PlaySound(cue));
+                }
+            }
             NetEvent::CommunitySaved(response) => {
-                let reload = self.community.saved(&response);
+                let (reload, cue) = self.community.saved(&response);
+                self.directives.push(Directive::PlaySound(cue));
                 self.client.send(reload);
             }
             NetEvent::CommunityChecked(_) => {}
@@ -1613,8 +1638,23 @@ impl OnlineSession {
                 // shows the sentence either way.
                 self.community.failed(&error.message);
                 self.community_fetching.clear();
+                self.directives
+                    .push(Directive::PlaySound(engine_audio::SoundId::UiError));
             }
-            NetEvent::History { before, page } => self.records.history_arrived(before, *page),
+            NetEvent::History { before, page } => {
+                // The newest page after a run: a personal best rings once per run.
+                if before.is_none()
+                    && crate::online_audio::is_personal_best(&page.runs)
+                    && let Some(newest) = page.runs.first()
+                    && self.pb_announced.as_deref() != Some(newest.run_uid.as_str())
+                {
+                    self.pb_announced = Some(newest.run_uid.clone());
+                    self.directives
+                        .push(Directive::PlaySound(engine_audio::SoundId::LootJackpot));
+                    self.toast_quiet(StatusLevel::Good, "New personal best!");
+                }
+                self.records.history_arrived(before, *page);
+            }
             NetEvent::Leaderboard(page) => self.records.board_arrived(*page),
             // A run opened on its own is not used by the pages (the history rows carry it).
             NetEvent::Run(_) => {}

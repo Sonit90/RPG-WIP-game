@@ -439,6 +439,8 @@ pub struct App {
     screenshot: Option<(std::path::PathBuf, u64)>,
     /// The character sheet, opened from the corner button or the character key.
     character_menu: CharacterMenu,
+    /// Notices a set bonus switching on as the persistent character's equipment changes.
+    set_bonus_watch: crate::online_audio::SetBonusWatch,
     /// How the character sheet is coloured.
     character_theme: CharacterTheme,
     /// Scratch the character sheet formats its numbers into. Reused; never freed.
@@ -1389,6 +1391,7 @@ impl App {
                 .map(std::path::PathBuf::from)
                 .or_else(|| args.scene.is_graveyard().then(graveyard_path)),
             character_menu: CharacterMenu::with_scale(ui_scale),
+            set_bonus_watch: crate::online_audio::SetBonusWatch::default(),
             character_theme: CharacterTheme::default(),
             character_scratch: String::with_capacity(64),
             item_tooltip: ItemTooltip::new(),
@@ -2501,7 +2504,7 @@ impl App {
                     self.change_talents(None);
                 }
                 TalentMenuOutcome::SetBookOption { book, option } => {
-                    self.play_ui_sound(engine_audio::SoundId::UiSelect);
+                    self.play_ui_sound(engine_audio::SoundId::BookSwitch);
                     let ids = self.snapshot.books.enhancement.get(book).and_then(|view| {
                         Some((view.id.clone(), view.options.get(option)?.id.clone()))
                     });
@@ -6667,8 +6670,14 @@ impl Application for App {
                         self.simulation.set_talents(grid);
                     }
                     crate::online::Directive::ApplyLoadout(hero, loadout) => {
-                        *self.simulation.roster_mut().sheet_mut(hero) =
-                            engine_realm::loadout::sheet_of(hero, &loadout);
+                        let sheet = engine_realm::loadout::sheet_of(hero, &loadout);
+                        // A set gaining a tier from this change is heard (the first look at a
+                        // hero is only a baseline).
+                        let worn = engine_game::character::active_sets(sheet.equipment());
+                        if let Some(cue) = self.set_bonus_watch.observe(hero, &worn) {
+                            self.play_ui_sound(cue);
+                        }
+                        *self.simulation.roster_mut().sheet_mut(hero) = sheet;
                         self.simulation.refresh_character();
                         log::info!(
                             "online: {} dressed from the persistent character",

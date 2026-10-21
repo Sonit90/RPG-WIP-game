@@ -451,10 +451,36 @@ pub enum SoundId {
     DungeonComplete,
     /// The run failed: a falling sting.
     DungeonFail,
+    /// A blade sharpened: a stone rasp and a bright steel ring.
+    SharpenSuccess,
+    /// An item breaking, or gems lost: a crunch and a falling tone.
+    ItemBreak,
+    /// A gem set into its socket: a crystal click with a short ring.
+    GemSocket,
+    /// A gem prised out: the same click falling away.
+    GemUnsocket,
+    /// A gem upgraded: three rising crystal notes with a shimmer.
+    GemUpgrade,
+    /// A book read: a page turning, then a warm held note.
+    BookRead,
+    /// A book option switched: a quick page flick.
+    BookSwitch,
+    /// A set bonus switching on: a bright rising chord with a shimmer.
+    SetBonus,
+    /// One minute left on the run timer: two low urgent beeps.
+    TimerWarning,
+    /// The run finished inside its timer: a bright ascending sting.
+    RunTimed,
+    /// The run finished after its timer: a low descending sting.
+    RunOvertime,
+    /// The Drowned Abbess's Undertow: a deep surging rush of water.
+    BossUndertow,
+    /// The Foundry Overseer's conveyor: a rattling, grinding metal rumble.
+    BossConveyor,
 }
 
 /// How many sounds there are.
-pub const SOUND_COUNT: usize = 112;
+pub const SOUND_COUNT: usize = 125;
 
 impl SoundId {
     /// Every sound, in table order. The order is the order of [`SOUNDS`].
@@ -571,6 +597,19 @@ impl SoundId {
         Self::CountdownGo,
         Self::DungeonComplete,
         Self::DungeonFail,
+        Self::SharpenSuccess,
+        Self::ItemBreak,
+        Self::GemSocket,
+        Self::GemUnsocket,
+        Self::GemUpgrade,
+        Self::BookRead,
+        Self::BookSwitch,
+        Self::SetBonus,
+        Self::TimerWarning,
+        Self::RunTimed,
+        Self::RunOvertime,
+        Self::BossUndertow,
+        Self::BossConveyor,
     ];
 
     /// Its index into [`SOUNDS`] and into any per-sound array.
@@ -2035,7 +2074,188 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     .on(AudioCategory::Ui)
     .gain(0.6)
     .jitter(0.0, 0.0)
+    .limit(1, 5.0),    SoundDesc::sfx(
+        "sharpen_success",
+        UI,
+        Recipe::new(0.5)
+            .noise(0.5, 6_000.0, 2_500.0)
+            .tone(0.7, 1_760.0, 2_349.0)
+            .harmonic(0.5, 2.76)
+            .envelope(0.002, 0.04, 2.2),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.45)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.15),
+    SoundDesc::sfx(
+        "item_break",
+        UI,
+        Recipe::new(0.7)
+            .noise(0.8, 2_500.0, 300.0)
+            .tone(0.5, 330.0, 90.0)
+            .crackle(0.5, 60.0)
+            .envelope(0.001, 0.02, 2.4),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.2),
+    SoundDesc::sfx(
+        "gem_socket",
+        UI,
+        Recipe::new(0.35)
+            .noise(0.3, 7_000.0, 3_000.0)
+            .tone(0.8, 1_319.0, 1_319.0)
+            .harmonic(0.5, 3.0)
+            .envelope(0.001, 0.03, 2.6),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.42)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "gem_unsocket",
+        UI,
+        Recipe::new(0.3)
+            .noise(0.3, 5_000.0, 1_500.0)
+            .tone(0.8, 1_175.0, 740.0)
+            .harmonic(0.4, 2.0)
+            .envelope(0.001, 0.02, 2.6),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.4)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "gem_upgrade",
+        UI,
+        Recipe::new(0.9)
+            .noise(0.12, 8_000.0, 5_000.0)
+            .tone(0.8, 1_047.0, 1_568.0)
+            .harmonic(0.5, 3.0)
+            .steps(3)
+            .envelope(0.003, 0.12, 1.7),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.48)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.3),
+    SoundDesc::sfx(
+        "book_read",
+        UI,
+        Recipe::new(1.2)
+            .noise(0.5, 3_500.0, 900.0)
+            .tone(0.6, 262.0, 392.0)
+            .harmonic(0.4, 1.5)
+            .envelope(0.12, 0.3, 1.5),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.4),
+    SoundDesc::sfx(
+        "book_switch",
+        UI,
+        Recipe::new(0.18)
+            .noise(0.8, 4_500.0, 1_500.0)
+            .envelope(0.004, 0.0, 2.8),
+        PRIORITY_UI,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.4)
+    .jitter(0.0, 0.0)
+    .limit(2, 0.1),
+    SoundDesc::sfx(
+        "set_bonus",
+        UI,
+        Recipe::new(1.3)
+            .noise(0.08, 7_000.0, 4_000.0)
+            .tone(0.8, 523.0, 784.0)
+            .harmonic(0.6, 1.5)
+            .steps(3)
+            .tremolo(6.0, 0.15)
+            .envelope(0.004, 0.25, 1.5),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.55)
+    .jitter(0.0, 0.0)
+    .limit(1, 0.6),
+    SoundDesc::sfx(
+        "timer_warning",
+        UI,
+        Recipe::new(0.5)
+            .tone(0.9, 440.0, 440.0)
+            .steps(2)
+            .envelope(0.002, 0.05, 2.4),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
     .limit(1, 5.0),
+    SoundDesc::sfx(
+        "run_timed",
+        UI,
+        Recipe::new(0.8)
+            .noise(0.06, 7_000.0, 4_000.0)
+            .tone(0.8, 784.0, 1_175.0)
+            .harmonic(0.5, 2.0)
+            .steps(2)
+            .envelope(0.003, 0.12, 1.8),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(1, 5.0),
+    SoundDesc::sfx(
+        "run_overtime",
+        UI,
+        Recipe::new(0.9)
+            .tone(0.8, 392.0, 247.0)
+            .harmonic(0.4, 1.19)
+            .steps(2)
+            .envelope(0.008, 0.15, 1.7),
+        PRIORITY_ULTIMATE,
+    )
+    .on(AudioCategory::Ui)
+    .gain(0.5)
+    .jitter(0.0, 0.0)
+    .limit(1, 5.0),
+    SoundDesc::sfx(
+        "boss_undertow",
+        ABILITIES,
+        Recipe::new(1.6)
+            .noise(0.9, 400.0, 1_800.0)
+            .tone(0.7, 70.0, 130.0)
+            .tremolo(3.0, 0.4)
+            .envelope(0.35, 0.3, 1.5),
+        PRIORITY_CRITICAL,
+    )
+    .gain(0.8)
+    .carries(12.0, 110.0)
+    .limit(1, 2.0),
+    SoundDesc::sfx(
+        "boss_conveyor",
+        ABILITIES,
+        Recipe::new(1.4)
+            .noise(0.8, 1_200.0, 700.0)
+            .tone(0.6, 55.0, 48.0)
+            .crackle(0.6, 28.0)
+            .tremolo(9.0, 0.35)
+            .envelope(0.15, 0.4, 1.5),
+        PRIORITY_CRITICAL,
+    )
+    .gain(0.8)
+    .carries(12.0, 110.0)
+    .limit(1, 2.0),
 ];
 
 /// One sound's samples: mono PCM and the rate it was authored at.

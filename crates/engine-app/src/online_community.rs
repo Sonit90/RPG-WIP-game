@@ -3,6 +3,7 @@
 //! or a control changes, never per frame; everything shown was decided by the server (the
 //! validator's report, the plays counter, the status) and the client only formats it.
 
+use engine_audio::SoundId;
 use engine_net::session::NetCommand;
 use engine_presentation::ui::frontend::{
     CommunityAction, CommunityCard, IssueLine, MAP_ROWS, MapDetailCard, MapRowCard,
@@ -12,6 +13,13 @@ use engine_realm::community::{
 };
 
 use crate::online_records::format_duration_us;
+
+/// The sound for a map whose status changed from `before` to `after`: becoming published is
+/// the party-formed chord; anything else is silent.
+#[must_use]
+pub fn published_sound(before: MapStatus, after: MapStatus) -> Option<SoundId> {
+    (before != MapStatus::Published && after == MapStatus::Published).then_some(SoundId::PartyFormed)
+}
 
 /// What a press on the page asks the session to do next.
 #[derive(Debug)]
@@ -230,22 +238,27 @@ impl CommunityState {
         self.list = Some(page);
     }
 
-    /// A map arrived (opened, published or unpublished): shown, and its row refreshed.
-    pub fn detail_arrived(&mut self, detail: MapDetail) {
+    /// A map arrived (opened, published or unpublished): shown, and its row refreshed. A map
+    /// that has just become published is a success worth a sound.
+    pub fn detail_arrived(&mut self, detail: MapDetail) -> Option<SoundId> {
         self.loading = false;
+        let mut cue = None;
         if let Some(page) = self.list.as_mut()
             && let Some(row) = page.maps.iter_mut().find(|m| m.id == detail.summary.id)
         {
+            cue = published_sound(row.status, detail.summary.status);
             *row = detail.summary.clone();
         }
         let selected_id = self.selected_summary().map(|m| m.id.clone());
         if selected_id.as_deref() == Some(detail.summary.id.as_str()) {
             self.detail = Some(detail);
         }
+        cue
     }
 
-    /// An upload was answered.
-    pub fn saved(&mut self, response: &SaveMapResponse) -> NetCommand {
+    /// An upload was answered: the list reloads, and the answer is heard (a refusal or a draft
+    /// with errors is the error tone, a clean upload the confirm chime).
+    pub fn saved(&mut self, response: &SaveMapResponse) -> (NetCommand, SoundId) {
         let errors = response.report.errors.len();
         let warnings = response.report.warnings.len();
         self.message = Some(match &response.map {
@@ -268,7 +281,12 @@ impl CommunityState {
         });
         self.mine = true;
         self.page = 0;
-        self.reload()
+        let cue = if response.map.is_some() && errors == 0 {
+            SoundId::ReadyAccept
+        } else {
+            SoundId::UiError
+        };
+        (self.reload(), cue)
     }
 
     /// A request failed.
@@ -456,6 +474,42 @@ mod tests {
             panic!("a fetch");
         };
         assert!(matches!(&commands[0], NetCommand::CommunityList(q) if q.search == "crypt"));
+    }
+
+    #[test]
+    fn publishing_chimes_and_a_refused_upload_sounds_the_error() {
+        let mut state = CommunityState::default();
+        state.list_arrived(page(vec![summary("a", MapStatus::Draft, "me")]));
+        state.act(CommunityAction::Select(0));
+        // Opening a draft is silent; becoming published is the chord; a repeat is silent.
+        assert_eq!(state.detail_arrived(detail(MapStatus::Draft, "me", vec![])), None);
+        assert_eq!(
+            state.detail_arrived(detail(MapStatus::Published, "me", vec![])),
+            Some(SoundId::PartyFormed)
+        );
+        assert_eq!(state.detail_arrived(detail(MapStatus::Published, "me", vec![])), None);
+        assert_eq!(published_sound(MapStatus::Published, MapStatus::Draft), None);
+        // A clean upload confirms; a draft saved with errors, or nothing saved, is an error.
+        let bad = IssueInfo {
+            code: "unknown_monster".into(),
+            path: "scene.monsters[0].monster".into(),
+            message: "no".into(),
+        };
+        let clean = SaveMapResponse {
+            report: ReportInfo::default(),
+            map: Some(detail(MapStatus::Draft, "me", vec![])),
+        };
+        let with_errors = SaveMapResponse {
+            report: ReportInfo { errors: vec![bad.clone()], warnings: vec![] },
+            map: Some(detail(MapStatus::Draft, "me", vec![bad.clone()])),
+        };
+        let refused = SaveMapResponse {
+            report: ReportInfo { errors: vec![bad], warnings: vec![] },
+            map: None,
+        };
+        assert_eq!(state.saved(&clean).1, SoundId::ReadyAccept);
+        assert_eq!(state.saved(&with_errors).1, SoundId::UiError);
+        assert_eq!(state.saved(&refused).1, SoundId::UiError);
     }
 
     #[test]

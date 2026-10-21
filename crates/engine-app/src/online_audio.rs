@@ -12,8 +12,12 @@
 //! a ready check that stays open for thirty seconds is one chime, not thirty.
 
 use engine_audio::SoundId;
+use engine_game::character::ActiveSets;
+use engine_game::hero::Hero;
 use engine_presentation::ui::frontend::FrontEndAction;
+use engine_realm::api::{HistoryEntry, SharpenOutcomeName};
 use engine_realm::instance::{CountdownDisplay, InstanceState};
+use engine_realm::outcome::RunOutcome;
 use engine_realm::party::PartyState;
 
 /// What pressing a front-end button sounds like.
@@ -85,6 +89,123 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
     }
 }
 
+/// What a sharpening attempt sounds like: a bright ring when it takes, a crunch when the item
+/// breaks.
+#[must_use]
+pub fn sharpen_sound(outcome: SharpenOutcomeName) -> SoundId {
+    match outcome {
+        SharpenOutcomeName::Success => SoundId::SharpenSuccess,
+        SharpenOutcomeName::Broken => SoundId::ItemBreak,
+    }
+}
+
+/// What a reforge result sounds like, by the new base quality against the old: the jackpot
+/// sting for a 110, the epic ring for a 100 or better, a lesser chime for any improvement, the
+/// error tone for a worse roll, and nothing for the same number again.
+#[must_use]
+pub fn reforge_sound(old_quality: u8, new_quality: u8) -> Option<SoundId> {
+    if new_quality == 110 {
+        Some(SoundId::LootJackpot)
+    } else if new_quality >= 100 && new_quality > old_quality {
+        Some(SoundId::LootEpic)
+    } else if new_quality > old_quality {
+        Some(SoundId::LootRare)
+    } else if new_quality < old_quality {
+        Some(SoundId::UiError)
+    } else {
+        None
+    }
+}
+
+/// What a gem being set (`gold_paid` zero) or prised out (it costs gold) sounds like.
+#[must_use]
+pub fn gem_slot_sound(gold_paid: u64) -> SoundId {
+    if gold_paid > 0 {
+        SoundId::GemUnsocket
+    } else {
+        SoundId::GemSocket
+    }
+}
+
+/// What a gem upgrade sounds like: three rising notes when it takes, the crunch of lost gems
+/// when it does not.
+#[must_use]
+pub fn gem_upgrade_sound(success: bool) -> SoundId {
+    if success {
+        SoundId::GemUpgrade
+    } else {
+        SoundId::ItemBreak
+    }
+}
+
+/// Whether the newest run in `runs` (newest first) is a personal best: a completion that beat
+/// every earlier completion of the same dungeon at the same key level. A first clear is not a
+/// best, it is the only one.
+#[must_use]
+pub fn is_personal_best(runs: &[HistoryEntry]) -> bool {
+    let Some((newest, earlier)) = runs.split_first() else {
+        return false;
+    };
+    let done = |run: &HistoryEntry| matches!(run.outcome, RunOutcome::Timed | RunOutcome::Overtime);
+    if !done(newest) {
+        return false;
+    }
+    let mut rivals = earlier
+        .iter()
+        .filter(|run| {
+            done(run) && run.dungeon_id == newest.dungeon_id && run.key_level == newest.key_level
+        })
+        .peekable();
+    rivals.peek().is_some() && rivals.all(|run| newest.duration_us < run.duration_us)
+}
+
+/// Notices a set bonus switching on as equipment changes. The first look at a hero is the
+/// baseline (logging in dressed in a set is not an event); after that any set gaining a tier
+/// is one chord. Losing a tier is silent.
+#[derive(Debug, Default)]
+pub struct SetBonusWatch {
+    hero: Option<Hero>,
+    tiers: Vec<(String, usize)>,
+}
+
+impl SetBonusWatch {
+    /// Looks at what `hero` wears now. Returns the cue if a set gained a tier since the last
+    /// look at the same hero.
+    pub fn observe(&mut self, hero: Hero, worn: &ActiveSets) -> Option<SoundId> {
+        let now: Vec<(String, usize)> = worn
+            .iter()
+            .map(|active| (active.set.id.clone(), active.tiers_active()))
+            .collect();
+        let known = self.hero == Some(hero);
+        let gained = known
+            && now.iter().any(|(id, tiers)| {
+                let before = self
+                    .tiers
+                    .iter()
+                    .find(|(known_id, _)| known_id == id)
+                    .map_or(0, |(_, tiers)| *tiers);
+                *tiers > before
+            });
+        self.hero = Some(hero);
+        self.tiers = now;
+        gained.then_some(SoundId::SetBonus)
+    }
+}
+
+/// Where the run's timer stands, for the edges worth a sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimerPhase {
+    /// No timer (not in a run, or a map without a clock).
+    #[default]
+    None,
+    /// Time remains.
+    Running,
+    /// Under a minute remains.
+    Urgent,
+    /// The clock ran out.
+    Overtime,
+}
+
 /// The parts of the realm's state the watch listens to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NetSnapshot {
@@ -98,6 +219,8 @@ pub struct NetSnapshot {
     pub instance: Option<InstanceState>,
     /// What the run's countdown shows.
     pub countdown: Option<CountdownDisplay>,
+    /// Where the run's timer stands while the run is active.
+    pub timer: TimerPhase,
 }
 
 /// Remembers the last [`NetSnapshot`] and says what changed.
@@ -106,6 +229,8 @@ pub struct NetSoundWatch {
     last: NetSnapshot,
     /// The party whose ready check has already been announced.
     announced: Option<u64>,
+    /// The last timer phase seen while the run was active: what the run finished against.
+    run_phase: TimerPhase,
 }
 
 impl NetSoundWatch {
@@ -149,16 +274,39 @@ impl NetSoundWatch {
             _ => {}
         }
 
+        // The run's timer: a warning once when a minute is left, and a sting as it runs out.
+        if last.timer == TimerPhase::Running && now.timer == TimerPhase::Urgent {
+            out.push(SoundId::TimerWarning);
+        }
+        if matches!(last.timer, TimerPhase::Running | TimerPhase::Urgent)
+            && now.timer == TimerPhase::Overtime
+        {
+            out.push(SoundId::ModifierResultWeak);
+        }
+        if now.timer != TimerPhase::None {
+            self.run_phase = now.timer;
+        }
+
         // Only the transition is a sound: coming back to a finished run (a reconnect) is not
-        // a fanfare.
+        // a fanfare. A completion against a clock also says how it went: in time, or late.
         if let (Some(before), Some(after)) = (last.instance, now.instance)
             && before != after
         {
             match after {
-                InstanceState::Completed => out.push(SoundId::DungeonComplete),
+                InstanceState::Completed => {
+                    out.push(SoundId::DungeonComplete);
+                    match self.run_phase {
+                        TimerPhase::None => {}
+                        TimerPhase::Overtime => out.push(SoundId::RunOvertime),
+                        TimerPhase::Running | TimerPhase::Urgent => out.push(SoundId::RunTimed),
+                    }
+                }
                 InstanceState::Failed => out.push(SoundId::DungeonFail),
                 _ => {}
             }
+        }
+        if now.instance.is_none() {
+            self.run_phase = TimerPhase::None;
         }
 
         self.last = now;
@@ -254,6 +402,162 @@ mod tests {
         let mut expected = vec![SoundId::CountdownTick; 5];
         expected.push(SoundId::CountdownGo);
         assert_eq!(sounds, expected);
+    }
+
+    #[test]
+    fn sharpening_rings_when_it_takes_and_crunches_when_the_item_breaks() {
+        assert_eq!(sharpen_sound(SharpenOutcomeName::Success), SoundId::SharpenSuccess);
+        assert_eq!(sharpen_sound(SharpenOutcomeName::Broken), SoundId::ItemBreak);
+    }
+
+    #[test]
+    fn a_reforge_is_heard_as_better_worse_or_a_jackpot() {
+        assert_eq!(reforge_sound(80, 110), Some(SoundId::LootJackpot));
+        assert_eq!(reforge_sound(110, 110), Some(SoundId::LootJackpot));
+        assert_eq!(reforge_sound(80, 102), Some(SoundId::LootEpic));
+        assert_eq!(reforge_sound(80, 90), Some(SoundId::LootRare));
+        assert_eq!(reforge_sound(90, 70), Some(SoundId::UiError));
+        assert_eq!(reforge_sound(90, 90), None);
+    }
+
+    #[test]
+    fn gems_have_a_cue_for_socketing_unsocketing_and_upgrading() {
+        assert_eq!(gem_slot_sound(0), SoundId::GemSocket);
+        assert_eq!(gem_slot_sound(250), SoundId::GemUnsocket);
+        assert_eq!(gem_upgrade_sound(true), SoundId::GemUpgrade);
+        assert_eq!(gem_upgrade_sound(false), SoundId::ItemBreak);
+    }
+
+    #[test]
+    fn the_new_online_cues_are_all_different_sounds() {
+        let sounds = [
+            SoundId::SharpenSuccess,
+            SoundId::ItemBreak,
+            SoundId::GemSocket,
+            SoundId::GemUnsocket,
+            SoundId::GemUpgrade,
+            SoundId::BookRead,
+            SoundId::BookSwitch,
+            SoundId::SetBonus,
+            SoundId::TimerWarning,
+            SoundId::RunTimed,
+            SoundId::RunOvertime,
+        ];
+        for (i, a) in sounds.iter().enumerate() {
+            for b in &sounds[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    fn entry(dungeon: &str, key: u32, outcome: RunOutcome, seconds: i64) -> HistoryEntry {
+        HistoryEntry {
+            run_uid: String::new(),
+            dungeon_id: dungeon.into(),
+            key_level: key,
+            outcome,
+            duration_us: seconds * engine_realm::SECOND,
+            timer_us: 0,
+            applied_at_us: 0,
+            party: Vec::new(),
+            modifiers: Vec::new(),
+            deaths: 0,
+            damage_taken: 0,
+            healing: 0,
+            dps: 0.0,
+            loot: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_personal_best_beats_every_earlier_completion_of_the_same_dungeon_and_key() {
+        let best = entry("crypt", 5, RunOutcome::Timed, 600);
+        let older = entry("crypt", 5, RunOutcome::Overtime, 700);
+        let other_key = entry("crypt", 6, RunOutcome::Timed, 300);
+        let other_dungeon = entry("foundry", 5, RunOutcome::Timed, 100);
+        let failed = entry("crypt", 5, RunOutcome::Failed, 10);
+        assert!(is_personal_best(&[
+            best.clone(),
+            older.clone(),
+            other_key,
+            other_dungeon,
+            failed
+        ]));
+        // Slower than an earlier run, a failure, a first clear and an empty list are not.
+        assert!(!is_personal_best(&[older, best.clone()]));
+        assert!(!is_personal_best(&[entry("crypt", 5, RunOutcome::Failed, 1), best.clone()]));
+        assert!(!is_personal_best(&[best]));
+        assert!(!is_personal_best(&[]));
+    }
+
+    #[test]
+    fn a_set_bonus_chimes_when_a_tier_switches_on_and_not_on_load_or_removal() {
+        use engine_game::character::{ActiveSets, EquipSlot, ItemStack, active_sets_of};
+        engine_realm::loot::ensure_items_registered();
+        let sets = engine_game::character::registered_sets();
+        let Some(set) = sets.iter().find(|set| set.bonuses.first().is_some_and(|b| b.count == 2))
+        else {
+            panic!("the shipped sets have a two-piece tier");
+        };
+        let piece = |key: &str| {
+            engine_game::character::item_by_key(key).map(|def| ItemStack::new(def.id, 1))
+        };
+        let worn = |count: usize| -> ActiveSets {
+            let mut slots = vec![None; EquipSlot::COUNT];
+            for (slot, key) in set.pieces.iter().take(count).enumerate() {
+                slots[slot] = piece(key);
+            }
+            active_sets_of(&slots)
+        };
+        let mut watch = SetBonusWatch::default();
+        // The first look is the baseline, however much is worn.
+        assert_eq!(watch.observe(Hero::Warrior, &worn(2)), None);
+        assert_eq!(watch.observe(Hero::Warrior, &worn(2)), None);
+        // Taking a piece off is silent; putting it back switches the tier on again.
+        assert_eq!(watch.observe(Hero::Warrior, &worn(1)), None);
+        assert_eq!(watch.observe(Hero::Warrior, &worn(2)), Some(SoundId::SetBonus));
+        // A different hero's first look is a baseline again.
+        assert_eq!(watch.observe(Hero::Druid, &worn(2)), None);
+        assert_eq!(watch.observe(Hero::Druid, &worn(0)), None);
+        assert_eq!(watch.observe(Hero::Druid, &worn(2)), Some(SoundId::SetBonus));
+    }
+
+    #[test]
+    fn the_run_timer_warns_at_a_minute_and_a_completion_says_timed_or_overtime() {
+        let at = |timer| NetSnapshot {
+            instance: Some(InstanceState::Active),
+            timer,
+            ..NetSnapshot::default()
+        };
+        let done = NetSnapshot {
+            instance: Some(InstanceState::Completed),
+            ..NetSnapshot::default()
+        };
+        // Timed: running, then urgent (one warning), then a completion in time.
+        let mut watch = NetSoundWatch::default();
+        assert!(heard(&mut watch, at(TimerPhase::Running)).is_empty());
+        assert_eq!(heard(&mut watch, at(TimerPhase::Urgent)), [SoundId::TimerWarning]);
+        assert!(heard(&mut watch, at(TimerPhase::Urgent)).is_empty(), "one warning");
+        assert_eq!(
+            heard(&mut watch, done),
+            [SoundId::DungeonComplete, SoundId::RunTimed]
+        );
+        // Overtime: the clock runs out (a sting), the completion is late.
+        let mut watch = NetSoundWatch::default();
+        heard(&mut watch, at(TimerPhase::Running));
+        heard(&mut watch, at(TimerPhase::Urgent));
+        assert_eq!(heard(&mut watch, at(TimerPhase::Overtime)), [SoundId::ModifierResultWeak]);
+        assert_eq!(
+            heard(&mut watch, done),
+            [SoundId::DungeonComplete, SoundId::RunOvertime]
+        );
+        // No clock at all (an untimed community map): the plain fanfare only.
+        let mut watch = NetSoundWatch::default();
+        heard(&mut watch, at(TimerPhase::None));
+        assert_eq!(heard(&mut watch, done), [SoundId::DungeonComplete]);
+        // Arriving mid-minute does not warn.
+        let mut watch = NetSoundWatch::default();
+        assert!(heard(&mut watch, at(TimerPhase::Urgent)).is_empty());
     }
 
     #[test]
