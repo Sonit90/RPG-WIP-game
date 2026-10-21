@@ -75,6 +75,11 @@ migration 0015. ONLY this agent may use the realm stack. Editor dungeon-block in
 MERGED `p2-gems`: gems.json 7 kinds × 5 levels, every epic socketed (6 with 2), routes
 socket/unsocket/upgrade, loadout v3 (gems as item keys), median 108 runs to max gem at key 10,
 p2_gems ≈ +9.5 % DPS over p2_set. Gems borrow the trinket icon. `--gem-sim` → docs/balance/gem-economy.md.
+MERGED `p2-books`: 3 talent books + 3×3 enhancement books per class as hidden talent nodes (TalentGrid
+u64 bitset + granted mask), `characters.books` (0014), /books/use, /books/active, Books page toggle,
+book_drops (gate on drop: talent key 8, enhancement key 6). Tiers now …p2_set, p2_gems, p2_books.
+Verified on merge branch: workspace 4627, embedded 364, backend 124, DB 53.
+`p2-balance` (worktree `../myGame-wt-balance`): economy sim, set/druid survivability fixes, eternal wall, P2_BALANCE.md.
 `p2-editor` (worktree `../myGame-wt-editor`): dungeon-block inspector, community metadata, live mapcheck, export, template.
 p2-core verified after sets+reforge: workspace 4527, embedded 331, backend 121, DB 36, clippy clean.
 6. Community publishing: Postgres tables, API, realm `community_map` table, `cm:<id>:<ver>` instances,
