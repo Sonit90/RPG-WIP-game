@@ -36,7 +36,7 @@ use engine_game::ability::text::{self as ability_text, ResourceMode};
 use engine_game::character::stat::{HEALTH_PER_STAMINA, armor_reduction};
 use engine_game::character::equipment::INVENTORY_SLOTS;
 use engine_game::character::{
-    BROKEN_PENALTY, EquipSlot, ItemProps, ItemSlot, ItemStack, SetBonus, SetDef, SetEffect, Stat,
+    BROKEN_PENALTY, EquipSlot, ItemFamily, ItemProps, ItemSlot, ItemStack, SetBonus, SetDef, SetEffect, Stat,
     StatBlock, active_sets_of, item_by_key, set_by_id,
 };
 use engine_game::firemage::{FireAbility, FireMastery, TargetMode};
@@ -915,6 +915,8 @@ pub struct ItemContext {
     pub worn: [Option<ItemStack>; EquipSlot::COUNT],
     /// What the reader carries, for the set section: which pieces they own.
     pub carried: [Option<ItemStack>; INVENTORY_SLOTS],
+    /// Whether the reader has already read this item, if it is a book.
+    pub book_learned: bool,
 }
 
 impl ItemContext {
@@ -931,6 +933,7 @@ impl ItemContext {
                     replaces: None,
                     worn: character.equipment,
                     carried: character.inventory,
+                    book_learned: character.has_read(stack.def().map_or("", |def| def.key)),
                 },
             ),
             ItemSlot::Inventory(_) => (stack, Self::loose(character, stack, ItemPlace::Bag)),
@@ -948,6 +951,7 @@ impl ItemContext {
             replaces,
             worn: character.equipment,
             carried: character.inventory,
+            book_learned: character.has_read(stack.def().map_or("", |def| def.key)),
         }
     }
 }
@@ -1045,6 +1049,11 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
         ItemPlace::Bag => place.push_str("In your bag"),
         ItemPlace::Loose => place.push_str("New"),
         ItemPlace::Mailed => place.push_str("In your mail"),
+    }
+
+    if def.family == ItemFamily::Book {
+        fill_book(model, def.key, hero, context);
+        return;
     }
 
     // The stats, as the genre prints them: "+2 Haste".
@@ -1149,6 +1158,79 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
         ItemPlace::Bag => "Right-click to equip - drag to move",
         ItemPlace::Loose => "Added to your bag",
         ItemPlace::Mailed => "Sent to your mail",
+    });
+}
+
+/// A book's tooltip: its kind, its class, what reading it gives, and whether it is already learned.
+fn fill_book(model: &mut TooltipModel, key: &str, hero: Hero, context: &ItemContext) {
+    use engine_game::talent::books::{BookKind, book_hero};
+    let catalog = engine_game::talent::catalog();
+    let owner = book_hero(key);
+    let books = owner.map(|owner| &catalog.books[owner.index()]);
+    let kind = books.and_then(|books| books.kind_of(key));
+
+    let body = model.section(SectionKind::Description);
+    match (kind, books) {
+        (Some(BookKind::TalentPoint), _) => {
+            body.text
+                .push_str("A talent book. Reading it grants one talent point, permanently.");
+        }
+        (Some(BookKind::Enhancement), Some(books)) => {
+            if let Some(book) = books.enhancement_book(key) {
+                body.text.push_str("An enhancement book for ");
+                let mut ability = String::new();
+                for part in book.ability.split('_') {
+                    if !ability.is_empty() {
+                        ability.push(' ');
+                    }
+                    ability.push_str(part);
+                }
+                super::map_style::push_title_case(&mut body.text, &ability);
+                body.text.push_str(
+                    ". Reading it unlocks three options; one is active at a time, and you can switch at the hub.",
+                );
+                let options = model.section(SectionKind::Details);
+                options.color = color::TEXT_SECONDARY;
+                for option in &book.options {
+                    if !options.text.is_empty() {
+                        options.text.push('\n');
+                    }
+                    super::map_style::push_title_case(&mut options.text, &option.name);
+                    options.text.push_str(": ");
+                    super::map_style::push_title_case(&mut options.text, &option.description);
+                }
+            }
+        }
+        _ => body.text.push_str("A book."),
+    }
+
+    let state = model.section(SectionKind::Requirements);
+    match owner {
+        Some(owner) if owner != hero => {
+            state.color = color::EMBER;
+            state.text.push_str("Written for the ");
+            super::map_style::push_title_case(&mut state.text, owner.name());
+            state.text.push_str(" - your character cannot read it");
+        }
+        Some(_) if context.book_learned => {
+            state.color = color::TEXT_MUTED;
+            state.text.push_str("Already learned");
+        }
+        Some(_) => {
+            state.color = color::VERDANT;
+            state.text.push_str("Not learned yet");
+        }
+        None => model.drop_last_section(),
+    }
+
+    model.footer.push_str(match context.place {
+        ItemPlace::Bag if owner == Some(hero) && !context.book_learned => {
+            "Right-click to read - consumed on use"
+        }
+        ItemPlace::Bag => "In your bag",
+        ItemPlace::Loose => "Added to your bag",
+        ItemPlace::Mailed => "Sent to your mail",
+        ItemPlace::Equipped(_) => "",
     });
 }
 

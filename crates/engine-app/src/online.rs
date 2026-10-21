@@ -385,6 +385,9 @@ pub struct OnlineSession {
     settings_in_flight: Option<serde_json::Value>,
     /// The selected character's stored loadout, as the API last sent it.
     stored_loadout: Option<(Hero, engine_realm::loadout::Loadout)>,
+    /// The books the selected character has learned and the option in force for each, as the
+    /// API last sent them.
+    books: engine_realm::books::BookState,
     /// The bag cells put in the Workshop's salvage tray, in the order they were put there.
     salvage_tray: Vec<u32>,
     /// Chest loot (or its mail) the bridge may not have persisted yet.
@@ -499,6 +502,7 @@ impl OnlineSession {
             settings_synced: None,
             settings_in_flight: None,
             stored_loadout: None,
+            books: engine_realm::books::BookState::default(),
             salvage_tray: Vec::new(),
             loot_watch: None,
             sharpen_mode: false,
@@ -716,6 +720,87 @@ impl OnlineSession {
                 character_id,
                 talents,
             });
+        }
+    }
+
+    /// Reads the book in bag cell `cell` of the selected character. The API consumes the item and
+    /// answers with the character; a duplicate or another class's book is refused there and the
+    /// item stays. One UUID per call, reused by the network thread if it retries.
+    pub fn request_use_book(&mut self, cell: usize) {
+        if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone()) {
+            self.client.send(NetCommand::UseBook {
+                character_id,
+                slot: engine_realm::loadout::SlotRef::Inventory {
+                    index: u32::try_from(cell).unwrap_or(u32::MAX),
+                },
+            });
+        }
+    }
+
+    /// Puts `option_id` in force for enhancement book `book_id` (hub only: the API refuses while
+    /// the character is queued, in a party or in a dungeon).
+    pub fn request_book_option(&mut self, book_id: &str, option_id: &str) {
+        if let Some(character_id) = self.selected_character_summary().map(|c| c.id.clone()) {
+            self.client.send(NetCommand::SetActiveBook {
+                character_id,
+                book_id: book_id.to_owned(),
+                option_id: option_id.to_owned(),
+            });
+        }
+    }
+
+    /// Which books the selected character has read, as the bit mask the sheet view carries.
+    #[must_use]
+    pub fn books_mask(&self) -> u32 {
+        self.books
+            .unlocked
+            .iter()
+            .filter_map(|id| engine_game::talent::books::book_bit(id))
+            .fold(0, |mask, bit| mask | (1 << bit))
+    }
+
+    /// `hero`'s books with what the selected character has learned and chosen, for the talent
+    /// screen's Books page.
+    #[must_use]
+    pub fn books_view(&self, hero: Hero) -> engine_presentation::snapshot::BooksView {
+        use engine_presentation::snapshot::{
+            BookOptionView, BooksView, EnhancementBookView, TalentBookView,
+        };
+        let books = engine_realm::books::books_of(hero);
+        BooksView {
+            talent: books
+                .talent
+                .iter()
+                .map(|book| TalentBookView {
+                    name: book.name.to_uppercase(),
+                    learned: self.books.has(&book.id),
+                    min_key_level: book.min_key_level,
+                })
+                .collect(),
+            enhancement: books
+                .enhancement
+                .iter()
+                .map(|book| {
+                    let chosen = self.books.active.get(&book.id);
+                    EnhancementBookView {
+                        id: book.id.clone(),
+                        name: book.name.to_uppercase(),
+                        ability: book.ability.replace('_', " ").to_uppercase(),
+                        learned: self.books.has(&book.id),
+                        min_key_level: book.min_key_level,
+                        options: book
+                            .options
+                            .iter()
+                            .map(|option| BookOptionView {
+                                id: option.id.clone(),
+                                name: option.name.clone(),
+                                description: option.description.clone(),
+                                active: chosen == Some(&option.id),
+                            })
+                            .collect(),
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -1253,6 +1338,15 @@ impl OnlineSession {
                 );
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
+            NetEvent::BookRead(response) => {
+                let response = *response;
+                let name = engine_game::character::item_by_key(&response.book)
+                    .map_or_else(|| response.book.clone(), |def| def.name.to_owned());
+                self.directives
+                    .push(Directive::PlaySound(engine_audio::SoundId::LootRare));
+                self.toast(StatusLevel::Good, format!("Learned: {name}"));
+                self.on_event(NetEvent::Character(Box::new(response.character)));
+            }
             NetEvent::Settings(document) => {
                 self.settings_version = Some(document.version);
                 if document.version > 0 && document.settings.is_object() {
@@ -1293,9 +1387,14 @@ impl OnlineSession {
                     });
                     self.stored_loadout = Some((hero, loadout.clone()));
                     self.directives.push(Directive::ApplyLoadout(hero, loadout));
+                    // The active book options hidden nodes ride with the bought talents; they cost
+                    // nothing and the grid switches them on.
+                    let mut keys = detail.talents.clone();
+                    keys.extend(detail.books.active_nodes(hero));
+                    self.books = detail.books.clone();
                     self.directives.push(Directive::ApplyTalents(
                         hero,
-                        detail.talents.clone(),
+                        keys,
                         detail.talent_points_total,
                     ));
                 }

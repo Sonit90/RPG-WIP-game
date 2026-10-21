@@ -120,6 +120,33 @@ impl HeroBooks {
     }
 }
 
+/// The bit a book takes in a "which books are read" mask: its position among every hero's books
+/// (heroes in [`Hero::ALL`] order, talent books then enhancement books). `None` for an unknown id.
+/// How the interface's `Copy` character view carries which books are learned.
+#[must_use]
+pub fn book_bit(id: &str) -> Option<u32> {
+    let catalog = super::catalog();
+    let mut bit = 0;
+    for hero in Hero::ALL {
+        for candidate in catalog.books[hero.index()].ids() {
+            if candidate == id {
+                return Some(bit);
+            }
+            bit += 1;
+        }
+    }
+    None
+}
+
+/// The hero a book is written for, by its id.
+#[must_use]
+pub fn book_hero(id: &str) -> Option<Hero> {
+    let catalog = super::catalog();
+    Hero::ALL
+        .into_iter()
+        .find(|hero| catalog.books[hero.index()].kind_of(id).is_some())
+}
+
 /// Switches on the nodes of the active options (`(book id, option id)` pairs) in `grid`. A pair
 /// that names no book or option of the grid's hero is ignored.
 pub fn grant_active(grid: &mut TalentGrid, books: &HeroBooks, active: &[(&str, &str)]) {

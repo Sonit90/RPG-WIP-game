@@ -2219,6 +2219,19 @@ impl App {
         self.aura_pointer = None;
         self.snapshot
             .refresh(&self.simulation, self.aiming_ability());
+        // Books are the persistent character: the simulation knows nothing of them.
+        match self.online.as_ref() {
+            Some(online) => {
+                self.snapshot.character.books_learned = online.books_mask();
+                if self.talent_menu.is_open() {
+                    self.snapshot.books = online.books_view(self.simulation.hero());
+                }
+            }
+            None => {
+                self.snapshot.character.books_learned = 0;
+                self.snapshot.books = engine_presentation::snapshot::BooksView::default();
+            }
+        }
         self.refresh_recount(ctx.time().real_delta().as_secs_f32());
         self.refresh_modifiers(ctx.time().real_delta().as_secs_f32());
 
@@ -2446,6 +2459,15 @@ impl App {
                         online.request_move(from, to);
                     }
                 }
+                CharacterMenuOutcome::Use { cell } => {
+                    // Books exist only on the persistent (online) character.
+                    if self.online.is_some() {
+                        self.play_ui_sound(engine_audio::SoundId::UiSelect);
+                    }
+                    if let Some(online) = self.online.as_mut() {
+                        online.request_use_book(cell);
+                    }
+                }
                 CharacterMenuOutcome::Move { from, to } => {
                     self.play_ui_sound(engine_audio::SoundId::UiClick);
                     self.simulation
@@ -2477,6 +2499,16 @@ impl App {
                 TalentMenuOutcome::Reset => {
                     self.play_ui_sound(engine_audio::SoundId::UiCancel);
                     self.change_talents(None);
+                }
+                TalentMenuOutcome::SetBookOption { book, option } => {
+                    self.play_ui_sound(engine_audio::SoundId::UiSelect);
+                    let ids = self.snapshot.books.enhancement.get(book).and_then(|view| {
+                        Some((view.id.clone(), view.options.get(option)?.id.clone()))
+                    });
+                    if let (Some(online), Some((book_id, option_id))) = (self.online.as_mut(), ids)
+                    {
+                        online.request_book_option(&book_id, &option_id);
+                    }
                 }
                 TalentMenuOutcome::Idle | TalentMenuOutcome::Closed => {}
             }
@@ -6614,7 +6646,7 @@ impl Application for App {
                     crate::online::Directive::PlaySound(sound) => self.play_ui_sound(sound),
                     crate::online::Directive::ApplyTalents(hero, keys, total_points) => {
                         let grid =
-                            engine_game::talent::TalentGrid::from_keys(hero, &keys, total_points)
+                            engine_game::talent::TalentGrid::from_keys_with_nodes(hero, &keys, total_points)
                                 // A stored set that no longer fits is shown empty; the realm drops it
                                 // the same way.
                                 .unwrap_or_else(|_| {
