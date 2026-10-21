@@ -5,6 +5,9 @@
 use crate::history;
 use engine_realm::api::{CharacterDetail, DungeonCompletion, DungeonResult, LootDelivery};
 use engine_realm::economy::{add_resources, debit_resources, spend_resource};
+use engine_realm::gems::{
+    GemError, socket as gem_socket, unsocket as gem_unsocket, upgrade as gem_upgrade,
+};
 use engine_realm::reforge::{reforge, ReforgeError, ReforgeOutcome};
 use engine_realm::sharpen::{sharpen, SharpenError, SharpenOutcome};
 use engine_realm::loadout::{
@@ -737,6 +740,184 @@ where
         item: outcome.item,
         old_quality: outcome.old_quality,
         new_quality: outcome.new_quality,
+        cost: outcome.cost,
+        gold_left: outcome.gold_left,
+        character: hub.detail().await?,
+    };
+    hub.commit(&response).await?;
+    Ok(Some(response))
+}
+
+/// A refused gem service as the HTTP error: the request named nothing usable (400), or the
+/// state it needs is not there (409). The message is the sentence the player reads.
+#[must_use]
+pub fn gem_error(error: GemError) -> AppError {
+    let message = error.to_string();
+    match error {
+        GemError::EmptySlot
+        | GemError::NoSockets
+        | GemError::NoSuchSocket
+        | GemError::NotAGem => AppError::BadRequest(message),
+        GemError::Disabled
+        | GemError::SocketOccupied
+        | GemError::SocketEmpty
+        | GemError::MaxLevel
+        | GemError::NotEnoughGems(..)
+        | GemError::BagFull
+        | GemError::Insufficient(_) => AppError::Conflict(message),
+    }
+}
+
+fn gem_catalog() -> Result<&'static engine_realm::gems::GemCatalog, AppError> {
+    engine_realm::gems::builtin().ok_or_else(|| gem_error(GemError::Disabled))
+}
+
+fn replayed<T: serde::de::DeserializeOwned>(response: serde_json::Value) -> Result<T, AppError> {
+    serde_json::from_value(response)
+        .map_err(|_| AppError::internal("The earlier answer to that request could not be read."))
+}
+
+/// Socket a gem into one of the account's characters' items, atomic and idempotent: the row
+/// lock, the replay lookup under `request_id`, `ensure_unlocked`, then the write, with the
+/// response recorded in the same transaction. `Ok(None)` if the character is not the account's.
+///
+/// # Errors
+///
+/// The refusals of [`engine_realm::gems::socket`] ([`gem_error`]), the error of
+/// `ensure_unlocked`, a request id that belongs to another action, or a database failure.
+pub async fn socket_gem<Fut>(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    request_id: Uuid,
+    request: &engine_realm::api::GemSocketRequest,
+    ensure_unlocked: impl FnOnce() -> Fut,
+) -> Result<Option<engine_realm::api::GemSlotResponse>, AppError>
+where
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    let mut hub = match HubTx::begin(pool, account_id, id, Some(request_id), "gem_socket").await? {
+        HubStart::Missing => return Ok(None),
+        HubStart::Replay(response) => return replayed(response).map(Some),
+        HubStart::Locked(hub) => hub,
+    };
+    ensure_unlocked().await?;
+    let mut changed = hub.row.loadout.0.clone();
+    let outcome = gem_socket(
+        &mut changed,
+        &request.item_slot,
+        request.socket,
+        request.gem_slot,
+        gem_catalog()?,
+    )
+    .map_err(gem_error)?;
+    hub.save_loadout(&changed).await?;
+    tracing::info!(account_id = %account_id, character_id = %id, item = %outcome.item,
+        gem = %outcome.gem, socket = outcome.socket, "gem socketed");
+    let response = engine_realm::api::GemSlotResponse {
+        item: outcome.item,
+        socket: outcome.socket,
+        gem: outcome.gem,
+        cost: 0,
+        gold_left: changed.resources.get("gold").copied().unwrap_or(0),
+        character: hub.detail().await?,
+    };
+    hub.commit(&response).await?;
+    Ok(Some(response))
+}
+
+/// Take a gem out of a socket for gold, atomic and idempotent (see [`socket_gem`]).
+///
+/// # Errors
+///
+/// The refusals of [`engine_realm::gems::unsocket`] ([`gem_error`]: gold, a full bag, an empty
+/// socket), the error of `ensure_unlocked`, or a database failure.
+pub async fn unsocket_gem<Fut>(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    request_id: Uuid,
+    request: &engine_realm::api::GemUnsocketRequest,
+    ensure_unlocked: impl FnOnce() -> Fut,
+) -> Result<Option<engine_realm::api::GemSlotResponse>, AppError>
+where
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    let mut hub = match HubTx::begin(pool, account_id, id, Some(request_id), "gem_unsocket").await?
+    {
+        HubStart::Missing => return Ok(None),
+        HubStart::Replay(response) => return replayed(response).map(Some),
+        HubStart::Locked(hub) => hub,
+    };
+    ensure_unlocked().await?;
+    let mut changed = hub.row.loadout.0.clone();
+    let outcome = gem_unsocket(
+        &mut changed,
+        &request.item_slot,
+        request.socket,
+        gem_catalog()?,
+        crate::catalog().economy(),
+    )
+    .map_err(gem_error)?;
+    hub.save_loadout(&changed).await?;
+    tracing::info!(account_id = %account_id, character_id = %id, item = %outcome.item,
+        gem = %outcome.gem, cost = outcome.cost, "gem unsocketed");
+    let response = engine_realm::api::GemSlotResponse {
+        item: outcome.item,
+        socket: outcome.socket,
+        gem: outcome.gem,
+        cost: outcome.cost,
+        gold_left: outcome.gold_left,
+        character: hub.detail().await?,
+    };
+    hub.commit(&response).await?;
+    Ok(Some(response))
+}
+
+/// One gem upgrade, atomic and idempotent (see [`socket_gem`]). `draw` must be the server's own
+/// random source, never derived from the request; a replayed `request_id` returns the stored
+/// answer: no second roll, no second charge.
+///
+/// # Errors
+///
+/// The refusals of [`engine_realm::gems::upgrade`] ([`gem_error`]), the error of
+/// `ensure_unlocked`, or a database failure.
+pub async fn upgrade_gem<Fut>(
+    pool: &PgPool,
+    account_id: Uuid,
+    id: Uuid,
+    request_id: Uuid,
+    gem_slot: u32,
+    draw: &mut (dyn FnMut() -> u64 + Send),
+    ensure_unlocked: impl FnOnce() -> Fut,
+) -> Result<Option<engine_realm::api::GemUpgradeResponse>, AppError>
+where
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    let mut hub = match HubTx::begin(pool, account_id, id, Some(request_id), "gem_upgrade").await? {
+        HubStart::Missing => return Ok(None),
+        HubStart::Replay(response) => return replayed(response).map(Some),
+        HubStart::Locked(hub) => hub,
+    };
+    ensure_unlocked().await?;
+    let mut changed = hub.row.loadout.0.clone();
+    let outcome = gem_upgrade(
+        &mut changed,
+        gem_slot,
+        draw,
+        gem_catalog()?,
+        crate::catalog().economy(),
+    )
+    .map_err(gem_error)?;
+    hub.save_loadout(&changed).await?;
+    tracing::info!(account_id = %account_id, character_id = %id, gem = %outcome.gem,
+        success = outcome.success, cost = outcome.cost, "gem upgraded");
+    let response = engine_realm::api::GemUpgradeResponse {
+        gem: outcome.gem,
+        result: outcome.result,
+        success: outcome.success,
+        consumed: outcome.consumed,
+        returned: outcome.returned,
         cost: outcome.cost,
         gold_left: outcome.gold_left,
         character: hub.detail().await?,
