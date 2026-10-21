@@ -479,6 +479,7 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
         icon: ItemIcon::Ring,
         stats: vec![(Stat::Stamina, value)],
         active: None,
+        set: None,
     };
     register_catalog_items(vec![
         row("it_rare_ring", ItemQuality::Rare, 10.0),

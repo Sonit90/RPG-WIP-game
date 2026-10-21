@@ -49,14 +49,14 @@ use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiS
 use engine_game::character::equipment::{INVENTORY_COLUMNS, INVENTORY_SLOTS};
 use engine_game::character::stat::{StatGroup, armor_reduction};
 use engine_game::character::{
-    EquipSlot, ItemIcon, ItemQuality, ItemSlot, ItemStack, Stat, StatBlock,
+    EquipSlot, ItemIcon, ItemQuality, ItemSlot, ItemStack, Stat, StatBlock, active_sets_of,
 };
 use engine_game::hero::Hero;
 
 use super::input::UiInput;
 use super::kit::{self, Kit, tokens};
 use super::map_style::{TextStyle, blend, color, push_title_case, radius, type_scale};
-use super::tooltip::{ItemContext, ItemTooltip};
+use super::tooltip::{ItemContext, ItemTooltip, write_set_bonus};
 use crate::game_ui::write_integer;
 use crate::snapshot::{CharacterView, UiSnapshot};
 
@@ -1238,6 +1238,47 @@ fn push_derived_card(
             y += metrics.row;
         }
     }
+
+    // The sets the gear forms: each with a bonus on, and every tier that is on. Derived from
+    // the worn items by the same function the server uses; the panel only prints it.
+    let sets = active_sets_of(&character.equipment);
+    if sets.iter().any(|active| active.tiers_active() > 0) {
+        y += kit::section(list, kit, right.x, y, right.width, "SET BONUSES");
+        for active in sets.iter().filter(|active| active.tiers_active() > 0) {
+            scratch.clear();
+            scratch.push_str(&active.set.name);
+            scratch.push_str(" (");
+            write_integer(scratch, i64::from(active.equipped));
+            scratch.push('/');
+            write_integer(scratch, active.set.pieces.len() as i64);
+            scratch.push(')');
+            let mut rows = vec![(color::BRONZE_BRIGHT, scratch.clone())];
+            for bonus in active.active_bonuses() {
+                scratch.clear();
+                write_set_bonus(scratch, bonus, character.hero);
+                rows.extend(
+                    scratch
+                        .split('\n')
+                        .map(|line| (color::VERDANT, line.to_owned())),
+                );
+            }
+            for (ink, line) in rows {
+                if y + metrics.row > inner.bottom() {
+                    return;
+                }
+                kit.text(
+                    list,
+                    right.x,
+                    y + metrics.row * 0.5,
+                    &line,
+                    type_scale::BODY,
+                    ink,
+                    TextAlign::Left,
+                );
+                y += metrics.row;
+            }
+        }
+    }
 }
 
 /// The character themselves, standing between their gear.
@@ -1840,6 +1881,26 @@ mod tests {
             );
         }
         assert_eq!(menu.slot_at(1.0, 1.0, VIEWPORT), None);
+    }
+
+    #[test]
+    fn the_stats_panel_lists_the_active_set_bonuses_and_only_those() {
+        use engine_game::character::item_by_key;
+        engine_realm::loot::ensure_items_registered();
+        let piece = |key: &str| ItemStack::one(item_by_key(key).expect("a set piece").id);
+        let mut snapshot = snapshot();
+        snapshot.character.equipment[EquipSlot::Head.index()] = Some(piece("emberwake_hood"));
+        let one = texts(&render(&open(), &snapshot));
+        assert!(!one.iter().any(|text| text.contains("SET BONUSES")), "{one:?}");
+
+        snapshot.character.equipment[EquipSlot::Shoulder.index()] =
+            Some(piece("emberwake_mantle"));
+        snapshot.character.gear = StatBlock::of(Stat::Haste, 4.0);
+        let two = texts(&render(&open(), &snapshot));
+        assert!(two.contains(&"SET BONUSES".to_owned()), "{two:?}");
+        assert!(two.contains(&"Emberwake Regalia (2/5)".to_owned()), "{two:?}");
+        assert!(two.iter().any(|text| text.starts_with("(2) +6 Critical Strike")));
+        assert!(!two.iter().any(|text| text.starts_with("(4)")), "tier 4 is not earned");
     }
 
     #[test]

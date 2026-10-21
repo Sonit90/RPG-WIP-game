@@ -1247,6 +1247,8 @@ impl Simulation {
 
     /// Adds Heat and counts the cycle if it reached the top of the bar.
     pub(super) fn gain_heat(&mut self, amount: f32) {
+        // A set's resource generation scales what a cast pays into the bar.
+        let amount = amount * self.set_effects().resource_gen_scale();
         if self.mage.gain_heat(amount) {
             self.fire.heat_cycles += 1;
         }

@@ -73,6 +73,7 @@ pub mod rate_limit;
 pub mod reconnect;
 pub mod rewards;
 pub mod role;
+pub mod sets;
 pub mod sharpen;
 pub mod talents;
 

@@ -467,6 +467,10 @@ pub struct ItemDef {
     /// The button it gives while worn, if it is a trinket with one. Quality and sharpening
     /// do not scale it: see [`crate::trinket`].
     pub active: Option<TrinketActive>,
+    /// The equipment set this piece belongs to, by id (see [`super::sets`]). `None` for an item
+    /// that is part of no set. Set bonuses are not scaled by quality or enhancement, so this is
+    /// identity only.
+    pub set: Option<&'static str>,
 }
 
 impl ItemDef {
@@ -517,6 +521,7 @@ const fn white(
         stats: StatBlock::zero(),
         max_stack: 1,
         active: None,
+        set: None,
     }
 }
 
@@ -623,6 +628,7 @@ pub const ITEMS: [ItemDef; 12] = [
         stats: StatBlock::of_const(Stat::Stamina, 10.0),
         max_stack: 1,
         active: None,
+        set: None,
     },
 ];
 
@@ -1014,6 +1020,7 @@ static LOOT: LazyLock<Vec<ItemDef>> = LazyLock::new(|| {
                     stats,
                     max_stack: 1,
                     active: None,
+                    set: None,
                 });
                 pair_index += 1;
             }
@@ -1058,6 +1065,8 @@ pub struct CatalogItem {
     pub stats: Vec<(Stat, f32)>,
     /// The button it gives while worn, for a trinket that has one.
     pub active: Option<TrinketActive>,
+    /// The id of the equipment set it belongs to, if any (`sets.json`).
+    pub set: Option<String>,
 }
 
 /// The registered catalog rows, in registration order. Set once.
@@ -1098,6 +1107,10 @@ pub fn register_catalog_items(items: Vec<CatalogItem>) -> bool {
                     stats,
                     max_stack: 1,
                     active: row.active,
+                    set: row
+                        .set
+                        .as_deref()
+                        .map(|id| &*Box::leak(id.to_owned().into_boxed_str())),
                 }
             })
             .collect()

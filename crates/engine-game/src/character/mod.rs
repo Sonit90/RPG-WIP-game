@@ -28,6 +28,7 @@
 //! | [`equipment`] | The thirteen worn slots, the bag, and how a slot is addressed |
 //! | [`spirit`] | The Spirit proc and its stacking main-stat buff |
 //! | [`mail`] | The mailbox: items sent to a character instead of lost |
+//! | [`sets`] | Equipment sets: which are worn, and the stats and effects they add |
 
 /// What an incoming attack meets: Dodge, Parry, Block and Armour, rolled once.
 pub mod defense;
@@ -37,6 +38,8 @@ pub mod equipment;
 pub mod item;
 /// The mailbox: items that could not be handed over, kept for the player to collect.
 pub mod mail;
+/// Equipment sets: pieces worth more together, counted from what is worn.
+pub mod sets;
 /// Spirit: the chance to bank a point of Ultimate, and the stacking buff it grants.
 pub mod spirit;
 /// Every stat a character has, as one table rather than as fields.
@@ -56,6 +59,10 @@ pub use item::{
     sharpen_highlight_from, starting_item,
 };
 pub use mail::{MAIL_SOFT_CAP, MailItem, MailReason, MailSender, Mailbox, TakeMailError};
+pub use sets::{
+    ActiveSet, ActiveSets, SetBonus, SetDef, SetEffect, SetEffects, active_sets, active_sets_of,
+    register_sets, registered_sets, set_by_id,
+};
 pub use spirit::{
     SPIRIT_BUFF_DURATION, SPIRIT_MAIN_STAT_PER_STACK, SPIRIT_MAX_STACKS, SpiritProc, SpiritSurge,
 };
@@ -245,7 +252,11 @@ impl CharacterSheet {
         self.hero.base_stats()
     }
 
-    /// The sum of every worn item's stats. Nothing else contributes.
+    /// The sum of every worn item's stats, plus the bonuses of the equipment sets they form.
+    /// Nothing else contributes.
+    ///
+    /// Set stats are added as they are written: **not** scaled by an item's quality or
+    /// sharpening, because they belong to the set and not to any one copy of a piece.
     ///
     /// **Where [`Stat::MainStat`] is resolved.** Items are hero-agnostic, so a piece says
     /// "main stat" and this sheet - the one place that knows its [`Hero`] - turns it into
@@ -259,6 +270,8 @@ impl CharacterSheet {
         for (_, stack) in self.equipment.worn() {
             total.add_block(&stack.stats());
         }
+        // Before the main stat is resolved: a set may grant "main stat" like a piece does.
+        total.add_block(&sets::active_sets(&self.equipment).stats());
         let main = total.get(Stat::MainStat);
         if main != 0.0 {
             total.add(self.main_stat(), main);

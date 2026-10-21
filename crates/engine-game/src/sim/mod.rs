@@ -644,6 +644,10 @@ pub struct Simulation {
     effect_stat_bonus: crate::character::StatBlock,
     /// The active player's trinket cooldowns and Group Absorb pool.
     trinket: crate::trinket::TrinketState,
+    /// The active player's equipment-set effects, worked out by
+    /// [`Simulation::refresh_character`] whenever what they wear changes, so a hit reads a
+    /// copy instead of recounting the pieces.
+    set_effects: crate::character::SetEffects,
 }
 
 impl Simulation {
@@ -739,6 +743,7 @@ impl Simulation {
             health_override: None,
             effect_stat_bonus: crate::character::StatBlock::default(),
             trinket: crate::trinket::TrinketState::new(),
+            set_effects: crate::character::SetEffects::NONE,
             tick: 0,
             time: 0.0,
             stats: SimStats::default(),
@@ -982,6 +987,27 @@ impl Simulation {
             crit_chance: stats.percent(Stat::CriticalStrike),
             crit_damage: 0.0,
         };
+
+        // **Equipment sets.** The stats above already include the active tiers (they ride
+        // `gear_stats`); the cooldown cuts go into the ability book, the same place a hero
+        // talent's change to a cooldown goes. Damage and resource generation read the copy
+        // kept here where they apply (see `set_effects`).
+        let effects = crate::character::SetEffects::of(self.sheet().equipment());
+        self.set_effects = effects;
+        for ability in FireAbility::ALL {
+            self.mage
+                .abilities
+                .set_cooldown_scale(ability, effects.cooldown_scale(ability));
+        }
+    }
+
+    /// **What the active player's equipment sets are doing to their abilities right now.**
+    ///
+    /// Worked out from the worn items by [`Simulation::refresh_character`], which every change
+    /// to them goes through, and kept per player; the hot paths (every hit) read this copy.
+    #[must_use]
+    pub fn set_effects(&self) -> crate::character::SetEffects {
+        self.set_effects
     }
 
     /// Replaces the player's maximum health with `max`, or gives it back to the character
@@ -2699,6 +2725,14 @@ impl Simulation {
             // bypass it.
             amount *= 1.0 + self.versatility_of(source);
             amount *= 1.0 - self.versatility_of(target) * VERSATILITY_MITIGATION_SHARE;
+            // **Set bonuses** that make an ability hit harder: the active player, by this
+            // point, is the one dealing the damage (see `context_player`).
+            if source == self.player.entity
+                && target != source
+                && let Some(ability) = ability.fire()
+            {
+                amount *= 1.0 + self.set_effects().damage_bonus(ability);
+            }
             if target != self.player.entity {
                 amount *= 1.0 - self.status_damage_reduction(target);
             }

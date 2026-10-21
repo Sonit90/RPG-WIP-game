@@ -527,7 +527,7 @@ fn gear_profiles(out: &mut String) {
          best rare in every slot; `medium` an epic in every other slot and rares between; \
          `high` the best epic in each slot that has one (the catalog has epics for head, chest, \
          necklace, one ring and the trinkets, so the rest are rares); `p2_max` the same pieces \
-         at the quality ceiling with a heavy sharpening. `--gear top` is an alias of `high`.\n"
+         at the quality ceiling with a heavy sharpening; `p2_set` is `p2_max` with the class's full major set (see `docs/sets.md`) worn over the slots it covers, so its gain over `p2_max` is the set's pieces and bonuses together. `--gear top` is an alias of `high`.\n"
     );
     let _ = writeln!(
         out,

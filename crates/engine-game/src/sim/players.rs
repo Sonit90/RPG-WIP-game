@@ -65,6 +65,7 @@ pub struct PlayerSlot {
     effect_stat_bonus: crate::character::StatBlock,
     last_move: MoveResult,
     trinket: crate::trinket::TrinketState,
+    set_effects: crate::character::SetEffects,
 }
 
 impl PlayerSlot {
@@ -103,6 +104,7 @@ impl PlayerSlot {
             effect_stat_bonus: crate::character::StatBlock::default(),
             last_move: MoveResult::default(),
             trinket: crate::trinket::TrinketState::new(),
+            set_effects: crate::character::SetEffects::NONE,
         }
     }
 
@@ -142,6 +144,7 @@ impl Simulation {
         swap(&mut self.effect_stat_bonus, &mut slot.effect_stat_bonus);
         swap(&mut self.last_move, &mut slot.last_move);
         swap(&mut self.trinket, &mut slot.trinket);
+        swap(&mut self.set_effects, &mut slot.set_effects);
     }
 
     /// Runs `body` with the player at `index` in `others` active, then restores the active

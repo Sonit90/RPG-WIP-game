@@ -34,8 +34,10 @@ use std::hash::{Hash, Hasher};
 
 use engine_game::ability::text::{self as ability_text, ResourceMode};
 use engine_game::character::stat::{HEALTH_PER_STAMINA, armor_reduction};
+use engine_game::character::equipment::INVENTORY_SLOTS;
 use engine_game::character::{
-    BROKEN_PENALTY, EquipSlot, ItemProps, ItemSlot, ItemStack, Stat, StatBlock,
+    BROKEN_PENALTY, EquipSlot, ItemProps, ItemSlot, ItemStack, SetBonus, SetDef, SetEffect, Stat,
+    StatBlock, active_sets_of, item_by_key, set_by_id,
 };
 use engine_game::firemage::{FireAbility, FireMastery, TargetMode};
 use engine_game::hero::Hero;
@@ -54,7 +56,7 @@ pub const DEFAULT_WIDTH: f32 = 380.0;
 pub const DOCK_HEIGHT: f32 = 64.0;
 
 /// Sections a tooltip may hold.
-const MAX_SECTIONS: usize = 8;
+const MAX_SECTIONS: usize = 12;
 
 /// What a section is, which decides its heading and its colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,6 +83,12 @@ pub enum SectionKind {
     Numbers,
     /// An item against the one it would replace; lines starting `+` are green, `-` red.
     Comparison,
+    /// An item's equipment set: its name and how much of it is worn.
+    SetName,
+    /// Set pieces, worn first (green) then the rest (muted); one section per state.
+    SetPiece,
+    /// Set bonus tiers: the active ones (green) then the ones still to earn (muted).
+    SetBonus,
 }
 
 impl SectionKind {
@@ -88,7 +96,14 @@ impl SectionKind {
     #[must_use]
     pub fn heading(self) -> Option<&'static str> {
         match self {
-            Self::Description | Self::Effect | Self::Details | Self::Stats | Self::Quality => None,
+            Self::Description
+            | Self::Effect
+            | Self::Details
+            | Self::Stats
+            | Self::Quality
+            | Self::SetName
+            | Self::SetPiece
+            | Self::SetBonus => None,
             Self::Numbers => Some("WHAT IT DOES FOR YOU"),
             Self::Comparison => Some("COMPARED TO EQUIPPED"),
             Self::Resource => Some("RESOURCE"),
@@ -107,7 +122,7 @@ impl SectionKind {
             Self::Requirements => color::EMBER,
             Self::Stats => color::VERDANT,
             Self::Quality => color::BRONZE_BRIGHT,
-            Self::Numbers | Self::Comparison => color::BRONZE_BRIGHT,
+            Self::Numbers | Self::Comparison | Self::SetName => color::BRONZE_BRIGHT,
             _ => color::TEXT_MUTED,
         }
     }
@@ -116,9 +131,14 @@ impl SectionKind {
     #[must_use]
     pub fn style(self) -> TextStyle {
         match self {
-            Self::Effect | Self::Details | Self::Numbers | Self::Comparison | Self::Quality => {
-                tokens::TOOLTIP_META
-            }
+            Self::Effect
+            | Self::Details
+            | Self::Numbers
+            | Self::Comparison
+            | Self::Quality
+            | Self::SetName
+            | Self::SetPiece
+            | Self::SetBonus => tokens::TOOLTIP_META,
             _ => tokens::TOOLTIP_BODY,
         }
     }
@@ -209,6 +229,11 @@ impl TooltipModel {
         section.color = color::TEXT_PRIMARY;
         section.highlight = false;
         section
+    }
+
+    /// Gives back the section most recently started, for one that turned out to be empty.
+    fn drop_last_section(&mut self) {
+        self.len = self.len.saturating_sub(1);
     }
 
     /// The live sections.
@@ -886,6 +911,10 @@ pub struct ItemContext {
     pub total: StatBlock,
     /// What putting the item on would take off, for an item that is not already worn.
     pub replaces: Option<ItemStack>,
+    /// What the reader wears, for the set section: which pieces are on.
+    pub worn: [Option<ItemStack>; EquipSlot::COUNT],
+    /// What the reader carries, for the set section: which pieces they own.
+    pub carried: [Option<ItemStack>; INVENTORY_SLOTS],
 }
 
 impl ItemContext {
@@ -900,6 +929,8 @@ impl ItemContext {
                     place: ItemPlace::Equipped(worn),
                     total: character.total,
                     replaces: None,
+                    worn: character.equipment,
+                    carried: character.inventory,
                 },
             ),
             ItemSlot::Inventory(_) => (stack, Self::loose(character, stack, ItemPlace::Bag)),
@@ -915,6 +946,8 @@ impl ItemContext {
             place,
             total: character.total,
             replaces,
+            worn: character.equipment,
+            carried: character.inventory,
         }
     }
 }
@@ -1107,12 +1140,144 @@ pub fn fill_item(model: &mut TooltipModel, stack: ItemStack, hero: Hero, context
         }
     }
 
+    if let Some(set) = def.set.and_then(set_by_id) {
+        fill_set(model, set, hero, context);
+    }
+
     model.footer.push_str(match context.place {
         ItemPlace::Equipped(_) => "Right-click to unequip - drag to move",
         ItemPlace::Bag => "Right-click to equip - drag to move",
         ItemPlace::Loose => "Added to your bag",
         ItemPlace::Mailed => "Sent to your mail",
     });
+}
+
+/// Writes a set effect as a short phrase: `+12% Firebolt damage`, `Flame Lance cooldown -20%`,
+/// `+15% resource generation`.
+pub fn write_set_effect(out: &mut String, effect: SetEffect) {
+    let percent = (effect.value() * 100.0).round() as i64;
+    match effect {
+        SetEffect::DamagePct { ability, .. } => {
+            out.push('+');
+            write_integer(out, percent);
+            out.push_str("% ");
+            super::map_style::push_title_case(out, ability.definition().name);
+            out.push_str(" damage");
+        }
+        SetEffect::CooldownPct { ability, .. } => {
+            super::map_style::push_title_case(out, ability.definition().name);
+            out.push_str(" cooldown -");
+            write_integer(out, percent);
+            out.push('%');
+        }
+        SetEffect::ResourceGenPct { .. } => {
+            out.push('+');
+            write_integer(out, percent);
+            out.push_str("% resource generation");
+        }
+    }
+}
+
+/// Writes one set bonus tier: its stats on one line, then one line per effect, the first
+/// prefixed with its piece count: `(2) +6 Critical Strike, +4 Haste`.
+pub fn write_set_bonus(out: &mut String, bonus: &SetBonus, hero: Hero) {
+    out.push('(');
+    write_integer(out, i64::from(bonus.count));
+    out.push_str(") ");
+    let mut wrote = false;
+    for (stat, value) in &bonus.stats {
+        if wrote {
+            out.push_str(", ");
+        }
+        write_signed(out, *value);
+        out.push(' ');
+        super::map_style::push_title_case(out, stat.display_for(hero));
+        wrote = true;
+    }
+    for effect in &bonus.effects {
+        if wrote {
+            out.push_str("\n     ");
+        }
+        write_set_effect(out, *effect);
+        wrote = true;
+    }
+}
+
+/// Writes the set sections of an item that belongs to `set`: the name and how many pieces are
+/// worn, the pieces (worn ones highlighted, owned ones plain, missing ones muted) and every
+/// bonus tier, greyed until the worn pieces earn it.
+fn fill_set(model: &mut TooltipModel, set: &SetDef, hero: Hero, context: &ItemContext) {
+    let worn = active_sets_of(&context.worn);
+    let equipped = worn.get(&set.id).map_or(0, |active| active.equipped);
+
+    let name = model.section(SectionKind::SetName);
+    name.color = color::BRONZE_BRIGHT;
+    name.text.push_str(&set.name);
+    name.text.push_str(" (");
+    write_integer(&mut name.text, i64::from(equipped));
+    name.text.push('/');
+    write_integer(&mut name.text, set.pieces.len() as i64);
+    name.text.push(')');
+
+    #[derive(PartialEq, Clone, Copy)]
+    enum Have {
+        Worn,
+        Carried,
+        Missing,
+    }
+    let has = |stacks: &[Option<ItemStack>], key: &str| {
+        item_by_key(key).is_some_and(|def| stacks.iter().flatten().any(|s| s.item == def.id))
+    };
+    for (state, tint, highlight) in [
+        (Have::Worn, color::VERDANT, true),
+        (Have::Carried, color::TEXT_PRIMARY, false),
+        (Have::Missing, color::TEXT_MUTED, false),
+    ] {
+        let section = model.section(SectionKind::SetPiece);
+        section.color = tint;
+        section.highlight = highlight;
+        for key in &set.pieces {
+            let have = if has(&context.worn, key) {
+                Have::Worn
+            } else if has(&context.carried, key) {
+                Have::Carried
+            } else {
+                Have::Missing
+            };
+            if have != state {
+                continue;
+            }
+            if !section.text.is_empty() {
+                section.text.push('\n');
+            }
+            let piece = item_by_key(key).map_or(key.as_str(), |def| def.name);
+            super::map_style::push_title_case(&mut section.text, piece);
+            if state == Have::Carried {
+                section.text.push_str(" (in bag)");
+            }
+        }
+        if section.text.is_empty() {
+            // Nothing in this state: give the section back.
+            model.drop_last_section();
+        }
+    }
+
+    for (active, tint) in [(true, color::VERDANT), (false, color::TEXT_MUTED)] {
+        let section = model.section(SectionKind::SetBonus);
+        section.color = tint;
+        for bonus in &set.bonuses {
+            if (bonus.count <= equipped) != active {
+                continue;
+            }
+            if !section.text.is_empty() {
+                section.text.push('\n');
+            }
+            write_set_bonus(&mut section.text, bonus, hero);
+        }
+        if section.text.is_empty() {
+            model.drop_last_section();
+        }
+    }
 }
 
 /// Writes the quality sections of an item copy: `Base Quality: 106%`, `Sharpening: +7%`,
@@ -1572,6 +1737,52 @@ Effective Quality: 89%"
             super::super::character_menu::quality_color(engine_game::character::ItemQuality::Epic)
         );
         assert_eq!(model.meta[0].0, "Epic");
+    }
+
+    #[test]
+    fn a_set_piece_lists_its_set_and_greys_the_tiers_it_has_not_earned() {
+        use engine_game::character::item_by_key;
+        engine_realm::loot::ensure_items_registered();
+        let piece = |key: &str| ItemStack::one(item_by_key(key).expect("a set piece").id);
+        let mut character = character();
+        character.equipment = [None; EquipSlot::COUNT];
+        character.inventory = [None; engine_game::character::INVENTORY_SLOTS];
+        character.equipment[EquipSlot::Head.index()] = Some(piece("emberwake_hood"));
+        character.equipment[EquipSlot::Shoulder.index()] = Some(piece("emberwake_mantle"));
+        character.inventory[0] = Some(piece("emberwake_shroud"));
+
+        let stack = piece("emberwake_shroud");
+        let context = ItemContext::loose(&character, stack, ItemPlace::Bag);
+        let mut model = TooltipModel::new();
+        fill_item(&mut model, stack, Hero::FireMage, &context);
+
+        let name = &model.find(SectionKind::SetName).expect("a set name").text;
+        assert_eq!(name, "Emberwake Regalia (2/5)");
+        let pieces: Vec<_> = model
+            .sections()
+            .filter(|section| section.kind == Some(SectionKind::SetPiece))
+            .collect();
+        assert_eq!(pieces.len(), 3, "worn, owned and missing");
+        assert!(pieces[0].highlight && pieces[0].text.contains("Emberwake Hood"));
+        assert!(pieces[1].text.contains("Emberwake Shroud (in bag)"));
+        assert!(pieces[2].text.contains("Emberwake Gauntlets"));
+        let bonuses: Vec<_> = model
+            .sections()
+            .filter(|section| section.kind == Some(SectionKind::SetBonus))
+            .collect();
+        assert_eq!(bonuses.len(), 2, "earned, then still to earn");
+        assert!(bonuses[0].text.starts_with("(2) +6 Critical Strike"));
+        assert!(!bonuses[0].text.contains("(4)"));
+        assert!(bonuses[1].text.contains("(4)") && bonuses[1].text.contains("(5)"));
+        assert!(bonuses[1].text.contains("+12% Firebolt damage"));
+        assert!(bonuses[1].text.contains("Flame Lance cooldown -20%"));
+        assert_ne!(bonuses[0].color, bonuses[1].color);
+
+        // An item that is part of no set says nothing about one.
+        let loose = piece("gravewardens_cowl");
+        let context = ItemContext::loose(&character, loose, ItemPlace::Bag);
+        fill_item(&mut model, loose, Hero::FireMage, &context);
+        assert!(model.find(SectionKind::SetName).is_none());
     }
 
     /// An epic from the registered catalog items, if the catalog registered any.
