@@ -1568,6 +1568,7 @@ impl OnlineSession {
                     character_id: character,
                     dungeon_id: dungeon,
                     role,
+                    difficulty: None,
                 });
             }
             FrontEndAction::Back => {

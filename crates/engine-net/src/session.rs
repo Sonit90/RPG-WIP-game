@@ -179,6 +179,8 @@ pub enum NetCommand {
         dungeon_id: String,
         /// As which role.
         role: Role,
+        /// A community map's difficulty (1 to 10); `None` for an official dungeon.
+        difficulty: Option<u32>,
     },
     /// Leave the queue.
     LeaveQueue,
@@ -828,12 +830,14 @@ impl Worker {
                 character_id,
                 dungeon_id,
                 role,
+                difficulty,
             } => {
                 let Some(token) = self.access() else { return };
                 let request = QueueRequest {
                     character_id,
                     dungeon_id,
                     role,
+                    difficulty,
                 };
                 match self.api.queue(&token, &request) {
                     Ok(()) => self.emit(NetEvent::QueueAccepted),

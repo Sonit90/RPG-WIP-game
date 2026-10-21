@@ -30,6 +30,7 @@
 //! | [`sharpen`] | sharpening equipment: cost, success and breakage |
 //! | [`reforge`] | the reforge gamble: re-roll an item's base quality from a published table |
 //! | [`loot`] | the loot catalog: dungeon items, drop tables, quality and epic odds |
+//! | [`community`] | community maps at play time: ids, the dungeon a map becomes, no-grant rules, API bodies |
 //! | [`mapcheck`] | validation of community maps and official scenes, one shared rule set |
 //! | [`haul`] | monster drops and the loot lines of a run summary |
 //! | [`key`] | dungeon keys: validity, progression, scaling |
@@ -53,6 +54,7 @@ pub mod api;
 pub mod catalog;
 pub mod chat;
 pub mod combat;
+pub mod community;
 pub mod economy;
 pub mod error;
 pub mod haul;

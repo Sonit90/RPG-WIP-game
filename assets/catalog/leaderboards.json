@@ -2,5 +2,5 @@
   "version": 1,
   "score": { "kind": "key_then_time" },
   "page_size": 25,
-  "boards": ["fastest", "highest"]
+  "boards": ["fastest", "highest", "completions"]
 }

@@ -281,6 +281,10 @@ pub struct QueueRequest {
     pub dungeon_id: String,
     /// As which role.
     pub role: Role,
+    /// For a community map (`cm:` dungeon): the difficulty to play at, 1 to
+    /// [`crate::community::MAX_DIFFICULTY`]. Ignored for official dungeons, which use the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<u32>,
 }
 
 /// The API's error body: `{"error":{"code":..,"message":..}}`.
@@ -618,6 +622,26 @@ pub struct LeaderboardRow {
     pub party: Vec<RunMember>,
 }
 
+/// One player on the completions board.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompletionRow {
+    /// Position, from 1.
+    pub rank: u32,
+    /// The character that completed.
+    pub character_id: String,
+    /// Their name.
+    pub name: String,
+    /// Their class.
+    #[serde(default)]
+    pub hero: String,
+    /// Completed runs of the dungeon.
+    pub completions: u32,
+    /// The highest key level (difficulty) among them.
+    pub best_key_level: u32,
+    /// The fastest, microseconds.
+    pub best_duration_us: i64,
+}
+
 /// `GET /api/v1/leaderboards?dungeon=&key=&season=&board=&page=`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LeaderboardPage {
@@ -639,6 +663,9 @@ pub struct LeaderboardPage {
     /// Whether a later page has rows.
     #[serde(default)]
     pub has_more: bool,
+    /// The rows of the `completions` board (which ranks players, so `rows` is empty then).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completions: Vec<CompletionRow>,
 }
 
 /// `POST /api/v1/characters/{id}/sharpen`.
