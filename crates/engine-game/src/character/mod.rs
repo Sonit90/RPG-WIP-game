@@ -52,7 +52,7 @@ pub use equipment::{
     Equipment, INVENTORY_COLUMNS, INVENTORY_SLOTS, Inventory, ItemSlot, MoveError,
 };
 pub use item::{
-    BROKEN_PENALTY, CATALOG_ID_BASE, CatalogItem, EquipSlot, ITEMS, ItemDef, ItemFamily, ItemIcon,
+    BROKEN_PENALTY, CATALOG_ID_BASE, CatalogItem, EquipSlot, GEM_SOCKETS_MAX, GEM_STACK_MAX, ITEMS, ItemDef, ItemFamily, ItemIcon,
     ItemId, ItemProps, ItemQuality, ItemStack, QUALITY_DEFAULT, QUALITY_MAX, QUALITY_MIN,
     SHARPEN_HIGHLIGHT_DEFAULT, SHARPEN_STEP_PCT, SHARPENING_CEILING, catalog_items, item,
     item_by_key, loot_pool, register_catalog_items, set_sharpen_highlight_from,
@@ -255,8 +255,9 @@ impl CharacterSheet {
     /// The sum of every worn item's stats, plus the bonuses of the equipment sets they form.
     /// Nothing else contributes.
     ///
-    /// Set stats are added as they are written: **not** scaled by an item's quality or
-    /// sharpening, because they belong to the set and not to any one copy of a piece.
+    /// Set stats and socketed gems' stats are added as they are written: **not** scaled by an
+    /// item's quality or sharpening, because they belong to the set (or the gem) and not to the
+    /// copy of the piece.
     ///
     /// **Where [`Stat::MainStat`] is resolved.** Items are hero-agnostic, so a piece says
     /// "main stat" and this sheet - the one place that knows its [`Hero`] - turns it into
@@ -269,6 +270,9 @@ impl CharacterSheet {
         let mut total = StatBlock::zero();
         for (_, stack) in self.equipment.worn() {
             total.add_block(&stack.stats());
+            // Socketed gems: their stats as written, not scaled by the piece's quality or
+            // sharpening (like set bonuses).
+            total.add_block(&stack.props.gem_stats());
         }
         // Before the main stat is resolved: a set may grant "main stat" like a piece does.
         total.add_block(&sets::active_sets(&self.equipment).stats());

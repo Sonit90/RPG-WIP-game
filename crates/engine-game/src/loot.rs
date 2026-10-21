@@ -150,6 +150,94 @@ pub struct GoldRules {
     pub boss_amount: u32,
 }
 
+/// One source's gem drop: how often, and how the dropped gem's level is spread.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GemSourceRule {
+    /// Where the drop comes from.
+    pub source: DropSource,
+    /// The chance, per player per event, of one gem at key level 1.
+    pub chance: f32,
+    /// Relative weight per gem level (index 0 is level 1). Levels beyond the list never drop.
+    pub level_weights: Vec<f32>,
+}
+
+/// Gem drops: which gem items exist and how often each source gives one.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GemDrops {
+    /// The rule of every source that drops gems (a source with none drops none).
+    pub sources: Vec<GemSourceRule>,
+    /// The chance is multiplied by `1 + this x (key level - 1)`.
+    pub key_bonus_per_level: f32,
+    /// The most that multiplier reaches.
+    pub max_multiplier: f32,
+    /// The gem items: `items[kind][level - 1]`. Every kind is equally likely.
+    pub items: Vec<Vec<ItemId>>,
+}
+
+impl GemDrops {
+    /// No gem ever drops.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// The chance, `0..=1`, of a gem from `source` at `key_level` with a reward bonus.
+    #[must_use]
+    pub fn chance_at(&self, source: DropSource, key_level: u32, bonus_pct: u32) -> f32 {
+        let Some(rule) = self.sources.iter().find(|rule| rule.source == source) else {
+            return 0.0;
+        };
+        let multiplier = (1.0 + self.key_bonus_per_level * key_level.saturating_sub(1) as f32)
+            .clamp(1.0, self.max_multiplier.max(1.0));
+        (rule.chance * multiplier * bonus_factor(bonus_pct)).clamp(0.0, 1.0)
+    }
+}
+
+/// **One gem roll** for `source`: whether one drops (the key level and reward bonus raise the
+/// chance), then which kind (uniform), then which level (by the source's weights).
+///
+/// Draws exactly three numbers whatever the outcome, and none at all when the rules have no
+/// gems, so a table without gems leaves every other roll where it was.
+pub fn roll_gem(
+    rules: &LootRules,
+    source: DropSource,
+    key_level: u32,
+    bonus_pct: u32,
+    rng: &mut Rng,
+) -> Option<ItemId> {
+    let gems = &rules.gems;
+    if gems.items.is_empty() {
+        return None;
+    }
+    let (hit, kind_roll, level_roll) = (rng.next_f32(), rng.next_f32(), rng.next_f32());
+    let rule = gems.sources.iter().find(|rule| rule.source == source)?;
+    if hit >= gems.chance_at(source, key_level, bonus_pct) {
+        return None;
+    }
+    let kind = ((kind_roll * gems.items.len() as f32) as usize).min(gems.items.len() - 1);
+    let levels = &gems.items[kind];
+    let weights: Vec<f32> = rule
+        .level_weights
+        .iter()
+        .take(levels.len())
+        .map(|weight| weight.max(0.0))
+        .collect();
+    let total: f32 = weights.iter().sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut target = level_roll * total;
+    let mut chosen = weights.len() - 1;
+    for (index, weight) in weights.iter().enumerate() {
+        if target < *weight {
+            chosen = index;
+            break;
+        }
+        target -= weight;
+    }
+    levels.get(chosen).copied()
+}
+
 /// Every loot number the simulation needs, as plain data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LootRules {
@@ -169,6 +257,8 @@ pub struct LootRules {
     pub gold: GoldRules,
     /// How a drop is pre-sharpened.
     pub sharpening: SharpeningDrops,
+    /// Gems.
+    pub gems: GemDrops,
 }
 
 impl LootRules {
@@ -429,6 +519,8 @@ pub(crate) mod tests {
             stats: vec![(Stat::Stamina, value)],
             active: None,
             set: None,
+            sockets: 0,
+            gem_level: 0,
         };
         crate::character::register_catalog_items(vec![
             mk("test_rare_ring", ItemFamily::Ring, ItemQuality::Rare, 10.0),
@@ -512,6 +604,7 @@ pub(crate) mod tests {
                 boss_amount: 50,
             },
             sharpening: SharpeningDrops::none(),
+            gems: GemDrops::none(),
         }
     }
 
@@ -670,5 +763,54 @@ pub(crate) mod tests {
         }
         assert_eq!(boss_gold(&rules, 0).map(|g| g.amount), Some(50));
         assert_eq!(boss_gold(&rules, 25).map(|g| g.amount), Some(63));
+    }
+
+    fn gem_rules() -> LootRules {
+        let mut rules = rules();
+        let ids = |base: u16| (0..3).map(|i| ItemId(base + i)).collect::<Vec<_>>();
+        rules.gems = GemDrops {
+            sources: vec![GemSourceRule {
+                source: DropSource::Mob,
+                chance: 0.1,
+                level_weights: vec![3.0, 1.0],
+            }],
+            key_bonus_per_level: 0.1,
+            max_multiplier: 2.0,
+            items: vec![ids(100), ids(200)],
+        };
+        rules
+    }
+
+    #[test]
+    fn gem_rolls_are_deterministic_and_follow_chance_kind_and_level() {
+        let rules = gem_rules();
+        let roll = |seed| {
+            let mut rng = Rng::new(seed);
+            (0..20_000)
+                .filter_map(|_| roll_gem(&rules, DropSource::Mob, 1, 0, &mut rng))
+                .collect::<Vec<_>>()
+        };
+        let drops = roll(5);
+        assert_eq!(drops, roll(5), "same seed, same gems");
+        let rate = drops.len() as f32 / 20_000.0;
+        assert!((rate - 0.1).abs() < 0.01, "{rate}");
+        // Both kinds, only the two weighted levels, level 1 three times as often.
+        assert!(drops.iter().any(|id| id.0 >= 200) && drops.iter().any(|id| id.0 < 200));
+        assert!(drops.iter().all(|id| id.0 % 100 < 2));
+        let level1 = drops.iter().filter(|id| id.0 % 100 == 0).count() as f32;
+        assert!((level1 / drops.len() as f32 - 0.75).abs() < 0.04);
+        // A source with no rule never drops; the key level and bonus raise the chance.
+        let mut rng = Rng::new(1);
+        assert!((0..2000).all(|_| roll_gem(&rules, DropSource::Boss, 1, 0, &mut rng).is_none()));
+        assert!(rules.gems.chance_at(DropSource::Mob, 6, 0) > rules.gems.chance_at(DropSource::Mob, 1, 0));
+        assert!(rules.gems.chance_at(DropSource::Mob, 1, 50) > rules.gems.chance_at(DropSource::Mob, 1, 0));
+    }
+
+    #[test]
+    fn no_gem_rules_means_no_draws() {
+        let rules = rules();
+        let (mut a, mut b) = (Rng::new(9), Rng::new(9));
+        assert_eq!(roll_gem(&rules, DropSource::Mob, 1, 0, &mut a), None);
+        assert_eq!(a.next_f32(), b.next_f32(), "nothing was drawn");
     }
 }

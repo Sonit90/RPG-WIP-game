@@ -480,6 +480,8 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
         stats: vec![(Stat::Stamina, value)],
         active: None,
         set: None,
+        sockets: 0,
+        gem_level: 0,
     };
     register_catalog_items(vec![
         row("it_rare_ring", ItemQuality::Rare, 10.0),
@@ -538,6 +540,7 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
             boss_amount: 40,
         },
         sharpening: engine_game::loot::SharpeningDrops::none(),
+        gems: engine_game::loot::GemDrops::none(),
     }
 }
 

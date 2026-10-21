@@ -345,6 +345,7 @@ pub fn sheet_of_items(hero: Hero, loadout: &[(EquipSlot, String, ItemProps)]) ->
                 quality: props.quality,
                 sharpening: props.sharpening,
                 broken: props.broken,
+                gems: engine_realm::loadout::gem_keys_of(props.gems),
             })
             .collect(),
         ..StoredLoadout::default()

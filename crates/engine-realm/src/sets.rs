@@ -321,6 +321,7 @@ mod tests {
                 quality: 100,
                 sharpening: 0,
                 broken: false,
+                gems: Vec::new(),
             });
         }
         let sheet = crate::loadout::sheet_of(Hero::FireMage, &loadout);
