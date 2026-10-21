@@ -263,7 +263,7 @@ impl Simulation {
             if bonus > 0.0 && self.loot_rng.chance(bonus.min(1.0)) {
                 rolls += 1;
             }
-            let items = (0..rolls)
+            let mut items = (0..rolls)
                 .filter_map(|_| {
                     loot::roll_equipment(
                         table,
@@ -275,7 +275,19 @@ impl Simulation {
                     )
                 })
                 .map(|(item, props)| ItemStack::with_props(item, props))
-                .collect();
+                .collect::<Vec<_>>();
+            // Books: only when the rules carry them, so a ruleset without them draws exactly
+            // what it always drew.
+            if let Some(books) = &rules.books {
+                let hero = self
+                    .with_player(player, |sim| sim.hero)
+                    .unwrap_or(self.hero);
+                if let Some(book) =
+                    loot::roll_book(books, boss, hero, key_level, &mut self.loot_rng)
+                {
+                    items.push(ItemStack::one(book));
+                }
+            }
             shares.push((player, items));
         }
         shares

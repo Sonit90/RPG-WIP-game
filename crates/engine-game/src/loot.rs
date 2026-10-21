@@ -35,6 +35,8 @@
 
 use crate::character::{ItemId, ItemProps, ItemQuality, QUALITY_MAX, QUALITY_MIN, item};
 use crate::firemage::Rng;
+use crate::hero::Hero;
+use crate::talent::books::BookKind;
 pub use crate::sharpen_drops::{DropSource, SharpeningDrops};
 
 /// One entry of a loot table: an item and how likely it is relative to its siblings.
@@ -169,6 +171,86 @@ pub struct LootRules {
     pub gold: GoldRules,
     /// How a drop is pre-sharpened.
     pub sharpening: SharpeningDrops,
+    /// Book drops from a boss chest. `None`: bosses drop no books.
+    pub books: Option<BookRules>,
+}
+
+/// The chance a boss chest holds a book, per player, by kind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BookChances {
+    /// A talent-point book.
+    pub talent: f32,
+    /// An enhancement book.
+    pub enhancement: f32,
+}
+
+/// One book a boss can drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BookDrop {
+    /// The book's item.
+    pub item: ItemId,
+    /// Its kind.
+    pub kind: BookKind,
+    /// The lowest key level it drops at.
+    pub min_key_level: u32,
+}
+
+/// Book drops: a chance per boss, and each hero's books.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BookRules {
+    /// The chances of a boss with no row of its own.
+    pub default: BookChances,
+    /// Per-boss chances, by the boss's stable id.
+    pub bosses: Vec<(String, BookChances)>,
+    /// Every hero's books, indexed by [`Hero::index`].
+    pub per_hero: [Vec<BookDrop>; 3],
+}
+
+impl BookRules {
+    /// The chances for `boss`.
+    #[must_use]
+    pub fn chances_for(&self, boss: Option<&str>) -> BookChances {
+        boss.and_then(|id| self.bosses.iter().find(|(name, _)| name == id))
+            .map_or(self.default, |(_, chances)| *chances)
+    }
+}
+
+/// **One boss-chest book roll** for a player of `hero` at `key_level`: at most one book.
+///
+/// A talent book is tried first, then an enhancement book; either needs a book of the hero's whose
+/// key-level gate is met, and the book is picked uniformly among those (a hit with nothing eligible
+/// falls through to the other kind). Draws exactly three numbers
+/// from `rng` whatever the outcome.
+pub fn roll_book(
+    rules: &BookRules,
+    boss: Option<&str>,
+    hero: Hero,
+    key_level: u32,
+    rng: &mut Rng,
+) -> Option<ItemId> {
+    let chances = rules.chances_for(boss);
+    let talent_hit = rng.chance(chances.talent);
+    let enhancement_hit = rng.chance(chances.enhancement);
+    let pick = rng.next_f32();
+    let eligible_of = |kind: BookKind| -> Vec<&BookDrop> {
+        rules.per_hero[hero.index()]
+            .iter()
+            .filter(|book| book.kind == kind && book.min_key_level <= key_level)
+            .collect()
+    };
+    let mut eligible = if talent_hit {
+        eligible_of(BookKind::TalentPoint)
+    } else {
+        Vec::new()
+    };
+    if eligible.is_empty() && enhancement_hit {
+        eligible = eligible_of(BookKind::Enhancement);
+    }
+    if eligible.is_empty() {
+        return None;
+    }
+    let index = ((pick * eligible.len() as f32) as usize).min(eligible.len() - 1);
+    Some(eligible[index].item)
 }
 
 impl LootRules {
@@ -512,6 +594,74 @@ pub(crate) mod tests {
                 boss_amount: 50,
             },
             sharpening: SharpeningDrops::none(),
+            books: None,
+        }
+    }
+
+    fn book_rules(talent: f32, enhancement: f32) -> BookRules {
+        let book = |id, kind, min_key_level| BookDrop {
+            item: ItemId(id),
+            kind,
+            min_key_level,
+        };
+        BookRules {
+            default: BookChances {
+                talent,
+                enhancement,
+            },
+            bosses: vec![(
+                "quiet_boss".to_owned(),
+                BookChances {
+                    talent: 0.0,
+                    enhancement: 0.0,
+                },
+            )],
+            per_hero: [
+                vec![],
+                vec![
+                    book(1, BookKind::TalentPoint, 8),
+                    book(2, BookKind::TalentPoint, 12),
+                    book(3, BookKind::Enhancement, 6),
+                ],
+                vec![],
+            ],
+        }
+    }
+
+    #[test]
+    fn books_drop_by_class_kind_and_key_level_gate() {
+        let rules = book_rules(1.0, 1.0);
+        let roll = |hero, key| roll_book(&rules, Some("b"), hero, key, &mut Rng::new(7));
+        assert_eq!(roll(Hero::Warrior, 5), None, "below every gate");
+        assert_eq!(roll(Hero::Warrior, 6), Some(ItemId(3)), "falls through to enhancement");
+        assert_eq!(roll(Hero::FireMage, 20), None, "no books for this class");
+        let hit = roll(Hero::Warrior, 8).expect("a talent book");
+        assert!(hit == ItemId(1));
+        let both = roll(Hero::Warrior, 12).expect("a talent book");
+        assert!(both == ItemId(1) || both == ItemId(2));
+        let only_enhancement = book_rules(0.0, 1.0);
+        let got = roll_book(&only_enhancement, None, Hero::Warrior, 6, &mut Rng::new(1));
+        assert_eq!(got, Some(ItemId(3)));
+    }
+
+    #[test]
+    fn book_rolls_are_deterministic_and_use_the_boss_row() {
+        let rules = book_rules(0.3, 0.3);
+        let run = |seed| {
+            let mut rng = Rng::new(seed);
+            (0..200)
+                .map(|_| roll_book(&rules, Some("b"), Hero::Warrior, 10, &mut rng))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(42), run(42));
+        let drops = run(42).iter().flatten().count();
+        assert!((70..=135).contains(&drops), "{drops} of 200 at about 51%");
+        let mut rng = Rng::new(42);
+        for _ in 0..100 {
+            assert_eq!(
+                roll_book(&rules, Some("quiet_boss"), Hero::Warrior, 20, &mut rng),
+                None
+            );
         }
     }
 

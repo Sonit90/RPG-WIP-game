@@ -20,6 +20,7 @@
 //! A hero's talents are an enum implementing [`TalentKey`]: its variant order is the table's
 //! row order. Adding a talent is a row in the JSON, a variant, and an effect field.
 
+pub mod books;
 pub mod druid;
 pub mod warrior;
 
@@ -27,11 +28,15 @@ use std::sync::OnceLock;
 
 use crate::hero::Hero;
 
-/// The most talents one hero may have: the grid is a `u32` bitset.
-pub const MAX_TALENTS: usize = 32;
+/// The most talents (and hidden book nodes) one hero may have: the grid is a `u64` bitset.
+pub const MAX_TALENTS: usize = 64;
 
 /// How many tiers the menu groups talents into.
 pub const TALENT_TIERS: u8 = 4;
+
+/// The tier of a hidden node: a row the grid never sells. A book option grants it for free
+/// (see [`books`]), and it costs nothing. Hidden rows follow every visible one in a table.
+pub const HIDDEN_TIER: u8 = 0;
 
 /// One talent, as the built-in default table writes it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -134,6 +139,12 @@ impl TalentSpec {
         }
     }
 
+    /// Whether this is a hidden book node rather than a talent the player buys.
+    #[must_use]
+    pub fn is_hidden(&self) -> bool {
+        self.tier == HIDDEN_TIER
+    }
+
     fn of_def(def: &TalentDef) -> Self {
         Self::new(
             def.key,
@@ -207,6 +218,17 @@ impl HeroTalents {
         self.talents.iter().position(|talent| talent.key == key)
     }
 
+    /// The talents the player can buy: every row before the hidden book nodes.
+    #[must_use]
+    pub fn visible(&self) -> &[TalentSpec] {
+        let end = self
+            .talents
+            .iter()
+            .position(TalentSpec::is_hidden)
+            .unwrap_or(self.talents.len());
+        &self.talents[..end]
+    }
+
     /// Points needed to own every talent.
     #[must_use]
     pub fn total_cost(&self) -> u32 {
@@ -267,6 +289,9 @@ pub struct TalentCatalog {
     pub progression: TalentProgression,
     /// Per hero, indexed by [`Hero::index`].
     pub heroes: [HeroTalents; 3],
+    /// Per hero, the books whose options are the hidden rows of `heroes`. Empty until a data
+    /// file supplies them (every unit test in this crate).
+    pub books: [books::HeroBooks; 3],
 }
 
 impl Default for TalentCatalog {
@@ -278,6 +303,7 @@ impl Default for TalentCatalog {
                 HeroTalents::from_defs(&warrior::DEFS),
                 HeroTalents::from_defs(&druid::DEFS),
             ],
+            books: Default::default(),
         }
     }
 }
@@ -321,7 +347,9 @@ impl TalentCatalog {
                         spec.key
                     ));
                 }
-                if !(1..=TALENT_TIERS).contains(&spec.tier) || spec.cost == 0 {
+                let hidden_ok = spec.is_hidden() && spec.cost == 0;
+                let visible_ok = (1..=TALENT_TIERS).contains(&spec.tier) && spec.cost > 0;
+                if !(hidden_ok || visible_ok) {
                     return Err(format!("{}: '{key}' has a bad tier or cost", hero.name()));
                 }
                 for name in names {
@@ -330,6 +358,9 @@ impl TalentCatalog {
                     }
                 }
             }
+        }
+        for hero in Hero::ALL {
+            books::validate_hero(hero, &self.heroes[hero.index()], &self.books[hero.index()])?;
         }
         Ok(())
     }
@@ -409,7 +440,9 @@ impl TalentError {
 pub struct TalentGrid {
     hero: Hero,
     /// One bit per table row.
-    purchased: u32,
+    purchased: u64,
+    /// Hidden book nodes switched on for free. Survives [`TalentGrid::reset`].
+    granted: u64,
     available: u32,
     spent: u32,
 }
@@ -433,6 +466,7 @@ impl TalentGrid {
         Self {
             hero,
             purchased: 0,
+            granted: 0,
             available: points,
             spent: 0,
         }
@@ -446,6 +480,43 @@ impl TalentGrid {
             let _ = grid.purchase(*talent);
         }
         grid
+    }
+
+    /// A grid with the hidden book nodes `nodes` switched on and nothing bought: how a test or
+    /// the simulator asks what a book option does on its own.
+    #[must_use]
+    pub fn from_nodes<T: TalentKey>(nodes: &[T]) -> Self {
+        let mut grid = Self::with_points(T::HERO, 0);
+        for node in nodes {
+            grid.grant_index(node.index());
+        }
+        grid
+    }
+
+    /// Like [`TalentGrid::from_keys`], but a key may also name a hidden book node, which is
+    /// switched on at no cost. Only the API's own snapshot of a character carries such keys.
+    ///
+    /// # Errors
+    ///
+    /// As [`TalentGrid::from_keys`]; the budget covers the visible talents only.
+    pub fn from_keys_with_nodes<S: AsRef<str>>(
+        hero: Hero,
+        keys: &[S],
+        total_points: u32,
+    ) -> Result<Self, TalentError> {
+        let table = hero_talents(hero);
+        let (nodes, bought): (Vec<&S>, Vec<&S>) = keys.iter().partition(|key| {
+            table
+                .index_of(key.as_ref())
+                .is_some_and(|index| table.talents[index].is_hidden())
+        });
+        let mut grid = Self::from_keys(hero, &bought, total_points)?;
+        for key in nodes {
+            if let Some(index) = table.index_of(key.as_ref()) {
+                grid.grant_index(index);
+            }
+        }
+        Ok(grid)
     }
 
     /// A grid holding the talents `keys` name, with `total_points` to spend in all.
@@ -512,10 +583,40 @@ impl TalentGrid {
             .map_or(u32::MAX, |talent| talent.cost)
     }
 
-    /// Whether row `index` is owned.
+    /// Switches on the hidden book node at row `index` (a no-op for a visible or unknown row).
+    pub fn grant_index(&mut self, index: usize) {
+        if index < MAX_TALENTS
+            && hero_talents(self.hero)
+                .talents
+                .get(index)
+                .is_some_and(TalentSpec::is_hidden)
+        {
+            self.granted |= 1 << index;
+        }
+    }
+
+    /// Whether the hidden node at row `index` is switched on.
+    #[must_use]
+    pub fn node_on(&self, index: usize) -> bool {
+        index < MAX_TALENTS && self.granted & (1 << index) != 0
+    }
+
+    /// The keys of every switched-on hidden node, in table order.
+    #[must_use]
+    pub fn granted_keys(&self) -> Vec<String> {
+        hero_talents(self.hero)
+            .talents
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.node_on(*index))
+            .map(|(_, talent)| talent.key.clone())
+            .collect()
+    }
+
+    /// Whether row `index` is owned (bought, or a hidden node switched on).
     #[must_use]
     pub fn has_index(&self, index: usize) -> bool {
-        index < MAX_TALENTS && self.purchased & (1 << index) != 0
+        index < MAX_TALENTS && (self.purchased | self.granted) & (1 << index) != 0
     }
 
     /// Whether `talent` is owned.
@@ -533,8 +634,9 @@ impl TalentGrid {
     /// Why row `index` cannot be bought, or `None` if it can.
     #[must_use]
     pub fn purchase_error_index(&self, index: usize) -> Option<TalentError> {
-        if index >= hero_talents(self.hero).talents.len() {
-            return Some(TalentError::UnknownTalent);
+        match hero_talents(self.hero).talents.get(index) {
+            Some(spec) if !spec.is_hidden() => {}
+            _ => return Some(TalentError::UnknownTalent),
         }
         if self.has_index(index) {
             return Some(TalentError::AlreadyOwned);
@@ -597,7 +699,7 @@ impl TalentGrid {
             .talents
             .iter()
             .enumerate()
-            .filter(|(index, _)| self.has_index(*index))
+            .filter(|(index, _)| self.purchased & (1 << *index) != 0)
             .map(|(_, talent)| talent.key.clone())
             .collect()
     }
@@ -621,9 +723,9 @@ mod tests {
     #[test]
     fn the_default_table_is_valid_and_complete() {
         TalentCatalog::default().validate().expect("valid");
-        assert_eq!(hero_talents(Hero::FireMage).talents.len(), 12);
-        assert_eq!(hero_talents(Hero::Druid).talents.len(), 8);
-        assert_eq!(hero_talents(Hero::Warrior).talents.len(), 8);
+        assert_eq!(hero_talents(Hero::FireMage).visible().len(), 12);
+        assert_eq!(hero_talents(Hero::Druid).visible().len(), 8);
+        assert_eq!(hero_talents(Hero::Warrior).visible().len(), 8);
     }
 
     #[test]
@@ -654,6 +756,27 @@ mod tests {
             TalentGrid::from_keys(Hero::Warrior, &keys, 99),
             Err(TalentError::UnknownTalent)
         );
+    }
+
+    #[test]
+    fn hidden_nodes_cannot_be_bought_or_saved_but_a_snapshot_may_carry_them() {
+        let node = "bk_wide_quake";
+        assert_eq!(
+            TalentGrid::from_keys(Hero::Warrior, &[node], 99),
+            Err(TalentError::UnknownTalent)
+        );
+        let grid = TalentGrid::from_keys_with_nodes(Hero::Warrior, &[node, "shockwave"], 3)
+            .expect("fits: the node is free");
+        assert_eq!(grid.purchased_keys(), ["shockwave"]);
+        assert_eq!(grid.granted_keys(), [node]);
+        assert_eq!(grid.available_points(), 0);
+        assert_eq!(
+            TalentGrid::from_keys_with_nodes(Hero::Warrior, &[node, "shockwave"], 2),
+            Err(TalentError::NotEnoughPoints)
+        );
+        let table = hero_talents(Hero::Warrior);
+        assert!(table.visible().iter().all(|spec| !spec.is_hidden()));
+        assert!(table.talents.len() > table.visible().len());
     }
 
     #[test]

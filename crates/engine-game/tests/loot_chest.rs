@@ -538,6 +538,7 @@ fn rules(mob_equipment_chance: f32) -> LootRules {
             boss_amount: 40,
         },
         sharpening: engine_game::loot::SharpeningDrops::none(),
+        books: None,
     }
 }
 
