@@ -98,8 +98,8 @@ immunity indicator, gem/book SVG icons, hub "Community Maps" row, community `dun
 300–3600 (`bad_timer`) + editor field, UNTIMED label, terminology scans. Unseen/unheard.
 Perf (RTX 5080, 1080p hidden, autocast): ashen 0.93 ms CPU p50 / 1023 FPS; drowned 1.19 / 784;
 foundry 1.22 / 695 (1% low 329); sanctum 1.16 / 833. Raw: scratchpad/perf.
-ALL P2 STREAMS MERGED. Final §46 verification agent running on main tree (only stack user) →
-docs/P2_VERIFICATION.md. Then write docs/P2_FINAL_REPORT.md (§47).
+P2 COMPLETE. §46 verification 30/30 PASS (docs/P2_VERIFICATION.md); final report
+docs/P2_FINAL_REPORT.md. Stack: API+SpacetimeDB down, Postgres up. `tools\realm-dev.ps1 restart` exists.
 Leftover unrelated worktree `.claude/worktrees/agent-a6dc99e9390f24845` (settings FPS limit, not in p2-core) — ask user.
 `p2-balance` (worktree `../myGame-wt-balance`): economy sim, set/druid survivability fixes, eternal wall, P2_BALANCE.md.
 `p2-editor` (worktree `../myGame-wt-editor`): dungeon-block inspector, community metadata, live mapcheck, export, template.
