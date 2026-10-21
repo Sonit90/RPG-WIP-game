@@ -130,10 +130,7 @@ pub fn prepare(
     if !report.is_valid() {
         return Err(report);
     }
-    let map = match CommunityMap::parse(text) {
-        Ok(map) => map,
-        Err(report) => return Err(report),
-    };
+    let map = CommunityMap::parse(text)?;
     let scene = match map.scene.to_scene(dungeon_id) {
         Ok(scene) => scene,
         Err(error) => {
@@ -621,8 +618,70 @@ pub struct MapActionRequest {
     pub reason: Option<String>,
 }
 
-/// The least a title search may be, and the most.
+/// The most characters a title search may have.
 pub const SEARCH_MAX: usize = 48;
+
+/// What a list of maps is asked for (the client's side of `GET /community/maps`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MapQuery {
+    /// A title substring.
+    pub search: String,
+    /// Only this author's maps (account id).
+    pub author: Option<String>,
+    /// The caller's own maps, every status.
+    pub mine: bool,
+    /// The order.
+    pub sort: Option<MapSort>,
+    /// The author-claimed difficulty, 1 to 5.
+    pub difficulty: Option<u8>,
+    /// From 0.
+    pub page: u32,
+}
+
+impl MapQuery {
+    /// The query string (leading `?`), values percent-encoded.
+    #[must_use]
+    pub fn to_query(&self) -> String {
+        let mut parts = Vec::new();
+        let search = self.search.trim();
+        if !search.is_empty() {
+            parts.push(format!("q={}", percent_encode(search)));
+        }
+        if let Some(author) = &self.author {
+            parts.push(format!("author={}", percent_encode(author)));
+        }
+        if self.mine {
+            parts.push("mine=true".to_owned());
+        }
+        if let Some(sort) = self.sort {
+            parts.push(format!("sort={}", sort.key()));
+        }
+        if let Some(difficulty) = self.difficulty {
+            parts.push(format!("difficulty={difficulty}"));
+        }
+        if self.page > 0 {
+            parts.push(format!("page={}", self.page));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", parts.join("&"))
+        }
+    }
+}
+
+/// Percent-encodes everything but unreserved ASCII.
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
 
 /// How a list is sorted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -840,6 +899,23 @@ mod tests {
         assert!(wrap_editor_scene(&scene.to_string()).expect_err("no block").contains("community"));
         assert!(wrap_editor_scene("[]").is_err());
         assert!(wrap_editor_scene("nope").is_err());
+    }
+
+    #[test]
+    fn a_query_encodes_only_what_it_sets() {
+        assert_eq!(MapQuery::default().to_query(), "");
+        let query = MapQuery {
+            search: " cr ypt&x ".into(),
+            author: Some("a-b".into()),
+            mine: true,
+            sort: Some(MapSort::Plays),
+            difficulty: Some(3),
+            page: 2,
+        };
+        assert_eq!(
+            query.to_query(),
+            "?q=cr%20ypt%26x&author=a-b&mine=true&sort=plays&difficulty=3&page=2"
+        );
     }
 
     #[test]

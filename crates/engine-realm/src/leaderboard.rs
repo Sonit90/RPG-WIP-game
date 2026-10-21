@@ -382,7 +382,7 @@ mod tests {
             name: name.to_owned(),
         };
         let kind = ScoreKind::KeyThenTime;
-        let mut players = vec![
+        let mut players = [
             score(3, 5, 100, "b"),
             score(5, 1, 900, "a"),
             score(3, 7, 500, "c"),
