@@ -84,6 +84,10 @@ community.moderate→admin), /api/v1/community/*, realm private `community_map` 
 30 s reconciler, `cm:<id>:<ver>` instances, 4-layer no-loot isolation, client browser (via Dungeon
 Finder), realm-bot `community`; live `scenario all` 14/14. Dev DB `realm` had 0015 before 0014 —
 applied 0014 manually with sqlx checksum. Verified: workspace 4645, embedded 375, backend 127, DB 62.
+MERGED `p2-editor`: inspector tabs Selection/Dungeon/Listing/Validate, debounced mapcheck (same
+check_str as server), issue→selection, approved-library warning from mapcheck Rules, Export Community
+Map (refuses on errors), New Community Map template `assets/templates/community_blank.json`, listing in
+`<level>.meta.json`. Fixed editor test that broke with assets/generated. Text entry lacks punctuation.
 `p2-polish` (worktree `../myGame-wt-polish`): audio audit, pylon-immunity indicator, gem/book icons,
 hub entry for community, community timer_seconds, terminology sweep.
 `p2-balance` (worktree `../myGame-wt-balance`): economy sim, set/druid survivability fixes, eternal wall, P2_BALANCE.md.
