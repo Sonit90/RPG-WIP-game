@@ -838,7 +838,11 @@ mod tests {
         use engine_game::character::ItemIcon;
         let catalog = gems();
         let mut icons: Vec<ItemIcon> = catalog.kinds.iter().map(|k| gem_icon(&k.id)).collect();
-        assert!(icons.iter().all(|icon| ![ItemIcon::Trinket, ItemIcon::Gem].contains(icon)));
+        assert!(
+            icons
+                .iter()
+                .all(|icon| ![ItemIcon::Trinket, ItemIcon::Gem].contains(icon))
+        );
         let count = icons.len();
         icons.sort_by_key(|icon| *icon as u8);
         icons.dedup();
@@ -846,6 +850,35 @@ mod tests {
         // The registered items carry them, at every level.
         for item in catalog.items_for_registration() {
             assert_ne!(item.icon, ItemIcon::Trinket, "{}", item.key);
+        }
+    }
+
+    #[test]
+    fn no_shipped_item_set_gem_or_book_name_uses_retired_wording() {
+        crate::loot::ensure_items_registered();
+        let mut names: Vec<String> = gems()
+            .items_for_registration()
+            .into_iter()
+            .map(|i| i.name)
+            .collect();
+        names.extend(crate::talents::book_items().into_iter().map(|i| i.name));
+        names.extend(
+            engine_game::character::registered_sets()
+                .iter()
+                .map(|set| set.name.clone()),
+        );
+        names.extend(gems().kinds.iter().map(|kind| kind.name.clone()));
+        assert!(names.len() > 40);
+        for name in names {
+            let lower = name.to_lowercase();
+            assert!(!lower.contains("enhance"), "{name}");
+            assert!(
+                !lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "total"),
+                "{name}"
+            );
+            assert!(!lower.contains("tier"), "{name}");
         }
     }
 

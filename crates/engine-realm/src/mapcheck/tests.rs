@@ -245,12 +245,22 @@ fn numeric_sanity_is_enforced() {
 #[test]
 fn the_timer_is_optional_and_range_checked() {
     // Missing: untimed, valid, silent.
-    assert!(typed().scene.dungeon.expect("block").timer_seconds.is_none());
+    assert!(
+        typed()
+            .scene
+            .dungeon
+            .expect("block")
+            .timer_seconds
+            .is_none()
+    );
     for good in [300, 1500, 3600] {
         let mut v = fixture();
         v["scene"]["dungeon"]["timer_seconds"] = json!(good);
         let report = check(&v);
-        assert!(report.is_valid() && report.warnings.is_empty(), "{good}: {report}");
+        assert!(
+            report.is_valid() && report.warnings.is_empty(),
+            "{good}: {report}"
+        );
     }
     for bad in [0, 1, 299, 3601, 100_000] {
         let mut v = fixture();

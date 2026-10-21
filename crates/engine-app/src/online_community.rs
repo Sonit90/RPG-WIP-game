@@ -18,7 +18,8 @@ use crate::online_records::format_duration_us;
 /// the party-formed chord; anything else is silent.
 #[must_use]
 pub fn published_sound(before: MapStatus, after: MapStatus) -> Option<SoundId> {
-    (before != MapStatus::Published && after == MapStatus::Published).then_some(SoundId::PartyFormed)
+    (before != MapStatus::Published && after == MapStatus::Published)
+        .then_some(SoundId::PartyFormed)
 }
 
 /// What a press on the page asks the session to do next.
@@ -482,13 +483,22 @@ mod tests {
         state.list_arrived(page(vec![summary("a", MapStatus::Draft, "me")]));
         state.act(CommunityAction::Select(0));
         // Opening a draft is silent; becoming published is the chord; a repeat is silent.
-        assert_eq!(state.detail_arrived(detail(MapStatus::Draft, "me", vec![])), None);
+        assert_eq!(
+            state.detail_arrived(detail(MapStatus::Draft, "me", vec![])),
+            None
+        );
         assert_eq!(
             state.detail_arrived(detail(MapStatus::Published, "me", vec![])),
             Some(SoundId::PartyFormed)
         );
-        assert_eq!(state.detail_arrived(detail(MapStatus::Published, "me", vec![])), None);
-        assert_eq!(published_sound(MapStatus::Published, MapStatus::Draft), None);
+        assert_eq!(
+            state.detail_arrived(detail(MapStatus::Published, "me", vec![])),
+            None
+        );
+        assert_eq!(
+            published_sound(MapStatus::Published, MapStatus::Draft),
+            None
+        );
         // A clean upload confirms; a draft saved with errors, or nothing saved, is an error.
         let bad = IssueInfo {
             code: "unknown_monster".into(),
@@ -500,11 +510,17 @@ mod tests {
             map: Some(detail(MapStatus::Draft, "me", vec![])),
         };
         let with_errors = SaveMapResponse {
-            report: ReportInfo { errors: vec![bad.clone()], warnings: vec![] },
+            report: ReportInfo {
+                errors: vec![bad.clone()],
+                warnings: vec![],
+            },
             map: Some(detail(MapStatus::Draft, "me", vec![bad.clone()])),
         };
         let refused = SaveMapResponse {
-            report: ReportInfo { errors: vec![bad], warnings: vec![] },
+            report: ReportInfo {
+                errors: vec![bad],
+                warnings: vec![],
+            },
             map: None,
         };
         assert_eq!(state.saved(&clean).1, SoundId::ReadyAccept);

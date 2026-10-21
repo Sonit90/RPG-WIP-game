@@ -254,7 +254,12 @@ pub fn book_items() -> Vec<engine_game::character::CatalogItem> {
     for hero in Hero::ALL {
         let books = &catalog.books[hero.index()];
         for book in &books.talent {
-            items.push(item(&book.id, &book.name, ItemQuality::Rare, ItemIcon::BookTalent));
+            items.push(item(
+                &book.id,
+                &book.name,
+                ItemQuality::Rare,
+                ItemIcon::BookTalent,
+            ));
         }
         for book in &books.enhancement {
             items.push(item(
@@ -501,7 +506,10 @@ mod tests {
                 assert_eq!(def.max_stack, 1);
                 assert_eq!(def.family.slots().count(), 0);
                 // Their own pictures, never the trinket's; the two kinds differ.
-                assert!(matches!(def.icon, ItemIcon::BookTalent | ItemIcon::BookEnhancement));
+                assert!(matches!(
+                    def.icon,
+                    ItemIcon::BookTalent | ItemIcon::BookEnhancement
+                ));
             }
         }
     }
@@ -509,9 +517,16 @@ mod tests {
     #[test]
     fn the_two_book_kinds_have_different_icons() {
         let items = book_items();
-        let talent = items.iter().find(|i| i.quality == engine_game::character::ItemQuality::Rare);
-        let enhancement = items.iter().find(|i| i.quality == engine_game::character::ItemQuality::Epic);
-        assert_ne!(talent.expect("a talent book").icon, enhancement.expect("an enhancement book").icon);
+        let talent = items
+            .iter()
+            .find(|i| i.quality == engine_game::character::ItemQuality::Rare);
+        let enhancement = items
+            .iter()
+            .find(|i| i.quality == engine_game::character::ItemQuality::Epic);
+        assert_ne!(
+            talent.expect("a talent book").icon,
+            enhancement.expect("an enhancement book").icon
+        );
     }
 
     #[test]

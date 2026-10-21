@@ -1754,7 +1754,10 @@ fn the_pylon_immunity_is_a_status_that_appears_and_disappears_with_the_pylons() 
     assert!(
         !events.iter().any(|event| matches!(
             event,
-            CombatEvent::StatusApplied { status: StatusKind::Shielded, .. }
+            CombatEvent::StatusApplied {
+                status: StatusKind::Shielded,
+                ..
+            }
         )),
         "the shield is announced once, not every tick"
     );

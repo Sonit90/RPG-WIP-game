@@ -755,6 +755,17 @@ fn draw_detail(ctx: &mut Painter<'_>, card: &CommunityCard, detail: UiRect) {
             &Hit::Community(CommunityHit::Play),
             card.can_queue,
         );
+        if !card.can_queue {
+            // Why Play is greyed out, not a silent dead button.
+            ctx.text(
+                (d.primary.right(), d.primary.y - px(18.0)),
+                "Finish your queue or party first.",
+                DIM,
+                UiFont::Medium,
+                11.0,
+                TextAlign::Right,
+            );
+        }
     }
     if map.can_publish {
         ctx.button(

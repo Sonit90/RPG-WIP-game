@@ -406,8 +406,14 @@ mod tests {
 
     #[test]
     fn sharpening_rings_when_it_takes_and_crunches_when_the_item_breaks() {
-        assert_eq!(sharpen_sound(SharpenOutcomeName::Success), SoundId::SharpenSuccess);
-        assert_eq!(sharpen_sound(SharpenOutcomeName::Broken), SoundId::ItemBreak);
+        assert_eq!(
+            sharpen_sound(SharpenOutcomeName::Success),
+            SoundId::SharpenSuccess
+        );
+        assert_eq!(
+            sharpen_sound(SharpenOutcomeName::Broken),
+            SoundId::ItemBreak
+        );
     }
 
     #[test]
@@ -485,7 +491,10 @@ mod tests {
         ]));
         // Slower than an earlier run, a failure, a first clear and an empty list are not.
         assert!(!is_personal_best(&[older, best.clone()]));
-        assert!(!is_personal_best(&[entry("crypt", 5, RunOutcome::Failed, 1), best.clone()]));
+        assert!(!is_personal_best(&[
+            entry("crypt", 5, RunOutcome::Failed, 1),
+            best.clone()
+        ]));
         assert!(!is_personal_best(&[best]));
         assert!(!is_personal_best(&[]));
     }
@@ -495,7 +504,9 @@ mod tests {
         use engine_game::character::{ActiveSets, EquipSlot, ItemStack, active_sets_of};
         engine_realm::loot::ensure_items_registered();
         let sets = engine_game::character::registered_sets();
-        let Some(set) = sets.iter().find(|set| set.bonuses.first().is_some_and(|b| b.count == 2))
+        let Some(set) = sets
+            .iter()
+            .find(|set| set.bonuses.first().is_some_and(|b| b.count == 2))
         else {
             panic!("the shipped sets have a two-piece tier");
         };
@@ -515,11 +526,17 @@ mod tests {
         assert_eq!(watch.observe(Hero::Warrior, &worn(2)), None);
         // Taking a piece off is silent; putting it back switches the tier on again.
         assert_eq!(watch.observe(Hero::Warrior, &worn(1)), None);
-        assert_eq!(watch.observe(Hero::Warrior, &worn(2)), Some(SoundId::SetBonus));
+        assert_eq!(
+            watch.observe(Hero::Warrior, &worn(2)),
+            Some(SoundId::SetBonus)
+        );
         // A different hero's first look is a baseline again.
         assert_eq!(watch.observe(Hero::Druid, &worn(2)), None);
         assert_eq!(watch.observe(Hero::Druid, &worn(0)), None);
-        assert_eq!(watch.observe(Hero::Druid, &worn(2)), Some(SoundId::SetBonus));
+        assert_eq!(
+            watch.observe(Hero::Druid, &worn(2)),
+            Some(SoundId::SetBonus)
+        );
     }
 
     #[test]
@@ -536,8 +553,14 @@ mod tests {
         // Timed: running, then urgent (one warning), then a completion in time.
         let mut watch = NetSoundWatch::default();
         assert!(heard(&mut watch, at(TimerPhase::Running)).is_empty());
-        assert_eq!(heard(&mut watch, at(TimerPhase::Urgent)), [SoundId::TimerWarning]);
-        assert!(heard(&mut watch, at(TimerPhase::Urgent)).is_empty(), "one warning");
+        assert_eq!(
+            heard(&mut watch, at(TimerPhase::Urgent)),
+            [SoundId::TimerWarning]
+        );
+        assert!(
+            heard(&mut watch, at(TimerPhase::Urgent)).is_empty(),
+            "one warning"
+        );
         assert_eq!(
             heard(&mut watch, done),
             [SoundId::DungeonComplete, SoundId::RunTimed]
@@ -546,7 +569,10 @@ mod tests {
         let mut watch = NetSoundWatch::default();
         heard(&mut watch, at(TimerPhase::Running));
         heard(&mut watch, at(TimerPhase::Urgent));
-        assert_eq!(heard(&mut watch, at(TimerPhase::Overtime)), [SoundId::ModifierResultWeak]);
+        assert_eq!(
+            heard(&mut watch, at(TimerPhase::Overtime)),
+            [SoundId::ModifierResultWeak]
+        );
         assert_eq!(
             heard(&mut watch, done),
             [SoundId::DungeonComplete, SoundId::RunOvertime]

@@ -6410,7 +6410,12 @@ mod tests {
         let mut view = hub_view();
         let entry = rect_of(&ui, &view, &Hit::CommunityButton).expect("a hub entry");
         // Its own row: clear of the finder it used to hide behind, and of its neighbours.
-        for other in [Hit::DungeonFinder, Hit::Workshop, Hit::BoardsButton, Hit::ChangeCharacter] {
+        for other in [
+            Hit::DungeonFinder,
+            Hit::Workshop,
+            Hit::BoardsButton,
+            Hit::ChangeCharacter,
+        ] {
             let rect = rect_of(&ui, &view, &other).expect("laid out");
             assert!(!crate::ui::layout_audit::overlap(entry, rect), "{other:?}");
         }
@@ -7745,6 +7750,188 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The P2 pages in their busiest state: the workshop's three modes with the longest
+    /// reasons, the Community Maps page with a full row and a long description.
+    fn p2_views() -> Vec<(String, FrontEndView)> {
+        let engaged = "Your talents and equipment are locked while you are in a dungeon or queue.";
+        let mut views = vec![
+            ("sharpen".to_owned(), sharpen_view(true, true, None)),
+            (
+                "sharpen locked".to_owned(),
+                sharpen_view(true, true, Some(engaged)),
+            ),
+            ("sharpen poor".to_owned(), sharpen_view(true, false, None)),
+            ("reforge".to_owned(), reforge_view(false, true, None)),
+            ("reforge confirm".to_owned(), reforge_view(true, true, None)),
+            (
+                "reforge locked".to_owned(),
+                reforge_view(false, true, Some(engaged)),
+            ),
+            ("gems".to_owned(), gems_view(false, 5_000, 3)),
+            ("gems confirm".to_owned(), gems_view(true, 5_000, 3)),
+        ];
+        let card = CommunityCard {
+            sort: "Most played".into(),
+            filter: "Any difficulty".into(),
+            rows: (0..MAP_ROWS)
+                .map(|i| MapRowCard {
+                    title: format!("A map with a rather long title number {i}"),
+                    author: "SomeLongAuthorName".into(),
+                    difficulty: 5,
+                    plays: 123_456,
+                    status: "Published".into(),
+                    valid: true,
+                })
+                .collect(),
+            selected: Some(0),
+            detail: Some(MapDetailCard {
+                title: "A map with a rather long title number 0".into(),
+                author: "SomeLongAuthorName".into(),
+                description: "A long description of rooms and corridors and a boss. ".repeat(6),
+                facts: "Difficulty 5 of 5 | v12 | Published".into(),
+                stats: "123,456 plays | 31,000 clears | fastest 04:12".into(),
+                tags: vec!["crypt".into(), "short".into(), "boss rush".into()],
+                issues: (0..8)
+                    .map(|i| IssueLine {
+                        code: "unknown_monster".into(),
+                        text: format!("scene.monsters[{i}].monster is not an approved monster"),
+                        error: i % 2 == 0,
+                    })
+                    .collect(),
+                best_times: vec!["1. Ash 04:12".into(); 5],
+                can_play: true,
+                ..MapDetailCard::default()
+            }),
+            play_difficulty: 10,
+            page: 12,
+            can_prev: true,
+            can_next: true,
+            message: Some("Not uploaded: the file is not a level the realm can read.".into()),
+            can_queue: false,
+            ..CommunityCard::default()
+        };
+        let mut community = crowded_view(Screen::Community);
+        community.community = Some(card);
+        views.push(("community".to_owned(), community));
+        views.push(("hub".to_owned(), crowded_view(Screen::Hub)));
+        views.push(("history".to_owned(), crowded_view(Screen::History)));
+        views.push(("boards".to_owned(), crowded_view(Screen::Leaderboards)));
+        views
+    }
+
+    #[test]
+    fn the_p2_pages_stay_inside_the_window_and_apart_at_any_size() {
+        use crate::ui::layout_audit;
+        let ui = FrontEndUi::new();
+        for (viewport, scale) in layout_audit::sizes() {
+            for (name, view) in p2_views() {
+                let what = format!("{name} at {viewport:?} x{}", scale.factor());
+                let mut list = UiDrawList::new();
+                ui.draw(&mut list, &view, viewport, scale);
+                layout_audit::assert_sound(&list, viewport, &what);
+                for (hit, rect) in &ui.layout(&view, viewport, scale).hits {
+                    assert!(
+                        layout_audit::on_screen(*rect, viewport),
+                        "{what}: {hit:?} is off screen"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_locked_or_unaffordable_p2_control_says_why_and_offers_no_button() {
+        // Locked while engaged: the reason is on the page and there is nothing to press.
+        let ui = FrontEndUi::new();
+        for (view, go) in [
+            (
+                sharpen_view(true, true, Some("Locked while in a dungeon.")),
+                Hit::SharpenGo,
+            ),
+            (
+                reforge_view(false, true, Some("Locked while in a dungeon.")),
+                Hit::ReforgeGo,
+            ),
+        ] {
+            let mut list = UiDrawList::new();
+            ui.draw(&mut list, &view, VIEWPORT, scale());
+            assert!(
+                words(&list)
+                    .iter()
+                    .any(|text| text.contains("Locked while in a dungeon.")),
+                "the reason is not shown"
+            );
+            assert!(
+                rect_of(&ui, &view, &go).is_none(),
+                "{go:?} is offered while locked"
+            );
+        }
+        // Community Play while queued: greyed out, with the reason beside it.
+        let (_, view) = p2_views()
+            .into_iter()
+            .find(|(name, _)| name == "community")
+            .expect("the community view");
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(
+            words(&list)
+                .iter()
+                .any(|text| text.contains("Finish your queue or party first"))
+        );
+        assert!(rect_of(&ui, &view, &Hit::Community(community::CommunityHit::Play)).is_none());
+    }
+
+    /// Words the player must never read: the P1 name for sharpening, a bare "Total", and the
+    /// retired C/B/A/S item tiers.
+    fn forbidden_wording(text: &str) -> Option<&'static str> {
+        let lower = text.to_lowercase();
+        // Enhancement books are a real thing; "enhancement" as the name of sharpening is not.
+        let without_books = lower.replace("enhancement book", "");
+        if without_books.contains("enhance") {
+            return Some("enhancement");
+        }
+        if lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word == "total")
+        {
+            return Some("total");
+        }
+        for tier in [
+            "c-tier",
+            "b-tier",
+            "a-tier",
+            "s-tier",
+            "tier c",
+            "tier b",
+            "tier a",
+            "tier s",
+            "tier fusion",
+        ] {
+            if lower.contains(tier) {
+                return Some("item tier");
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn no_p2_page_uses_retired_wording() {
+        let ui = FrontEndUi::new();
+        for (name, view) in p2_views() {
+            let mut list = UiDrawList::new();
+            ui.draw(&mut list, &view, VIEWPORT, scale());
+            for text in words(&list) {
+                assert_eq!(forbidden_wording(&text), None, "{name}: {text:?}");
+            }
+        }
+        // The check itself catches what it should.
+        assert_eq!(forbidden_wording("Enhancement +3"), Some("enhancement"));
+        assert_eq!(forbidden_wording("Total: 5"), Some("total"));
+        assert_eq!(forbidden_wording("S-Tier"), Some("item tier"));
+        assert_eq!(forbidden_wording("An enhancement book for Wrath"), None);
+        assert_eq!(forbidden_wording("Sharpening +3"), None);
     }
 
     #[test]

@@ -182,7 +182,11 @@ pub fn definition(
         reward_table: RewardTable::default(),
         // The map's own clock, if it sets one (validated 300-3600 s). Without one a completion
         // is always timed and the boards show it as untimed.
-        timer_seconds: map.scene.dungeon.as_ref().and_then(|dungeon| dungeon.timer_seconds),
+        timer_seconds: map
+            .scene
+            .dungeon
+            .as_ref()
+            .and_then(|dungeon| dungeon.timer_seconds),
         spawn_points: if spawn_points.is_empty() {
             template.spawn_points.clone()
         } else {
@@ -802,7 +806,9 @@ mod tests {
         use crate::outcome::{RunEnd, RunOutcome, classify, timer_us};
         let id = dungeon_id("ab", 1);
         // No timer in the file: untimed, so every completion is timed.
-        let untimed = prepare(FIXTURE, &id, &template()).expect("valid").definition;
+        let untimed = prepare(FIXTURE, &id, &template())
+            .expect("valid")
+            .definition;
         assert_eq!(timer_us(&untimed), None);
         assert_eq!(
             classify(RunEnd::Completed, 99_999 * SECOND, timer_us(&untimed)),
@@ -817,8 +823,14 @@ mod tests {
         assert_eq!(timed.timer_seconds, Some(600));
         let clock = timer_us(&timed);
         assert_eq!(clock, Some(600 * SECOND));
-        assert_eq!(classify(RunEnd::Completed, 600 * SECOND, clock), RunOutcome::Timed);
-        assert_eq!(classify(RunEnd::Completed, 600 * SECOND + 1, clock), RunOutcome::Overtime);
+        assert_eq!(
+            classify(RunEnd::Completed, 600 * SECOND, clock),
+            RunOutcome::Timed
+        );
+        assert_eq!(
+            classify(RunEnd::Completed, 600 * SECOND + 1, clock),
+            RunOutcome::Overtime
+        );
         // A timer outside the range never prepares.
         value["scene"]["dungeon"]["timer_seconds"] = serde_json::json!(5);
         assert!(

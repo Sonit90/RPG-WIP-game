@@ -502,8 +502,14 @@ mod tests {
     #[test]
     fn a_completion_with_no_clock_is_untimed_everywhere_it_is_listed() {
         assert_eq!(tag(RunOutcome::Timed, 0), OutcomeTag::Untimed);
-        assert_eq!(tag(RunOutcome::Timed, 600 * engine_realm::SECOND), OutcomeTag::Timed);
-        assert_eq!(tag(RunOutcome::Overtime, 600 * engine_realm::SECOND), OutcomeTag::Overtime);
+        assert_eq!(
+            tag(RunOutcome::Timed, 600 * engine_realm::SECOND),
+            OutcomeTag::Timed
+        );
+        assert_eq!(
+            tag(RunOutcome::Overtime, 600 * engine_realm::SECOND),
+            OutcomeTag::Overtime
+        );
         assert_eq!(tag(RunOutcome::Failed, 0), OutcomeTag::Failed);
         let catalog = catalog();
         let mut records = Records::default();
@@ -511,7 +517,11 @@ mod tests {
         // The page helper builds rows with no timer: those are untimed.
         records.board_arrived(board_page(2, false));
         let card = records.board_card(&catalog);
-        assert!(card.rows.iter().all(|row| row.outcome == OutcomeTag::Untimed));
+        assert!(
+            card.rows
+                .iter()
+                .all(|row| row.outcome == OutcomeTag::Untimed)
+        );
         assert_eq!(OutcomeTag::Untimed.label(), "UNTIMED");
     }
 

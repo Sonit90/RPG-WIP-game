@@ -1116,7 +1116,10 @@ mod tests {
         let mut text = String::new();
         numbers.numbers()[0].write_text(&mut text);
         assert!(text.starts_with("IMMUNE"), "{text}");
-        assert_eq!(numbers.numbers()[0].kind, CombatTextKind::Callout(Callout::Immune));
+        assert_eq!(
+            numbers.numbers()[0].kind,
+            CombatTextKind::Callout(Callout::Immune)
+        );
         observe(
             &mut numbers,
             &[CombatEvent::StatusRemoved {

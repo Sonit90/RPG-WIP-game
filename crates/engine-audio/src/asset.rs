@@ -2074,7 +2074,8 @@ pub static SOUNDS: [SoundDesc; SOUND_COUNT] = [
     .on(AudioCategory::Ui)
     .gain(0.6)
     .jitter(0.0, 0.0)
-    .limit(1, 5.0),    SoundDesc::sfx(
+    .limit(1, 5.0),
+    SoundDesc::sfx(
         "sharpen_success",
         UI,
         Recipe::new(0.5)

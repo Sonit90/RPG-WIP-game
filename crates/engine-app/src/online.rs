@@ -1052,9 +1052,9 @@ impl OnlineSession {
                 .is_some_and(|party| party.key_owner.is_some()),
             instance: self.mirror.instance.as_ref().map(|i| i.state),
             countdown: self.view.countdown,
-            timer: self.run_timer().map_or(
-                crate::online_audio::TimerPhase::None,
-                |timer| {
+            timer: self
+                .run_timer()
+                .map_or(crate::online_audio::TimerPhase::None, |timer| {
                     if timer.overtime {
                         crate::online_audio::TimerPhase::Overtime
                     } else if timer.urgent {
@@ -1062,8 +1062,7 @@ impl OnlineSession {
                     } else {
                         crate::online_audio::TimerPhase::Running
                     }
-                },
-            ),
+                }),
         };
         let mut sounds = Vec::new();
         self.sounds.observe(snapshot, &mut sounds);
@@ -1444,9 +1443,10 @@ impl OnlineSession {
             NetEvent::Economy(economy) => self.economy = Some(*economy),
             NetEvent::Sharpened(response) => {
                 let response = *response;
-                self.directives.push(Directive::PlaySound(
-                    crate::online_audio::sharpen_sound(response.outcome),
-                ));
+                self.directives
+                    .push(Directive::PlaySound(crate::online_audio::sharpen_sound(
+                        response.outcome,
+                    )));
                 match response.outcome {
                     SharpenOutcomeName::Success => self.toast_quiet(
                         StatusLevel::Good,
@@ -1524,9 +1524,10 @@ impl OnlineSession {
                     text: text.clone(),
                     improved: Some(true),
                 });
-                self.directives.push(Directive::PlaySound(
-                    crate::online_audio::gem_slot_sound(response.cost),
-                ));
+                self.directives
+                    .push(Directive::PlaySound(crate::online_audio::gem_slot_sound(
+                        response.cost,
+                    )));
                 self.toast_quiet(StatusLevel::Good, text);
                 self.on_event(NetEvent::Character(Box::new(response.character)));
             }
@@ -2195,6 +2196,21 @@ impl OnlineSession {
         true
     }
 
+    /// Why the workshop's item actions are locked, while the realm holds a snapshot of the
+    /// character (queued, in a party, in a run).
+    fn engaged_reason(&self) -> Option<String> {
+        self.mirror
+            .is_engaged()
+            .then(|| engine_realm::api::ENGAGED_MESSAGE.to_owned())
+    }
+
+    /// Puts the engaged lock in front of any other reason an action is unavailable.
+    fn note_engaged(&self, blocked: &mut Option<String>) {
+        if let Some(reason) = self.engaged_reason() {
+            *blocked = Some(reason);
+        }
+    }
+
     /// Whether the Dungeon Finder may be opened: not while searching, grouped or saving.
     fn can_find_dungeon(&self) -> bool {
         self.mirror.ticket.is_none()
@@ -2756,7 +2772,11 @@ impl OnlineSession {
             Some(GemItemDetail {
                 name: def.name.to_owned(),
                 quality: def.quality,
-                blocked: sockets.is_empty().then(|| "This item has no sockets.".to_owned()),
+                blocked: self.engaged_reason().or_else(|| {
+                    sockets
+                        .is_empty()
+                        .then(|| "This item has no sockets.".to_owned())
+                }),
                 sockets,
             })
         });
@@ -2875,6 +2895,7 @@ impl OnlineSession {
             }
             Err(error) => detail.blocked = Some(error.to_string()),
         }
+        self.note_engaged(&mut detail.blocked);
         Some(detail)
     }
 
@@ -2980,6 +3001,7 @@ impl OnlineSession {
             }
             Err(error) => detail.blocked = Some(error.to_string()),
         }
+        self.note_engaged(&mut detail.blocked);
         Some(detail)
     }
 
@@ -3273,7 +3295,7 @@ impl OnlineSession {
             community: (screen == Screen::Community).then(|| {
                 self.community.card(
                     self.mirror.my_account_id().unwrap_or_default(),
-                    self.selected_character.is_some(),
+                    self.selected_character.is_some() && self.can_find_dungeon(),
                 )
             }),
             queue_target: self.community_play.as_ref().map(|(id, difficulty)| {
@@ -4675,7 +4697,11 @@ mod tests {
         session.on_action(FrontEndAction::OpenCommunity);
         assert_eq!(session.stage, Screen::Community);
         session.on_action(FrontEndAction::Back);
-        assert_eq!(session.stage, Screen::Hub, "back to the hub it was opened from");
+        assert_eq!(
+            session.stage,
+            Screen::Hub,
+            "back to the hub it was opened from"
+        );
         // From the Dungeon Finder it still goes back to the finder.
         session.stage = Screen::Dungeons;
         session.on_action(FrontEndAction::OpenCommunity);

@@ -2421,22 +2421,39 @@ mod tests {
                 .find(|plate| plate.entity == boss)
                 .map(|plate| plate.immune)
         };
-        assert_eq!(immune(&simulation, &mut set), Some(false), "plain plate first");
+        assert_eq!(
+            immune(&simulation, &mut set),
+            Some(false),
+            "plain plate first"
+        );
 
-        let status = Status::new(StatusKind::Shielded, EntityId::INVALID, AbilityId::NONE, 600.0, 0.0);
+        let status = Status::new(
+            StatusKind::Shielded,
+            EntityId::INVALID,
+            AbilityId::NONE,
+            600.0,
+            0.0,
+        );
         simulation
             .world_mut()
             .statuses_mut(boss)
             .expect("a boss has statuses")
             .apply(status);
-        assert_eq!(immune(&simulation, &mut set), Some(true), "the plate is tinted");
+        assert_eq!(
+            immune(&simulation, &mut set),
+            Some(true),
+            "the plate is tinted"
+        );
         // The aura row and the target frame say it too, through the same status.
         let auras = crate::aura::auras_of(&simulation, boss);
         let shield = auras
             .iter()
             .find(|aura| aura.kind == crate::aura::AuraKind::Status(StatusKind::Shielded))
             .expect("the aura row lists the shield");
-        assert_eq!(shield.kind.icon(), engine_render_data::ui::UiIcon::AuraShielded);
+        assert_eq!(
+            shield.kind.icon(),
+            engine_render_data::ui::UiIcon::AuraShielded
+        );
         assert!(shield.kind.description().contains("pylons"));
         simulation.push_command(PlayerCommand::SelectTarget { entity: boss });
         simulation.step_once();
@@ -2450,10 +2467,22 @@ mod tests {
         assert!(snapshot.target.as_ref().is_some_and(|target| target.immune));
 
         // And it goes when the status does.
-        simulation.world_mut().statuses_mut(boss).expect("statuses").consume(StatusKind::Shielded);
-        assert_eq!(immune(&simulation, &mut set), Some(false), "the tint is gone");
+        simulation
+            .world_mut()
+            .statuses_mut(boss)
+            .expect("statuses")
+            .consume(StatusKind::Shielded);
+        assert_eq!(
+            immune(&simulation, &mut set),
+            Some(false),
+            "the tint is gone"
+        );
         let auras = crate::aura::auras_of(&simulation, boss);
-        assert!(auras.iter().all(|aura| aura.kind != crate::aura::AuraKind::Status(StatusKind::Shielded)));
+        assert!(
+            auras
+                .iter()
+                .all(|aura| aura.kind != crate::aura::AuraKind::Status(StatusKind::Shielded))
+        );
     }
 
     #[test]
