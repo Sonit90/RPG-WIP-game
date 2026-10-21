@@ -517,6 +517,7 @@ mod tests {
                 })
                 .collect(),
             has_more,
+            completions: Vec::new(),
         }
     }
 

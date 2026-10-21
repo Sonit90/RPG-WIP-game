@@ -596,6 +596,167 @@ impl ApiClient {
         self.get(&self.persistence, &path, token, Category::Persistence)
     }
 
+    /// One page of community maps.
+    ///
+    /// # Errors
+    ///
+    /// The server is unreachable or refused the query.
+    pub fn community_list(
+        &self,
+        token: &str,
+        query: &engine_realm::community::MapQuery,
+    ) -> Result<engine_realm::community::MapPage, RealmError> {
+        self.get(
+            &self.persistence,
+            &format!("/api/v1/community/maps{}", query.to_query()),
+            token,
+            Category::Persistence,
+        )
+    }
+
+    /// One community map with its latest validation report.
+    ///
+    /// # Errors
+    ///
+    /// No such map (or not visible to the caller), or the server is unreachable.
+    pub fn community_map(
+        &self,
+        token: &str,
+        id: &str,
+    ) -> Result<engine_realm::community::MapDetail, RealmError> {
+        self.get(
+            &self.persistence,
+            &format!("/api/v1/community/maps/{}", path_segment(id)),
+            token,
+            Category::Persistence,
+        )
+    }
+
+    /// The stored text of one version of a map (what the scene is built from).
+    ///
+    /// # Errors
+    ///
+    /// No such version, or the server is unreachable.
+    pub fn community_version(
+        &self,
+        token: &str,
+        id: &str,
+        version: u32,
+    ) -> Result<String, RealmError> {
+        let response = self
+            .agent
+            .get(format!(
+                "{}/api/v1/community/maps/{}/versions/{version}",
+                self.persistence,
+                path_segment(id)
+            ))
+            .header("Authorization", format!("Bearer {token}"))
+            .call();
+        let mut response = response.map_err(|error| {
+            log::warn!("api: request failed: {error}");
+            RealmError::new(
+                ErrorCategory::Connection,
+                "Cannot reach the game servers. Check your connection and try again.",
+            )
+        })?;
+        let status = response.status().as_u16();
+        if (200..300).contains(&status) {
+            return response
+                .body_mut()
+                .with_config()
+                .limit(engine_realm::community::MAX_BODY_BYTES as u64 * 4)
+                .read_to_string()
+                .map_err(|_| RealmError::protocol("The server sent an unexpected reply."));
+        }
+        let message = response
+            .body_mut()
+            .read_json::<ErrorBody>()
+            .ok()
+            .map(|body| body.error.message);
+        Err(classify(status, message, Category::Persistence))
+    }
+
+    /// Creates a draft (`map_id` `None`) or saves a new version of `map_id`. `text` is the map
+    /// file. A text that is not a map at all comes back as `Ok` with `map: None` and the report.
+    ///
+    /// # Errors
+    ///
+    /// Not the author's map, a rejected map, a limit, or the server is unreachable.
+    pub fn community_save(
+        &self,
+        token: &str,
+        map_id: Option<&str>,
+        text: &str,
+        request_id: &str,
+    ) -> Result<engine_realm::community::SaveMapResponse, RealmError> {
+        let data: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| RealmError::persistence(format!("That file is not valid JSON: {e}")))?;
+        let body = engine_realm::community::SaveMapRequest {
+            request_id: Some(request_id.to_owned()),
+            data,
+        };
+        let (method, path) = match map_id {
+            Some(id) => (
+                "PUT",
+                format!("/api/v1/community/maps/{}", path_segment(id)),
+            ),
+            None => ("POST", "/api/v1/community/maps".to_owned()),
+        };
+        self.send_with_report(method, &path, token, &body)
+    }
+
+    /// A dry run of the validator.
+    ///
+    /// # Errors
+    ///
+    /// The server is unreachable or the file is not JSON.
+    pub fn community_validate(
+        &self,
+        token: &str,
+        text: &str,
+    ) -> Result<engine_realm::community::SaveMapResponse, RealmError> {
+        let data: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| RealmError::persistence(format!("That file is not valid JSON: {e}")))?;
+        let body = engine_realm::community::SaveMapRequest {
+            request_id: None,
+            data,
+        };
+        self.send_with_report("POST", "/api/v1/community/validate", token, &body)
+    }
+
+    /// Publishes (`publish`) or unpublishes the author's map.
+    ///
+    /// # Errors
+    ///
+    /// Not the author's map, a moderated map, a map with validation errors (the message says
+    /// so; read the report from the map), or the server is unreachable.
+    pub fn community_publish(
+        &self,
+        token: &str,
+        id: &str,
+        publish: bool,
+        request_id: &str,
+    ) -> Result<engine_realm::community::MapDetail, RealmError> {
+        let body = engine_realm::community::MapActionRequest {
+            request_id: Some(request_id.to_owned()),
+            reason: None,
+        };
+        let action = if publish { "publish" } else { "unpublish" };
+        match self.send_with_report_raw(
+            "POST",
+            &format!("/api/v1/community/maps/{}/{action}", path_segment(id)),
+            token,
+            &body,
+        )? {
+            (status, text) if (200..300).contains(&status) => serde_json::from_str(&text)
+                .map_err(|_| RealmError::protocol("The server sent an unexpected reply.")),
+            (422, _) => Err(RealmError::persistence(
+                "This map has validation errors. Fix them and save again before publishing.",
+            )),
+            (status, text) => Err(error_from(status, &text, Category::Persistence)),
+        }
+    }
+
     /// The account's synced settings, if any were ever saved.
     ///
     /// # Errors
@@ -645,6 +806,54 @@ impl ApiClient {
             Category::Matchmaking,
         )?;
         Ok(())
+    }
+
+    /// A save or validate call: 200 and 422 both carry a `SaveMapResponse`.
+    fn send_with_report<B: Serialize>(
+        &self,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: &B,
+    ) -> Result<engine_realm::community::SaveMapResponse, RealmError> {
+        let (status, text) = self.send_with_report_raw(method, path, token, body)?;
+        if (200..300).contains(&status) || status == 422 {
+            if let Ok(response) =
+                serde_json::from_str::<engine_realm::community::SaveMapResponse>(&text)
+            {
+                return Ok(response);
+            }
+        }
+        Err(error_from(status, &text, Category::Persistence))
+    }
+
+    /// Sends a JSON body and returns the status and the body text whatever the status.
+    fn send_with_report_raw<B: Serialize>(
+        &self,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: &B,
+    ) -> Result<(u16, String), RealmError> {
+        let url = format!("{}{path}", self.persistence);
+        let request = match method {
+            "PUT" => self.agent.put(url),
+            _ => self.agent.post(url),
+        }
+        .header("Authorization", format!("Bearer {token}"));
+        let mut response = request.send_json(body).map_err(|error| {
+            log::warn!("api: request failed: {error}");
+            RealmError::new(
+                ErrorCategory::Connection,
+                "Cannot reach the game servers. Check your connection and try again.",
+            )
+        })?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|_| RealmError::protocol("The server sent an unexpected reply."))?;
+        Ok((status, text))
     }
 
     fn get<T: DeserializeOwned>(
@@ -745,6 +954,14 @@ fn read<T: DeserializeOwned>(
         .ok()
         .map(|body| body.error.message);
     Err(classify(status, message, category))
+}
+
+/// The error for a failed response whose body text is `text`.
+fn error_from(status: u16, text: &str, category: Category) -> RealmError {
+    let message = serde_json::from_str::<ErrorBody>(text)
+        .ok()
+        .map(|body| body.error.message);
+    classify(status, message, category)
 }
 
 /// Turns a status code into the error a player sees.

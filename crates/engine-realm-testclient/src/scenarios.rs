@@ -42,6 +42,19 @@ fn trio(
     walk: bool,
     lead: bool,
 ) -> Result<Vec<Bot>, String> {
+    trio_for(tag, prefix, endpoints, walk, lead, "graveyard_crypt", None)
+}
+
+/// [`trio`] queueing for `dungeon` (a community map at `difficulty`).
+fn trio_for(
+    tag: &str,
+    prefix: &str,
+    endpoints: &RealmEndpoints,
+    walk: bool,
+    lead: bool,
+    dungeon: &str,
+    difficulty: Option<u32>,
+) -> Result<Vec<Bot>, String> {
     let roles = [
         ("tank", "warrior", Role::Tank),
         ("healer", "druid", Role::Healer),
@@ -51,14 +64,14 @@ fn trio(
         .iter()
         .enumerate()
         .map(|(index, (label, definition, role))| {
-            Bot::start(
+            let mut bot = Bot::start(
                 BotConfig {
                     name: format!("{prefix}-{label}"),
                     email: format!("{prefix}-{label}-{tag}@bots.mygame.test"),
                     password: "bot-password-1".into(),
                     definition: (*definition).into(),
                     role: *role,
-                    dungeon: "graveyard_crypt".into(),
+                    dungeon: dungeon.into(),
                     accept: true,
                     insert_key: lead && index == 0,
                     start_if_leader: lead && index == 0,
@@ -68,7 +81,9 @@ fn trio(
                 },
                 endpoints,
             )
-            .map_err(|e| e.message)
+            .map_err(|e| e.message)?;
+            bot.difficulty = difficulty;
+            Ok(bot)
         })
         .collect()
 }
@@ -2223,4 +2238,298 @@ pub fn history(endpoints: &RealmEndpoints) -> Outcome {
         bots.iter().all(|b| b.mirror.party.is_none())
     });
     Ok(())
+}
+
+/// Calls the realm API directly, returning the status and the JSON body (`Null` if none).
+fn api_json(
+    endpoints: &RealmEndpoints,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> (u16, serde_json::Value) {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let url = format!("{}{path}", endpoints.persistence_api_url);
+    let auth = format!("Bearer {token}");
+    let result = match method {
+        "GET" => agent.get(url).header("Authorization", auth).call(),
+        "PUT" => agent.put(url).header("Authorization", auth).send_json(body),
+        _ => agent.post(url).header("Authorization", auth).send_json(body),
+    };
+    match result {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            let value = response
+                .body_mut()
+                .read_json::<serde_json::Value>()
+                .unwrap_or(serde_json::Value::Null);
+            (status, value)
+        }
+        Err(_) => (0, serde_json::Value::Null),
+    }
+}
+
+/// Signs a throwaway bot in and returns it with its API token.
+fn signed_in_probe(
+    endpoints: &RealmEndpoints,
+    name: &str,
+    tag: &str,
+) -> Result<(Bot, String), String> {
+    let mut bot = Bot::start(
+        BotConfig {
+            name: name.into(),
+            email: format!("{name}-{tag}@bots.mygame.test"),
+            password: "bot-password-1".into(),
+            definition: "warrior".into(),
+            role: Role::Tank,
+            dungeon: "graveyard_crypt".into(),
+            accept: true,
+            insert_key: false,
+            start_if_leader: false,
+            walk: false,
+            hunt: false,
+            queue: false,
+        },
+        endpoints,
+    )
+    .map_err(|e| e.message)?;
+    check(
+        drive(std::slice::from_mut(&mut bot), Duration::from_secs(20), |b| {
+            b[0].character().is_some()
+        }),
+        "the probe signed in",
+    )?;
+    let token = bot.acquire_probe_token(endpoints).map_err(|e| e.message)?;
+    Ok((bot, token))
+}
+
+/// What a character holds that a community run must not change.
+type Holdings = (u64, u64, u64, u32, usize);
+
+fn holdings(bot: &Bot) -> Holdings {
+    (
+        resource_of(bot, "gold"),
+        resource_of(bot, "aether_shard"),
+        resource_of(bot, "crypt_dust"),
+        key_level_of(bot),
+        loot_held(bot).len(),
+    )
+}
+
+/// Community maps end to end: upload the fixture, refuse what is invalid or not yours, publish,
+/// play it as a party at difficulty 3 until it completes, and prove the run granted nothing
+/// (no experience, loot, currency or key progress) while the history, the board and the map's
+/// plays counter recorded it.
+pub fn community(endpoints: &RealmEndpoints) -> Outcome {
+    log::info!("scenario: community");
+    let tag = run_tag();
+    let fixture = include_str!("../../engine-realm/tests/fixtures/community/valid_small.json");
+    let map: serde_json::Value = serde_json::from_str(fixture).map_err(|e| e.to_string())?;
+    let (_author_bot, author) = signed_in_probe(endpoints, "cm-author", &tag)?;
+    let (_other_bot, other) = signed_in_probe(endpoints, "cm-other", &tag)?;
+    let no_body = serde_json::Value::Null;
+
+    // Upload, validate, and the refusals.
+    let (status, body) = api_json(
+        endpoints,
+        &author,
+        "POST",
+        "/api/v1/community/maps",
+        &serde_json::json!({"request_id": uuid_like(&tag), "data": map}),
+    );
+    check(status == 200, "the fixture uploads as a draft")?;
+    let id = body["map"]["summary"]["id"].as_str().ok_or("no map id")?.to_owned();
+    check(
+        body["report"]["errors"].as_array().is_some_and(Vec::is_empty),
+        "the fixture validates with no errors",
+    )?;
+    let publish_path = format!("/api/v1/community/maps/{id}/publish");
+    let (status, _) = api_json(endpoints, &other, "POST", &publish_path, &serde_json::json!({}));
+    check(status == 404, "someone else cannot publish the author's map")?;
+    let mut broken = map.clone();
+    broken["scene"]["objects"][0]["asset"] = "no_such_asset".into();
+    let (status, bad) = api_json(
+        endpoints,
+        &author,
+        "POST",
+        "/api/v1/community/maps",
+        &serde_json::json!({"data": broken}),
+    );
+    check(status == 200, "an invalid map is stored as a draft")?;
+    check(
+        bad["report"]["errors"][0]["code"] == "missing_asset",
+        "the report names the problem by code",
+    )?;
+    let bad_id = bad["map"]["summary"]["id"].as_str().ok_or("no id")?.to_owned();
+    let (status, _) = api_json(
+        endpoints,
+        &author,
+        "POST",
+        &format!("/api/v1/community/maps/{bad_id}/publish"),
+        &serde_json::json!({}),
+    );
+    check(status == 422, "an invalid map cannot be published")?;
+    let detail_path = format!("/api/v1/community/maps/{id}");
+    let (status, _) = api_json(endpoints, &other, "GET", &detail_path, &no_body);
+    check(status == 404, "a draft is invisible to others")?;
+
+    let (status, published) =
+        api_json(endpoints, &author, "POST", &publish_path, &serde_json::json!({}));
+    check(status == 200, "the author publishes")?;
+    let dungeon = published["dungeon_id"].as_str().ok_or("no dungeon id")?.to_owned();
+    check(dungeon == format!("cm:{id}:1"), "the dungeon id is cm:<id>:<version>")?;
+    let author_id = published["summary"]["author_id"].as_str().unwrap_or("").to_owned();
+    let (status, listed) = api_json(
+        endpoints,
+        &other,
+        "GET",
+        &format!("/api/v1/community/maps?author={author_id}"),
+        &no_body,
+    );
+    check(
+        status == 200
+            && listed["maps"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|x| x["id"] == id.as_str())),
+        "others list the published map",
+    )?;
+
+    let mut bots = trio_for(&tag, "cm", endpoints, false, true, &dungeon, Some(3))?;
+    check(
+        drive(&mut bots, Duration::from_secs(60), all_active),
+        "the community run became active",
+    )?;
+    let instance = bots[0].mirror.instance.as_ref().map(|i| i.id).ok_or("no instance")?;
+    check(
+        bots[0]
+            .mirror
+            .instance
+            .as_ref()
+            .is_some_and(|i| i.dungeon_id == dungeon && i.key_level == 3),
+        "the instance runs the community map at difficulty 3",
+    )?;
+    fetch_details(&mut bots, Duration::from_millis(1500));
+    let before: Vec<Holdings> = bots.iter().map(holdings).collect();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        clear_instance(endpoints, instance)?;
+        let done = drive(&mut bots, Duration::from_secs(1), |bots| {
+            bots.iter().all(|b| {
+                b.mirror
+                    .instance
+                    .as_ref()
+                    .is_some_and(|i| i.state == InstanceState::Completed)
+                    && b.mirror.run_summary.is_some()
+            })
+        });
+        if done {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("FAILED: the community run did not complete".into());
+        }
+    }
+    for bot in &bots {
+        let summary = bot.mirror.run_summary.as_ref().ok_or("no summary")?;
+        check(
+            summary.success
+                && summary.experience == 0
+                && summary.resources.is_empty()
+                && summary.loot.is_empty()
+                && summary.looted.is_empty()
+                && summary.mob_drops == 0
+                && summary.key_level_after == 0,
+            "the run summary shows no experience, resources, loot, currency or key progress",
+        )?;
+    }
+    for bot in &bots {
+        bot.send(NetCommand::LeaveParty);
+    }
+
+    // The bridge persists the results; the history, the board and the plays counter follow.
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let (plays, rows) = loop {
+        drive(&mut bots, Duration::from_millis(1000), |_| false);
+        let (_, detail) = api_json(endpoints, &author, "GET", &detail_path, &no_body);
+        let plays = detail["summary"]["plays"].as_i64().unwrap_or(0);
+        let (_, board) = api_json(
+            endpoints,
+            &other,
+            "GET",
+            &format!("/api/v1/leaderboards?board=highest&dungeon=cm:{id}"),
+            &no_body,
+        );
+        let rows = board["rows"].as_array().map_or(0, Vec::len);
+        if plays >= 1 && rows >= 1 {
+            break (plays, rows);
+        }
+        if Instant::now() > deadline {
+            return Err(format!(
+                "FAILED: run not recorded (plays {plays}, board rows {rows})"
+            ));
+        }
+    };
+    check(plays == 1, "the map's plays counter counted the run once")?;
+    check(rows == 1, "the map's board lists the run once (one row for three players)")?;
+    let (_, comp) = api_json(
+        endpoints,
+        &other,
+        "GET",
+        &format!("/api/v1/leaderboards?board=completions&dungeon=cm:{id}"),
+        &no_body,
+    );
+    check(
+        comp["completions"].as_array().is_some_and(|c| c.len() == 3),
+        "the completions board ranks the three players",
+    )?;
+    fetch_details(&mut bots, Duration::from_millis(1500));
+    let after: Vec<Holdings> = bots.iter().map(holdings).collect();
+    check(
+        before == after,
+        "no gold, shards, dust, key progress or items were granted",
+    )?;
+    for bot in bots.iter_mut() {
+        bot.history = None;
+        if let Some(character) = bot.character().map(|c| c.id.clone()) {
+            bot.send(NetCommand::FetchHistory {
+                character_id: character,
+                before: None,
+                limit: 10,
+            });
+        }
+    }
+    drive(&mut bots, Duration::from_secs(3), |bots| {
+        bots.iter().all(|b| b.history.is_some())
+    });
+    check(
+        bots.iter().all(|b| {
+            b.history
+                .as_ref()
+                .is_some_and(|h| h.runs.iter().any(|r| r.dungeon_id == dungeon))
+        }),
+        "every member's history lists the community run",
+    )?;
+
+    // Unpublishing makes it invisible to others.
+    let (status, _) = api_json(
+        endpoints,
+        &author,
+        "POST",
+        &format!("/api/v1/community/maps/{id}/unpublish"),
+        &serde_json::json!({}),
+    );
+    check(status == 200, "the author unpublishes")?;
+    let (status, _) = api_json(endpoints, &other, "GET", &detail_path, &no_body);
+    check(status == 404, "an unpublished map is gone for others")?;
+    Ok(())
+}
+
+/// A UUID-shaped request id from the run tag.
+fn uuid_like(tag: &str) -> String {
+    let digits: String = tag.chars().filter(char::is_ascii_digit).collect();
+    format!("00000001-0000-4000-8000-{digits:0>12}")
 }

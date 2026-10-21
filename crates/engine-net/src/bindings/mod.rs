@@ -20,6 +20,7 @@ pub mod chat_send_reducer;
 pub mod combat_act_reducer;
 pub mod combat_batch_type;
 pub mod combat_timer_type;
+pub mod community_map_row_type;
 pub mod connection_type;
 pub mod countdown_timer_type;
 pub mod dismiss_notice_reducer;
@@ -89,6 +90,9 @@ pub mod server_time_procedure;
 pub mod svc_ack_loot_reducer;
 pub mod svc_ack_results_reducer;
 pub mod svc_admin_snapshot_procedure;
+pub mod svc_community_list_procedure;
+pub mod svc_community_put_reducer;
+pub mod svc_community_remove_reducer;
 pub mod svc_engagement_procedure;
 pub mod svc_enqueue_reducer;
 pub mod svc_take_loot_procedure;
@@ -110,6 +114,7 @@ pub use chat_send_reducer::chat_send;
 pub use combat_act_reducer::combat_act;
 pub use combat_batch_type::CombatBatch;
 pub use combat_timer_type::CombatTimer;
+pub use community_map_row_type::CommunityMapRow;
 pub use connection_type::Connection;
 pub use countdown_timer_type::CountdownTimer;
 pub use dismiss_notice_reducer::dismiss_notice;
@@ -179,6 +184,9 @@ pub use server_time_procedure::server_time;
 pub use svc_ack_loot_reducer::svc_ack_loot;
 pub use svc_ack_results_reducer::svc_ack_results;
 pub use svc_admin_snapshot_procedure::svc_admin_snapshot;
+pub use svc_community_list_procedure::svc_community_list;
+pub use svc_community_put_reducer::svc_community_put;
+pub use svc_community_remove_reducer::svc_community_remove;
 pub use svc_engagement_procedure::svc_engagement;
 pub use svc_enqueue_reducer::svc_enqueue;
 pub use svc_take_loot_procedure::svc_take_loot;
@@ -264,6 +272,13 @@ pub enum Reducer {
     SvcAckResults {
         result_ids: Vec<String>,
     },
+    SvcCommunityPut {
+        key: String,
+        data: String,
+    },
+    SvcCommunityRemove {
+        map_id: String,
+    },
     SvcEnqueue {
         account_id: String,
         character_id: String,
@@ -311,6 +326,8 @@ impl __sdk::Reducer for Reducer {
             Reducer::ReadyCheckRespond { .. } => "ready_check_respond",
             Reducer::SvcAckLoot { .. } => "svc_ack_loot",
             Reducer::SvcAckResults { .. } => "svc_ack_results",
+            Reducer::SvcCommunityPut { .. } => "svc_community_put",
+            Reducer::SvcCommunityRemove { .. } => "svc_community_remove",
             Reducer::SvcEnqueue { .. } => "svc_enqueue",
             _ => unreachable!(),
         }
@@ -437,6 +454,17 @@ impl __sdk::Reducer for Reducer {
             Reducer::SvcAckResults { result_ids } => {
                 __sats::bsatn::to_vec(&svc_ack_results_reducer::SvcAckResultsArgs {
                     result_ids: result_ids.clone(),
+                })
+            }
+            Reducer::SvcCommunityPut { key, data } => {
+                __sats::bsatn::to_vec(&svc_community_put_reducer::SvcCommunityPutArgs {
+                    key: key.clone(),
+                    data: data.clone(),
+                })
+            }
+            Reducer::SvcCommunityRemove { map_id } => {
+                __sats::bsatn::to_vec(&svc_community_remove_reducer::SvcCommunityRemoveArgs {
+                    map_id: map_id.clone(),
                 })
             }
             Reducer::SvcEnqueue {

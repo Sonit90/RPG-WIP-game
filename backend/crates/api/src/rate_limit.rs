@@ -67,6 +67,17 @@ pub const READS_PER_ACCOUNT: Rule = Rule {
     capacity: 20.0,
     per_second: 2.0,
 };
+/// Community map writes (create, update, publish, unpublish) per account: ten, then one every
+/// six seconds. Each write parses and validates a map of up to 2 MiB.
+pub const COMMUNITY_WRITES_PER_ACCOUNT: Rule = Rule {
+    capacity: 10.0,
+    per_second: 1.0 / 6.0,
+};
+/// Community map dry-run validations per account.
+pub const COMMUNITY_VALIDATE_PER_ACCOUNT: Rule = Rule {
+    capacity: 10.0,
+    per_second: 0.5,
+};
 /// Settings saves per account.
 pub const SETTINGS_PER_ACCOUNT: Rule = Rule {
     capacity: 5.0,

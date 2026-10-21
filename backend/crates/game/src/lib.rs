@@ -12,6 +12,7 @@
 
 pub mod bridge;
 pub mod characters;
+pub mod community;
 pub mod history;
 pub mod store;
 

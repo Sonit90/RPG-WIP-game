@@ -1252,6 +1252,11 @@ pub fn granted_looted(result: &DungeonResult) -> Vec<(String, u64)> {
 /// the run was played at, so a key never advances twice for one run). Nothing in it came from
 /// a client.
 pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool, AppError> {
+    // A community map pays nothing: its own, much smaller path records the history and the
+    // leaderboard entry and has no code that touches a character, a loadout or a key.
+    if engine_realm::community::grants_nothing(&result.dungeon_id) {
+        return apply_community_result(pool, result).await;
+    }
     let account_id = Uuid::parse_str(&result.account_id)
         .map_err(|_| AppError::validation("result has a malformed account id"))?;
     let character_id = Uuid::parse_str(&result.character_id).ok();
@@ -1477,6 +1482,85 @@ pub async fn apply_result(pool: &PgPool, result: &DungeonResult) -> Result<bool,
     Ok(true)
 }
 
+/// Applies a community-map result exactly once: the result row (with every grant zeroed), the
+/// run's own row on `cm:<map id>` for the leaderboards, and the map's plays counter, all in one
+/// transaction keyed by the result id and the run uid.
+///
+/// What this does **not** do is the point: no experience, no talent points, no resources, no
+/// looted currency, no spending debit, no key change, no completion count, no damage report and
+/// no character row lock. A community run grants leaderboard entries and nothing else
+/// (docs/community-maps.md).
+async fn apply_community_result(pool: &PgPool, result: &DungeonResult) -> Result<bool, AppError> {
+    let account_id = Uuid::parse_str(&result.account_id)
+        .map_err(|_| AppError::validation("result has a malformed account id"))?;
+    let character_id = Uuid::parse_str(&result.character_id).ok();
+    let clean = engine_realm::community::sanitized(result);
+    let mut tx = pool.begin().await.map_err(db)?;
+    let recorded = sqlx::query(
+        "INSERT INTO game.dungeon_results
+            (result_id, account_id, character_id, dungeon_id, success, duration_us, experience,
+             key_level, key_owner, key_level_after, resources, talent_points,
+             currency_spent, participant_key_bump, own_key_level,
+             run_uid, outcome)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, false, 0, '[]'::jsonb, 0, '[]'::jsonb, false, 0,
+                 $8, $9)
+         ON CONFLICT (result_id) DO NOTHING",
+    )
+    .bind(&clean.result_id)
+    .bind(account_id)
+    .bind(character_id)
+    .bind(&result.dungeon_id)
+    .bind(clean.success)
+    .bind(clean.duration_us)
+    .bind(i32::try_from(clean.key_level).unwrap_or(i32::MAX))
+    .bind((!clean.run_uid.is_empty()).then_some(clean.run_uid.as_str()))
+    .bind(clean.outcome().key())
+    .execute(&mut *tx)
+    .await
+    .map_err(db)?;
+    if recorded.rows_affected() == 0 {
+        tx.commit().await.map_err(db)?;
+        return Ok(false);
+    }
+    if let Some(run) = history::run_row(&clean) {
+        let season = active_season(&mut *tx)
+            .await?
+            .map_or_else(|| history::FALLBACK_SEASON.to_owned(), |season| season.id);
+        let inserted = sqlx::query(
+            "INSERT INTO game.dungeon_runs
+                (run_uid, season_id, dungeon_id, key_level, modifiers, outcome, duration_us,
+                 timer_us, party)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (run_uid) DO NOTHING",
+        )
+        .bind(&run.run_uid)
+        .bind(&season)
+        .bind(&clean.dungeon_id)
+        .bind(run.key_level)
+        .bind(Json(&run.modifiers))
+        .bind(run.outcome.key())
+        .bind(run.duration_us)
+        .bind(run.timer_us)
+        .bind(Json(&run.party))
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        // One play per run: only the result that wrote the run's row counts it.
+        if inserted.rows_affected() == 1 {
+            crate::community::count_play(&mut tx, &clean.dungeon_id).await?;
+        }
+    }
+    tx.commit().await.map_err(db)?;
+    tracing::info!(
+        result_id = %result.result_id,
+        account_id = %result.account_id,
+        dungeon_id = %result.dungeon_id,
+        success = result.success,
+        "community result applied (no grants)"
+    );
+    Ok(true)
+}
+
 /// Delivers one chest item exactly once. Returns whether it was new.
 ///
 /// One transaction: record the delivery under its idempotency key (stop if seen), lock the
@@ -1487,6 +1571,23 @@ pub async fn apply_loot(pool: &PgPool, delivery: &LootDelivery) -> Result<bool, 
     let account_id = Uuid::parse_str(&delivery.account_id)
         .map_err(|_| AppError::validation("loot has a malformed account id"))?;
     let character_id = Uuid::parse_str(&delivery.character_id).ok();
+    // A community run grants no loot. The realm never rolls any for one; this refuses a delivery
+    // that names a community result anyway (the result is recorded before its loot in practice,
+    // and the realm withholds the rest).
+    if let Some(result_id) = history::result_id_of_loot(&delivery.loot_id) {
+        let community: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM game.dungeon_results
+                            WHERE result_id = $1 AND dungeon_id LIKE 'cm:%')",
+        )
+        .bind(result_id)
+        .fetch_one(pool)
+        .await
+        .map_err(db)?;
+        if community {
+            tracing::warn!(loot_id = %delivery.loot_id, "loot for a community run refused");
+            return Ok(false);
+        }
+    }
     let kind = if delivery.kind == "bag" {
         "bag"
     } else {

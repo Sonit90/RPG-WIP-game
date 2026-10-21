@@ -210,6 +210,33 @@ pub enum NetCommand {
         /// From 0.
         page: u32,
     },
+    /// Load a page of community maps.
+    CommunityList(engine_realm::community::MapQuery),
+    /// Load one community map with its latest report.
+    CommunityOpen(String),
+    /// Create a draft (`map_id` `None`) or save a new version of a map; `text` is the map file.
+    CommunitySave {
+        /// The map to update.
+        map_id: Option<String>,
+        /// The map file.
+        text: String,
+    },
+    /// Check a map file with the server's validator; nothing is stored.
+    CommunityValidate(String),
+    /// Publish or unpublish the caller's map.
+    CommunityPublish {
+        /// Which map.
+        map_id: String,
+        /// Publish (otherwise unpublish).
+        publish: bool,
+    },
+    /// Fetch the text of one version of a map, to build its level from.
+    CommunityData {
+        /// Which map.
+        map_id: String,
+        /// Which version.
+        version: u32,
+    },
     /// Load the account's synced settings.
     FetchSettings,
     /// Save the account's synced settings.
@@ -222,6 +249,8 @@ pub enum NetCommand {
         dungeon_id: String,
         /// As which role.
         role: Role,
+        /// A community map's difficulty (1 to 10); `None` for an official dungeon.
+        difficulty: Option<u32>,
     },
     /// Leave the queue.
     LeaveQueue,
@@ -302,6 +331,8 @@ pub enum Action {
     History,
     /// Loading a leaderboard.
     Leaderboard,
+    /// Browsing, uploading or publishing community maps.
+    Community,
     /// Loading or saving settings.
     Settings,
     /// Joining the queue.
@@ -402,6 +433,23 @@ pub enum NetEvent {
     Run(Box<engine_realm::api::RunDetail>),
     /// A leaderboard page.
     Leaderboard(Box<engine_realm::api::LeaderboardPage>),
+    /// A page of community maps.
+    CommunityPage(Box<engine_realm::community::MapPage>),
+    /// One community map (also the answer to publish and unpublish).
+    CommunityMap(Box<engine_realm::community::MapDetail>),
+    /// A map was saved (or refused as not a map at all: `map` is `None`), with its report.
+    CommunitySaved(Box<engine_realm::community::SaveMapResponse>),
+    /// The validator's report for a dry run.
+    CommunityChecked(Box<engine_realm::community::SaveMapResponse>),
+    /// The text of one version of a map.
+    CommunityData {
+        /// Which map.
+        map_id: String,
+        /// Which version.
+        version: u32,
+        /// The map file.
+        text: String,
+    },
     /// The account's synced settings.
     Settings(SettingsDocument),
     /// Settings were saved; this is the new version.
@@ -939,6 +987,60 @@ impl Worker {
                     Err(error) => self.fail(Action::Leaderboard, error),
                 }
             }
+            NetCommand::CommunityList(query) => {
+                let Some(token) = self.access() else { return };
+                match self.api.community_list(&token, &query) {
+                    Ok(page) => self.emit(NetEvent::CommunityPage(Box::new(page))),
+                    Err(error) => self.fail(Action::Community, error),
+                }
+            }
+            NetCommand::CommunityOpen(map_id) => {
+                let Some(token) = self.access() else { return };
+                match self.api.community_map(&token, &map_id) {
+                    Ok(detail) => self.emit(NetEvent::CommunityMap(Box::new(detail))),
+                    Err(error) => self.fail(Action::Community, error),
+                }
+            }
+            NetCommand::CommunitySave { map_id, text } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .community_save(&token, map_id.as_deref(), &text, request_id)
+                });
+                match result {
+                    Ok(response) => self.emit(NetEvent::CommunitySaved(Box::new(response))),
+                    Err(error) => self.fail(Action::Community, error),
+                }
+            }
+            NetCommand::CommunityValidate(text) => {
+                let Some(token) = self.access() else { return };
+                match self.api.community_validate(&token, &text) {
+                    Ok(response) => self.emit(NetEvent::CommunityChecked(Box::new(response))),
+                    Err(error) => self.fail(Action::Community, error),
+                }
+            }
+            NetCommand::CommunityPublish { map_id, publish } => {
+                let Some(token) = self.access() else { return };
+                let result = with_request_id(|request_id| {
+                    self.api
+                        .community_publish(&token, &map_id, publish, request_id)
+                });
+                match result {
+                    Ok(detail) => self.emit(NetEvent::CommunityMap(Box::new(detail))),
+                    Err(error) => self.fail(Action::Community, error),
+                }
+            }
+            NetCommand::CommunityData { map_id, version } => {
+                let Some(token) = self.access() else { return };
+                match self.api.community_version(&token, &map_id, version) {
+                    Ok(text) => self.emit(NetEvent::CommunityData {
+                        map_id,
+                        version,
+                        text,
+                    }),
+                    Err(error) => self.fail(Action::Community, error),
+                }
+            }
             NetCommand::FetchSettings => {
                 let Some(token) = self.access() else { return };
                 match self.api.settings(&token) {
@@ -957,12 +1059,14 @@ impl Worker {
                 character_id,
                 dungeon_id,
                 role,
+                difficulty,
             } => {
                 let Some(token) = self.access() else { return };
                 let request = QueueRequest {
                     character_id,
                     dungeon_id,
                     role,
+                    difficulty,
                 };
                 match self.api.queue(&token, &request) {
                     Ok(()) => self.emit(NetEvent::QueueAccepted),

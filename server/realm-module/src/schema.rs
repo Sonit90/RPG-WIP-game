@@ -944,3 +944,24 @@ pub struct PlayerMeter {
     /// When it was last written.
     pub updated_at: Timestamp,
 }
+
+/// A published community map the realm can build an instance from.
+///
+/// Written only by the bridge's `svc_community_put`, which validates the text again with
+/// `engine_realm::mapcheck` before it is stored; never readable by a client (the map reaches
+/// players through the API, which serves the same text). Keyed by the dungeon id a queue names:
+/// `"cm:<map id>:<version>"`. A version never changes once stored.
+#[spacetimedb::table(accessor = community_map)]
+#[derive(Debug, Clone)]
+pub struct CommunityMapRow {
+    /// `"cm:<map id>:<version>"`.
+    #[primary_key]
+    pub id: String,
+    /// The `{format, meta, scene}` file as JSON text.
+    pub data: String,
+    /// Whether new queues may name it. An unpublished map stays (inactive) while a party,
+    /// ticket or instance still refers to it, then the janitor removes it.
+    pub active: bool,
+    /// When it was stored.
+    pub created_at: Timestamp,
+}

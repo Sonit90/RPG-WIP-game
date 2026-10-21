@@ -63,6 +63,8 @@ pub fn action_sound(action: &FrontEndAction) -> SoundId {
         | A::OpenWorkshop
         | A::OpenHistory
         | A::OpenLeaderboards
+        | A::OpenCommunity
+        | A::Community(_)
         | A::HistorySelect(_)
         | A::HistoryOlder
         | A::HistoryNewest

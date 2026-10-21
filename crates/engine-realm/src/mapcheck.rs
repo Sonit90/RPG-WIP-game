@@ -87,7 +87,13 @@ impl Report {
         self.warnings.iter().any(|issue| issue.code == code)
     }
 
-    fn error(&mut self, code: &'static str, path: impl Into<String>, message: impl Into<String>) {
+    /// Adds an error (also how the play-time conversion reports a scene it cannot build).
+    pub(crate) fn error(
+        &mut self,
+        code: &'static str,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) {
         self.errors.push(Issue {
             code,
             path: path.into(),
@@ -241,13 +247,21 @@ impl CommunityMap {
 /// Parses and validates `text` in one go: the full pipeline a server runs on an upload.
 #[must_use]
 pub fn check_str(text: &str, rules: &Rules) -> Report {
+    check_map(text, rules).1
+}
+
+/// [`check_str`], also returning the parsed map whenever the typed parse succeeded (even if
+/// validation found errors), so a server can list a draft by its title and show its report.
+/// `None` when the text is not a map at all (too large, malformed, wrong shape).
+#[must_use]
+pub fn check_map(text: &str, rules: &Rules) -> (Option<CommunityMap>, Report) {
     let (map, mut report) = parse_inner(text, rules);
-    if let Some(map) = map {
-        let rest = validate(&map, rules);
+    if let Some(map) = &map {
+        let rest = validate(map, rules);
         report.errors.extend(rest.errors);
         report.warnings.extend(rest.warnings);
     }
-    report
+    (map, report)
 }
 
 /// Validates a parsed community map.

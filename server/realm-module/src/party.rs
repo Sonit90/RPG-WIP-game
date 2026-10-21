@@ -49,7 +49,7 @@ pub struct Loaded {
 impl Loaded {
     /// The rules' view.
     pub fn view(&self, ctx: &ReducerContext) -> PartyView {
-        let dungeon = crate::level::dungeon(&self.party.dungeon_id).ok();
+        let dungeon = crate::level::dungeon(ctx, &self.party.dungeon_id).ok();
         let account_of = |identity: Option<Identity>| {
             identity.and_then(|identity| {
                 self.members

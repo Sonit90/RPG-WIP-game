@@ -356,6 +356,35 @@ impl RealmBridge {
             .map(|_| ())
     }
 
+    /// Gives the realm a published community map (`svc_community_put`): `key` is
+    /// `cm:<map id>:<version>`, `data` the map file. The realm validates it again and refuses
+    /// what does not pass. Putting what it already holds changes nothing.
+    pub async fn community_put(
+        &self,
+        token: &str,
+        key: &str,
+        data: &str,
+    ) -> Result<(), BridgeError> {
+        self.call(token, "svc_community_put", json!([key, data]))
+            .await
+            .map(|_| ())
+    }
+
+    /// Takes every version of a community map out of play (`svc_community_remove`): a map in
+    /// use by a live party stays loaded until its run ends.
+    pub async fn community_remove(&self, token: &str, map_id: &str) -> Result<(), BridgeError> {
+        self.call(token, "svc_community_remove", json!([map_id]))
+            .await
+            .map(|_| ())
+    }
+
+    /// The ids (`cm:<map id>:<version>`) of the community maps the realm offers for play.
+    pub async fn community_list(&self, token: &str) -> Result<Vec<String>, BridgeError> {
+        let body = self.call(token, "svc_community_list", json!([])).await?;
+        serde_json::from_str(&body)
+            .map_err(|e| BridgeError::Unavailable(format!("unreadable community list: {e}")))
+    }
+
     /// Clears results that were persisted.
     pub async fn ack_results(&self, token: &str, ids: &[String]) -> Result<(), BridgeError> {
         self.call(token, "svc_ack_results", json!([ids]))
