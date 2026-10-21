@@ -4716,8 +4716,9 @@ pub static ARCHETYPES: [EnemyArchetype; ENEMY_KIND_COUNT] = [
         ],
         phases: &WARDEN_PHASES,
         id: "censer_warden",
+        // An elite with a phase and a table of its own, not a boss: the dungeon has one of those,
+        // and a guardian that is one too would be a second pack the level must call its boss.
         role: MonsterRole::Elite,
-        tier: MonsterTier::Boss,
         summary: "Smoke on two players, a curse to cleanse, and a censer that flares at half health.",
         completion: 20.0,
         look: MonsterLook {

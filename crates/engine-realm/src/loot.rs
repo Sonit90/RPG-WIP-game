@@ -378,9 +378,14 @@ impl LootCatalog {
             return Err(err("there is no boss table"));
         }
         for (boss, entries) in &self.boss_tables {
-            let is_boss = EnemyKind::from_id(boss).is_some_and(EnemyKind::is_boss);
-            if !is_boss {
-                return Err(err(format!("boss table {boss:?} is not a boss")));
+            // A boss, or an elite that guards the way to one and pays out where it falls.
+            let has_table = EnemyKind::from_id(boss).is_some_and(|kind| {
+                kind.is_boss() || kind.archetype().role == engine_game::enemy::MonsterRole::Elite
+            });
+            if !has_table {
+                return Err(err(format!(
+                    "boss table {boss:?} is not a boss or an elite"
+                )));
             }
             self.validate_table(&format!("boss table {boss:?}"), entries)?;
         }
@@ -721,7 +726,7 @@ mod tests {
         let loot = catalog.loot();
         assert!(loot.items.len() >= 20, "only {} items", loot.items.len());
         let epics = loot.items.iter().filter(|row| row.rarity == "epic").count();
-        assert!((4..=24).contains(&epics), "{epics} epics");
+        assert!((4..=48).contains(&epics), "{epics} epics");
         for (index, row) in loot.items.iter().enumerate() {
             let def = item_by_key(&row.id).expect("registered");
             assert_eq!(
@@ -813,6 +818,94 @@ mod tests {
             let def = item_by_key(key).expect("registered");
             assert!(stat_total(def.id) <= best_crypt * 1.2, "{key}");
         }
+    }
+
+    #[test]
+    fn the_pontiff_drops_armoured_epics_for_the_slots_that_had_none() {
+        let rules = rules();
+        let table = rules
+            .boss_table("ashen_pontiff")
+            .expect("the Pontiff has a table");
+        // Shoulder, legs, hands and feet had epics, but none with armour: tanks had nothing.
+        let mut slots = std::collections::HashSet::new();
+        for key in [
+            "pontiffs_ashplate_pauldrons",
+            "cinderforged_greaves",
+            "gauntlets_of_the_last_rite",
+            "ashwalker_sabatons",
+        ] {
+            let def = item_by_key(key).expect("registered");
+            assert_eq!(def.quality, ItemQuality::Epic, "{key}");
+            assert_eq!(def.item_level, 14, "{key}");
+            assert!(stat_total(def.id) >= 19.0, "{key}");
+            let armour = item(def.id)
+                .expect("registered")
+                .stats
+                .entries()
+                .find(|(stat, _)| *stat == engine_game::character::Stat::Armor)
+                .map_or(0.0, |(_, value)| value);
+            assert!(armour > 0.0, "{key} has no armour");
+            assert!(
+                table.entries.iter().any(|entry| entry.item == def.id),
+                "{key}"
+            );
+            slots.insert(def.family);
+        }
+        assert_eq!(slots.len(), 4, "four different slots: {slots:?}");
+        // Stronger than the Overseer's by an item level, never by more than the Foundry's
+        // tolerance over the best of the crypt's.
+        let best_crypt = stat_total(
+            item_by_key("stewards_funerary_raiment")
+                .expect("registered")
+                .id,
+        );
+        for entry in &table.entries {
+            let def = item(entry.item).expect("registered");
+            if def.quality == ItemQuality::Epic && def.item_level == 14 {
+                assert!(stat_total(def.id) <= best_crypt * 1.2, "{}", def.key);
+            }
+        }
+        // Every table row is something the registry knows, and only the Pontiff's own epics
+        // are the new ones.
+        for entry in &table.entries {
+            assert!(item(entry.item).is_some());
+        }
+    }
+
+    #[test]
+    fn the_censer_warden_has_a_small_table_of_its_own_that_is_not_the_chests() {
+        let rules = rules();
+        let warden = rules
+            .boss_table("censer_warden")
+            .expect("the Warden has a table");
+        let pontiff = rules
+            .boss_table("ashen_pontiff")
+            .expect("the Pontiff has a table");
+        // Small: a handful of rows, two of them its own epics.
+        assert!(warden.entries.len() <= 10, "{} rows", warden.entries.len());
+        assert!(warden.entries.len() < pontiff.entries.len());
+        let epics: Vec<_> = warden
+            .entries
+            .iter()
+            .filter_map(|entry| item(entry.item))
+            .filter(|def| def.quality == ItemQuality::Epic)
+            .collect();
+        assert_eq!(epics.len(), 2, "the Warden's own two epics");
+        for def in &epics {
+            assert_eq!(def.item_level, 13);
+            assert!(stat_total(def.id) >= 19.0, "{}", def.key);
+            assert!(
+                !pontiff.entries.iter().any(|entry| entry.item == def.id),
+                "{} is on both tables",
+                def.key
+            );
+        }
+        // The Warden is an elite guarding the way: a table may be keyed by one.
+        assert!(
+            EnemyKind::from_id("censer_warden")
+                .is_some_and(|kind| kind.archetype().role == MonsterRole::Elite)
+        );
+        assert!(EnemyKind::from_id("ashen_pontiff").is_some_and(EnemyKind::is_boss));
     }
 
     #[test]
