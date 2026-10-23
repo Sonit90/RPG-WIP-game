@@ -177,6 +177,7 @@ tools/                package.ps1 — builds and verifies a clean release distri
 * [docs/phase4.md](docs/phase4.md) — Phase 4 log: batched UI, the combat HUD and feedback
 * [docs/testing.md](docs/testing.md) — test categories and how to run them
 * [docs/manual-tests.md](docs/manual-tests.md) — manual verification checklist
+* [docs/MANUAL_TESTING_P1_P2.md](docs/MANUAL_TESTING_P1_P2.md) — hands-on test guide for the P1 and P2 work on this machine (online stack, real clients, editor)
 * [docs/performance.md](docs/performance.md) — measurement methodology and results
 * [docs/memory.md](docs/memory.md) — allocation policy and allocator design
 * [docs/threading.md](docs/threading.md) — worker threads, job system, measured scaling
