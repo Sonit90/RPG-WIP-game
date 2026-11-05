@@ -969,7 +969,7 @@ impl SceneDocument {
                 location: format!("objects[{index}]"),
                 reason,
             };
-            let asset = asset_from_file(&record.asset).map_err(&invalid)?;
+            let asset = asset_from_file(&record.asset).map_err(invalid)?;
             if let Some(CollisionRecord::Compound { shape }) = record.collision
                 && shape >= scene.collision_shapes.len()
             {

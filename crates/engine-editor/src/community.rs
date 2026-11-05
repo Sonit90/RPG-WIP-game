@@ -712,12 +712,10 @@ impl Editor {
         let target = issue.target();
         let message = format!("{}: {}", issue.code, issue.message);
         let what = match target {
-            Target::Object(i) => Some(Selected::Object(i)).filter(|_| i < scene.objects.len()),
-            Target::Monster(i) => Some(Selected::Monster(i)).filter(|_| i < scene.monsters.len()),
-            Target::SpawnPoint(i) => {
-                Some(Selected::Spawn(i)).filter(|_| i < scene.spawn_points.len())
-            }
-            Target::Light(i) => Some(Selected::Light(i)).filter(|_| i < scene.lights.len()),
+            Target::Object(i) => (i < scene.objects.len()).then_some(Selected::Object(i)),
+            Target::Monster(i) => (i < scene.monsters.len()).then_some(Selected::Monster(i)),
+            Target::SpawnPoint(i) => (i < scene.spawn_points.len()).then_some(Selected::Spawn(i)),
+            Target::Light(i) => (i < scene.lights.len()).then_some(Selected::Light(i)),
             Target::Dungeon | Target::BossGate | Target::AddSpawn(_) => {
                 self.community.tab = Tab::Dungeon;
                 None

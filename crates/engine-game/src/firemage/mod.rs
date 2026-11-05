@@ -215,9 +215,7 @@ impl VulnerabilityTracker {
 
     /// Removes every debuff.
     pub fn clear_all(&mut self) {
-        for remaining in &mut self.timers {
-            *remaining = 0.0;
-        }
+        self.timers.fill(0.0);
     }
 }
 

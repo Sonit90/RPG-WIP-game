@@ -2846,8 +2846,7 @@ impl Editor {
         // Every target is worked out before anything moves, so the undo snapshot is the scene
         // as it was before this frame and not as it was halfway through it.
         let mut targets: Vec<(Selected, Pose)> = Vec::with_capacity(drag.starts.len());
-        let describe;
-        match (drag.screen.mode, drag.handle) {
+        let describe = match (drag.screen.mode, drag.handle) {
             (gizmo::GizmoMode::Rotate, _) => {
                 if let (Some(last), Some(now)) =
                     (drag.last_angle, drag.screen.pointer_angle(ui_input.pointer))
@@ -2873,7 +2872,7 @@ impl Editor {
                         },
                     ));
                 }
-                describe = format!("Rotate {:+.1} degrees", turn.to_degrees());
+                format!("Rotate {:+.1} degrees", turn.to_degrees())
             }
             (gizmo::GizmoMode::Scale, handle) => {
                 let factor = match handle {
@@ -2922,12 +2921,12 @@ impl Editor {
                     .find(|(what, _)| Some(*what) == primary)
                     .or(targets.first())
                     .map_or(Vec3::ONE, |(_, pose)| pose.scale);
-                describe = match handle {
+                match handle {
                     gizmo::Handle::Axis(gizmo::Axis::X) => format!("Scale X {:.2}", shown.x),
                     gizmo::Handle::Axis(gizmo::Axis::Y) => format!("Scale Y {:.2}", shown.y),
                     gizmo::Handle::Axis(gizmo::Axis::Z) => format!("Scale Z {:.2}", shown.z),
                     _ => format!("Scale {:.2} {:.2} {:.2}", shown.x, shown.y, shown.z),
-                };
+                }
             }
             (gizmo::GizmoMode::Translate, handle) => {
                 let gizmo::Handle::Axis(axis) = handle else {
@@ -2951,7 +2950,7 @@ impl Editor {
                         (target.position - start.position).dot(axis.direction())
                     },
                 );
-                describe = if drag.starts.len() > 1 {
+                if drag.starts.len() > 1 {
                     format!(
                         "{} {applied:+.2} m ({} items)",
                         axis.label(),
@@ -2959,9 +2958,9 @@ impl Editor {
                     )
                 } else {
                     format!("{} {applied:+.2} m", axis.label())
-                };
+                }
             }
-        }
+        };
 
         targets.retain(|(what, target)| pose_of(scene, *what) != Some(*target));
         if targets.is_empty() {

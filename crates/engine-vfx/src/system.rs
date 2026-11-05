@@ -515,9 +515,7 @@ impl VfxSystem {
 
         self.particles
             .update_with(seconds, &self.motion, &self.generations, jobs);
-        for motion in &mut self.motion {
-            *motion = Vec3::ZERO;
-        }
+        self.motion.fill(Vec3::ZERO);
     }
 
     /// Appends every live particle to `list`.
