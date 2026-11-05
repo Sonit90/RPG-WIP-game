@@ -3,7 +3,9 @@
 //! For the developer report and the performance audit: one kernel call, meant for a report
 //! interval rather than for every frame.
 
+#[cfg(windows)]
 use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+#[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentProcess;
 
 /// The process's memory, in bytes.
@@ -19,6 +21,7 @@ pub struct ProcessMemory {
 }
 
 /// The process's memory now, or `None` if the OS would not say.
+#[cfg(windows)]
 #[must_use]
 pub fn process_memory() -> Option<ProcessMemory> {
     let mut counters = PROCESS_MEMORY_COUNTERS_EX {
@@ -45,6 +48,12 @@ pub fn process_memory() -> Option<ProcessMemory> {
         private_bytes: counters.PrivateUsage as u64,
     })
 }
+
+#[cfg(target_os = "macos")]
+#[path = "macos/memory.rs"]
+mod native;
+#[cfg(target_os = "macos")]
+pub use native::process_memory;
 
 #[cfg(test)]
 mod tests {

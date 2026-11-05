@@ -3,6 +3,9 @@
 //! The windows are created hidden so the test run does not steal focus. They still
 //! require an interactive desktop session; see `docs/testing.md`.
 
+// These drive a real HWND and Win32 messages; the macOS window needs the main thread,
+// which the test harness does not give, and is covered by its unit tests.
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use engine_core::input::{InputEvent, InputState, KeyCode, MouseButton};

@@ -22,11 +22,14 @@
 
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
 use windows::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer,
     TIMER_ALL_ACCESS, WaitForSingleObject,
 };
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
 /// How long before a deadline the wait stops sleeping and starts yielding.
@@ -41,6 +44,7 @@ pub const SPIN_MARGIN: Duration = Duration::from_millis(1);
 /// `std::thread::sleep` may then be rounded up to the system timer's tick, which on an
 /// untouched machine is about 15.6 ms. Two milliseconds does not cover that — nothing short
 /// of spinning would — but it keeps the common 1 ms-resolution case on time.
+#[cfg(windows)]
 const FALLBACK_SPIN_MARGIN: Duration = Duration::from_millis(2);
 
 /// The length of one frame at `fps`, or `None` for no limit.
@@ -75,6 +79,7 @@ pub fn next_release(previous: Option<Instant>, now: Instant, period: Duration) -
 /// Owns one high-resolution waitable timer for the life of the loop, so a wait creates no
 /// kernel object. Where that timer is not available — Windows before 10 version 1803 — it
 /// falls back to `std::thread::sleep` and a wider spin.
+#[cfg(windows)]
 #[derive(Debug)]
 pub struct FramePacer {
     /// The waitable timer, or `None` if one could not be created.
@@ -83,6 +88,7 @@ pub struct FramePacer {
     last_release: Option<Instant>,
 }
 
+#[cfg(windows)]
 impl FramePacer {
     /// Creates a pacer. Never fails: without a timer it still paces, less economically.
     #[must_use]
@@ -178,12 +184,14 @@ impl FramePacer {
     }
 }
 
+#[cfg(windows)]
 impl Default for FramePacer {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(windows)]
 impl Drop for FramePacer {
     fn drop(&mut self) {
         if let Some(timer) = self.timer.take() {
@@ -194,6 +202,14 @@ impl Drop for FramePacer {
         }
     }
 }
+
+// macOS has no waitable timer to own; its pacer is a sleep-and-spin one in its own file, and
+// shares the pure schedule above.
+#[cfg(target_os = "macos")]
+#[path = "macos/pacing.rs"]
+mod native;
+#[cfg(target_os = "macos")]
+pub use native::FramePacer;
 
 #[cfg(test)]
 mod tests {

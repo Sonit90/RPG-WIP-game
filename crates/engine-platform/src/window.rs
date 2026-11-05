@@ -41,6 +41,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 use engine_core::input::{InputEvent, MouseButton};
 
+pub use crate::config::CursorClip;
 use crate::config::{AppliedDisplay, WindowConfig, WindowMode};
 use crate::display::{self, MonitorInfo, VideoMode};
 use crate::error::PlatformError;
@@ -87,23 +88,6 @@ struct WindowState {
     /// Whether raw mouse input was registered, so mouse-look can read motion without the
     /// cursor having to move.
     raw_mouse: bool,
-}
-
-/// Where the cursor may go.
-///
-/// Mouse-look holds the cursor still: with raw input the cursor never needs to move for the
-/// camera to turn, so it is pinned where the button went down and the pointer is exactly where
-/// the player left it, ready to target. Without raw input the camera reads cursor positions,
-/// so the cursor has to move and is only kept inside the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CursorClip {
-    /// Anywhere on the desktop.
-    #[default]
-    Free,
-    /// Inside the client area.
-    Client,
-    /// Held at one client-area point, in client pixels.
-    Pinned(i32, i32),
 }
 
 /// An exclusive fullscreen switch this window made, and whether it is undone for now.

@@ -9,7 +9,7 @@ publish.workspace = true
 engine-core = { workspace = true }
 log = { workspace = true }
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",
@@ -33,8 +33,25 @@ features = [
     "Win32_UI_WindowsAndMessaging",
 ]
 
-[dev-dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 windows = { workspace = true }
+
+# macOS: winit is the window and event loop (pumped by the engine, never `run_app`), AppKit
+# for the clipboard and process activation, CoreGraphics for the monitor list that must
+# exist before any window, the Keychain for the remembered session.
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { workspace = true, features = ["rwh_06"] }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSString"] }
+objc2-app-kit = { workspace = true, features = [
+    "NSPasteboard",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
+objc2-core-graphics = { workspace = true, features = ["CGDirectDisplay", "CGDisplayConfiguration"] }
+security-framework = { workspace = true }
+libc = { workspace = true }
 
 [lints]
 workspace = true

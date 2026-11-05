@@ -1,6 +1,6 @@
 //! Window configuration and its validation rules.
 //!
-//! This module is pure data: it contains no Win32 calls and is fully unit-testable.
+//! This module is pure data: it contains no OS calls and is fully unit-testable.
 
 use crate::error::PlatformError;
 
@@ -26,6 +26,23 @@ pub enum WindowMode {
     Borderless,
     /// A borderless popup covering its monitor, the monitor switched to a chosen mode.
     Fullscreen,
+}
+
+/// Where the cursor may go.
+///
+/// Mouse-look holds the cursor still: with raw input the cursor never needs to move for the
+/// camera to turn, so it is pinned where the button went down and the pointer is exactly where
+/// the player left it, ready to target. Without raw input the camera reads cursor positions,
+/// so the cursor has to move and is only kept inside the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorClip {
+    /// Anywhere on the desktop.
+    #[default]
+    Free,
+    /// Inside the client area.
+    Client,
+    /// Held at one client-area point, in client pixels.
+    Pinned(i32, i32),
 }
 
 /// What [`crate::Window::apply_display`] actually did: the mode and client size in force,

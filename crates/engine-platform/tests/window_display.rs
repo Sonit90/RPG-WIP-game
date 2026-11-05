@@ -5,6 +5,9 @@
 //! test changes the real monitor's mode and is therefore `#[ignore]`d — run it by hand with
 //! `cargo test -p engine-platform --test window_display -- --ignored` on a desktop session.
 
+// These drive a real HWND and Win32 messages; the macOS window needs the main thread,
+// which the test harness does not give, and is covered by its unit tests.
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use engine_platform::window::query_client_size;
