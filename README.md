@@ -96,6 +96,31 @@ Remove-Item Env:RUSTFLAGS
 The executable is `target/release/mygame.exe`. `tools\build_standalone.bat` runs the same
 build from any directory.
 
+## Asset archive
+
+Most of `assets/` (models, `.blend` sources, animations, generated content) is git-ignored, so
+a fresh clone does not have it. `tools\pack-assets.ps1` zips exactly the git-ignored files under
+`assets/`, as `git ls-files --others --ignored` reports them, into one archive for backup or for
+moving to another machine:
+
+```powershell
+tools\pack-assets.ps1                                   # dist\mygame-assets-<yyyyMMdd>.zip
+tools\pack-assets.ps1 -Output D:\backup\assets.zip      # choose the file
+tools\pack-assets.ps1 -Exclude '*.blend1','*.autosave.json'   # skip Blender/editor backups
+```
+
+Paths inside the zip start at the repository root (`assets/...`), so extracting it at the root
+of another checkout restores the files in place:
+
+```powershell
+Expand-Archive dist\mygame-assets-<date>.zip -DestinationPath . -Force   # Windows
+```
+```sh
+unzip -o mygame-assets-<date>.zip                                        # macOS / Linux
+```
+
+Tracked content (scenes, templates, catalog, audio) is not included; git already carries it.
+
 ## Level editor
 
 The in-game level editor is behind the `editor` Cargo feature, so a normal build does not
