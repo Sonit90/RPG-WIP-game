@@ -44,6 +44,7 @@ mod readback;
 mod recorder;
 mod renderer;
 mod resources;
+mod shadow;
 mod ui;
 mod upload;
 

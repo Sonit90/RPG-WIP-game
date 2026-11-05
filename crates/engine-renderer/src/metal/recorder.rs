@@ -9,8 +9,8 @@
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
-    MTLBuffer, MTLCommandEncoder, MTLIndexType, MTLPrimitiveType, MTLRenderCommandEncoder,
-    MTLScissorRect, MTLTexture, MTLViewport, MTLWinding,
+    MTLBuffer, MTLCommandEncoder, MTLDepthClipMode, MTLIndexType, MTLPrimitiveType,
+    MTLRenderCommandEncoder, MTLScissorRect, MTLTexture, MTLViewport, MTLWinding,
 };
 
 use super::pipelines::{DepthRule, DepthStates, Pipeline, Raster};
@@ -79,6 +79,53 @@ impl Recorder {
     /// Whether a pass is open.
     pub(crate) fn is_recording(&self) -> bool {
         self.encoder.is_some()
+    }
+
+    /// What the open pass has counted so far.
+    pub(crate) fn stats(&self) -> CommandStats {
+        self.stats
+    }
+
+    /// Restricts drawing to the square at (`x`, `y`) of the target: the viewport and the
+    /// scissor together, as D3D12's `set_viewport_rect` does. One shadow view's tile.
+    pub(crate) fn set_viewport_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        let Some(encoder) = &self.encoder else {
+            return;
+        };
+        encoder.setViewport(MTLViewport {
+            originX: f64::from(x),
+            originY: f64::from(y),
+            width: f64::from(width),
+            height: f64::from(height),
+            znear: 0.0,
+            zfar: 1.0,
+        });
+        encoder.setScissorRect(MTLScissorRect {
+            x: x as usize,
+            y: y as usize,
+            width: width as usize,
+            height: height as usize,
+        });
+    }
+
+    /// Sets the rasterizer's depth offset for the rest of the pass. D3D12 bakes this into the
+    /// pipeline state; Metal keeps it on the encoder.
+    pub(crate) fn set_depth_bias(&mut self, bias: f32, slope_scale: f32, clamp: f32) {
+        if let Some(encoder) = &self.encoder {
+            encoder.setDepthBias_slopeScale_clamp(bias, slope_scale, clamp);
+        }
+    }
+
+    /// Chooses between clipping at the near and far planes and clamping to them
+    /// (D3D12 `DepthClipEnable` false).
+    pub(crate) fn set_depth_clamp(&mut self, clamp: bool) {
+        if let Some(encoder) = &self.encoder {
+            encoder.setDepthClipMode(if clamp {
+                MTLDepthClipMode::Clamp
+            } else {
+                MTLDepthClipMode::Clip
+            });
+        }
     }
 
     /// Ends the pass and returns what it counted.
@@ -256,4 +303,27 @@ impl Recorder {
             self.stats.instanced_draws += 1;
         }
     }
+}
+
+/// Adds `part`'s counters to `total`: the recording passes of one frame, each its own encoder,
+/// reported as the one command list D3D12 would have recorded.
+pub(crate) fn accumulate(total: &mut CommandStats, part: CommandStats) {
+    total.draw_calls += part.draw_calls;
+    total.instanced_draws += part.instanced_draws;
+    total.instances += part.instances;
+    total.triangles += part.triangles;
+    total.pipeline_changes += part.pipeline_changes;
+    total.redundant_pipeline_binds += part.redundant_pipeline_binds;
+    total.root_cbv_binds += part.root_cbv_binds;
+    total.redundant_root_cbv_binds += part.redundant_root_cbv_binds;
+    total.material_changes += part.material_changes;
+    total.mesh_changes += part.mesh_changes;
+    total.vertex_buffer_binds += part.vertex_buffer_binds;
+    total.redundant_vertex_buffer_binds += part.redundant_vertex_buffer_binds;
+    total.index_buffer_binds += part.index_buffer_binds;
+    total.redundant_index_buffer_binds += part.redundant_index_buffer_binds;
+    total.barriers += part.barriers;
+    total.barrier_flushes += part.barrier_flushes;
+    total.redundant_transitions += part.redundant_transitions;
+    total.copies += part.copies;
 }

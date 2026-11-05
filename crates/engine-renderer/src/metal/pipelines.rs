@@ -230,6 +230,42 @@ pub(crate) fn build_state(
         })
 }
 
+/// Builds a pipeline state for a pass that is not the camera's: `color` and `depth` name the
+/// attachments the pass has, and a pipeline with neither configured is depth-only or
+/// colour-only, as the shadow atlas, the depth prepass and the contact march are.
+///
+/// # Errors
+///
+/// [`RendererError::Api`] with the compiler's message if the state is rejected.
+pub(crate) fn build_pass_state(
+    device: &Device,
+    vertex: &Function,
+    fragment: Option<&Function>,
+    color: Option<MTLPixelFormat>,
+    depth: Option<MTLPixelFormat>,
+    what: &'static str,
+) -> Result<PipelineState, RendererError> {
+    let descriptor = MTLRenderPipelineDescriptor::new();
+    descriptor.setVertexFunction(Some(&**vertex));
+    descriptor.setFragmentFunction(fragment.map(|function| &**function));
+    if let Some(format) = depth {
+        descriptor.setDepthAttachmentPixelFormat(format);
+    }
+    if let Some(format) = color {
+        // SAFETY: slot 0 always exists; a pipeline has up to eight colour attachments.
+        let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+        attachment.setPixelFormat(format);
+    }
+    device
+        .newRenderPipelineStateWithDescriptor_error(&descriptor)
+        .map_err(|error| {
+            api_error(
+                "MTLDevice::newRenderPipelineStateWithDescriptor",
+                format!("{what}: {}", describe(&error)),
+            )
+        })
+}
+
 /// Which vertex layout and shader file a mesh pipeline uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum MeshKind {

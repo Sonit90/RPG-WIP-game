@@ -18,6 +18,9 @@
 //!
 //! Every test skips itself when no D3D12 adapter is present.
 
+// Renders through the D3D12 offscreen helpers, which exist on Windows only.
+#![cfg(windows)]
+
 #![allow(
     clippy::expect_used,
     reason = "test code may assert on known-good values"

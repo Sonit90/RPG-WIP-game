@@ -356,9 +356,11 @@ pub(crate) fn texture_with_levels(
     Ok(texture)
 }
 
-/// Creates the depth buffer for a `width` x `height` render target.
+/// Creates a depth texture of `width` x `height`: the camera's depth buffer, and the shadow
+/// atlas.
 ///
-/// `Depth32Float`, private storage, and sampleable so the contact-shadow march can read it.
+/// `Depth32Float`, private storage, and sampleable so the contact-shadow march and the
+/// lighting pass can read it.
 ///
 /// # Errors
 ///
@@ -387,32 +389,33 @@ pub(crate) fn depth_texture(
     })
 }
 
-/// Creates a 1x1 texture of `format`, never written and never meaningfully read.
-///
-/// The mesh fragment functions declare the shadow atlas (slot 4) and the contact-shadow target
-/// (slot 7) unconditionally, and Metal's validation wants every declared texture bound even when
-/// a function constant has made the code that reads it dead. A placeholder satisfies that for
-/// the passes that run without shadows.
+/// Creates a private `format` texture that passes render into and later passes sample: the
+/// contact-shadow target.
 ///
 /// # Errors
 ///
 /// [`RendererError::Api`] if the texture cannot be created.
-pub(crate) fn placeholder_texture(
+pub(crate) fn color_target_texture(
     device: &Device,
+    width: u32,
+    height: u32,
     format: MTLPixelFormat,
 ) -> Result<Texture, RendererError> {
     // SAFETY: a plain constructor call; the class method has no preconditions.
     let descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            format, 1, 1, false,
+            format,
+            width as usize,
+            height as usize,
+            false,
         )
     };
     descriptor.setStorageMode(MTLStorageMode::Private);
-    descriptor.setUsage(MTLTextureUsage::ShaderRead);
+    descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
     device.newTextureWithDescriptor(&descriptor).ok_or_else(|| {
         api_error(
             "MTLDevice::newTextureWithDescriptor",
-            "could not create a placeholder texture",
+            format!("could not create a {width}x{height} render target"),
         )
     })
 }

@@ -5,10 +5,9 @@
 //!                -> particles -> debug overlay -> UI
 //! ```
 //!
-//! All of it goes into one render command encoder, opened by `begin_recording` with the
-//! drawable and the depth buffer cleared. The shadow stage, the depth prepass and the contact
-//! march that precede it on D3D12 are not part of this backend yet; where they would record
-//! is marked in [`Renderer::draw_render_list`].
+//! All of it goes into one render command encoder, opened once the shadow stage (`shadow.rs`:
+//! the atlas, the depth prepass and the contact march) has recorded its own passes into the
+//! same command buffer. The depth buffer is cleared, or loaded when the prepass wrote it.
 
 use engine_render_data::{Camera, Lighting, MaterialHandle};
 use objc2_metal::MTLPrimitiveType;
@@ -74,7 +73,7 @@ impl FramePalettes {
     }
 
     /// Where this frame uploaded the palette starting at bone `start`, `len` bones long.
-    fn address(&self, start: u32, len: u32) -> Option<Allocation> {
+    pub(super) fn address(&self, start: u32, len: u32) -> Option<Allocation> {
         self.entries
             .iter()
             .find(|entry| entry.0 == start && entry.1 == len)
@@ -116,7 +115,7 @@ impl FramePalettes {
 /// The identity for the bones the character does not have: zeroes would collapse any vertex
 /// that reached them to the origin. Always the shader's whole 8 KB array, so the constant
 /// binding never lets the GPU read past its allocation.
-fn upload_padded(
+pub(super) fn upload_padded(
     palette: &[Mat4],
     scratch: &mut Vec<[f32; 16]>,
     uploads: &mut UploadRing,
@@ -133,7 +132,7 @@ fn upload_padded(
 
 /// Composes every entry's per-instance data into one allocation of this frame's upload ring,
 /// in the order the batches walk. `None` for an empty list.
-fn upload_instances(
+pub(super) fn upload_instances(
     list: &RenderList,
     uploads: &mut UploadRing,
     slot: usize,
@@ -235,9 +234,9 @@ impl Renderer {
         lighting: Lighting,
         color: [f32; 4],
     ) -> Result<(), RendererError> {
-        let slot = self.begin_recording(color)?;
-        // Until the shadow stage has recorded this frame's prepass, nothing may be drawn
-        // primed.
+        let slot = self.begin_frame()?;
+        // Until the shadow stage has actually recorded this frame's prepass, nothing may be
+        // drawn primed.
         self.depth_primed = false;
         // The camera's instances, once, for every pass that draws the visible list.
         self.camera_instances = upload_instances(
@@ -248,9 +247,9 @@ impl Renderer {
         )?;
 
         // Every character's palette, once, before any pass binds one. The shadow list is the
-        // unculled superset and only matters when shadow passes record.
+        // unculled superset and only matters when there are shadows.
         self.frame_palettes.clear();
-        if self.shadows_rendered && self.shadow.settings().enabled {
+        if self.shadow.settings().enabled {
             self.frame_palettes.upload_all(
                 &self.shadow_skinned,
                 &mut self.uploads,
@@ -274,20 +273,21 @@ impl Renderer {
         self.shadow.write_frame_constants(
             &mut frame_constants,
             &self.lights,
-            self.shadow_layout.size(),
+            self.shadow_stage.atlas_size(),
         );
         frame_constants.set_light_clusters(&self.clusters);
-        // No contact-shadow pass runs: the shader reads "no contact shadows".
-        frame_constants.set_contact_target(None);
+        frame_constants.set_contact_target(self.shadow_stage.contact_target_size());
         // The particle pass is recorded later, from a function with no camera. Its basis is
         // captured here, from the same camera the scene is drawn with.
         self.particles.constants =
             ParticleConstants::new(&camera.view(), &camera.view_projection());
         let frame = self.uploads.write_constants(slot, &frame_constants)?;
 
-        // The shadow stage records here on D3D12: the atlas passes, the camera depth prepass
-        // and the contact march, all before the camera pass's own draws. When they exist they
-        // set `depth_primed` and `shadows_rendered`.
+        // The atlas, the camera depth prepass and the contact march, all before the camera
+        // pass's own draws. The prepass sets `depth_primed`, which the camera pass answers by
+        // loading the depth it wrote instead of clearing.
+        self.record_shadow_stage(slot, camera, frame)?;
+        self.begin_camera_pass(color, self.depth_primed)?;
 
         self.recorder
             .set_constants(FRAME_SLOT, self.uploads.buffer(slot, frame), frame.offset());
@@ -301,13 +301,13 @@ impl Renderer {
             self.uploads.buffer(slot, clusters),
             clusters.offset(),
         );
-        // The shader declares the shadow atlas and the contact target whether or not a
-        // function constant has made their reads dead; bind placeholders so every declared
-        // texture is bound.
+        // The shader declares the shadow atlas and the contact target whether or not a function
+        // constant has made their reads dead, so both are always bound: the stage keeps a
+        // one-texel stand-in for each while shadows or contact shadows are off.
         self.recorder
-            .set_fragment_texture(SHADOW_ATLAS_SLOT, &self.placeholder_atlas);
+            .set_fragment_texture(SHADOW_ATLAS_SLOT, &self.shadow_stage.atlas);
         self.recorder
-            .set_fragment_texture(CONTACT_SLOT, &self.placeholder_contact);
+            .set_fragment_texture(CONTACT_SLOT, &self.shadow_stage.contact);
 
         if self.instancing {
             let primed = self.primed_depth_mode();
@@ -352,11 +352,11 @@ impl Renderer {
     /// The shader permutation `material` asks for, with this frame's shadow state folded in.
     ///
     /// The material half was settled when the material was created; the shadow half is the
-    /// renderer's: pipelines are built without shadow sampling until the shadow passes exist.
+    /// renderer's: shadow sampling is compiled in exactly when the shadow system is enabled.
     fn material_variant(&self, material: MaterialHandle) -> PipelineVariant {
         let features = self
             .features_of(material)
-            .with_shadows(self.shadows_rendered && self.shadow.settings().enabled);
+            .with_shadows(self.shadow.settings().enabled);
         let surface = self
             .material_surfaces
             .get(material.index())

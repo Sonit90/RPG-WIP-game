@@ -26,7 +26,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue, MTLLoadAction,
-    MTLPixelFormat, MTLRenderPassDescriptor, MTLStoreAction,
+    MTLRenderPassDescriptor, MTLStoreAction,
 };
 use objc2_quartz_core::CAMetalDrawable;
 
@@ -43,9 +43,8 @@ use super::particles::{ParticlePipelines, ParticleState};
 use super::pipelines::{DepthStates, MeshPipelines, TrianglePipeline};
 use super::readback::Readback;
 use super::recorder::Recorder;
-use super::resources::{
-    DynamicMesh, GpuMesh, buffer_with_data, depth_texture, placeholder_texture,
-};
+use super::resources::{DynamicMesh, GpuMesh, buffer_with_data, depth_texture};
+use super::shadow::ShadowStage;
 use super::ui::UiState;
 use super::upload::{Allocation, UploadRing};
 use super::{Buffer, CommandBuffer, Texture, api_error};
@@ -123,11 +122,13 @@ pub struct Renderer {
     pub(super) uploads: UploadRing,
     /// The layer frames are presented through.
     pub(super) layer: MetalLayer,
-    /// What the most recent frame's recording cost.
+    /// What the most recent frame's recording cost, every pass counted.
     pub(super) command_stats: CommandStats,
-    /// The camera pass's encoder.
+    /// What the frame being recorded has counted so far, from the passes already ended.
+    pub(super) frame_stats: CommandStats,
+    /// The open pass's encoder: the shadow stage's passes, then the camera pass.
     pub(super) recorder: Recorder,
-    /// The frame being encoded, between `begin_recording` and `finish_recording`.
+    /// The frame being encoded, between `begin_frame` and `finish_recording`.
     pub(super) recording: Option<FrameInProgress>,
     /// The frame encoded and waiting for `present` (or `capture_world`) to commit it.
     pub(super) recorded: Option<FrameInProgress>,
@@ -143,10 +144,8 @@ pub struct Renderer {
     pub(super) triangle: TrianglePipeline,
     /// Depth target, the size of the drawable.
     pub(super) depth: Texture,
-    /// Stand-ins for the shadow atlas and the contact-shadow target, bound while no shadow
-    /// pass exists; see `draw_render_list`.
-    pub(super) placeholder_atlas: Texture,
-    pub(super) placeholder_contact: Texture,
+    /// The shadow atlas, the contact-shadow target and the pipelines that fill them.
+    pub(super) shadow_stage: ShadowStage,
     /// Whether `render_world` draws through the wireframe pipeline.
     pub(super) wireframe: bool,
     /// Meshes created through [`Renderer::create_mesh`], indexed by handle.
@@ -184,12 +183,8 @@ pub struct Renderer {
     pub(super) transparent_draws_last_frame: u32,
     /// The shadow stage's CPU half: settings, cascades, caster lists, light selection.
     pub(super) shadow: ShadowPlan,
-    /// Where each shadow view lives in the atlas. The atlas texture itself arrives with the
-    /// shadow stage; the layout is needed now to plan views.
+    /// Where each shadow view lives in the atlas.
     pub(super) shadow_layout: ShadowAtlasLayout,
-    /// Whether this renderer records the shadow stage and its shaders sample the atlas.
-    /// False until the shadow passes exist; the mesh pipelines are built without shadows.
-    pub(super) shadows_rendered: bool,
     /// This frame's local lights.
     pub(super) lights: Vec<LocalLight>,
     /// This frame's clustered light grid.
@@ -341,8 +336,6 @@ impl Renderer {
         let depth_states = DepthStates::new(&device)?;
         let triangle = TrianglePipeline::new(&device, &mut libraries)?;
         let depth = depth_texture(&device, config.width, config.height)?;
-        let placeholder_atlas = placeholder_texture(&device, MTLPixelFormat::Depth32Float)?;
-        let placeholder_contact = placeholder_texture(&device, MTLPixelFormat::RG16Float)?;
         let mut scene_scratch = Vec::new();
         stress::build_grid(1, &mut scene_scratch);
         let scene = buffer_with_data(&device, &scene_scratch, "the stress scene")?;
@@ -351,10 +344,15 @@ impl Renderer {
         let particle_pipelines = ParticlePipelines::new(&device, &mut libraries)?;
 
         let mut shadow = ShadowPlan::new(ShadowSettings::default().validated());
-        // The camera pass is drawn primed by default, as on D3D12; the prepass itself arrives
-        // with the shadow stage.
+        // The camera pass is drawn primed by default, as on D3D12.
         shadow.set_priming_prepass(true);
         let shadow_layout = ShadowAtlasLayout::new(shadow.settings());
+        let shadow_stage = ShadowStage::new(
+            &device,
+            &mut libraries,
+            shadow.settings(),
+            (config.width, config.height),
+        )?;
 
         let mut renderer = Self {
             camera_fade: None,
@@ -368,6 +366,7 @@ impl Renderer {
             uploads,
             layer,
             command_stats: CommandStats::default(),
+            frame_stats: CommandStats::default(),
             recorder: Recorder::default(),
             recording: None,
             recorded: None,
@@ -377,8 +376,7 @@ impl Renderer {
             pipelines: MeshPipelines::new(),
             triangle,
             depth,
-            placeholder_atlas,
-            placeholder_contact,
+            shadow_stage,
             wireframe: false,
             meshes: Vec::new(),
             skinned_meshes: Vec::new(),
@@ -400,7 +398,6 @@ impl Renderer {
             transparent_draws_last_frame: 0,
             shadow,
             shadow_layout,
-            shadows_rendered: false,
             lights: Vec::new(),
             clusters: LightClusters::new(),
             light_clustering: true,
@@ -968,12 +965,10 @@ impl Renderer {
             self.meshes.len(),
             &self.shadow_layout,
         );
-        // What the D3D12 shadow stage records alongside the plan, so the statistics read the
-        // same whether or not the passes that follow exist yet.
+        // What the D3D12 shadow stage's `record` starts its statistics with; the passes in
+        // `shadow.rs` add their own times to it.
         self.shadow.stats.cpu_ms = self.shadow.prepare_ms;
         self.shadow.stats.prepare_ms = self.shadow.prepare_ms;
-        // No depth prepass is recorded yet, whatever the settings would have asked for.
-        self.shadow.stats.prepass = false;
     }
 
     /// The shadow settings in force.
@@ -985,15 +980,18 @@ impl Renderer {
     /// Replaces the shadow settings.
     ///
     /// Waits for the GPU first, as the D3D12 renderer does, because a quality change can
-    /// replace the atlas. That makes this a stall, which belongs on a settings screen rather
-    /// than on a slider that fires every frame.
+    /// replace the atlas and the contact target. That makes this a stall, which belongs on a
+    /// settings screen rather than on a slider that fires every frame. The depth bias needs no
+    /// rebuild here: Metal takes it per pass, not per pipeline.
     ///
     /// # Errors
     ///
-    /// Returns [`RendererError::Api`] if the wait fails.
+    /// Returns [`RendererError::Api`] if the wait or a new texture fails.
     pub fn set_shadow_settings(&mut self, settings: ShadowSettings) -> Result<(), RendererError> {
         self.wait_for_idle()?;
         let settings = settings.validated();
+        self.shadow_stage
+            .resize(self.context.device(), &settings, self.layer.size())?;
         self.shadow_layout = ShadowAtlasLayout::new(&settings);
         self.shadow.apply_settings(settings);
         Ok(())
@@ -1157,16 +1155,27 @@ impl Renderer {
         self.meshes.get(mesh.index()).map(GpuMesh::bounds)
     }
 
-    /// Opens a frame: waits for the slot, acquires a drawable, resets per-frame state, and
-    /// starts the camera pass with cleared targets.
+    /// Opens a frame and its first pass: [`Renderer::begin_frame`], then a camera pass with
+    /// cleared targets.
+    ///
+    /// For the frames that have no shadow stage in front of the camera pass (the stress scene).
+    pub(super) fn begin_recording(&mut self, color: [f32; 4]) -> Result<usize, RendererError> {
+        let slot = self.begin_frame()?;
+        self.begin_camera_pass(color, false)?;
+        Ok(slot)
+    }
+
+    /// Opens a frame: waits for the slot, acquires a drawable, resets per-frame state and
+    /// starts the command buffer. No pass is open yet.
     ///
     /// Shared by [`Renderer::render`] and [`Renderer::render_world`] so the two cannot drift
     /// apart — the pacing, the GPU-time read, the retirement of replaced meshes and the ring
     /// reset all have to happen in exactly this order.
-    pub(super) fn begin_recording(&mut self, color: [f32; 4]) -> Result<usize, RendererError> {
+    pub(super) fn begin_frame(&mut self) -> Result<usize, RendererError> {
         // A frame abandoned half-encoded still has an open encoder, which Metal insists is
         // ended before its command buffer goes away.
         self.abandon_frames();
+        self.frame_stats = CommandStats::default();
 
         // Frame pacing: wait for this slot's previous command buffer.
         let slot = self.frames.begin_frame()?;
@@ -1198,11 +1207,32 @@ impl Renderer {
                 "the queue returned no command buffer",
             ));
         };
+        self.recording = Some(FrameInProgress {
+            command_buffer,
+            drawable,
+            slot,
+        });
+        Ok(slot)
+    }
 
+    /// Opens the camera pass on the frame's drawable and depth buffer.
+    ///
+    /// The colour is always cleared to `color`. The depth buffer is cleared too, unless
+    /// `keep_depth`: the depth prepass wrote it earlier in this frame and the pass loads it.
+    pub(super) fn begin_camera_pass(
+        &mut self,
+        color: [f32; 4],
+        keep_depth: bool,
+    ) -> Result<(), RendererError> {
+        let Some(frame) = &self.recording else {
+            return Err(RendererError::InvalidConfig {
+                reason: "the camera pass was begun without a frame being recorded".to_owned(),
+            });
+        };
         let pass = MTLRenderPassDescriptor::renderPassDescriptor();
         // SAFETY: attachment 0 always exists; a render pass has up to eight colour attachments.
         let color_attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
-        let target = drawable.texture();
+        let target = frame.drawable.texture();
         color_attachment.setTexture(Some(&target));
         color_attachment.setLoadAction(MTLLoadAction::Clear);
         color_attachment.setStoreAction(MTLStoreAction::Store);
@@ -1214,33 +1244,25 @@ impl Renderer {
         });
         let depth_attachment = pass.depthAttachment();
         depth_attachment.setTexture(Some(&self.depth));
-        depth_attachment.setLoadAction(MTLLoadAction::Clear);
-        depth_attachment.setClearDepth(f64::from(DEPTH_CLEAR));
-        // Nothing reads the depth after the pass: the prepass and the contact march that would
-        // are not part of this backend yet.
+        if keep_depth {
+            depth_attachment.setLoadAction(MTLLoadAction::Load);
+        } else {
+            depth_attachment.setLoadAction(MTLLoadAction::Clear);
+            depth_attachment.setClearDepth(f64::from(DEPTH_CLEAR));
+        }
+        // Nothing reads the depth after the camera pass.
         depth_attachment.setStoreAction(MTLStoreAction::DontCare);
 
-        let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&pass) else {
-            return Err(api_error(
-                "MTLCommandBuffer::renderCommandEncoderWithDescriptor",
-                "the command buffer returned no render encoder",
-            ));
-        };
         let (width, height) = self.layer.size();
-        self.recorder.begin(encoder, width, height);
-        self.recording = Some(FrameInProgress {
-            command_buffer,
-            drawable,
-            slot,
-        });
-        Ok(slot)
+        self.begin_pass(&pass, width, height)
     }
 
     /// Ends the camera pass, adds the screenshot copy if one was asked for, and holds the
     /// encoded command buffer for [`Renderer::present`] to commit.
     pub(super) fn finish_recording(&mut self, slot: usize) -> Result<(), RendererError> {
         // The particles, the overlay and the UI are drawn by the caller of this function.
-        let stats = self.recorder.finish();
+        self.end_pass();
+        let stats = self.frame_stats;
         self.draw_calls_last_frame = stats.draw_calls;
         self.triangles_last_frame = stats.triangles;
         self.command_stats = stats;
@@ -1409,6 +1431,12 @@ impl Renderer {
         // It must match the drawable exactly: a depth buffer smaller than the render target is
         // a validation error, and a larger one wastes memory.
         self.depth = depth_texture(self.context.device(), width, height)?;
+        // The contact target follows the camera's size.
+        self.shadow_stage.resize(
+            self.context.device(),
+            self.shadow.settings(),
+            (width, height),
+        )?;
         Ok(())
     }
 

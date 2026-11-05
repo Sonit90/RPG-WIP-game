@@ -126,11 +126,15 @@ impl Libraries {
         log::info!("compiling {file}.metal from source (no precompiled library in this build)");
         let options = MTLCompileOptions::new();
         options.setLanguageVersion(MTLLanguageVersion::Version3_0);
+        // Fast math off, matching build.rs's `-fno-fast-math`: the depth prepass and the
+        // camera pass compute clip position in different functions, and primed draws test
+        // `LessEqual` against the prepass's depth. Fast math lets the compiler reassociate the
+        // two differently, which would leave holes in primed surfaces.
         #[allow(
             deprecated,
             reason = "mathMode replaces it, but only on macOS 15 and newer"
         )]
-        options.setFastMathEnabled(true);
+        options.setFastMathEnabled(false);
         self.device
             .newLibraryWithSource_options_error(&NSString::from_str(source), Some(&options))
             .map_err(|error| RendererError::ShaderCompilation {
