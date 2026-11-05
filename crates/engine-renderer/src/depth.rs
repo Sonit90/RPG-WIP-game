@@ -5,15 +5,23 @@
 //! order and whatever was recorded last wins — which happens to look correct for a single
 //! triangle and stops looking correct the moment there are two objects.
 
+#[cfg(windows)]
 use crate::descriptor::{CpuDescriptorHeap, DescriptorHandle};
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::resource::{GpuTexture, TrackedResource};
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT;
 
+#[cfg(windows)]
 /// The depth format.
 ///
 /// `D32_FLOAT` rather than `D24_UNORM_S8_UINT`: there is no stencil work in Phase 2, and a
@@ -30,6 +38,7 @@ pub const DEPTH_FORMAT: DXGI_FORMAT = DXGI_FORMAT_D32_FLOAT;
 /// a cheap later change.
 pub const DEPTH_CLEAR: f32 = 1.0;
 
+#[cfg(windows)]
 /// A depth-stencil target and its view.
 pub struct DepthBuffer {
     texture: GpuTexture,
@@ -40,6 +49,7 @@ pub struct DepthBuffer {
     height: u32,
 }
 
+#[cfg(windows)]
 impl DepthBuffer {
     /// Creates a depth buffer of the given size.
     ///
@@ -119,6 +129,7 @@ impl DepthBuffer {
     }
 }
 
+#[cfg(windows)]
 /// Creates the depth-stencil view for the typeless depth buffer.
 ///
 /// The buffer is `R32_TYPELESS` so the contact-shadow march can sample it in place rather

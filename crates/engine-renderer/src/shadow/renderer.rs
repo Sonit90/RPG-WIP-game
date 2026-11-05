@@ -20,7 +20,7 @@
 //! the enemies and the scenery all cast shadows through the same two paths, and adding a new
 //! kind of entity to the game adds no code here at all.
 
-use engine_core::math::{Frustum, Mat4, Vec3};
+use engine_core::math::Frustum;
 use engine_render_data::{Camera, Lighting, RenderWorld, SkinnedDrawList};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D12::{
@@ -44,11 +44,13 @@ use crate::scene::{
 use crate::upload::UploadRing;
 
 use super::atlas::AtlasRect;
-use super::cascade::{CascadeView, build_cascades};
-use super::caster::{CasterSlots, ShadowCasterCollector, skinned_caster_visible};
+use super::cascade::CascadeView;
+use super::caster::skinned_caster_visible;
 use super::contact::{ContactShadowPipeline, ContactShadowTarget};
-use super::local::{LocalShadowView, SelectedLight, select_shadow_lights};
 use super::pipeline::{ShadowGeometry, ShadowPipelineSet, ShadowPipelines, ShadowSurface};
+// Moved to `plan.rs` with the rest of the backend-neutral half; re-exported so the old
+// paths keep working.
+pub use super::plan::{MAX_DEBUG_MODE, ShadowPlan, ShadowViewConstants, safe_light_direction};
 use super::resources::{SHADOW_CLEAR, ShadowResources};
 use super::settings::ShadowSettings;
 use super::static_cache::{StaticShadowCache, StaticView};
@@ -64,31 +66,6 @@ pub(crate) enum InstanceSource<'a> {
     /// Already in the ring, in the list's batch order: what the camera pass uploaded for the
     /// same list, which the depth prepass binds instead of composing it a second time.
     Uploaded(windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW),
-}
-
-/// What one depth pass is rendered with.
-///
-/// Deliberately *not* the frame constants: a shadow pass runs once per cascade and once per
-/// local light, and re-uploading two kilobytes of lighting data for each of them to change
-/// one matrix would be most of the pass's CPU cost.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct ShadowViewConstants {
-    /// The light's view-projection, column-major.
-    pub view_projection: [f32; 16],
-    /// `[1 for a cascade, 0 for a local view, 0, 0]`.
-    pub params: [f32; 4],
-}
-
-impl ShadowViewConstants {
-    /// The constants for one view.
-    #[must_use]
-    pub fn new(view_projection: Mat4, is_cascade: bool) -> Self {
-        Self {
-            view_projection: view_projection.to_cols_array(),
-            params: [f32::from(u8::from(is_cascade)), 0.0, 0.0, 0.0],
-        }
-    }
 }
 
 /// The GPU resources a shadow pass draws with, borrowed from the renderer for one call.
@@ -114,26 +91,8 @@ pub struct ShadowScene<'a> {
     pub palettes: &'a crate::palette::FramePalettes,
 }
 
-/// The highest debug view `shade_surface` knows.
-///
-/// ```text
-/// 0  none          4  base colour map     8  shading normal, after the TBN transform
-/// 1  cascade tint  5  normal map          9  roughness, after the ORM map scales it
-/// 2  shadow factor 6  ORM map            10  metallic, likewise
-/// 3  the atlas     7  emissive map       11  occlusion
-/// ```
-///
-/// 4 to 7 are the raw texels a descriptor resolved to; 8 to 11 are what the shading made of
-/// them, which is the half a texel view cannot answer — a normal map bound correctly and
-/// applied with the wrong handedness looks right at 5 and wrong at 8.
-///
-/// The shader's `if` chain and this number are the same fact stated twice, so raising one
-/// without the other silently disables the new view.
-pub const MAX_DEBUG_MODE: u32 = 11;
-
 /// Owns the shadow atlas, decides what goes in it, and records the passes that fill it.
 pub struct ShadowRenderer {
-    settings: ShadowSettings,
     resources: ShadowResources,
     pipelines: ShadowPipelines,
     /// The half-resolution contact-shadow target and the pass that fills it.
@@ -142,40 +101,12 @@ pub struct ShadowRenderer {
     /// depth copy this module makes and it is bracketed by the same GPU timer.
     contact: ContactShadowTarget,
     contact_pipeline: ContactShadowPipeline,
+    /// Everything the stage decides on the CPU: settings, cascades, caster lists, light
+    /// selection, statistics. The passes below record from its lists.
+    plan: ShadowPlan,
 
-    /// This frame's cascades and where each one lives in the atlas.
-    cascades: Vec<CascadeView>,
-    cascade_rects: Vec<AtlasRect>,
-    /// One render list per cascade, kept across frames so the build stops allocating.
-    cascade_lists: Vec<RenderList>,
-
-    /// This frame's local shadow views, the lights that won them, and their rectangles.
-    local_views: Vec<LocalShadowView>,
-    local_selected: Vec<SelectedLight>,
-    local_rects: Vec<AtlasRect>,
-    local_lists: Vec<RenderList>,
-    /// Scratch for the light sort, kept for the same reason.
-    light_scratch: Vec<(usize, f32)>,
-
-    collector: ShadowCasterCollector,
     instance_scratch: Vec<InstanceTransform>,
     palette_scratch: Vec<[f32; 16]>,
-
-    stats: ShadowStats,
-    /// 0 none, 1 cascade tint, 2 shadow factor only.
-    debug_mode: u32,
-    /// Whether the camera prepass runs for depth priming alone, without contact shadows.
-    priming_prepass: bool,
-    /// Every view's static casters, kept across frames.
-    static_cache: StaticShadowCache,
-    /// This frame's movers: casting slots that are not part of the static scene.
-    movers: Vec<u32>,
-    /// Whether the last cascade draws movers and characters. On by default; off is a measured
-    /// trade-off (`--shadow-tweak far-movers=off`): something moving 50 m and more away loses
-    /// its shadow, which is a few pixels at that range, for its draws in the largest view.
-    far_movers: bool,
-    /// Milliseconds the last `prepare` took, folded into the stats by `record`.
-    prepare_ms: f64,
 }
 
 impl ShadowRenderer {
@@ -202,36 +133,20 @@ impl ShadowRenderer {
         )?;
         let contact_pipeline = ContactShadowPipeline::new(device.device())?;
         Ok(Self {
-            stats: ShadowStats::for_settings(&settings),
-            settings,
             resources,
             pipelines,
             contact,
             contact_pipeline,
-            cascades: Vec::new(),
-            cascade_rects: Vec::new(),
-            cascade_lists: Vec::new(),
-            local_views: Vec::new(),
-            local_selected: Vec::new(),
-            local_rects: Vec::new(),
-            local_lists: Vec::new(),
-            light_scratch: Vec::new(),
-            collector: ShadowCasterCollector::new(),
+            plan: ShadowPlan::new(settings),
             instance_scratch: Vec::new(),
             palette_scratch: Vec::new(),
-            debug_mode: 0,
-            priming_prepass: false,
-            static_cache: StaticShadowCache::default(),
-            movers: Vec::new(),
-            far_movers: true,
-            prepare_ms: 0.0,
         })
     }
 
     /// What the system is currently configured with.
     #[must_use]
     pub fn settings(&self) -> &ShadowSettings {
-        &self.settings
+        self.plan.settings()
     }
 
     /// Replaces the settings, recreating whatever they invalidate.
@@ -258,9 +173,7 @@ impl ShadowRenderer {
         self.contact
             .resize(device, &settings.contact, settings.enabled, scene_size)?;
         self.pipelines.set_bias(device.device(), settings.bias)?;
-        self.settings = settings;
-        self.stats = ShadowStats::for_settings(&self.settings);
-        self.stats.prepass = self.needs_prepass();
+        self.plan.apply_settings(settings);
         Ok(())
     }
 
@@ -274,11 +187,12 @@ impl ShadowRenderer {
         device: &RenderDevice,
         scene_size: (u32, u32),
     ) -> Result<(), RendererError> {
-        self.resources.resize(device, &self.settings, scene_size)?;
+        self.resources
+            .resize(device, self.plan.settings(), scene_size)?;
         self.contact.resize(
             device,
-            &self.settings.contact,
-            self.settings.enabled,
+            &self.plan.settings().contact,
+            self.plan.settings().enabled,
             scene_size,
         )?;
         Ok(())
@@ -294,25 +208,25 @@ impl ShadowRenderer {
     /// through to "no debug view" for anything it does not know, and clamping here keeps the
     /// two ends agreeing on how many views there are.
     pub fn set_debug_mode(&mut self, mode: u32) {
-        self.debug_mode = mode.min(MAX_DEBUG_MODE);
+        self.plan.set_debug_mode(mode);
     }
 
     /// The current debug view.
     #[must_use]
     pub fn debug_mode(&self) -> u32 {
-        self.debug_mode
+        self.plan.debug_mode()
     }
 
     /// What the last frame's shadow stage did.
     #[must_use]
     pub fn stats(&self) -> ShadowStats {
-        self.stats
+        self.plan.stats()
     }
 
     /// This frame's cascades, for a debug view that wants to draw their bounds.
     #[must_use]
     pub fn cascades(&self) -> &[CascadeView] {
-        &self.cascades
+        self.plan.cascades()
     }
 
     /// Whether the depth prepass has to run this frame.
@@ -321,7 +235,7 @@ impl ShadowRenderer {
     /// configuration without them pays nothing for it.
     #[must_use]
     pub fn needs_prepass(&self) -> bool {
-        self.needs_depth_copy() || self.priming_prepass
+        self.plan.needs_prepass()
     }
 
     /// Whether the prepass's depth is copied for, and marched by, the contact shadows.
@@ -330,32 +244,31 @@ impl ShadowRenderer {
     /// the camera's depth buffer and stops there.
     #[must_use]
     pub fn needs_depth_copy(&self) -> bool {
-        self.settings.enabled && self.settings.contact.enabled
+        self.plan.needs_depth_copy()
     }
 
     /// Runs the camera prepass even without contact shadows, so the camera pass can test
     /// against it instead of writing its own depth. See `DepthMode::Primed`.
     pub fn set_priming_prepass(&mut self, enabled: bool) {
-        self.priming_prepass = enabled;
+        self.plan.set_priming_prepass(enabled);
     }
 
     /// Whether the last cascade draws movers and characters (see the field).
     pub fn set_far_movers(&mut self, enabled: bool) {
-        self.far_movers = enabled;
+        self.plan.set_far_movers(enabled);
     }
 
     /// Turns the static-caster cache on or off, and sets how far a cached cascade may drift
     /// before it is gathered again, as a fraction of its radius. Off gathers every caster
     /// into every view every frame: the A/B control.
     pub fn set_static_cache(&mut self, enabled: bool, margin_fraction: f32) {
-        self.static_cache.set_enabled(enabled);
-        self.static_cache.set_margin_fraction(margin_fraction);
+        self.plan.set_static_cache(enabled, margin_fraction);
     }
 
     /// Whether any shadow work happens at all.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        self.settings.enabled
+        self.plan.is_enabled()
     }
 
     /// The shadow atlas's shader-visible handle, for the lighting pass to bind.
@@ -402,182 +315,14 @@ impl ShadowRenderer {
         material_count: usize,
         mesh_count: usize,
     ) {
-        let started = std::time::Instant::now();
-        self.stats = ShadowStats::for_settings(&self.settings);
-        self.stats.enabled = self.settings.enabled;
-        self.cascades.clear();
-        self.cascade_rects.clear();
-        self.local_views.clear();
-        self.local_selected.clear();
-        self.local_rects.clear();
-
-        if !self.settings.enabled {
-            self.prepare_ms = started.elapsed().as_secs_f64() * 1e3;
-            return;
-        }
-
-        build_cascades(
-            &self.settings,
+        self.plan.prepare(
+            world,
             camera,
-            lighting.direction,
-            &mut self.cascades,
+            lighting,
+            material_count,
+            mesh_count,
+            self.resources.layout(),
         );
-
-        // One list per cascade, allocated once and kept. `resize_with` only grows, so a
-        // quality change that adds a cascade allocates once and never again.
-        if self.cascade_lists.len() < self.cascades.len() {
-            self.cascade_lists
-                .resize_with(self.cascades.len(), RenderList::new);
-        }
-
-        // The frame's movers: everything that casts and is not part of the static scene,
-        // gathered once here and tested per view below. With the cache off, that is every
-        // caster, and every view is gathered from scratch exactly as before the cache.
-        self.static_cache
-            .begin_frame(world.static_generation(), &self.settings);
-        let caching = self.static_cache.enabled();
-        self.movers.clear();
-        {
-            let (flags, shadow, statics) = (
-                world.visible_flags(),
-                world.shadow_casting(),
-                world.static_flags(),
-            );
-            for slot in 0..world.slot_count() {
-                if flags[slot] && shadow[slot].casts && !(caching && statics[slot]) {
-                    self.movers.push(slot as u32);
-                }
-            }
-        }
-
-        let layout = *self.resources.layout();
-        let mut lod_counts = [0_u32; 4];
-        for index in 0..self.cascades.len() {
-            let cascade = self.cascades[index];
-            let mut static_casters = 0;
-            if caching {
-                let (collector, settings) = (&mut self.collector, &self.settings);
-                let view = self.static_cache.cascade(index, &cascade, |frustum, list| {
-                    collector.collect_cascade_with(
-                        world,
-                        frustum,
-                        &cascade,
-                        index,
-                        settings,
-                        CasterSlots::Static,
-                        list,
-                    );
-                    list.group_by_material_and_mesh(material_count, mesh_count);
-                });
-                static_casters = view.list.len() as u32;
-            }
-            let mut list = std::mem::take(&mut self.cascade_lists[index]);
-            let movers: &[u32] = if self.far_movers || index + 1 < self.cascades.len() {
-                &self.movers
-            } else {
-                &[]
-            };
-            self.collector.collect_cascade_with(
-                world,
-                &cascade.frustum(),
-                &cascade,
-                index,
-                &self.settings,
-                CasterSlots::Only(movers),
-                &mut list,
-            );
-            // The same grouping the camera pass uses, over the same key space, which is what
-            // gives the shadow pass instanced batching.
-            list.group_by_material_and_mesh(material_count, mesh_count);
-            let stats = self.collector.stats();
-            self.stats.cascades[index].casters = static_casters + stats.visible;
-            for (level, count) in stats.lod_counts.iter().enumerate() {
-                lod_counts[level] += count;
-            }
-            lod_counts[3] += stats.too_small;
-            self.static_cache.count_moving(list.len());
-            self.cascade_lists[index] = list;
-            self.cascade_rects
-                .push(layout.cascade_rect(index).unwrap_or(AtlasRect {
-                    x: 0,
-                    y: 0,
-                    size: 1,
-                }));
-        }
-        self.stats.lod_counts = lod_counts;
-
-        // Local lights, if the budget allows any.
-        let frustum = Frustum::from_view_projection(&camera.view_projection());
-        select_shadow_lights(
-            world.lights(),
-            camera.position(),
-            &frustum,
-            &self.settings,
-            &mut self.light_scratch,
-            &mut self.local_selected,
-            &mut self.local_views,
-        );
-        self.stats.local_views = self.local_views.len() as u32;
-        self.stats.local_lights = self.local_selected.len() as u32;
-        self.stats.local_lights_refused = world
-            .lights()
-            .iter()
-            .filter(|light| light.casts_shadow && light.is_significant())
-            .count()
-            .saturating_sub(self.local_selected.len())
-            as u32;
-
-        if self.local_lists.len() < self.local_views.len() {
-            self.local_lists
-                .resize_with(self.local_views.len(), RenderList::new);
-        }
-        for index in 0..self.local_views.len() {
-            let view = self.local_views[index];
-            let resolution = layout.local_resolution();
-            if caching {
-                let (collector, settings) = (&mut self.collector, &self.settings);
-                let cached = self.static_cache.local(
-                    view.light,
-                    view.face.unwrap_or(0),
-                    view.view_projection.to_cols_array(),
-                    |list| {
-                        collector.collect_local_with(
-                            world,
-                            &view,
-                            resolution,
-                            settings,
-                            CasterSlots::Static,
-                            list,
-                        );
-                        list.group_by_material_and_mesh(material_count, mesh_count);
-                    },
-                );
-                self.stats.local.casters += cached.list.len() as u32;
-            }
-            let mut list = std::mem::take(&mut self.local_lists[index]);
-            self.collector.collect_local_with(
-                world,
-                &view,
-                resolution,
-                &self.settings,
-                CasterSlots::Only(&self.movers),
-                &mut list,
-            );
-            list.group_by_material_and_mesh(material_count, mesh_count);
-            self.stats.local.casters += self.collector.stats().visible;
-            self.static_cache.count_moving(list.len());
-            self.local_lists[index] = list;
-            self.local_rects
-                .push(layout.local_rect(index).unwrap_or(AtlasRect {
-                    x: 0,
-                    y: 0,
-                    size: 1,
-                }));
-        }
-
-        self.stats.static_cache = self.static_cache.stats();
-        self.stats.static_views = self.static_cache.cached_views();
-        self.prepare_ms = started.elapsed().as_secs_f64() * 1e3;
     }
 
     /// Writes everything the lighting pass needs to sample what `prepare` selected.
@@ -586,34 +331,8 @@ impl ShadowRenderer {
         constants: &mut FrameConstants,
         lights: &[engine_render_data::LocalLight],
     ) {
-        let atlas_size = self.resources.atlas_size();
-        constants.set_atlas_size(atlas_size);
-        constants.set_debug_mode(self.debug_mode);
-        if !self.settings.enabled {
-            // Explicitly: a disabled shadow system must leave the shader on the unshadowed
-            // path rather than sampling a stale atlas.
-            constants.set_directional_shadows(&[], &[], atlas_size, &self.settings);
-            constants.set_local_lights(lights, &[], &[], &[], atlas_size);
-            constants.set_contact_shadows(&super::settings::ContactShadowSettings {
-                enabled: false,
-                ..self.settings.contact
-            });
-            return;
-        }
-        constants.set_directional_shadows(
-            &self.cascades,
-            &self.cascade_rects,
-            atlas_size,
-            &self.settings,
-        );
-        constants.set_local_lights(
-            lights,
-            &self.local_selected,
-            &self.local_views,
-            &self.local_rects,
-            atlas_size,
-        );
-        constants.set_contact_shadows(&self.settings.contact);
+        self.plan
+            .write_frame_constants(constants, lights, self.resources.atlas_size());
     }
 
     /// Records the depth passes that fill the atlas.
@@ -633,9 +352,9 @@ impl ShadowRenderer {
         slot: usize,
         scene: &ShadowScene<'_>,
     ) -> Result<(), RendererError> {
-        self.stats.cpu_ms = self.prepare_ms;
-        self.stats.prepare_ms = self.prepare_ms;
-        if !self.settings.enabled {
+        self.plan.stats.cpu_ms = self.plan.prepare_ms;
+        self.plan.stats.prepare_ms = self.plan.prepare_ms;
+        if !self.plan.settings.enabled {
             return Ok(());
         }
         let started = std::time::Instant::now();
@@ -654,9 +373,9 @@ impl ShadowRenderer {
 
         // Out of `self` for the loops, so a view can lend its static casters to `record_view`
         // while that borrows `self` mutably. Put back below, on every path.
-        let cache = std::mem::take(&mut self.static_cache);
+        let cache = std::mem::take(&mut self.plan.static_cache);
         let result = self.record_views(commands, uploads, slot, scene, &cache);
-        self.static_cache = cache;
+        self.plan.static_cache = cache;
         result?;
 
         // One transition for the whole atlas, which is the second reason it is one texture.
@@ -665,8 +384,8 @@ impl ShadowRenderer {
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         );
 
-        self.stats.atlas_ms = started.elapsed().as_secs_f64() * 1e3;
-        self.stats.cpu_ms += self.stats.atlas_ms;
+        self.plan.stats.atlas_ms = started.elapsed().as_secs_f64() * 1e3;
+        self.plan.stats.cpu_ms += self.plan.stats.atlas_ms;
         Ok(())
     }
 
@@ -680,43 +399,43 @@ impl ShadowRenderer {
         scene: &ShadowScene<'_>,
         cache: &StaticShadowCache,
     ) -> Result<(), RendererError> {
-        for index in 0..self.cascades.len() {
-            let Some(rect) = self.cascade_rects.get(index).copied() else {
+        for index in 0..self.plan.cascades.len() {
+            let Some(rect) = self.plan.cascade_rects.get(index).copied() else {
                 continue;
             };
-            let view = ShadowViewConstants::new(self.cascades[index].view_projection, true);
-            let frustum = self.cascades[index].frustum();
+            let view = ShadowViewConstants::new(self.plan.cascades[index].view_projection, true);
+            let frustum = self.plan.cascades[index].frustum();
             let statics = cache.cascade_view(index);
-            let characters = self.far_movers || index + 1 < self.cascades.len();
-            let list = std::mem::take(&mut self.cascade_lists[index]);
+            let characters = self.plan.far_movers || index + 1 < self.plan.cascades.len();
+            let list = std::mem::take(&mut self.plan.cascade_lists[index]);
             let pass = self.record_view(
                 commands, uploads, slot, scene, rect, view, statics, &list, &frustum, characters,
             );
-            self.cascade_lists[index] = list;
+            self.plan.cascade_lists[index] = list;
             let pass = pass?;
-            self.stats.cascades[index].draw_calls = pass.draw_calls;
-            self.stats.cascades[index].triangles = pass.triangles;
+            self.plan.stats.cascades[index].draw_calls = pass.draw_calls;
+            self.plan.stats.cascades[index].triangles = pass.triangles;
         }
 
-        for index in 0..self.local_views.len() {
-            let Some(rect) = self.local_rects.get(index).copied() else {
+        for index in 0..self.plan.local_views.len() {
+            let Some(rect) = self.plan.local_rects.get(index).copied() else {
                 continue;
             };
-            let local = self.local_views[index];
+            let local = self.plan.local_views[index];
             let view = ShadowViewConstants::new(local.view_projection, false);
             let frustum = local.frustum();
             let statics = cache
                 .enabled()
                 .then(|| cache.local_view(local.light, local.face.unwrap_or(0)))
                 .flatten();
-            let list = std::mem::take(&mut self.local_lists[index]);
+            let list = std::mem::take(&mut self.plan.local_lists[index]);
             let pass = self.record_view(
                 commands, uploads, slot, scene, rect, view, statics, &list, &frustum, true,
             );
-            self.local_lists[index] = list;
+            self.plan.local_lists[index] = list;
             let pass = pass?;
-            self.stats.local.draw_calls += pass.draw_calls;
-            self.stats.local.triangles += pass.triangles;
+            self.plan.stats.local.draw_calls += pass.draw_calls;
+            self.plan.stats.local.triangles += pass.triangles;
         }
         Ok(())
     }
@@ -795,8 +514,8 @@ impl ShadowRenderer {
         self.instance_scratch = instances;
         self.palette_scratch = palette;
         result?;
-        self.stats.prepass_ms = started.elapsed().as_secs_f64() * 1e3;
-        self.stats.cpu_ms += self.stats.prepass_ms;
+        self.plan.stats.prepass_ms = started.elapsed().as_secs_f64() * 1e3;
+        self.plan.stats.cpu_ms += self.plan.stats.prepass_ms;
         Ok(())
     }
 
@@ -952,7 +671,7 @@ impl ShadowRenderer {
             });
         self.instance_scratch = instances;
         self.palette_scratch = palette;
-        self.stats.skinned_draws += result?;
+        self.plan.stats.skinned_draws += result?;
 
         let after = commands.stats();
         Ok(ShadowPassStats {
@@ -1175,57 +894,6 @@ impl ShadowRenderer {
 
     /// Records the GPU time the shadow passes took, once the timer has resolved it.
     pub fn set_gpu_ms(&mut self, milliseconds: Option<f64>) {
-        self.stats.gpu_ms = milliseconds;
-    }
-}
-
-/// The direction a light travels, normalized, with a fallback for a degenerate one.
-///
-/// A light with no direction at all is authored by accident — a script that zeroed a vector
-/// — and it would produce a `NaN` view matrix and a black frame. Straight down is the
-/// answer that keeps the frame renderable and looks obviously wrong.
-#[must_use]
-pub fn safe_light_direction(direction: Vec3) -> Vec3 {
-    if direction.length_squared() > 1e-6 {
-        direction.normalize()
-    } else {
-        Vec3::new(0.0, -1.0, 0.0)
-    }
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "test code may assert on known-good values"
-)]
-mod tests {
-    use super::*;
-    use crate::shadow::settings::ShadowPreset;
-
-    #[test]
-    fn a_shadow_views_constants_carry_the_matrix_untransposed() {
-        let matrix = Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0));
-        let constants = ShadowViewConstants::new(matrix, true);
-        assert_eq!(&constants.view_projection[12..15], &[1.0, 2.0, 3.0]);
-        assert_eq!(constants.params[0], 1.0);
-        // Small on purpose: this is uploaded once per cascade and once per local view.
-        assert_eq!(size_of::<ShadowViewConstants>(), 80);
-    }
-
-    #[test]
-    fn a_degenerate_light_direction_does_not_produce_a_nan_matrix() {
-        assert_eq!(safe_light_direction(Vec3::ZERO), Vec3::new(0.0, -1.0, 0.0));
-        assert!(
-            (safe_light_direction(Vec3::new(0.0, -2.0, 0.0)).y + 1.0).abs() < 1e-6,
-            "an ordinary direction must be normalized, not replaced"
-        );
-    }
-
-    #[test]
-    fn the_prepass_only_runs_for_contact_shadows() {
-        // It is the one thing that needs it, and it costs a second pass over every visible
-        // object — so a configuration without contact shadows must not pay for one.
-        assert!(ShadowPreset::High.settings().contact.enabled);
-        assert!(!ShadowPreset::Medium.settings().contact.enabled);
+        self.plan.set_gpu_ms(milliseconds);
     }
 }

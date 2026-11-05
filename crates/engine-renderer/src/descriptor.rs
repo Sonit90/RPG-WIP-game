@@ -54,14 +54,17 @@
 //! reset once the GPU has finished the frame that used it, which is exactly what the frame
 //! ring already establishes before `begin_frame` returns.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_TYPE,
     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_GPU_DESCRIPTOR_HANDLE, ID3D12DescriptorHeap,
 };
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 
+#[cfg(windows)]
 /// An index into a descriptor heap, plus the handles that address it.
 ///
 /// The index is what the owner returns to free the descriptor; the handles are what D3D12
@@ -322,6 +325,7 @@ impl BumpAllocator {
     }
 }
 
+#[cfg(windows)]
 /// A CPU-only descriptor heap: render-target and depth-stencil views.
 ///
 /// These are never bound as a table, so the heap is not shader-visible. Views are created
@@ -334,6 +338,7 @@ pub struct CpuDescriptorHeap {
     allocator: FreeListAllocator,
 }
 
+#[cfg(windows)]
 impl CpuDescriptorHeap {
     /// Creates a non-shader-visible heap of `capacity` descriptors.
     ///
@@ -421,6 +426,7 @@ impl CpuDescriptorHeap {
     }
 }
 
+#[cfg(windows)]
 /// The shader-visible CBV/SRV/UAV heap, split into a persistent region and one per-frame
 /// region per frame slot.
 ///
@@ -441,6 +447,7 @@ pub struct GpuDescriptorHeap {
     frames: Vec<BumpAllocator>,
 }
 
+#[cfg(windows)]
 impl GpuDescriptorHeap {
     /// Creates the heap with `persistent_capacity` long-lived slots and
     /// `per_frame_capacity` slots for each of `frames_in_flight` slices.

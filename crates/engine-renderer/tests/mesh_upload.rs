@@ -5,6 +5,7 @@
 //! at them, and that a batch of meshes costs one synchronization rather than one per mesh.
 //! An upload that silently wrote nowhere looks identical from the CPU side.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

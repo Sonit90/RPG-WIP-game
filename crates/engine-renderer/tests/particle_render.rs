@@ -16,6 +16,8 @@
 //!
 //! Every test skips itself when no D3D12 adapter is present.
 
+#![cfg(windows)]
+
 use engine_core::math::Vec3;
 use engine_render_data::{Camera, ParticleBlend, ParticleDrawList, ParticleInstance, Projection};
 use engine_renderer::offscreen::{CapturedImage, render_particles};

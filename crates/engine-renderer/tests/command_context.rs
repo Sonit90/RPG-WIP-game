@@ -10,6 +10,7 @@
 //! Like every GPU test in this crate they take the process-wide lock and skip rather than
 //! fail without a D3D12 adapter.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

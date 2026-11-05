@@ -4,11 +4,13 @@
 //! here mentions a specific vendor or model: the engine must run on any D3D12 adapter,
 //! and simply prefers the most capable one it can find.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, IDXGIAdapter1,
     IDXGIFactory6,
 };
 
+#[cfg(windows)]
 use crate::error::RendererError;
 
 /// Description of one graphics adapter.
@@ -65,6 +67,7 @@ pub fn select_adapter(candidates: &[AdapterInfo]) -> Option<usize> {
     best_hardware.or(if candidates.is_empty() { None } else { Some(0) })
 }
 
+#[cfg(windows)]
 /// Enumerates every DXGI adapter on the system.
 ///
 /// Returns the COM objects alongside their descriptions so the caller can create a

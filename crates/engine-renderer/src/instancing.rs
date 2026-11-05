@@ -25,22 +25,29 @@
 //! * **Intentionally staged.** Do not delete it as unused — the benchmark is a caller — and
 //!   do not mistake it for the instancing feature itself.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
     D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
+#[cfg(windows)]
 use windows::core::s;
 
+#[cfg(windows)]
 use crate::depth::DEPTH_FORMAT;
+#[cfg(windows)]
 use crate::error::RendererError;
-use crate::pipeline::{
-    Vertex, blend_desc, create_root_signature, depth_stencil_desc, rasterizer_desc,
-};
+use crate::pipeline::Vertex;
+#[cfg(windows)]
+use crate::pipeline::{blend_desc, create_root_signature, depth_stencil_desc, rasterizer_desc};
+#[cfg(windows)]
 use crate::shader::{INSTANCED_PS, INSTANCED_VS, bytecode};
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
 /// Per-instance data: where to put the triangle and what colour to tint it.
@@ -119,12 +126,14 @@ pub fn build_instance_grid(count: u32, instances: &mut Vec<InstanceData>) {
     }
 }
 
+#[cfg(windows)]
 /// Root signature and pipeline state for instanced position + colour geometry.
 pub struct InstancedPipeline {
     root_signature: ID3D12RootSignature,
     pipeline_state: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl InstancedPipeline {
     /// Builds the pipeline state from the embedded instanced DXIL.
     ///

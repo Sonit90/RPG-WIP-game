@@ -8,7 +8,9 @@
 //! Milestone 9 builds its automated GPU test on this; Milestone 4 uses it to verify the
 //! triangle is visible.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_FLAG_DEPTH, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_CPU_DESCRIPTOR_HANDLE,
     D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
@@ -21,37 +23,55 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandAllocator, ID3D12DescriptorHeap, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+#[cfg(windows)]
 use windows::core::Interface;
 
 use engine_core::transform::Transform;
 
+#[cfg(windows)]
 use crate::command::{CommandContext, scissor_for, transition_barrier, viewport_for};
+#[cfg(windows)]
 use crate::depth::{DEPTH_CLEAR, DepthBuffer};
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
-use crate::material::{
-    MATERIAL_TEXTURE_COUNT, Material, MaterialDesc, MaterialTextureSlot, SurfaceClass,
-};
-use crate::mesh::{GpuMesh, MeshData, SkinnedMeshData, VertexStream};
+use crate::material::{MATERIAL_TEXTURE_COUNT, MaterialDesc};
+#[cfg(windows)]
+use crate::material::{Material, MaterialTextureSlot, SurfaceClass};
+#[cfg(windows)]
+use crate::mesh::{GpuMesh, VertexStream};
+use crate::mesh::{MeshData, SkinnedMeshData};
+#[cfg(windows)]
 use crate::mesh_pipeline::{
     CharacterPass, InstanceTransform, InstancedMeshPipeline, MeshPipeline, PipelineVariant,
     SkinnedMeshPipeline,
 };
+#[cfg(windows)]
 use crate::pipeline::{ScenePipeline, TRIANGLE_VERTICES, Vertex};
+#[cfg(windows)]
 use crate::scene::{
     FrameConstants, ObjectConstants, ROOT_FRAME_CBV, ROOT_MATERIAL_CBV, ROOT_MATERIAL_TABLE,
     ROOT_OBJECT_CBV, ROOT_SKIN_CBV,
 };
+#[cfg(windows)]
 use crate::shader::ShaderFeatures;
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
+#[cfg(windows)]
 use crate::upload::UploadRing;
+#[cfg(windows)]
 use engine_render_data::Camera;
-use engine_render_data::{Lighting, MAX_PALETTE_BONES};
+use engine_render_data::Lighting;
+#[cfg(windows)]
+use engine_render_data::MAX_PALETTE_BONES;
 
 /// Bytes per pixel of [`BACK_BUFFER_FORMAT`].
 pub const BYTES_PER_PIXEL: usize = 4;
 
+#[cfg(windows)]
 /// The four 1×1 fallback maps every offscreen material binds, and the heap holding them.
 ///
 /// Every mesh material binds a four-descriptor table, and an unbound descriptor is not a
@@ -79,6 +99,7 @@ struct FallbackMaps {
     table: windows::Win32::Graphics::Direct3D12::D3D12_GPU_DESCRIPTOR_HANDLE,
 }
 
+#[cfg(windows)]
 /// Prints whatever the validation layer stored, if it is running.
 ///
 /// Silent when the layer is off, which is the usual case: `GetNumStoredMessages` on a device
@@ -114,6 +135,7 @@ fn drain_validation_messages(context: &RenderDevice) {
     }
 }
 
+#[cfg(windows)]
 /// Uploads the four 1x1 fallback textures, in descriptor order.
 ///
 /// Split from [`fallback_maps`] so a path that owns its own descriptor heap — the shadowed
@@ -147,6 +169,7 @@ fn fallback_textures(
     Ok(textures)
 }
 
+#[cfg(windows)]
 /// The view format a slot's textures are read through. The colour space lives in the view,
 /// not the resource — the texels are the same bytes either way.
 fn slot_format(slot: MaterialTextureSlot) -> windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT {
@@ -160,6 +183,7 @@ fn slot_format(slot: MaterialTextureSlot) -> windows::Win32::Graphics::Dxgi::Com
     }
 }
 
+#[cfg(windows)]
 /// Writes the four fallback views into the contiguous range starting at `range`.
 ///
 /// `textures` must be in [`MaterialTextureSlot::ALL`] order, which is what
@@ -210,6 +234,7 @@ fn create_fallback_views(
     }
 }
 
+#[cfg(windows)]
 /// Creates the shared fallback material table for one offscreen submission.
 fn fallback_maps(context: &RenderDevice) -> Result<FallbackMaps, RendererError> {
     use crate::descriptor::GpuDescriptorHeap;
@@ -262,6 +287,7 @@ impl CapturedImage {
     }
 }
 
+#[cfg(windows)]
 /// Renders [`TRIANGLE_VERTICES`] offscreen and reads the result back.
 ///
 /// # Errors
@@ -276,6 +302,7 @@ pub fn render_triangle(
     render_vertices(width, height, clear_color, &TRIANGLE_VERTICES)
 }
 
+#[cfg(windows)]
 /// Renders arbitrary vertices offscreen and reads the result back.
 ///
 /// Creates its own device, so it is independent of any swap chain or window.
@@ -331,6 +358,7 @@ pub struct SkinnedObject<'a> {
     pub palette: &'a [engine_core::math::Mat4],
 }
 
+#[cfg(windows)]
 /// Renders skinned geometry offscreen and reads the result back.
 ///
 /// The offscreen equivalent of the renderer's skinned pass: same pipeline state, same root
@@ -453,6 +481,7 @@ pub fn render_skinned_scene(
     clippy::too_many_arguments,
     reason = "a scene, a character set and the one number under test"
 )]
+#[cfg(windows)]
 pub fn render_translucent_characters(
     width: u32,
     height: u32,
@@ -610,6 +639,7 @@ pub fn render_translucent_characters(
     })
 }
 
+#[cfg(windows)]
 /// Renders a set of transformed, shaded meshes through a camera and reads the result back.
 ///
 /// This is the offscreen equivalent of [`crate::Renderer::render_world`] — same pipeline,
@@ -638,6 +668,7 @@ pub fn render_scene(
     )
 }
 
+#[cfg(windows)]
 /// The same, through a pixel shader compiled with `features`.
 ///
 /// What lets a test compare two permutations of one scene: the geometry, the materials, the
@@ -683,6 +714,7 @@ pub fn render_scene_with_features(
     clippy::too_many_arguments,
     reason = "the arguments of `render_scene`, plus the two things this variant exists for"
 )]
+#[cfg(windows)]
 pub fn render_scene_styled(
     width: u32,
     height: u32,
@@ -710,6 +742,7 @@ pub fn render_scene_styled(
     clippy::too_many_arguments,
     reason = "the union of the public entry points' arguments"
 )]
+#[cfg(windows)]
 fn render_scene_inner(
     width: u32,
     height: u32,
@@ -794,6 +827,7 @@ fn render_scene_inner(
     })
 }
 
+#[cfg(windows)]
 /// Renders a scene of mixed surface classes offscreen, in the phase order the renderer uses.
 ///
 /// The headless counterpart of the window path's two mesh phases, and the one an automated
@@ -980,6 +1014,7 @@ impl MaterialSurface {
     }
 }
 
+#[cfg(windows)]
 /// Renders one surface with a caller-supplied material texture set and reads it back.
 ///
 /// The probe both halves of the material pipeline are tested through. With a debug mode in
@@ -1005,6 +1040,7 @@ pub fn render_material_surface(surface: MaterialSurface) -> Result<CapturedImage
 /// take longer to read back and say the same thing.
 pub const SURFACE_PROBE_SIZE: u32 = 64;
 
+#[cfg(windows)]
 /// Renders one surface with a caller-supplied material texture set and reads it back.
 ///
 /// The original four-texel binding probe, kept because a dozen Milestone 2 tests call it:
@@ -1023,6 +1059,7 @@ pub fn render_material_maps(
     render_material_quad(width, height, MaterialSurface::new(texels, debug_mode))
 }
 
+#[cfg(windows)]
 /// The body both entry points share.
 fn render_material_quad(
     width: u32,
@@ -1174,6 +1211,7 @@ pub struct ShadowSceneObject<'a> {
     pub shadow: engine_render_data::ShadowCasting,
 }
 
+#[cfg(windows)]
 /// One frame's worth of zeroed cluster masks, for a path that has no local lights.
 ///
 /// # Errors
@@ -1208,6 +1246,7 @@ fn empty_light_grid(
     clippy::too_many_arguments,
     reason = "an offscreen frame is a size, a clear, a scene, its lights, a camera, its               lighting and the settings under test; every one of them varies per test"
 )]
+#[cfg(windows)]
 pub fn render_scene_shadowed(
     width: u32,
     height: u32,
@@ -1245,6 +1284,7 @@ pub fn render_scene_shadowed(
     clippy::too_many_arguments,
     reason = "an offscreen frame is this many things"
 )]
+#[cfg(windows)]
 pub fn render_scene_shadowed_debug(
     width: u32,
     height: u32,
@@ -1435,6 +1475,7 @@ pub fn render_scene_shadowed_debug(
     )
 }
 
+#[cfg(windows)]
 /// Renders a [`ParticleDrawList`](engine_render_data::ParticleDrawList) through a camera
 /// and reads the result back.
 ///
@@ -1508,6 +1549,7 @@ pub fn render_particles(
     })
 }
 
+#[cfg(windows)]
 /// Renders a [`UiDrawList`] over a cleared target and reads the pixels back.
 ///
 /// The only way to prove alpha blending actually blends. A draw-call count and a silent
@@ -1630,6 +1672,7 @@ pub fn render_ui(
     })
 }
 
+#[cfg(windows)]
 /// Renders the same scene as [`render_scene`], one instanced draw per run of objects
 /// sharing a mesh and a material.
 ///
@@ -1752,6 +1795,7 @@ pub fn render_scene_instanced(
     })
 }
 
+#[cfg(windows)]
 /// Creates an offscreen target, lets `record` draw into it, and reads the pixels back.
 ///
 /// `record` returns whatever it must keep alive: a command list holds raw pointers, not
@@ -2003,6 +2047,7 @@ fn render_with(
     })
 }
 
+#[cfg(windows)]
 /// A buffer the GPU copies one texture into, and the layout it copies it with.
 ///
 /// The half of [`render_with`] the live renderer needs too: `Renderer::capture_world` copies
@@ -2020,6 +2065,7 @@ pub(crate) struct Readback {
     pub(crate) height: u32,
 }
 
+#[cfg(windows)]
 impl Readback {
     /// A readback buffer sized for one `width × height` texture of `format`.
     pub(crate) fn for_texture(
@@ -2143,6 +2189,7 @@ impl Readback {
     }
 }
 
+#[cfg(windows)]
 /// Maps the readback buffer and copies its rows into a tightly packed image.
 fn read_pixels(
     readback: &ID3D12Resource,
@@ -2219,6 +2266,7 @@ mod tests {
         assert_eq!(image.count_pixels(|p| p[3] == 255), 2);
     }
 
+    #[cfg(windows)]
     #[test]
     fn rejects_a_zero_sized_target() {
         assert!(render_triangle(0, 16, [0.0; 4]).is_err());

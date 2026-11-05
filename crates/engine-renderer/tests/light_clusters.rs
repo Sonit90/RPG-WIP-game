@@ -9,6 +9,7 @@
 //! window does from the same camera — so a passing test here is evidence about the path the
 //! game takes.
 
+#![cfg(windows)]
 #![allow(
     clippy::expect_used,
     reason = "test code may assert on known-good values"

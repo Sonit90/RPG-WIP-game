@@ -85,6 +85,7 @@ use engine_render_data::{InstanceStyle, MaterialHandle, MeshHandle, RenderEntity
 
 use crate::material::SurfaceClass;
 use crate::mesh_pipeline::InstanceTransform;
+#[cfg(windows)]
 use crate::upload::UploadRing;
 
 /// A run of entries sharing one mesh and one material.
@@ -463,6 +464,24 @@ impl RenderList {
         self.truncate(kept);
     }
 
+    /// Fills `out` with every entry's per-instance data, in the order the batches walk.
+    ///
+    /// The backend-neutral half of [`RenderList::upload_instances`]: the records themselves,
+    /// before they are copied into any API's upload memory. Replaces `out`'s contents and keeps
+    /// its allocation.
+    pub(crate) fn compose_instances(&self, out: &mut Vec<InstanceTransform>) {
+        out.clear();
+        out.extend(self.order.iter().map(|&entry| {
+            let entry = entry as usize;
+            InstanceTransform::shadowed(
+                self.transforms[entry].matrix(),
+                self.styles[entry],
+                self.receives_shadow[entry],
+            )
+        }));
+    }
+
+    #[cfg(windows)]
     /// Composes every entry's per-instance data into one allocation of this frame's upload
     /// ring, in the order the batches walk, and returns the view a batch loop binds once.
     ///
@@ -487,15 +506,7 @@ impl RenderList {
         if self.order.is_empty() {
             return Ok(None);
         }
-        scratch.clear();
-        scratch.extend(self.order.iter().map(|&entry| {
-            let entry = entry as usize;
-            InstanceTransform::shadowed(
-                self.transforms[entry].matrix(),
-                self.styles[entry],
-                self.receives_shadow[entry],
-            )
-        }));
+        self.compose_instances(scratch);
         let allocation = uploads.write(slot, scratch, INSTANCE_STREAM_ALIGNMENT)?;
         Ok(Some(
             windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW {

@@ -9,10 +9,12 @@
 //! Nothing above `engine-renderer` sees a D3D12 interface. `engine-core` has no graphics
 //! dependency at all; the application holds a [`crate::Renderer`], not a device.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
     D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_2,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_VALUE, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
     D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
@@ -26,7 +28,9 @@ use windows::Win32::Graphics::Direct3D12::{
     ID3D12Debug, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList,
     ID3D12InfoQueue, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
     DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
@@ -34,17 +38,27 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIFactory6,
 };
 
+#[cfg(windows)]
 use windows::core::Interface;
 
+#[cfg(windows)]
 use crate::adapter::{AdapterInfo, enumerate_adapters, select_adapter};
+#[cfg(windows)]
 use crate::error::RendererError;
 
 /// Backend name reported at startup.
+#[cfg(windows)]
 pub const BACKEND: &str = "Direct3D 12";
 
+/// Name of the graphics API in use, for logs and the window title.
+#[cfg(not(windows))]
+pub const BACKEND: &str = "Metal";
+
+#[cfg(windows)]
 /// Lowest feature level the engine will run on.
 const MINIMUM_FEATURE_LEVEL: D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
 
+#[cfg(windows)]
 /// Feature levels probed at startup, highest first.
 const PROBED_FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 5] = [
     D3D_FEATURE_LEVEL_12_2,
@@ -54,6 +68,7 @@ const PROBED_FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 5] = [
     D3D_FEATURE_LEVEL_11_0,
 ];
 
+#[cfg(windows)]
 /// Device, queue and the DXGI objects they came from.
 pub struct RenderDevice {
     factory: IDXGIFactory6,
@@ -78,6 +93,7 @@ pub struct VideoMemory {
     pub non_local_usage: u64,
 }
 
+#[cfg(windows)]
 impl RenderDevice {
     /// Creates the factory, selects an adapter, and creates the device and queue.
     ///
@@ -502,6 +518,7 @@ impl RenderDevice {
     }
 }
 
+#[cfg(windows)]
 /// Formats a feature level constant as the name used in D3D documentation.
 #[must_use]
 pub fn feature_level_name(level: D3D_FEATURE_LEVEL) -> &'static str {
@@ -515,6 +532,7 @@ pub fn feature_level_name(level: D3D_FEATURE_LEVEL) -> &'static str {
     }
 }
 
+#[cfg(windows)]
 /// Turns on the D3D12 validation layer. Returns whether it was enabled.
 fn enable_d3d12_debug_layer() -> bool {
     let mut debug: Option<ID3D12Debug> = None;
@@ -533,6 +551,7 @@ fn enable_d3d12_debug_layer() -> bool {
     true
 }
 
+#[cfg(windows)]
 /// Makes the debug layer break the process on validation errors.
 ///
 /// Best-effort: the info queue only exists when the debug layer is active.
@@ -548,6 +567,7 @@ fn configure_info_queue(device: &ID3D12Device) {
     }
 }
 
+#[cfg(windows)]
 /// Asks the device which of [`PROBED_FEATURE_LEVELS`] it actually supports.
 fn highest_feature_level(device: &ID3D12Device) -> D3D_FEATURE_LEVEL {
     let mut data = D3D12_FEATURE_DATA_FEATURE_LEVELS {
@@ -573,6 +593,7 @@ fn highest_feature_level(device: &ID3D12Device) -> D3D_FEATURE_LEVEL {
     }
 }
 
+#[cfg(windows)]
 /// Reports whether `DXGI_PRESENT_ALLOW_TEARING` may be used on this system.
 ///
 /// Tearing support is what makes uncapped presentation possible in a window; without it
@@ -598,6 +619,7 @@ fn query_tearing_support(factory: &IDXGIFactory6) -> bool {
     }
 }
 
+#[cfg(windows)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +645,7 @@ mod tests {
     }
 }
 
+#[cfg(windows)]
 #[cfg(test)]
 mod thread_safety_probe {
     /// Whether a D3D12 device handle can be moved between threads at all.

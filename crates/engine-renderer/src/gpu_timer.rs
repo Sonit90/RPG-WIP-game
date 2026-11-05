@@ -28,6 +28,7 @@
 //! execution span of the frame's own work. It excludes anything the GPU does for other
 //! processes, and it excludes time between frames when the queue is idle.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_READBACK, D3D12_QUERY_HEAP_DESC,
     D3D12_QUERY_HEAP_TYPE_TIMESTAMP, D3D12_QUERY_TYPE_TIMESTAMP, D3D12_RANGE, D3D12_RESOURCE_DESC,
@@ -35,8 +36,10 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandQueue, ID3D12Device, ID3D12GraphicsCommandList,
     ID3D12QueryHeap, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
+#[cfg(windows)]
 use crate::error::RendererError;
 
 /// Timestamps recorded per frame slot.
@@ -102,9 +105,11 @@ pub const TIMED_PASSES: [(usize, &str); MAX_TIMED_PASSES] = [
     (CONTACT_PASS, "contact"),
 ];
 
+#[cfg(windows)]
 /// Bytes per timestamp, which `ResolveQueryData` writes as `u64` ticks.
 const BYTES_PER_QUERY: usize = size_of::<u64>();
 
+#[cfg(windows)]
 /// Timestamp query heap, its readback buffer and the queue's tick rate.
 pub struct GpuTimer {
     query_heap: ID3D12QueryHeap,
@@ -117,6 +122,7 @@ pub struct GpuTimer {
     frame_count: usize,
 }
 
+#[cfg(windows)]
 impl GpuTimer {
     /// Creates a timer with `frame_count` independent slots.
     ///
@@ -362,6 +368,7 @@ pub fn ticks_to_ms(begin: u64, end: u64, frequency: u64) -> Option<f64> {
     Some(ticks as f64 * 1000.0 / frequency as f64)
 }
 
+#[cfg(windows)]
 /// Creates a readback buffer of `bytes` bytes for resolved query data.
 pub(crate) fn create_readback_buffer(
     device: &ID3D12Device,

@@ -11,6 +11,7 @@
 //! workspace, and it buys the guarantee that a shader which is in the binary is a shader
 //! that compiled.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::D3D12_SHADER_BYTECODE;
 
 // The generated module: one `pub const NAME: &[u8]` per entry point in `build.rs`'s table.
@@ -22,6 +23,7 @@ include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 /// including the RX 6700 XT this engine targets.
 pub const SHADER_MODEL: &str = "6_0";
 
+#[cfg(windows)]
 /// Describes embedded bytecode to D3D12.
 ///
 /// The returned descriptor borrows `bytecode`. Every caller passes a `&'static [u8]` from
@@ -82,6 +84,7 @@ impl ShaderFeatures {
     }
 }
 
+#[cfg(windows)]
 /// The mesh pixel shader for `features`.
 ///
 /// A `match` over all eight rather than a table indexed by bits: the constants are generated
@@ -101,6 +104,7 @@ pub fn mesh_pixel_shader(features: ShaderFeatures) -> &'static [u8] {
     }
 }
 
+#[cfg(windows)]
 /// The instanced mesh pixel shader for `features`.
 #[must_use]
 pub fn mesh_instanced_pixel_shader(features: ShaderFeatures) -> &'static [u8] {
@@ -116,6 +120,7 @@ pub fn mesh_instanced_pixel_shader(features: ShaderFeatures) -> &'static [u8] {
     }
 }
 
+#[cfg(windows)]
 /// The skinned mesh pixel shader for `features`.
 #[must_use]
 pub fn mesh_skinned_pixel_shader(features: ShaderFeatures) -> &'static [u8] {
@@ -141,6 +146,7 @@ pub fn is_dxil_container(blob: &[u8]) -> bool {
     blob.len() > 32 && blob.starts_with(b"DXBC")
 }
 
+#[cfg(windows)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,6 +10,7 @@
 //! Each test states the arithmetic it expects rather than a captured value, because a
 //! screenshot comparison tells you a frame changed and this tells you which rule broke.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

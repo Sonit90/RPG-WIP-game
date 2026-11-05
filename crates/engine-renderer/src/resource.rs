@@ -32,9 +32,12 @@
 //! has passed. [`DeferredReleaseQueue`] does the second, so releasing a resource costs a
 //! push rather than a pipeline drain.
 
+#[cfg(windows)]
 use std::sync::Arc;
+#[cfg(windows)]
 use std::sync::atomic::{AtomicI32, Ordering};
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_DEPTH_STENCIL_VALUE, D3D12_HEAP_TYPE,
     D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
@@ -42,11 +45,15 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ,
     D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
 
+#[cfg(windows)]
 /// A resource whose current state the engine tracks.
 ///
 /// Implemented by every wrapper in this module. The command context takes this rather than
@@ -126,6 +133,7 @@ impl MappedPtr {
     }
 }
 
+#[cfg(windows)]
 /// A resource's current state, tracked on the CPU so a barrier can be elided.
 ///
 /// An atomic rather than a `Cell` because the renderer is `Send`: it is created on the
@@ -136,6 +144,7 @@ impl MappedPtr {
 #[derive(Debug)]
 struct ResourceState(AtomicI32);
 
+#[cfg(windows)]
 impl ResourceState {
     fn new(state: D3D12_RESOURCE_STATES) -> Self {
         Self(AtomicI32::new(state.0))
@@ -150,6 +159,7 @@ impl ResourceState {
     }
 }
 
+#[cfg(windows)]
 /// A GPU buffer: vertices, indices, constants or instance data.
 pub struct GpuBuffer {
     resource: ID3D12Resource,
@@ -159,6 +169,7 @@ pub struct GpuBuffer {
     gpu_address: u64,
 }
 
+#[cfg(windows)]
 impl GpuBuffer {
     /// Creates a buffer of `size` bytes in device-local memory.
     ///
@@ -323,6 +334,7 @@ impl GpuBuffer {
     }
 }
 
+#[cfg(windows)]
 impl TrackedResource for GpuBuffer {
     fn resource(&self) -> &ID3D12Resource {
         &self.resource
@@ -337,6 +349,7 @@ impl TrackedResource for GpuBuffer {
     }
 }
 
+#[cfg(windows)]
 /// A range of a buffer: the whole of a dedicated one, or a suballocation out of an arena.
 ///
 /// # Why a mesh no longer owns a resource
@@ -357,6 +370,7 @@ pub struct BufferSlice {
     size: usize,
 }
 
+#[cfg(windows)]
 impl BufferSlice {
     /// The whole of a buffer nothing else shares.
     ///
@@ -399,18 +413,21 @@ impl BufferSlice {
     }
 }
 
+#[cfg(windows)]
 /// How large one arena chunk is, in bytes.
 ///
 /// Eight megabytes: a level's whole static geometry fits in one or two, and an asset larger
 /// than a chunk gets one of its own rather than being refused.
 const ARENA_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
+#[cfg(windows)]
 /// One chunk and how much of it is spoken for.
 struct ArenaChunk {
     buffer: Arc<GpuBuffer>,
     used: usize,
 }
 
+#[cfg(windows)]
 /// Device-local memory for data that is written once and lives as long as the content does.
 ///
 /// Never freed piecemeal: a chunk is released when the last slice out of it is, and nothing
@@ -422,6 +439,7 @@ pub struct BufferArena {
     state: D3D12_RESOURCE_STATES,
 }
 
+#[cfg(windows)]
 impl BufferArena {
     /// An arena whose chunks are created in `state`. No memory until the first allocation.
     #[must_use]
@@ -489,6 +507,7 @@ impl BufferArena {
     }
 }
 
+#[cfg(windows)]
 /// Where a buffer for a mesh or a material comes from.
 ///
 /// Two callers, one code path: the renderer suballocates out of its arena, and a test or a
@@ -501,6 +520,7 @@ pub enum BufferSource<'a> {
     Arena(&'a mut BufferArena),
 }
 
+#[cfg(windows)]
 impl BufferSource<'_> {
     /// Reserves `size` bytes aligned to `alignment`, however this source provides them.
     ///
@@ -525,6 +545,7 @@ impl BufferSource<'_> {
     }
 }
 
+#[cfg(windows)]
 /// A 2D texture: a render target, a depth buffer, or a sampled image.
 pub struct GpuTexture {
     resource: ID3D12Resource,
@@ -541,6 +562,7 @@ pub struct GpuTexture {
     state: ResourceState,
 }
 
+#[cfg(windows)]
 impl GpuTexture {
     /// Wraps an existing resource whose state is known.
     ///
@@ -845,6 +867,7 @@ impl FormatLayout {
     }
 }
 
+#[cfg(windows)]
 impl TrackedResource for GpuTexture {
     fn resource(&self) -> &ID3D12Resource {
         &self.resource
@@ -859,6 +882,7 @@ impl TrackedResource for GpuTexture {
     }
 }
 
+#[cfg(windows)]
 /// Resources awaiting release, each with the fence value that must pass first.
 ///
 /// The alternative — blocking until the GPU is idle before every release — is correct and
@@ -893,6 +917,7 @@ pub struct DeferredReleaseQueue {
     peak_pending: usize,
 }
 
+#[cfg(windows)]
 impl DeferredReleaseQueue {
     /// Creates an empty queue.
     #[must_use]
@@ -961,6 +986,7 @@ impl DeferredReleaseQueue {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::*;
 
     /// The queue's ordering logic, exercised without D3D12 resources.
@@ -1010,6 +1036,7 @@ mod tests {
         assert_eq!(releasable_prefix(&[], 100), 0);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_new_queue_is_empty() {
         let queue = DeferredReleaseQueue::new();

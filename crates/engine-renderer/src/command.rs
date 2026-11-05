@@ -28,10 +28,14 @@
 //! cannot forget to, which is the point: forgetting produces a validation error at best
 //! and a read of an untransitioned resource at worst.
 
+#[cfg(windows)]
 use std::mem::ManuallyDrop;
 
+#[cfg(windows)]
 use windows::Win32::Foundation::RECT;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_FLAG_DEPTH, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_GPU_DESCRIPTOR_HANDLE,
     D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
@@ -41,12 +45,17 @@ use windows::Win32::Graphics::Direct3D12::{
     ID3D12CommandAllocator, ID3D12DescriptorHeap, ID3D12GraphicsCommandList, ID3D12PipelineState,
     ID3D12Resource, ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::core::Interface;
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::resource::TrackedResource;
 
+#[cfg(windows)]
 /// Barriers batched before the array is submitted.
 ///
 /// A frame transitions a handful of resources: the back buffer in and out, a depth buffer,
@@ -54,6 +63,7 @@ use crate::resource::TrackedResource;
 /// once so the recording path never does.
 const MAX_PENDING_BARRIERS: usize = 16;
 
+#[cfg(windows)]
 /// Root slots whose bound address is tracked for the statistics.
 ///
 /// Three, matching the mesh root signature. A slot beyond this is counted as a bind but not
@@ -61,6 +71,7 @@ const MAX_PENDING_BARRIERS: usize = 16;
 /// than inventing one.
 const MAX_TRACKED_ROOT_SLOTS: usize = 3;
 
+#[cfg(windows)]
 /// Root slot whose changes are reported as material changes.
 ///
 /// `crate::scene::ROOT_MATERIAL_CBV`, not re-derived: the two must agree, and the
@@ -172,9 +183,11 @@ impl CommandStats {
     }
 }
 
+#[cfg(windows)]
 /// Vertex-buffer slots whose binding is tracked for redundancy. Higher slots are always bound.
 const TRACKED_VERTEX_SLOTS: usize = 2;
 
+#[cfg(windows)]
 /// The pipeline objects currently bound, by identity.
 ///
 /// COM interface pointers are compared as addresses: two handles to the same object have
@@ -203,6 +216,7 @@ struct BindingState {
     index_buffer: u64,
 }
 
+#[cfg(windows)]
 impl BindingState {
     /// Records a binding, returning whether it changed anything.
     fn bind(current: &mut usize, requested: usize) -> bool {
@@ -223,6 +237,7 @@ impl BindingState {
     }
 }
 
+#[cfg(windows)]
 /// Records commands into one D3D12 command list.
 pub struct CommandContext {
     list: ID3D12GraphicsCommandList,
@@ -234,6 +249,7 @@ pub struct CommandContext {
     recording: bool,
 }
 
+#[cfg(windows)]
 impl CommandContext {
     /// Creates a context around a new, closed command list.
     ///
@@ -747,6 +763,7 @@ impl CommandContext {
     }
 }
 
+#[cfg(windows)]
 /// Builds a resource transition barrier.
 ///
 /// The `pResource` field is a non-owning copy of the interface pointer: `ManuallyDrop`
@@ -774,6 +791,7 @@ pub(crate) fn transition_barrier(
     }
 }
 
+#[cfg(windows)]
 /// Viewport covering `width` x `height`.
 ///
 /// Pure, so the mapping from target size to viewport is testable without a GPU.
@@ -790,6 +808,7 @@ pub fn viewport_for(width: u32, height: u32) -> D3D12_VIEWPORT {
     }
 }
 
+#[cfg(windows)]
 /// Scissor rectangle covering `width` x `height`.
 #[must_use]
 pub fn scissor_for(width: u32, height: u32) -> RECT {
@@ -805,6 +824,7 @@ pub fn scissor_for(width: u32, height: u32) -> RECT {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn binding_state_reports_only_real_changes() {
         let mut bound = BindingState::default();
@@ -818,6 +838,7 @@ mod tests {
         assert!(!BindingState::bind(&mut bound.pipeline, 0x2000));
     }
 
+    #[cfg(windows)]
     #[test]
     fn clearing_binding_state_forces_the_next_bind() {
         let mut bound = BindingState::default();
@@ -832,6 +853,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn each_binding_slot_is_independent() {
         let mut bound = BindingState::default();
@@ -895,6 +917,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_material_slot_the_counter_watches_is_the_one_the_signature_binds() {
         // `material_changes` counts binds to this slot. If the root parameter order changed
@@ -926,6 +949,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn viewport_and_scissor_cover_the_whole_target() {
         let viewport = viewport_for(1920, 1080);
@@ -937,6 +961,7 @@ mod tests {
         assert_eq!((scissor.right, scissor.bottom), (1920, 1080));
     }
 
+    #[cfg(windows)]
     #[test]
     fn viewport_and_scissor_agree_at_every_size() {
         for (width, height) in [(640, 480), (1920, 1080), (3840, 2160)] {

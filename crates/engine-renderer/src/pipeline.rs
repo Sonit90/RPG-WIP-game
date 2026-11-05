@@ -6,7 +6,9 @@
 //! The shaders are DXIL blobs compiled by `build.rs` and embedded by [`crate::shader`];
 //! creating the pipeline state costs no compilation.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE,
     D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL,
@@ -19,15 +21,22 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12SerializeRootSignature,
     ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
+#[cfg(windows)]
 use windows::core::s;
 
+#[cfg(windows)]
 use crate::depth::DEPTH_FORMAT;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::material::SurfaceClass;
+#[cfg(windows)]
 use crate::shader::{TRIANGLE_PS, TRIANGLE_VS, bytecode};
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
 /// One vertex: clip-space position and a colour.
@@ -62,6 +71,7 @@ pub const TRIANGLE_VERTICES: [Vertex; 3] = [
     },
 ];
 
+#[cfg(windows)]
 /// Root signature and pipeline state for position + colour geometry.
 ///
 /// Holds no geometry of its own: meshes are separate ([`crate::mesh::GpuMesh`]) so the
@@ -71,6 +81,7 @@ pub struct ScenePipeline {
     pipeline_state: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl ScenePipeline {
     /// Creates the root signature and pipeline state from the embedded DXIL.
     ///
@@ -107,6 +118,7 @@ impl ScenePipeline {
     }
 }
 
+#[cfg(windows)]
 /// Creates an empty root signature.
 ///
 /// The shaders take no constant buffers, textures or samplers, so the signature only has
@@ -152,6 +164,7 @@ pub(crate) fn create_root_signature(
         .map_err(|error| RendererError::api("ID3D12Device::CreateRootSignature", error))
 }
 
+#[cfg(windows)]
 /// Creates the graphics pipeline state for the triangle.
 fn create_pipeline_state(
     device: &ID3D12Device,
@@ -222,6 +235,7 @@ fn create_pipeline_state(
     state
 }
 
+#[cfg(windows)]
 /// Depth testing on, depth writing on, `LESS`.
 ///
 /// A fragment is drawn when it is nearer than what is already in the depth buffer. Stencil
@@ -246,6 +260,7 @@ pub(crate) fn depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Solid fill, back-face culling, no depth bias.
 ///
 /// `FrontCounterClockwise` must be `true` here, and this is easy to get wrong: winding is
@@ -263,6 +278,7 @@ pub(crate) fn rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Wireframe fill with no face culling.
 ///
 /// Culling is off deliberately: the point of a wireframe view is to see the triangle
@@ -276,6 +292,7 @@ pub(crate) fn wireframe_rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// The depth state for a surface class.
 ///
 /// The one place the classification becomes depth state. Opaque and alpha-tested surfaces get
@@ -306,6 +323,7 @@ pub(crate) fn depth_stencil_desc_for(surface: SurfaceClass) -> D3D12_DEPTH_STENC
     }
 }
 
+#[cfg(windows)]
 /// The depth state for a surface class drawn in `mode`.
 ///
 /// [`DepthMode::Write`] is [`depth_stencil_desc_for`] unchanged. [`DepthMode::Primed`] keeps
@@ -328,6 +346,7 @@ pub(crate) fn depth_stencil_desc_for_mode(
     }
 }
 
+#[cfg(windows)]
 /// The blend state for a surface class.
 ///
 /// Opaque and alpha-tested get [`blend_desc`], which blends nothing. Transparent gets
@@ -342,6 +361,7 @@ pub(crate) fn blend_desc_for(surface: SurfaceClass) -> D3D12_BLEND_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Straight source-alpha blending: `src.rgb * src.a + dst.rgb * (1 - src.a)`.
 ///
 /// **Not premultiplied**, which is the one way this differs from the particle pass. Particles
@@ -371,6 +391,7 @@ pub(crate) fn transparent_blend_desc() -> D3D12_BLEND_DESC {
     desc
 }
 
+#[cfg(windows)]
 /// Writes depth and no colour: the first of a translucent character's two passes.
 ///
 /// The character is drawn once like this, so the depth buffer holds its nearest surface, and
@@ -384,6 +405,7 @@ pub(crate) fn depth_prime_blend_desc() -> D3D12_BLEND_DESC {
     desc
 }
 
+#[cfg(windows)]
 /// Opaque rendering: no blending, write every channel.
 pub(crate) fn blend_desc() -> D3D12_BLEND_DESC {
     let target = D3D12_RENDER_TARGET_BLEND_DESC {
@@ -404,6 +426,7 @@ pub(crate) fn blend_desc() -> D3D12_BLEND_DESC {
     }
 }
 
+#[cfg(windows)]
 #[cfg(test)]
 mod tests {
     use super::*;

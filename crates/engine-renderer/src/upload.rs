@@ -26,18 +26,24 @@
 //! Phase 0 mesh upload did. [`StagingUploader`] queues copies into one list and waits once,
 //! so loading twenty meshes costs one synchronization rather than twenty.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATES,
     D3D12_SUBRESOURCE_FOOTPRINT, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
     ID3D12CommandList,
 };
+#[cfg(windows)]
 use windows::core::Interface;
 
+#[cfg(windows)]
 use crate::command::CommandContext;
+#[cfg(windows)]
 use crate::device::RenderDevice;
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::resource::{BufferSlice, GpuBuffer, GpuTexture, TrackedResource};
+#[cfg(windows)]
 use crate::sync::GpuFence;
 
 /// Alignment D3D12 requires for the row pitch of a texture upload.
@@ -144,6 +150,7 @@ impl UploadStats {
     }
 }
 
+#[cfg(windows)]
 /// One frame slot's upload buffer, permanently mapped.
 struct UploadSlot {
     /// Kept alive because `pointer` maps it and `gpu_base` addresses it.
@@ -156,6 +163,7 @@ struct UploadSlot {
     failures: u32,
 }
 
+#[cfg(windows)]
 impl UploadSlot {
     fn new(device: &RenderDevice, capacity: usize) -> Result<Self, RendererError> {
         let buffer = GpuBuffer::new_upload(device, capacity)?;
@@ -210,11 +218,13 @@ impl UploadSlot {
     }
 }
 
+#[cfg(windows)]
 /// Per-frame upload memory: one mapped buffer per frame slot, bump-allocated.
 pub struct UploadRing {
     slots: Vec<UploadSlot>,
 }
 
+#[cfg(windows)]
 impl UploadRing {
     /// Creates one buffer of `bytes_per_frame` for each of `frames_in_flight` slots.
     ///
@@ -350,12 +360,14 @@ impl UploadRing {
     }
 }
 
+#[cfg(windows)]
 /// How large one chunk of staging memory is, in bytes.
 ///
 /// Four megabytes: a level's whole content is a few of these, and a single asset larger than
 /// one gets a chunk of its own rather than being refused.
 const STAGING_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
+#[cfg(windows)]
 /// Where in the arena a staged copy lives.
 #[derive(Debug, Clone, Copy)]
 struct StagingSpan {
@@ -363,6 +375,7 @@ struct StagingSpan {
     offset: usize,
 }
 
+#[cfg(windows)]
 /// One permanently mapped upload buffer the queued copies are staged through.
 struct StagingChunk {
     buffer: GpuBuffer,
@@ -370,6 +383,7 @@ struct StagingChunk {
     used: usize,
 }
 
+#[cfg(windows)]
 /// Upload-heap memory for staging, suballocated rather than created per copy.
 ///
 /// # Why
@@ -383,6 +397,7 @@ struct StagingArena {
     chunks: Vec<StagingChunk>,
 }
 
+#[cfg(windows)]
 impl StagingArena {
     /// An arena with no memory yet. The first allocation creates the first chunk.
     fn new() -> Self {
@@ -459,6 +474,7 @@ impl StagingArena {
     }
 }
 
+#[cfg(windows)]
 /// Batched one-off uploads of static data to device-local memory.
 ///
 /// Queue several copies, then flush once. The alternative — a staging buffer, an allocator,
@@ -476,6 +492,7 @@ pub struct StagingUploader {
     total_flushes: u64,
 }
 
+#[cfg(windows)]
 impl StagingUploader {
     /// Creates an uploader with its own allocator, command list and fence.
     ///

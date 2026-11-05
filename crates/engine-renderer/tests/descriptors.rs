@@ -6,6 +6,7 @@
 //! actually reports, and a shader-visible heap has to be accepted by the driver at the
 //! requested size.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

@@ -17,9 +17,13 @@
 //! same way, at a different offset of the same ring.
 
 use engine_core::math::Mat4;
-use engine_render_data::{MAX_PALETTE_BONES, SkinnedDrawList};
+use engine_render_data::MAX_PALETTE_BONES;
+#[cfg(windows)]
+use engine_render_data::SkinnedDrawList;
 
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, UploadRing};
 
 /// Bytes one palette occupies on the GPU: the shader's whole declared array, so a root
@@ -32,6 +36,7 @@ pub struct FramePalettes {
     /// `(first bone, bone count, GPU address)`, in upload order. A few dozen at most — one
     /// per character on screen or casting into a shadow — so a scan is the right lookup.
     entries: Vec<(u32, u32, u64)>,
+    #[cfg(windows)]
     /// The padded palette being written, kept so uploading allocates nothing per frame.
     scratch: Vec<[f32; 16]>,
 }
@@ -48,6 +53,7 @@ impl FramePalettes {
         self.entries.clear();
     }
 
+    #[cfg(windows)]
     /// Uploads every palette `list`'s draws name that this frame has not uploaded yet.
     ///
     /// A draw whose range lies outside the list's palette is skipped here and reported by the
@@ -101,6 +107,17 @@ impl FramePalettes {
     }
 }
 
+/// Fills `scratch` with `palette`, padded with the identity to [`MAX_PALETTE_BONES`].
+///
+/// The backend-neutral half of [`upload_padded`]: what the GPU reads, before it is copied
+/// anywhere. A palette longer than the array is cut to it, exactly as the shader would read it.
+pub(crate) fn pad_palette(palette: &[Mat4], scratch: &mut Vec<[f32; 16]>) {
+    scratch.clear();
+    scratch.extend(palette.iter().map(Mat4::to_cols_array));
+    scratch.resize(MAX_PALETTE_BONES, Mat4::IDENTITY.to_cols_array());
+}
+
+#[cfg(windows)]
 /// Writes `palette`, padded with the identity to [`MAX_PALETTE_BONES`], into this frame's
 /// upload memory and returns its GPU address.
 ///
@@ -118,9 +135,7 @@ pub fn upload_padded(
     uploads: &mut UploadRing,
     slot: usize,
 ) -> Result<u64, RendererError> {
-    scratch.clear();
-    scratch.extend(palette.iter().map(Mat4::to_cols_array));
-    scratch.resize(MAX_PALETTE_BONES, Mat4::IDENTITY.to_cols_array());
+    pad_palette(palette, scratch);
     let allocation = uploads.allocate(slot, PALETTE_BYTES, CONSTANT_BUFFER_ALIGNMENT)?;
     allocation.write(scratch)?;
     Ok(allocation.gpu_address())

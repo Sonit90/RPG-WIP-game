@@ -30,7 +30,9 @@
 //! The quads are built to face the camera, and a quad rotated about the view axis can end
 //! up wound either way. Back-face culling would drop half the particles at random angles.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE,
     D3D12_BLEND_OP_ADD, D3D12_BLEND_ZERO, D3D12_COLOR_WRITE_ENABLE_ALL,
@@ -45,18 +47,25 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_SHADER_VISIBILITY_VERTEX, D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState,
     ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
     DXGI_SAMPLE_DESC,
 };
+#[cfg(windows)]
 use windows::core::s;
 
 use engine_core::math::{Mat4, Vec3};
+#[cfg(windows)]
 use engine_render_data::ParticleBlend;
 
+#[cfg(windows)]
 use crate::depth::DEPTH_FORMAT;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::shader::{PARTICLE_PS, PARTICLE_VS, bytecode};
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
 /// Root parameter slot of the particle frame constants, `b0` in `particle.hlsl`.
@@ -103,6 +112,7 @@ impl ParticleConstants {
     }
 }
 
+#[cfg(windows)]
 /// Root signature and the two blend-mode pipeline states for the particle pass.
 pub struct ParticlePipeline {
     root_signature: ID3D12RootSignature,
@@ -110,6 +120,7 @@ pub struct ParticlePipeline {
     alpha: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl ParticlePipeline {
     /// Creates the signature and both pipeline states from the embedded DXIL.
     ///
@@ -147,6 +158,7 @@ impl ParticlePipeline {
     }
 }
 
+#[cfg(windows)]
 /// One CBV, vertex-visible: the pass has no material, no texture and no per-object data.
 fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, RendererError> {
     let parameters = [D3D12_ROOT_PARAMETER {
@@ -204,6 +216,7 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
         .map_err(|error| RendererError::api("CreateRootSignature (particles)", error))
 }
 
+#[cfg(windows)]
 /// Creates one pipeline state with the given blend descriptor.
 fn create_state(
     device: &ID3D12Device,
@@ -249,6 +262,7 @@ fn create_state(
     .map_err(|error| RendererError::api("CreateGraphicsPipelineState (particles)", error))
 }
 
+#[cfg(windows)]
 /// The per-instance input elements, matching `engine_render_data::ParticleInstance`.
 ///
 /// Every element is per *instance*: there is no per-vertex stream at all, because the four
@@ -300,6 +314,7 @@ pub fn input_elements() -> [D3D12_INPUT_ELEMENT_DESC; 4] {
     ]
 }
 
+#[cfg(windows)]
 /// Solid fill, no culling: a camera-facing quad can be wound either way.
 fn rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     D3D12_RASTERIZER_DESC {
@@ -312,6 +327,7 @@ fn rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Depth tested against the scene, never written.
 #[must_use]
 pub fn depth_desc() -> D3D12_DEPTH_STENCIL_DESC {
@@ -328,18 +344,21 @@ pub fn depth_desc() -> D3D12_DEPTH_STENCIL_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Premultiplied additive: `src + dst`. Fire, sparks, flashes.
 #[must_use]
 pub fn additive_blend_desc() -> D3D12_BLEND_DESC {
     blend_with(D3D12_BLEND_ONE)
 }
 
+#[cfg(windows)]
 /// Premultiplied alpha: `src + dst * (1 - a)`. Smoke.
 #[must_use]
 pub fn alpha_blend_desc() -> D3D12_BLEND_DESC {
     blend_with(D3D12_BLEND_INV_SRC_ALPHA)
 }
 
+#[cfg(windows)]
 /// The shared blend descriptor, differing only in what the destination is scaled by.
 fn blend_with(destination: windows::Win32::Graphics::Direct3D12::D3D12_BLEND) -> D3D12_BLEND_DESC {
     let target = D3D12_RENDER_TARGET_BLEND_DESC {
@@ -413,6 +432,7 @@ mod tests {
         assert!((up.y - 1.0).abs() < 1e-4, "{up:?}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_two_modes_differ_only_in_the_destination_factor() {
         let additive = additive_blend_desc().RenderTarget[0];
@@ -426,6 +446,7 @@ mod tests {
         assert_eq!(alpha.DestBlend, D3D12_BLEND_INV_SRC_ALPHA);
     }
 
+    #[cfg(windows)]
     #[test]
     fn depth_is_tested_and_never_written() {
         let depth = depth_desc();
@@ -440,6 +461,7 @@ mod tests {
         assert_eq!(depth.DepthFunc, D3D12_COMPARISON_FUNC_LESS_EQUAL);
     }
 
+    #[cfg(windows)]
     #[test]
     fn every_element_steps_once_per_particle() {
         // A rate of zero here would make every particle in the draw read the first record,
@@ -454,6 +476,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_quads_are_not_back_face_culled() {
         // A quad rotated about the view axis can end up wound either way, and culling would

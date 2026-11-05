@@ -23,6 +23,7 @@
 //! The suite skips when no D3D12 device can be created, exactly as the other GPU tests do:
 //! a machine with no adapter should report "no GPU" rather than a wall of failures.
 
+#![cfg(windows)]
 #![allow(
     clippy::expect_used,
     reason = "test code may assert on known-good values"

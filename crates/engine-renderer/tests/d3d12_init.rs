@@ -12,6 +12,7 @@
 //! engine itself only ever has one device on one thread, so serializing the tests
 //! restores the conditions the code is actually written for. See `docs/testing.md`.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

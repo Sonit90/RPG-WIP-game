@@ -27,6 +27,7 @@
 //! renderer's own record of what each material's range holds, and a GPU capture through the
 //! shader's material debug views, which sample each slot raw and return it.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

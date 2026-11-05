@@ -11,6 +11,8 @@
 //! the list a cull pass produces holds the right *number* of entries and the right *data*
 //! in them, and that the counter and the list can never disagree.
 
+#![cfg(windows)]
+
 use engine_core::math::{Frustum, Mat4, Sphere, Vec3};
 use engine_core::transform::Transform;
 use engine_render_data::{

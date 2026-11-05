@@ -10,12 +10,16 @@
 
 use engine_core::math::{Vec3, Vec4};
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::renderer::TextureHandle;
+#[cfg(windows)]
 use crate::resource::{BufferSlice, BufferSource, GpuBuffer};
+use crate::texture::TextureHandle;
+#[cfg(windows)]
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader};
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 
 /// What a surface does to the pixels already in the render target.
@@ -675,12 +679,14 @@ impl From<MaterialDesc> for MaterialConstants {
     }
 }
 
+#[cfg(windows)]
 /// A material with its constants resident on the GPU.
 pub struct Material {
     desc: MaterialDesc,
     constants: BufferSlice,
 }
 
+#[cfg(windows)]
 impl Material {
     /// Uploads a material's constants and waits for the copy.
     ///
@@ -858,6 +864,7 @@ mod tests {
         assert!(infinite_emissive.validate().is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_constant_layout_matches_the_shader_registers() {
         // HLSL packs constants into 16-byte registers and never straddles one, so these

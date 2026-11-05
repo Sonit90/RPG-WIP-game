@@ -21,6 +21,8 @@
 //!
 //! Every test skips itself when no D3D12 adapter is present.
 
+#![cfg(windows)]
+
 use engine_assets::procedural::environment_model;
 use engine_assets::{Geometry, ModelAsset};
 use engine_core::math::Vec3;

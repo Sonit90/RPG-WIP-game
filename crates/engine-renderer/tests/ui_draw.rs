@@ -3,6 +3,7 @@
 //! Not behind the `debug-overlay` feature: this is game UI, and a shipping build draws it.
 //! Takes the same process-wide GPU lock as the other GPU tests.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

@@ -22,6 +22,7 @@
 //! depth prepass, where a bias would push the prepass depth away from the depth the camera
 //! pass computes and every fragment would fail its own test.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_NONE,
     D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_FILL_MODE_SOLID,
@@ -29,15 +30,21 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_SHADER_BYTECODE,
     ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::mesh_pipeline::{instanced_vertex_elements, skinned_vertex_elements};
+#[cfg(windows)]
 use crate::shader::{
     SHADOW_DEPTH_ALPHA_PS, SHADOW_DEPTH_INSTANCED_VS, SHADOW_DEPTH_SKINNED_VS, bytecode,
 };
 
+#[cfg(windows)]
 use super::resources::SHADOW_FORMAT;
+#[cfg(windows)]
 use super::settings::ShadowBias;
 
 /// Which geometry a depth-only pipeline consumes.
@@ -58,6 +65,7 @@ pub enum ShadowSurface {
     AlphaTested,
 }
 
+#[cfg(windows)]
 /// The four depth-only pipeline states one bias setting needs.
 pub struct ShadowPipelineSet {
     instanced_opaque: ID3D12PipelineState,
@@ -66,6 +74,7 @@ pub struct ShadowPipelineSet {
     skinned_alpha: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl ShadowPipelineSet {
     /// Creates the four states with `bias` applied by the rasterizer.
     ///
@@ -121,6 +130,7 @@ impl ShadowPipelineSet {
     }
 }
 
+#[cfg(windows)]
 /// Both bias variants, and the root signature they share.
 pub struct ShadowPipelines {
     /// The shared signature, held so the pipelines outlive nothing they point at.
@@ -134,6 +144,7 @@ pub struct ShadowPipelines {
     bias: ShadowBias,
 }
 
+#[cfg(windows)]
 impl ShadowPipelines {
     /// Creates both sets.
     ///
@@ -190,6 +201,7 @@ impl ShadowPipelines {
     }
 }
 
+#[cfg(windows)]
 /// The rasterizer state for a depth-only pass.
 ///
 /// Back faces are culled for opaque geometry, exactly as in the camera pass, so a shadow map
@@ -238,6 +250,7 @@ fn rasterizer(bias: Option<ShadowBias>, surface: ShadowSurface) -> D3D12_RASTERI
     }
 }
 
+#[cfg(windows)]
 /// The depth state every shadow pipeline uses: write, and test less-or-equal.
 fn depth_stencil() -> D3D12_DEPTH_STENCIL_DESC {
     D3D12_DEPTH_STENCIL_DESC {
@@ -252,6 +265,7 @@ fn depth_stencil() -> D3D12_DEPTH_STENCIL_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Creates one depth-only pipeline state.
 fn create(
     device: &ID3D12Device,
@@ -312,6 +326,7 @@ fn create(
     clippy::expect_used,
     reason = "test code may assert on known-good values"
 )]
+#[cfg(windows)]
 mod tests {
     use super::*;
 

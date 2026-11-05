@@ -29,6 +29,7 @@
 //! | [`cascade`] | no | splits, bounding spheres, stable light matrices, LOD |
 //! | [`local`] | no | which lights get maps, and their projections |
 //! | [`atlas`] | no | which texels each view owns |
+//! | [`plan`] | no | one frame's cascades, caster lists and light selection |
 //! | [`caster`] | no | which entities are drawn into a view |
 //! | [`resources`] | yes | the atlas texture, its DSV and SRV, the frame constants |
 //! | [`renderer`] | yes | recording the depth passes |
@@ -40,9 +41,12 @@
 pub mod atlas;
 pub mod cascade;
 pub mod caster;
+#[cfg(windows)]
 pub mod contact;
 pub mod local;
 pub mod pipeline;
+pub mod plan;
+#[cfg(windows)]
 pub mod renderer;
 pub mod resources;
 pub mod settings;
@@ -55,9 +59,13 @@ pub use cascade::{
     split_cascades,
 };
 pub use caster::{CasterSlots, ShadowCasterCollector, ShadowCullStats};
+#[cfg(windows)]
 pub use contact::{CONTACT_FORMAT, ContactShadowPipeline, ContactShadowTarget};
 pub use local::{LocalShadowView, SelectedLight, select_shadow_lights};
+pub use plan::ShadowPlan;
+#[cfg(windows)]
 pub use renderer::{ShadowRenderer, ShadowScene};
+#[cfg(windows)]
 pub use resources::{SHADOW_FORMAT, ShadowResources};
 pub use settings::{
     ContactShadowSettings, LocalShadowSettings, MAX_CASCADES, MAX_LOCAL_LIGHTS,

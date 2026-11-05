@@ -6,6 +6,7 @@
 //! alignment a root constant-buffer view requires — a misaligned CBV is rejected at bind
 //! time, long after the mistake.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

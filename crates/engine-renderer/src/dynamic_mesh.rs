@@ -26,13 +26,19 @@
 //! No fence is consulted; the argument rests on the ring's bound alone, which is also what
 //! the per-frame upload memory relies on.
 
+#[cfg(windows)]
 use std::sync::Arc;
 
+#[cfg(windows)]
 use engine_core::math::Sphere;
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::mesh::{GpuMesh, Index, MeshVertex};
+#[cfg(windows)]
 use crate::resource::{BufferSlice, GpuBuffer, MappedPtr};
 
 /// Which of a dynamic mesh's copies the next write goes to.
@@ -71,6 +77,7 @@ impl CopyRotation {
     }
 }
 
+#[cfg(windows)]
 /// One upload-heap copy of a dynamic mesh's geometry.
 struct BufferPair {
     vertices: BufferSlice,
@@ -79,6 +86,7 @@ struct BufferPair {
     index_ptr: MappedPtr,
 }
 
+#[cfg(windows)]
 /// The CPU side of a dynamic mesh: its copies and which one is live.
 ///
 /// The [`GpuMesh`] it feeds lives in the renderer's mesh list like any other, so the handle
@@ -90,6 +98,7 @@ pub(crate) struct DynamicMesh {
     max_indices: usize,
 }
 
+#[cfg(windows)]
 impl DynamicMesh {
     /// Allocates `frames_in_flight + 1` copies and returns them with the empty [`GpuMesh`]
     /// that draws from them.

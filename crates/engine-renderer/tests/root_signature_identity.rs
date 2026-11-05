@@ -8,6 +8,7 @@
 //!
 //! This test exists because that question decided the order of two lines in the shadow pass.
 
+#![cfg(windows)]
 #![allow(
     clippy::expect_used,
     reason = "test code may assert on known-good values"

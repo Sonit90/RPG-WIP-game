@@ -10,6 +10,15 @@
 //! Phase 0 / Milestone 2 scope: device, queue, swap chain, render targets, fences, and a
 //! frame that clears and presents. No pipeline state, no geometry, no GPU timing yet.
 
+// The backend-neutral items below (the render-list instance composition, the palette padding,
+// the texture preparation, the copy rotation) are consumed by the Direct3D 12 backend today
+// and by the Metal backend when it lands in phase R1; until then nothing on a non-Windows
+// target calls them. Remove with the first Metal consumer.
+#![cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "awaiting the Metal backend (phase R1)")
+)]
+
 pub mod adapter;
 pub mod bench;
 pub mod command;
@@ -31,6 +40,8 @@ pub mod light_cluster;
 pub mod material;
 pub mod mesh;
 pub mod mesh_pipeline;
+#[cfg(target_os = "macos")]
+pub mod metal;
 pub mod mipmap;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
@@ -41,6 +52,7 @@ pub mod particle_pipeline;
 pub mod pipeline;
 pub mod pipeline_stats;
 pub mod render_list;
+#[cfg(windows)]
 pub mod renderer;
 pub mod resource;
 pub mod scene;
@@ -48,8 +60,10 @@ pub mod shader;
 pub mod shadow;
 pub mod stress;
 pub mod swapchain;
+#[cfg(windows)]
 pub mod sync;
 pub mod text;
+pub mod texture;
 pub mod texture_id;
 pub mod transparency;
 pub mod ui_atlas;
@@ -58,29 +72,43 @@ pub mod upload;
 mod upload_timing;
 
 pub use adapter::{AdapterInfo, select_adapter};
-pub use bench::{BenchHarness, BenchResult, DrawMode};
+#[cfg(windows)]
+pub use bench::BenchHarness;
+pub use bench::{BenchResult, DrawMode};
 pub use culling::{CullStats, Culler};
 pub use device::BACKEND;
 pub use error::RendererError;
 pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
 pub use light_cluster::{LightClusterStats, LightClusters};
+#[cfg(windows)]
+pub use material::Material;
 pub use material::{
-    MATERIAL_TEXTURE_COUNT, Material, MaterialConstants, MaterialDesc, MaterialTextureSet,
+    MATERIAL_TEXTURE_COUNT, MaterialConstants, MaterialDesc, MaterialTextureSet,
     MaterialTextureSlot, MaterialTextures, SurfaceClass,
 };
-pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
+#[cfg(windows)]
+pub use mesh::{GpuMesh, VertexStream};
+pub use mesh::{Index, MeshData, MeshVertex};
+#[cfg(windows)]
 pub use mesh_pipeline::MeshPipeline;
 #[cfg(feature = "debug-overlay")]
 pub use overlay::OverlayMetrics;
-pub use particle_pipeline::{ParticleConstants, ParticlePipeline};
+pub use particle_pipeline::ParticleConstants;
+#[cfg(windows)]
+pub use particle_pipeline::ParticlePipeline;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
-pub use renderer::{Renderer, RendererStartup, TextureHandle, TextureImage};
+#[cfg(windows)]
+pub use renderer::{Renderer, RendererStartup};
 pub use scene::{FrameConstants, ObjectConstants};
-pub use shadow::{ShadowPreset, ShadowRenderer, ShadowSettings, ShadowStats};
+#[cfg(windows)]
+pub use shadow::ShadowRenderer;
+pub use shadow::{ShadowPreset, ShadowSettings, ShadowStats};
 pub use ui_atlas::{AtlasUv, UiAtlas};
-pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline, UiVertex};
+#[cfg(windows)]
+pub use ui_pipeline::UiPipeline;
+pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiVertex};
 
 // Re-exported from `engine-render-data`, where these types moved at the Milestone 15
 // checkpoint so a gameplay crate can build a `RenderWorld` without linking D3D12. Kept
@@ -93,9 +121,14 @@ pub use engine_render_data::{
     TextAlign, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
 };
 pub use parallel::limit_bands_on_this_thread;
-pub use renderer::{PreparedTexture, PreparedTextures, prepare_model_textures, prepare_texture};
 pub use stress::STRESS_LEVELS;
-pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};
+#[cfg(windows)]
+pub use swapchain::BACK_BUFFER_FORMAT;
+pub use swapchain::FRAME_COUNT;
+pub use texture::{
+    PreparedTexture, PreparedTextures, TextureHandle, TextureImage, prepare_model_textures,
+    prepare_texture,
+};
 pub use upload_timing::Counters as ResourceCounters;
 
 /// Pipelines, resources and GPU-waiting flushes created so far in the process.

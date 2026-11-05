@@ -5,6 +5,7 @@
 //! keeps two different ones apart, and really allocates and fills a chain that the SRV can
 //! see. Those are all statements about GPU objects, and none of them is visible in a pixel.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

@@ -12,6 +12,7 @@
 //! against magic colours wherever the relationship is what matters, which is the same
 //! discipline tests/lighting.rs uses.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

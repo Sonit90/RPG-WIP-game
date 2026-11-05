@@ -23,15 +23,19 @@
 //! of the frame, read at the slot's next fence wait — so the CPU never blocks for them and the
 //! numbers lag the frame by the ring's depth.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_QUERY_DATA_PIPELINE_STATISTICS, D3D12_QUERY_HEAP_DESC,
     D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, D3D12_RANGE,
     ID3D12Device, ID3D12GraphicsCommandList, ID3D12QueryHeap, ID3D12Resource,
 };
 
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::gpu_timer::create_readback_buffer;
 
+#[cfg(windows)]
 /// Bytes one resolved statistics query occupies.
 const BYTES_PER_QUERY: usize = size_of::<D3D12_QUERY_DATA_PIPELINE_STATISTICS>();
 
@@ -82,6 +86,7 @@ impl ScenePassStatistics {
 /// One frame's sections.
 pub type SceneStatistics = [ScenePassStatistics; SECTIONS];
 
+#[cfg(windows)]
 /// [`SECTIONS`] statistics queries per frame slot, around the camera's mesh pass.
 pub struct PipelineStatistics {
     query_heap: ID3D12QueryHeap,
@@ -93,6 +98,7 @@ pub struct PipelineStatistics {
     open: Option<usize>,
 }
 
+#[cfg(windows)]
 impl PipelineStatistics {
     /// Creates the heap and its readback buffer for `frame_count` slots.
     ///

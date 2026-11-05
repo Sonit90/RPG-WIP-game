@@ -12,6 +12,7 @@
 //! what is measured is the shadow term alone, with albedo, the sun's angle and the local
 //! lights out of the way.
 
+#![cfg(windows)]
 #![allow(
     clippy::expect_used,
     reason = "test code may assert on known-good values"

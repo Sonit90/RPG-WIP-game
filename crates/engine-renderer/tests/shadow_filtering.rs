@@ -12,6 +12,7 @@
 //! Everything renders through the shadow-factor debug view, so albedo and the sun's angle are
 //! out of the way and what is measured is the filter.
 
+#![cfg(windows)]
 #![allow(
     clippy::expect_used,
     reason = "test code may assert on known-good values"

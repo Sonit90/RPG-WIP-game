@@ -15,6 +15,7 @@
 //! saving is asserted rather than merely printed: a regression that broke deduplication
 //! would otherwise show up only as a number in a log that nobody diffs.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

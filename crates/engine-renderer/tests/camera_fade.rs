@@ -14,6 +14,7 @@
 //! and that the camera fade touches see-through surfaces — and only those — in front of the
 //! eye and between the eye and its target.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

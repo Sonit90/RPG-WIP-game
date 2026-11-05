@@ -42,7 +42,7 @@ resvg = { version = "0.48", default-features = false }
 # The interface fonts' distance-field atlas: outlines and coverage, at build time only.
 ab_glyph = "0.2"
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",
@@ -57,8 +57,10 @@ features = [
 # engine-platform is a *test-only* dependency: GPU integration tests need a real HWND to
 # create a swap chain against. The library itself never depends on it — the renderer
 # takes an opaque `isize` handle so the layering stays one-directional.
-[dev-dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 engine-platform = { workspace = true }
+
+[dev-dependencies]
 # The icon contact sheets (an ignored dev test) rasterize the SVGs the way build.rs does.
 resvg = { version = "0.48", default-features = false }
 

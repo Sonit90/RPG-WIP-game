@@ -12,6 +12,8 @@
 //!
 //! Every test skips itself when no D3D12 adapter is present.
 
+#![cfg(windows)]
+
 use engine_assets::procedural::{DummyVariant, fire_mage, training_dummy};
 use engine_assets::{AnimationPlayer, Geometry, ModelAsset, Pose};
 use engine_core::math::{Mat4, Quat, Vec3};

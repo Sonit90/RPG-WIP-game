@@ -4,6 +4,7 @@
 //! flight or a view pointing at the wrong copy would be reported rather than silently drawn;
 //! the pure rotation rule is unit-tested in `dynamic_mesh.rs`.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

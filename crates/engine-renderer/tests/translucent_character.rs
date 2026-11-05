@@ -14,6 +14,7 @@
 //! the world; three quarters red would be the character blended over *itself*, which is the
 //! x-ray look this exists to avoid.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

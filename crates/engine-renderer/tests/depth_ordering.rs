@@ -4,6 +4,7 @@
 //! visible. Two overlapping triangles are drawn in both orders; if depth is working, the
 //! nearer one wins both times.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

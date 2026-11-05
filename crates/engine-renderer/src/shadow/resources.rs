@@ -21,6 +21,7 @@
 //! `D32_FLOAT` and then asking for an SRV fails at descriptor creation with a message that
 //! does not mention the resource's format at all.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
     D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_FLAG_NONE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
@@ -28,18 +29,26 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_DSV,
     D3D12_TEX2D_SRV,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_TYPELESS,
 };
 
+#[cfg(windows)]
 use crate::descriptor::{CpuDescriptorHeap, DescriptorHandle, GpuDescriptorHeap};
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::resource::{GpuTexture, TrackedResource};
 
+#[cfg(windows)]
 use super::atlas::ShadowAtlasLayout;
+#[cfg(windows)]
 use super::settings::ShadowSettings;
 
+#[cfg(windows)]
 /// The depth format every shadow view is rendered with.
 ///
 /// `D32_FLOAT`, matching [`crate::depth::DEPTH_FORMAT`]: the shadow pass and the camera's
@@ -47,9 +56,11 @@ use super::settings::ShadowSettings;
 /// depth format. One format for both is what lets the prepass reuse the shadow pipelines.
 pub const SHADOW_FORMAT: DXGI_FORMAT = DXGI_FORMAT_D32_FLOAT;
 
+#[cfg(windows)]
 /// The typeless format the underlying resource is created with, so it can be sampled.
 pub const SHADOW_RESOURCE_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R32_TYPELESS;
 
+#[cfg(windows)]
 /// The format the shader reads depth through.
 pub const SHADOW_SRV_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R32_FLOAT;
 
@@ -59,6 +70,7 @@ pub const SHADOW_SRV_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R32_FLOAT;
 /// and a light with no casters lights the scene rather than blacking it out.
 pub const SHADOW_CLEAR: f32 = 1.0;
 
+#[cfg(windows)]
 /// The shadow atlas, the scene-depth copy, and every view onto them.
 pub struct ShadowResources {
     atlas: GpuTexture,
@@ -87,6 +99,7 @@ pub struct ShadowResources {
     layout: ShadowAtlasLayout,
 }
 
+#[cfg(windows)]
 impl ShadowResources {
     /// Creates the atlas and its views for `settings`.
     ///
@@ -314,6 +327,7 @@ impl ShadowResources {
     }
 }
 
+#[cfg(windows)]
 /// Creates a depth-stencil view naming the typed format for a typeless resource.
 ///
 /// The `None` description the rest of the renderer passes cannot be used here: a typeless
@@ -336,6 +350,7 @@ fn create_depth_view(device: &RenderDevice, texture: &GpuTexture, handle: Descri
     }
 }
 
+#[cfg(windows)]
 /// Creates the shader-resource view depth is sampled through.
 fn create_depth_srv(device: &RenderDevice, texture: &GpuTexture, handle: DescriptorHandle) {
     let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {

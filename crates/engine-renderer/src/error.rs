@@ -7,15 +7,47 @@ use std::fmt;
 
 use engine_core::error::{EngineError, ErrorCategory};
 
-/// Failure modes of the D3D12 renderer.
+/// The error a graphics API call reports: a Windows error (an `HRESULT`) on Windows.
+#[cfg(windows)]
+pub type ApiError = windows::core::Error;
+
+/// The error a graphics API call reports: a plain message on targets without `HRESULT`s.
+#[cfg(not(windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiError {
+    message: String,
+}
+
+#[cfg(not(windows))]
+impl ApiError {
+    /// Creates an error carrying the API's own description of the failure.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+#[cfg(not(windows))]
+impl std::error::Error for ApiError {}
+
+/// Failure modes of the renderer.
 #[derive(Debug)]
 pub enum RendererError {
-    /// A DXGI or D3D12 call returned a failing `HRESULT`.
+    /// A graphics API call failed (on Windows, a failing `HRESULT`).
     Api {
         /// Name of the failing function, e.g. `D3D12CreateDevice`.
         call: &'static str,
-        /// The `HRESULT` reported by Windows.
-        source: windows::core::Error,
+        /// The error reported by the API.
+        source: ApiError,
     },
     /// No adapter on this machine could create a D3D12 device at the required level.
     NoSuitableAdapter {
@@ -37,8 +69,10 @@ pub enum RendererError {
 }
 
 impl RendererError {
-    /// Wraps a `windows` error with the name of the call that produced it.
-    pub(crate) fn api(call: &'static str, source: windows::core::Error) -> Self {
+    /// Wraps an API error with the name of the call that produced it.
+    // Unused on targets whose backend has not landed yet.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn api(call: &'static str, source: ApiError) -> Self {
         Self::Api { call, source }
     }
 }
@@ -46,12 +80,15 @@ impl RendererError {
 impl fmt::Display for RendererError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(windows)]
             Self::Api { call, source } => write!(
                 f,
                 "{call} failed: {} ({:#010x})",
                 source.message(),
                 source.code().0
             ),
+            #[cfg(not(windows))]
+            Self::Api { call, source } => write!(f, "{call} failed: {source}"),
             Self::NoSuitableAdapter { examined } => write!(
                 f,
                 "no Direct3D 12 capable adapter found ({examined} examined); \
@@ -99,6 +136,7 @@ impl From<RendererError> for EngineError {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn api_message_names_call_and_code() {
         let error = RendererError::api(
@@ -132,10 +170,11 @@ mod tests {
         });
         assert_eq!(bad_config.category(), ErrorCategory::Configuration);
 
-        let api = EngineError::from(RendererError::api(
-            "D3D12CreateDevice",
-            windows::core::Error::from_hresult(windows::core::HRESULT(-2005270523)),
-        ));
+        #[cfg(windows)]
+        let source = windows::core::Error::from_hresult(windows::core::HRESULT(-2005270523));
+        #[cfg(not(windows))]
+        let source = ApiError::new("device removed");
+        let api = EngineError::from(RendererError::api("D3D12CreateDevice", source));
         assert_eq!(api.category(), ErrorCategory::Graphics);
         assert!(
             api.chain().contains("D3D12CreateDevice"),

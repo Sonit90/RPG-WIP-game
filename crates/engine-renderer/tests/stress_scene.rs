@@ -2,6 +2,7 @@
 //!
 //! Takes the same process-wide GPU lock as the other GPU tests; see `d3d12_init.rs`.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

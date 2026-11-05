@@ -5,8 +5,11 @@
 //! `RenderWorld`, the handle types, `Lighting` — is pure data and moved to
 //! `engine-render-data`; this is everything in the old file that genuinely needs a device.
 
+#[cfg(windows)]
 use std::collections::HashMap;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS_EQUAL,
     D3D12_DEPTH_STENCIL_DESC, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
@@ -26,26 +29,36 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12SerializeRootSignature, ID3D12Device,
     ID3D12PipelineState, ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R32G32_FLOAT,
     DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
 
+#[cfg(windows)]
 use windows::core::s;
 
+#[cfg(windows)]
 use crate::depth::DEPTH_FORMAT;
+#[cfg(windows)]
 use crate::error::RendererError;
 use crate::material::SurfaceClass;
+#[cfg(windows)]
 use crate::mesh::{MeshVertex, SkinnedVertex};
+#[cfg(windows)]
 use crate::pipeline::{
     blend_desc_for, depth_prime_blend_desc, depth_stencil_desc_for, depth_stencil_desc_for_mode,
     rasterizer_desc, transparent_blend_desc, wireframe_rasterizer_desc,
 };
+#[cfg(windows)]
 use crate::scene::{ROOT_PARAMETER_REGISTERS, ROOT_SKIN_CBV};
+use crate::shader::ShaderFeatures;
+#[cfg(windows)]
 use crate::shader::{
-    MESH_INSTANCED_VS, MESH_SKINNED_VS, MESH_VS, ShaderFeatures, bytecode,
-    mesh_instanced_pixel_shader, mesh_pixel_shader, mesh_skinned_pixel_shader,
+    MESH_INSTANCED_VS, MESH_SKINNED_VS, MESH_VS, bytecode, mesh_instanced_pixel_shader,
+    mesh_pixel_shader, mesh_skinned_pixel_shader,
 };
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
 
 /// One pipeline state's identity: which shader permutation, and which fill mode.
@@ -162,6 +175,7 @@ impl PipelineVariant {
         self
     }
 
+    #[cfg(windows)]
     /// The rasterizer state this variant draws with.
     ///
     /// Fill mode only. Transparent surfaces are rasterized exactly as opaque ones are -
@@ -177,6 +191,7 @@ impl PipelineVariant {
     }
 }
 
+#[cfg(windows)]
 /// The mesh pipeline states this renderer has needed so far, one per variant.
 ///
 /// **Created on first use, never released.** Eight feature permutations times two fill modes
@@ -207,6 +222,7 @@ pub struct MeshPipelines {
     skinned: HashMap<PipelineVariant, SkinnedMeshPipeline>,
 }
 
+#[cfg(windows)]
 impl MeshPipelines {
     /// An empty cache. The first frame fills it.
     #[must_use]
@@ -314,12 +330,14 @@ impl MeshPipelines {
     }
 }
 
+#[cfg(windows)]
 /// Root signature and pipeline state for [`MeshVertex`] geometry.
 pub struct MeshPipeline {
     root_signature: ID3D12RootSignature,
     pipeline_state: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl MeshPipeline {
     /// Creates the solid-fill root signature and pipeline state from the embedded DXIL.
     ///
@@ -495,6 +513,7 @@ impl MeshPipeline {
     }
 }
 
+#[cfg(windows)]
 /// Creates the root signature every mesh pipeline — rigid, instanced, skinned, and the
 /// depth-only shadow pipelines — shares.
 ///
@@ -711,6 +730,7 @@ pub(crate) fn create_root_signature(
         .map_err(|error| RendererError::api("ID3D12Device::CreateRootSignature", error))
 }
 
+#[cfg(windows)]
 /// The root parameters, in slot order, each a CBV at the register the mapping names.
 ///
 /// Split out of [`create_root_signature`] so the regression test can inspect the array
@@ -729,6 +749,7 @@ pub(crate) fn root_parameters() -> [D3D12_ROOT_PARAMETER; ROOT_PARAMETER_REGISTE
     })
 }
 
+#[cfg(windows)]
 /// Shader register the bone palette binds to, matching `cbuffer Skin : register(b3)`.
 const SKIN_SHADER_REGISTER: u32 = 3;
 
@@ -773,6 +794,7 @@ pub const SCENE_TEXTURE_REGISTERS: [u32; 4] = [
     CONTACT_SHADOW_SHADER_REGISTER,
 ];
 
+#[cfg(windows)]
 /// The sampler every shadow lookup goes through, at `s1`.
 ///
 /// A **comparison** sampler: the hardware performs the depth test *and* the bilinear filter
@@ -801,6 +823,7 @@ fn shadow_sampler() -> D3D12_STATIC_SAMPLER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// The sampler the contact-shadow march reads scene depth through, at `s2`.
 ///
 /// Point-filtered and clamped: a depth buffer holds distances, and the average of two
@@ -823,6 +846,7 @@ fn depth_sampler() -> D3D12_STATIC_SAMPLER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// How many samples the material sampler may take across a surface seen at a glancing angle.
 ///
 /// Eight, which is the usual default and the one every desktop GPU of the last decade runs at
@@ -839,6 +863,7 @@ fn depth_sampler() -> D3D12_STATIC_SAMPLER_DESC {
 /// fall back for. A driver that clamped the value would give fewer taps rather than an error.
 const MATERIAL_ANISOTROPY: u32 = 8;
 
+#[cfg(windows)]
 /// The one sampler every material map is read through.
 ///
 /// Anisotropic, because the alternative on a floor seen at a glancing angle is a texture that
@@ -865,6 +890,7 @@ fn static_sampler() -> D3D12_STATIC_SAMPLER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Root signature and pipeline state for skinned geometry.
 ///
 /// The same root signature as the rigid pipelines — it is one signature with the palette slot
@@ -875,6 +901,7 @@ pub struct SkinnedMeshPipeline {
     pipeline_state: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl SkinnedMeshPipeline {
     /// Creates the root signature and pipeline state from the embedded DXIL.
     ///
@@ -1058,6 +1085,7 @@ impl SkinnedMeshPipeline {
     }
 }
 
+#[cfg(windows)]
 /// The input elements a [`SkinnedVertex`] presents.
 ///
 /// The first three are byte-for-byte the rigid layout, so a skinned mesh and a rigid one
@@ -1098,6 +1126,7 @@ pub(crate) fn skinned_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 7] {
     ]
 }
 
+#[cfg(windows)]
 /// The input elements the instanced pipelines consume: the rigid vertex, then the
 /// per-instance stream.
 ///
@@ -1227,6 +1256,7 @@ impl InstanceTransform {
     }
 }
 
+#[cfg(windows)]
 /// Root signature and pipeline state for instanced [`MeshVertex`] geometry.
 ///
 /// The same shading as [`MeshPipeline`], with the model matrix arriving per instance
@@ -1238,6 +1268,7 @@ pub struct InstancedMeshPipeline {
     pipeline_state: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl InstancedMeshPipeline {
     /// Creates the root signature and pipeline state from the embedded DXIL.
     ///
@@ -1410,6 +1441,7 @@ impl InstancedMeshPipeline {
     }
 }
 
+#[cfg(windows)]
 /// Semantic name of the per-instance matrix rows, matching `mesh_instanced.hlsl`.
 ///
 /// One name, used with indices 0 to 3. The shader spells them `INSTANCE_MODEL0` through
@@ -1417,12 +1449,15 @@ impl InstancedMeshPipeline {
 /// than as part of the name.
 const INSTANCE_MODEL_SEMANTIC: windows::core::PCSTR = s!("INSTANCE_MODEL");
 
+#[cfg(windows)]
 /// Semantic for the per-instance colour multiply.
 const INSTANCE_TINT_SEMANTIC: windows::core::PCSTR = s!("INSTANCE_TINT");
 
+#[cfg(windows)]
 /// Semantic for the per-instance emissive add.
 const INSTANCE_EMISSIVE_SEMANTIC: windows::core::PCSTR = s!("INSTANCE_EMISSIVE");
 
+#[cfg(windows)]
 /// The per-vertex input elements both mesh pipelines consume.
 ///
 /// Shared rather than written twice: the instanced pipeline appends per-instance elements
@@ -1486,6 +1521,7 @@ fn mesh_vertex_elements() -> [D3D12_INPUT_ELEMENT_DESC; 5] {
     ]
 }
 
+#[cfg(windows)]
 #[cfg(test)]
 mod tests {
     use super::*;

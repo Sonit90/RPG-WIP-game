@@ -25,7 +25,9 @@
 //! fails a depth test vanishes, and one that passes writes depth that occludes whatever
 //! should have blended over it. See `engine_render_data::ui` for the full reasoning.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE,
     D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_COLOR_WRITE_ENABLE_ALL,
@@ -43,17 +45,22 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_STATIC_SAMPLER_DESC, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
     D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
+#[cfg(windows)]
 use windows::core::s;
 
 use engine_core::jobs::JobSystem;
 use engine_render_data::ui::{TextAlign, UiClip, UiCommand, UiDrawList, UiRect};
 
+#[cfg(windows)]
 use crate::error::RendererError;
 use crate::font::{GLYPH_ADVANCE, GLYPH_HEIGHT, GLYPH_WIDTH};
+#[cfg(windows)]
 use crate::shader::{UI_PS, UI_VS, bytecode};
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
 use crate::ui_atlas::{AtlasUv, UiAtlas};
 
@@ -1330,6 +1337,7 @@ pub fn text_height(scale: f32) -> f32 {
     GLYPH_HEIGHT as f32 * scale
 }
 
+#[cfg(windows)]
 /// Root signature and pipeline state for the UI pass.
 #[derive(Debug)]
 pub struct UiPipeline {
@@ -1337,6 +1345,7 @@ pub struct UiPipeline {
     state: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl UiPipeline {
     /// Creates the UI pipeline.
     ///
@@ -1406,6 +1415,7 @@ impl UiPipeline {
     }
 }
 
+#[cfg(windows)]
 /// The UI vertex layout, matching [`UiVertex`] exactly.
 #[must_use]
 pub fn input_elements() -> [D3D12_INPUT_ELEMENT_DESC; 4] {
@@ -1449,6 +1459,7 @@ pub fn input_elements() -> [D3D12_INPUT_ELEMENT_DESC; 4] {
     ]
 }
 
+#[cfg(windows)]
 /// Straight alpha blending: `src * a + dst * (1 - a)`.
 ///
 /// Alpha is written as `a + dst * (1 - a)` rather than replaced, so a translucent element
@@ -1475,6 +1486,7 @@ pub fn alpha_blend_desc() -> D3D12_BLEND_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Solid fill, no culling: a UI quad has no meaningful facing.
 fn ui_rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     D3D12_RASTERIZER_DESC {
@@ -1486,6 +1498,7 @@ fn ui_rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// No depth test, no depth write: the UI is painted in list order.
 fn ui_depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
     D3D12_DEPTH_STENCIL_DESC {
@@ -1497,6 +1510,7 @@ fn ui_depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Three root parameters and three static samplers.
 ///
 /// The third parameter and sampler are the map picture's; see [`ROOT_UI_MAP_TABLE`].
@@ -1667,6 +1681,7 @@ mod tests {
         UiBatcher::new(4096)
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_vertex_layout_matches_the_input_elements() {
         // The GPU is told this exact memory layout; a reordered field renders garbage
@@ -2132,6 +2147,7 @@ mod tests {
         assert!((constants.pixel_to_clip[1] + 2.0 / 1080.0).abs() < 1e-9);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_ui_pass_neither_tests_nor_writes_depth() {
         // Painter's order is the ordering strategy; a depth test would make a blended
@@ -2141,6 +2157,7 @@ mod tests {
         assert_eq!(depth.DepthWriteMask, D3D12_DEPTH_WRITE_MASK_ZERO);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_ui_blend_state_is_straight_alpha() {
         let blend = alpha_blend_desc();

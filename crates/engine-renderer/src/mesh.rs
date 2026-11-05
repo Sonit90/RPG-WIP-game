@@ -10,18 +10,24 @@
 //! wait — see [`crate::upload::StagingUploader`].
 
 use engine_core::math::{Sphere, Vec2, Vec3, Vec4};
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_STATE_INDEX_BUFFER,
     D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATES,
     D3D12_VERTEX_BUFFER_VIEW, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::resource::{BufferSlice, BufferSource, GpuBuffer, TrackedResource};
+#[cfg(windows)]
 use crate::upload::StagingUploader;
 
+#[cfg(windows)]
 /// The state static geometry is left in after its upload.
 ///
 /// Vertices, indices and material constants share the renderer's arena chunks, and D3D12
@@ -31,6 +37,7 @@ const GEOMETRY_STATE: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATES(
     D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER.0 | D3D12_RESOURCE_STATE_INDEX_BUFFER.0,
 );
 
+#[cfg(windows)]
 /// The alignment a suballocated geometry buffer starts on, in bytes.
 ///
 /// Sixteen: enough for any vertex attribute this engine has, and a multiple of the index
@@ -648,6 +655,7 @@ impl MeshData {
     }
 }
 
+#[cfg(windows)]
 /// An indexed mesh in device-local memory.
 pub struct GpuMesh {
     /// Kept alive because the view points into it. A range of the renderer's geometry arena
@@ -663,6 +671,7 @@ pub struct GpuMesh {
     bounds: Sphere,
 }
 
+#[cfg(windows)]
 impl GpuMesh {
     /// Uploads a mesh and waits for the copy to finish.
     ///
@@ -956,6 +965,7 @@ impl GpuMesh {
     }
 }
 
+#[cfg(windows)]
 /// A raw, non-indexed vertex buffer in device-local memory.
 ///
 /// This is what the Phase 0 stress scene and the per-instance streams use: geometry that is
@@ -969,6 +979,7 @@ pub struct VertexStream {
     vertex_count: u32,
 }
 
+#[cfg(windows)]
 impl VertexStream {
     /// Uploads `vertices` to a default-heap buffer and waits for the copy to finish.
     ///
