@@ -525,6 +525,16 @@ impl Window {
             PumpStatus::Continue => {}
             PumpStatus::Exit(_) => self.quit_received = true,
         }
+        // winit 0.30 sends no `Resized` on macOS for a size the program sets itself
+        // (`request_inner_size`, entering or leaving fullscreen), so the window's real size
+        // is compared with the last one reported after every pump. Without it the renderer
+        // and the UI layout keep the old size while the cursor reports positions in the new
+        // one, and nothing on screen can be clicked. `on_resized` ignores an unchanged size,
+        // so a `Resized` winit did send is not reported twice.
+        if let Some(window) = &self.app.window {
+            let size = window.inner_size();
+            self.app.on_resized(size);
+        }
         if self.app.exit_requested {
             self.quit_received = true;
         }
@@ -790,13 +800,24 @@ impl Window {
                 self.become_borderless(&monitor)
             }
         };
-        log::info!(
-            "display: {:?} at {}x{} on {}",
-            applied.mode,
-            applied.width,
-            applied.height,
-            monitor.device
-        );
+        if applied.mode == WindowMode::Borderless {
+            // The switch is animated and the client size is only known when it ends; on a
+            // notched display it is shorter than the screen. It arrives as `Resized`.
+            log::info!(
+                "display: Borderless on {} ({}x{} screen)",
+                monitor.device,
+                applied.width,
+                applied.height
+            );
+        } else {
+            log::info!(
+                "display: {:?} at {}x{} on {}",
+                applied.mode,
+                applied.width,
+                applied.height,
+                monitor.device
+            );
+        }
         Ok(applied)
     }
 
