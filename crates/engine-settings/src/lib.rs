@@ -657,12 +657,50 @@ fn write_settings(path: &Path, settings: GameSettings) -> io::Result<()> {
 }
 
 /// The directory the game runs from: the executable's own, or the working directory.
+///
+/// On macOS, inside an app bundle (`*.app/Contents/MacOS/<exe>`) it is instead
+/// `~/Library/Application Support/mygame`: a bundle must not be written into, and a signed
+/// one breaks if it is.
 #[must_use]
 pub fn game_directory() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    let exe = std::env::current_exe().ok();
+    #[cfg(target_os = "macos")]
+    if let Some(exe) = &exe
+        && is_in_app_bundle(exe)
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("mygame");
+    }
+    exe.and_then(|exe| exe.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Whether `exe` is laid out as `<name>.app/Contents/MacOS/<file>`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        dead_code,
+        reason = "only game_directory on macOS calls it; tests run everywhere"
+    )
+)]
+fn is_in_app_bundle(exe: &Path) -> bool {
+    let Some(macos) = exe.parent() else {
+        return false;
+    };
+    let Some(contents) = macos.parent() else {
+        return false;
+    };
+    let Some(bundle) = contents.parent() else {
+        return false;
+    };
+    macos.file_name().is_some_and(|name| name == "MacOS")
+        && contents.file_name().is_some_and(|name| name == "Contents")
+        && bundle
+            .extension()
+            .is_some_and(|extension| extension == "app")
 }
 
 #[cfg(test)]
@@ -672,6 +710,28 @@ pub fn game_directory() -> PathBuf {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_bundle_executable_is_detected() {
+        assert!(is_in_app_bundle(Path::new(
+            "/Applications/MyGame.app/Contents/MacOS/mygame"
+        )));
+        assert!(is_in_app_bundle(Path::new(
+            "MyGame.app/Contents/MacOS/mygame"
+        )));
+    }
+
+    #[test]
+    fn plain_executable_is_not_a_bundle() {
+        assert!(!is_in_app_bundle(Path::new("/repo/target/release/mygame")));
+        assert!(!is_in_app_bundle(Path::new(
+            "/x/MyGame.app/Contents/Resources/mygame"
+        )));
+        assert!(!is_in_app_bundle(Path::new(
+            "/x/MyGame/Contents/MacOS/mygame"
+        )));
+        assert!(!is_in_app_bundle(Path::new("mygame")));
+    }
 
     /// A directory of this test's own, removed when the guard is dropped.
     struct TempDir {

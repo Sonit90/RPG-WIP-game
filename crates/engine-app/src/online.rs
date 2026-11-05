@@ -83,15 +83,25 @@ use engine_realm::reconnect::SeenMember;
 use engine_realm::{ErrorCategory, Role};
 use engine_render_data::ui::{UiDrawList, UiIcon, UiScale};
 
-/// The remembered session, sealed with DPAPI for the current Windows user.
+/// The remembered session, sealed for the current user: with DPAPI on Windows. On macOS the
+/// file holds a Keychain reference rather than ciphertext (see
+/// `engine-platform/src/macos/secure_store.rs`).
 pub struct DpapiTokenStore {
     path: std::path::PathBuf,
 }
 
 impl DpapiTokenStore {
-    /// A store at `%APPDATA%\mygame\session[-profile].bin`.
+    /// A store at `%APPDATA%\mygame\session[-profile].bin`, or on macOS
+    /// `~/Library/Application Support/mygame/session[-profile].bin`.
     #[must_use]
     pub fn for_profile(profile: Option<&str>) -> Self {
+        #[cfg(target_os = "macos")]
+        let base = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .map(|home| home.join("Library").join("Application Support"))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("mygame");
+        #[cfg(not(target_os = "macos"))]
         let base = std::env::var_os("APPDATA")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)

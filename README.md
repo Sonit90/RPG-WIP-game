@@ -26,6 +26,8 @@ cargo run --bin mygame      # run the game executable
 cargo build --release       # release build (no test or bench code)
 ```
 
+Building on a Mac (Apple Silicon, Metal): see [docs/macos.md](docs/macos.md).
+
 Options (`cargo run --bin mygame -- --help`):
 
 ```

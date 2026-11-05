@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! mygame.exe ── FILES (include_bytes!) ──► %LOCALAPPDATA%\mygame\assets-<HASH>\
+//!                                          (macOS: ~/Library/Caches/mygame/assets-<HASH>/)
 //!                                                   ▲
 //!                         MYGAME_ASSETS ────────────┘  (asset_roots() looks here first)
 //! ```
@@ -64,6 +65,11 @@ pub fn default_arguments(arguments: Vec<String>) -> Vec<String> {
 }
 
 fn unpack_root() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library").join("Caches"))
+        .or_else(|| Some(std::env::temp_dir()))?;
+    #[cfg(not(target_os = "macos"))]
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .or_else(|| Some(std::env::temp_dir()))?;

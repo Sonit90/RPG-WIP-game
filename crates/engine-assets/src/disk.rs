@@ -51,6 +51,9 @@ pub fn asset_roots() -> Vec<PathBuf> {
         && let Some(directory) = exe.parent()
     {
         roots.push(directory.join("assets"));
+        if cfg!(target_os = "macos") {
+            roots.push(bundle_resources_root(directory));
+        }
     }
     if let Ok(working) = std::env::current_dir() {
         roots.push(working.join("assets"));
@@ -60,6 +63,12 @@ pub fn asset_roots() -> Vec<PathBuf> {
         "/../../assets"
     )));
     roots
+}
+
+/// `<exe dir>/../Resources/assets`: where an app bundle keeps content
+/// (`Contents/MacOS/<exe>` beside `Contents/Resources/assets`).
+fn bundle_resources_root(exe_directory: &Path) -> PathBuf {
+    exe_directory.join("..").join("Resources").join("assets")
 }
 
 /// Where `file` is, if any root holds it.
@@ -319,6 +328,15 @@ fn layout_key(node_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_root_is_resources_beside_macos_dir() {
+        let root = bundle_resources_root(Path::new("/A/MyGame.app/Contents/MacOS"));
+        assert_eq!(
+            root,
+            Path::new("/A/MyGame.app/Contents/MacOS/../Resources/assets")
+        );
+    }
 
     #[test]
     fn a_file_that_is_not_there_is_not_an_error() {
