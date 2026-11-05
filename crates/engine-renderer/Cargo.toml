@@ -54,6 +54,18 @@ features = [
     "Win32_System_Threading",
 ]
 
+# The Metal backend (src/metal): Objective-C bindings for Metal, the CAMetalLayer that backs the
+# window's NSView, and the libdispatch data a precompiled shader library is loaded from.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+block2 = { workspace = true }
+dispatch2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-metal = { workspace = true, features = ["block2", "dispatch2"] }
+objc2-quartz-core = { workspace = true }
+objc2-app-kit = { workspace = true }
+
 # engine-platform is a *test-only* dependency: GPU integration tests need a real HWND to
 # create a swap chain against. The library itself never depends on it — the renderer
 # takes an opaque `isize` handle so the layering stays one-directional.

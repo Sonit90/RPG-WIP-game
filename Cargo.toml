@@ -112,6 +112,9 @@ objc2-metal = "0.3"
 objc2-quartz-core = "0.3"
 objc2-app-kit = "0.3"
 objc2-core-graphics = "0.3"
+objc2-core-foundation = "0.3"
+# macOS only: the Metal library data (`newLibraryWithData:`) is a dispatch_data_t.
+dispatch2 = "0.3"
 # macOS only: the Keychain, for the remembered online session.
 security-framework = "2"
 libc = "0.2"

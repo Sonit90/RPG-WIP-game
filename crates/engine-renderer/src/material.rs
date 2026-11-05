@@ -348,7 +348,7 @@ impl MaterialDesc {
     ///
     /// `NaN` is the one that matters: it propagates through the whole lighting expression
     /// and produces a black or white pixel with no indication of where it came from.
-    fn validate(&self) -> Result<(), RendererError> {
+    pub(crate) fn validate(&self) -> Result<(), RendererError> {
         let finite = self.base_color.dot(self.base_color).is_finite()
             && self.roughness.is_finite()
             && self.metallic.is_finite()

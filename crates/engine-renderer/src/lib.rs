@@ -10,13 +10,11 @@
 //! Phase 0 / Milestone 2 scope: device, queue, swap chain, render targets, fences, and a
 //! frame that clears and presents. No pipeline state, no geometry, no GPU timing yet.
 
-// The backend-neutral items below (the render-list instance composition, the palette padding,
-// the texture preparation, the copy rotation) are consumed by the Direct3D 12 backend today
-// and by the Metal backend when it lands in phase R1; until then nothing on a non-Windows
-// target calls them. Remove with the first Metal consumer.
+// Targets with neither backend (there is no GPU path on them) keep the backend-neutral items
+// unused; Windows and macOS each consume them.
 #![cfg_attr(
-    not(windows),
-    allow(dead_code, reason = "awaiting the Metal backend (phase R1)")
+    not(any(windows, target_os = "macos")),
+    allow(dead_code, reason = "no GPU backend on this target")
 )]
 
 pub mod adapter;
@@ -46,6 +44,12 @@ pub mod mipmap;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
+// The Metal backend keeps its own palette table (it holds upload-ring allocations, not GPU
+// addresses) and uses only `pad_palette` from here.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "the D3D12 palette table; Metal keeps its own")
+)]
 mod palette;
 mod parallel;
 pub mod particle_pipeline;
@@ -69,6 +73,13 @@ pub mod transparency;
 pub mod ui_atlas;
 pub mod ui_pipeline;
 pub mod upload;
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "probes the D3D12 resource paths call; Metal has no use for them"
+    )
+)]
 mod upload_timing;
 
 pub use adapter::{AdapterInfo, select_adapter};
@@ -92,6 +103,8 @@ pub use mesh::{GpuMesh, VertexStream};
 pub use mesh::{Index, MeshData, MeshVertex};
 #[cfg(windows)]
 pub use mesh_pipeline::MeshPipeline;
+#[cfg(target_os = "macos")]
+pub use metal::{Renderer, RendererStartup};
 #[cfg(feature = "debug-overlay")]
 pub use overlay::OverlayMetrics;
 pub use particle_pipeline::ParticleConstants;
