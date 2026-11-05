@@ -944,7 +944,15 @@ fn compile_metal(source: &Path, metal_dir: &Path, stem: &str) {
     let compiled = Command::new("xcrun")
         // No fast math: the prepass and camera pass must produce bit-identical depth for the
         // primed `LessEqual` test, and reassociation could differ between the two functions.
-        .args(["-sdk", "macosx", "metal", "-std=metal3.0", "-O2", "-fno-fast-math", "-c"])
+        .args([
+            "-sdk",
+            "macosx",
+            "metal",
+            "-std=metal3.0",
+            "-O2",
+            "-fno-fast-math",
+            "-c",
+        ])
         .arg(source)
         .arg("-o")
         .arg(&air)
