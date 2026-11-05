@@ -109,10 +109,13 @@ engine-vfx = { workspace = true }
 # speakers and inside CI.
 engine-audio = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
+log = { workspace = true }
+
+# Windows only: the D3D12 benchmarks. On macOS those binaries are stubs.
 # Only for the descriptor-heap type constants the benchmark passes through to the
 # renderer's API. No D3D12 calls are made here.
+[target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Graphics_Direct3D12"] }
-log = { workspace = true }
 
 [lints]
 workspace = true
