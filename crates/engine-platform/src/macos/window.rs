@@ -717,13 +717,14 @@ impl Window {
                 reason: format!("a window cannot have a {width}x{height} client area"),
             });
         }
-        if let Some(size) = self
+        // winit 0.30 applies the size synchronously on macOS (`setContentSize`) but returns
+        // `None` and sends no `Resized` for it, so read the size back and report it now.
+        // `on_resized` ignores an unchanged size, so a later `Resized` is not reported twice.
+        let size = self
             .native()
             .request_inner_size(PhysicalSize::new(width, height))
-        {
-            // Applied synchronously: report it now rather than waiting for AppKit.
-            self.app.on_resized(size);
-        }
+            .unwrap_or_else(|| self.native().inner_size());
+        self.app.on_resized(size);
         Ok(())
     }
 
