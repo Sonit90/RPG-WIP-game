@@ -1,0 +1,23 @@
+[package]
+name = "engine-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Sound as data, and the runtime that mixes it. Deliberately only engine-core: no `windows`,
+# no cpal, no engine-game, no engine-renderer.
+#
+# The absence is the point. Without a device the whole audio runtime — the catalogue, the
+# bank, voices, the mixer, panning, attenuation, the limiter, the priority model and the
+# mix itself — is unit testable, because a test can ask for a block of frames and assert on
+# the samples. The device lives in engine-app and is thirty lines of callback.
+#
+# Without engine-game it is impossible for a sound to reach into the simulation that
+# announced it: this crate cannot name an ability, a target or a hit point.
+[dependencies]
+engine-core = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

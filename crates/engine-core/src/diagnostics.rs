@@ -168,6 +168,8 @@ pub fn assertion_failed(
     // Logged as well as panicked: the panic goes to stderr, but a log sink may be the
     // only thing being captured when this fires on a tester's machine.
     log::error!(target: "Diagnostics", "assertion failed at {file}:{line}: {condition} — {message}");
+    // The record is queued, not written: without this the panic can outrun it.
+    crate::logging::drain();
     panic!("engine assertion failed at {file}:{line}: {condition} — {message}");
 }
 

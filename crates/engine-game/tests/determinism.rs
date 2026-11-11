@@ -28,6 +28,7 @@ fn script() -> Vec<(u32, PlayerCommand)> {
                 forward: 1.0,
                 right: 0.0,
                 yaw: 0.0,
+                face_camera: false,
             },
         ),
         (
@@ -36,6 +37,7 @@ fn script() -> Vec<(u32, PlayerCommand)> {
                 forward: 0.5,
                 right: 1.0,
                 yaw: 0.7,
+                face_camera: false,
             },
         ),
         (30, PlayerCommand::Jump),
@@ -48,6 +50,7 @@ fn script() -> Vec<(u32, PlayerCommand)> {
                 forward: 0.0,
                 right: 0.0,
                 yaw: 0.7,
+                face_camera: false,
             },
         ),
     ]
@@ -176,17 +179,77 @@ fn the_same_script_produces_the_same_events_in_the_same_order() {
 /// A stable textual form of an event, for comparing two runs.
 fn describe(event: &CombatEvent) -> String {
     match *event {
+        // The Druid's resource stream, in the same shape as the Warrior's below it: whose
+        // resource moved, by how much, and to what.
+        CombatEvent::AstralPowerGained {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!(
+            "astral +{amount} to {value} for {} at {tick}",
+            entity.index()
+        ),
+        CombatEvent::AstralPowerArmed {
+            entity,
+            value,
+            tick,
+        } => format!("astral armed at {value} for {} at {tick}", entity.index()),
+        CombatEvent::AstralPowerSpent {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!(
+            "astral -{amount} to {value} for {} at {tick}",
+            entity.index()
+        ),
+        CombatEvent::ManaSpent {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!("mana -{amount} to {value} for {} at {tick}", entity.index()),
+        CombatEvent::ManaRestored {
+            entity,
+            amount,
+            value,
+            tick,
+            ..
+        } => format!("mana +{amount} to {value} for {} at {tick}", entity.index()),
+        CombatEvent::Dispelled {
+            target,
+            status,
+            school,
+            tick,
+            ..
+        } => format!(
+            "dispelled {} ({}) from {} at {tick}",
+            status.as_str(),
+            school.as_str(),
+            target.index()
+        ),
         CombatEvent::AbilityUsed {
             source,
             ability,
             targets,
+            facing,
             tick,
         } => format!(
-            "used {} by {}:{} on {targets} at {tick}",
+            "used {} by {}:{} on {targets} facing {facing} at {tick}",
             ability.slot(),
             source.index(),
             source.generation()
         ),
+        CombatEvent::PhaseChanged {
+            entity,
+            phase,
+            name,
+            tick,
+        } => format!("phase {phase} '{name}' for {} at {tick}", entity.index()),
         CombatEvent::Damage(damage) => format!(
             "damage {} to {}:{} by {} amount {} overkill {} killed {} at {}",
             damage.ability.slot(),
@@ -237,6 +300,23 @@ fn describe(event: &CombatEvent) -> String {
             killer,
             tick,
         } => format!("death {} by {} at {tick}", entity.index(), killer.index()),
+        // Where a teleport put someone is part of the run: two replays that blinked into
+        // different geometry are different runs however equal their health totals are.
+        CombatEvent::Teleported {
+            entity,
+            from,
+            to,
+            tick,
+        } => format!(
+            "teleport {} from {} {} {} to {} {} {} at {tick}",
+            entity.index(),
+            fixed(from.x),
+            fixed(from.y),
+            fixed(from.z),
+            fixed(to.x),
+            fixed(to.y),
+            fixed(to.z)
+        ),
         // Cast events are part of the ordered stream a replay has to reproduce: a cast that
         // started on a different tick, or was cancelled for a different reason, is a
         // different run even if the health totals agree.
@@ -259,6 +339,385 @@ fn describe(event: &CombatEvent) -> String {
             "cast-end {} {} {end:?} at {tick}",
             source.index(),
             ability.slot()
+        ),
+        // The presentation events are part of the stream a replay has to reproduce for the
+        // same reason the cast events are: a bolt that left from somewhere else, or a patch
+        // of fire that started a tick later, is a different run however equal the health
+        // totals are.
+        CombatEvent::ProjectileLaunched {
+            source,
+            target,
+            from,
+            to,
+            ability,
+            tick,
+        } => format!(
+            "projectile {} from {} at {} {} {} to {} at {} {} {} on {tick}",
+            ability.slot(),
+            source.index(),
+            fixed(from.x),
+            fixed(from.y),
+            fixed(from.z),
+            target.index(),
+            fixed(to.x),
+            fixed(to.y),
+            fixed(to.z)
+        ),
+        CombatEvent::ImpactScheduled {
+            ability,
+            position,
+            radius,
+            delay,
+            tick,
+            ..
+        } => format!(
+            "impact-scheduled {} at {} {} {} radius {} delay {} on {tick}",
+            ability.slot(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(radius),
+            fixed(delay)
+        ),
+        CombatEvent::ImpactLanded {
+            ability,
+            position,
+            radius,
+            targets,
+            tick,
+            ..
+        } => format!(
+            "impact-landed {} at {} {} {} radius {} on {targets} at {tick}",
+            ability.slot(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(radius)
+        ),
+        CombatEvent::AreaEffectStarted {
+            id,
+            ability,
+            position,
+            shape,
+            duration,
+            tick,
+            ..
+        } => format!(
+            "area-start {id} {} at {} {} {} {shape:?} for {} on {tick}",
+            ability.slot(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(duration)
+        ),
+        CombatEvent::AreaEffectEnded { id, position, tick } => format!(
+            "area-end {id} at {} {} {} on {tick}",
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z)
+        ),
+        CombatEvent::Jumped {
+            entity,
+            position,
+            tick,
+        } => format!(
+            "jump {} at {} {} {} on {tick}",
+            entity.index(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z)
+        ),
+        CombatEvent::TelegraphStarted {
+            id,
+            source,
+            ability,
+            anchor,
+            shape,
+            delay,
+            follow,
+            tick,
+        } => format!(
+            "telegraph {id} by {} ability {} at {} {} shape {shape:?} delay {} follow {:?} on {tick}",
+            source.index(),
+            ability.slot(),
+            fixed(anchor.x),
+            fixed(anchor.z),
+            fixed(delay),
+            follow.map(|entity| entity.index())
+        ),
+        CombatEvent::TelegraphEnded {
+            id,
+            anchor,
+            resolved,
+            tick,
+        } => format!(
+            "telegraph {id} ended resolved {resolved} at {} {} on {tick}",
+            fixed(anchor.x),
+            fixed(anchor.z)
+        ),
+        CombatEvent::Landed {
+            entity,
+            position,
+            speed,
+            tick,
+        } => format!(
+            "land {} at {} {} {} speed {} on {tick}",
+            entity.index(),
+            fixed(position.x),
+            fixed(position.y),
+            fixed(position.z),
+            fixed(speed)
+        ),
+        // The Warrior's defensive stream. Every one of these is the product of a roll or of
+        // a resource, and both are part of what a replay has to reproduce exactly: a fight
+        // where the same swing was dodged on one run and blocked on the next is not a
+        // deterministic fight.
+        CombatEvent::AttackDefended {
+            attacker,
+            defender,
+            outcome,
+            ability,
+            tick,
+            ..
+        } => format!(
+            "defend {} by {} from {} ability {} at {tick}",
+            outcome.as_str(),
+            defender.index(),
+            attacker.index(),
+            ability.slot()
+        ),
+        CombatEvent::ValorGained {
+            entity,
+            value,
+            filled,
+            ability,
+            tick,
+        } => format!(
+            "valor {value} filled {filled} for {} on {} at {tick}",
+            entity.index(),
+            ability.slot()
+        ),
+        CombatEvent::AbsorbApplied {
+            target,
+            amount,
+            duration,
+            ability,
+            tick,
+        } => format!(
+            "absorb {} for {} s on {} from {} at {tick}",
+            fixed(amount),
+            fixed(duration),
+            target.index(),
+            ability.slot()
+        ),
+        CombatEvent::Absorbed {
+            target,
+            amount,
+            remaining,
+            tick,
+        } => format!(
+            "absorbed {} leaving {} on {} at {tick}",
+            fixed(amount),
+            fixed(remaining),
+            target.index()
+        ),
+        CombatEvent::SpellReflected {
+            source,
+            target,
+            ability,
+            amount,
+            tick,
+        } => format!(
+            "reflect {} for {} from {} to {} at {tick}",
+            ability.slot(),
+            fixed(amount),
+            source.index(),
+            target.index()
+        ),
+        CombatEvent::ControlApplied {
+            source,
+            target,
+            control,
+            seconds,
+            ability,
+            tick,
+        } => format!(
+            "control {} for {} s on {} by {} from {} at {tick}",
+            control.as_str(),
+            fixed(seconds),
+            target.index(),
+            source.index(),
+            ability.slot()
+        ),
+        CombatEvent::DungeonProgress {
+            credited,
+            fraction,
+            tick,
+        } => format!(
+            "progress {} ({}) at {tick}",
+            fixed(credited),
+            fixed(fraction)
+        ),
+        CombatEvent::BossUnlocked { position, tick } => {
+            format!(
+                "unlocked at {} {} on {tick}",
+                fixed(position.x),
+                fixed(position.z)
+            )
+        }
+        CombatEvent::AddSummoned {
+            boss,
+            add,
+            position,
+            tick,
+        } => format!(
+            "add {} for {} at {} {} on {tick}",
+            add.index(),
+            boss.index(),
+            fixed(position.x),
+            fixed(position.z)
+        ),
+        CombatEvent::DungeonCompleted { seconds, tick } => {
+            format!("dungeon completed in {} on {tick}", fixed(seconds))
+        }
+        CombatEvent::ChestSpawned {
+            chest,
+            position,
+            tick,
+            ..
+        } => format!(
+            "chest {chest} at {},{} on {tick}",
+            fixed(position.x),
+            fixed(position.z)
+        ),
+        CombatEvent::ChestOpened { chest, by, tick } => {
+            format!("chest {chest} opened by {} on {tick}", by.index())
+        }
+        CombatEvent::LootAwarded {
+            player,
+            item,
+            props,
+            index,
+            tick,
+        } => {
+            format!(
+                "loot {} {props:?} #{index} to {} on {tick}",
+                item.0,
+                player.index()
+            )
+        }
+        CombatEvent::LootMailed {
+            player,
+            item,
+            props,
+            index,
+            reason,
+            tick,
+        } => format!(
+            "loot {} {props:?} #{index} mailed to {} ({reason:?}) on {tick}",
+            item.0,
+            player.index()
+        ),
+        CombatEvent::MobLoot {
+            player,
+            item,
+            props,
+            tick,
+        } => format!(
+            "mob loot {} {props:?} to {} on {tick}",
+            item.0,
+            player.index()
+        ),
+        CombatEvent::MobCurrency {
+            player,
+            resource,
+            amount,
+            tick,
+        } => format!(
+            "mob currency {amount} {resource} to {} on {tick}",
+            player.index()
+        ),
+        CombatEvent::MailTaken { player, item, tick } => {
+            format!("mail {} taken by {} on {tick}", item.0, player.index())
+        }
+        CombatEvent::MailBagFull { player, tick } => {
+            format!("mail bag full for {} on {tick}", player.index())
+        }
+        CombatEvent::ModifierBeamsStarted {
+            id,
+            center,
+            start_angle,
+            angular_speed,
+            start_time,
+            tick,
+            ..
+        } => format!(
+            "beams {id} at {:.2},{:.2} from {start_angle} turning {angular_speed} since {start_time} on {tick}",
+            center.x, center.z
+        ),
+        CombatEvent::ModifierBeamsEnded { id, tick } => format!("beams {id} ended on {tick}"),
+        CombatEvent::PlagueArmed {
+            id,
+            position,
+            explode_time,
+            tick,
+            ..
+        } => format!(
+            "plague {id} armed at {:.2},{:.2} to burst {explode_time} on {tick}",
+            position.x, position.z
+        ),
+        CombatEvent::PlagueExploded { id, tick, .. } => format!("plague {id} burst on {tick}"),
+        CombatEvent::PlagueCloudEnded { id, tick } => format!("plague {id} ended on {tick}"),
+        CombatEvent::BeamChannelStarted {
+            entity,
+            yaw,
+            start_time,
+            duration,
+            tick,
+        } => format!(
+            "beam {} started {} {} {} on {tick}",
+            entity.index(),
+            fixed(yaw),
+            fixed(start_time as f32),
+            fixed(duration)
+        ),
+        CombatEvent::BeamYaw {
+            entity,
+            yaw,
+            turn_target_yaw,
+            time,
+            tick,
+        } => format!(
+            "beam {} yaw {} -> {} at {} on {tick}",
+            entity.index(),
+            fixed(yaw),
+            fixed(turn_target_yaw),
+            fixed(time as f32)
+        ),
+        CombatEvent::BeamChannelEnded {
+            entity,
+            reason,
+            tick,
+        } => format!("beam {} ended {reason:?} on {tick}", entity.index()),
+        CombatEvent::TrinketUsed {
+            entity,
+            slot,
+            effect,
+            tick,
+        } => format!(
+            "trinket {} slot {slot} {effect:?} on {tick}",
+            entity.index()
+        ),
+        CombatEvent::Aggro {
+            enemy,
+            entity,
+            change,
+            tick,
+        } => format!(
+            "{} {} on {} at {tick}",
+            entity.index(),
+            change.as_str(),
+            enemy.index()
         ),
     }
 }

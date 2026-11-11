@@ -1,0 +1,78 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="tranquility_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="tranquility_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(150,220,180)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="tranquility_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="tranquility_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="tranquility_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="tranquility_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="tranquility_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="tranquility_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="tranquility_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="tranquility_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#tranquility_tile)">
+	<path fill="url(#tranquility_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#tranquility_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The light coming down through it, wide: this lands on everyone. -->
+	<path fill="url(#tranquility_leaf)" fill-opacity="0.16" d="M 338 240 L 640 862 L 36 862 z"></path>
+	<path fill="url(#tranquility_leaf)" fill-opacity="0.20" d="M 338 240 L 506 862 L 170 862 z"></path>
+	<path fill="rgb(255,255,255)" fill-opacity="0.14" d="M 338 240 L 400 862 L 276 862 z"></path>
+
+	<!-- The canopy, three tiers of it. -->
+	<path fill="url(#tranquility_leaf)" fill-opacity="0.3" d="M 338 236 C 424 288 480 356 500 442 L 176 442 C 196 356 252 288 338 236 z"></path>
+	<path fill="url(#tranquility_leaf)" d="M 338 262 C 408 306 454 364 472 434 L 204 434 C 222 364 268 306 338 262 z"></path>
+	<path fill="url(#tranquility_deep)" d="M 338 262 C 332 322 330 380 332 434 L 204 434 C 222 364 268 306 338 262 z"></path>
+	<path fill="url(#tranquility_leaf)" d="M 338 366 C 420 410 476 476 496 556 L 180 556 C 200 476 256 410 338 366 z"></path>
+	<path fill="url(#tranquility_deep)" d="M 338 366 C 332 428 330 494 332 556 L 180 556 C 200 476 256 410 338 366 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.45" d="M 356 392 C 404 428 442 476 462 532 C 428 480 392 434 356 392 z"></path>
+
+	<!-- The trunk, and the ground the channel is filling. -->
+	<path fill="url(#tranquility_bark)" d="M 306 786 C 302 704 306 634 316 552 L 360 552 C 370 634 374 704 370 786 z"></path>
+	<path fill="rgb(60,44,32)" fill-opacity="0.7" d="M 330 560 C 328 636 328 712 332 786 L 316 786 C 310 712 312 636 318 560 z"></path>
+	<path fill="url(#tranquility_leaf)" fill-opacity="0.7" d="M 338 744 C 442 744 526 776 526 816 C 526 856 442 888 338 888 C 234 888 150 856 150 816 C 150 776 234 744 338 744 z"></path>
+	<path fill="rgb(18,20,26)" d="M 338 768 C 424 768 492 790 492 816 C 492 842 424 864 338 864 C 252 864 184 842 184 816 C 184 790 252 768 338 768 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.55" d="M 338 786 C 400 786 450 800 450 816 C 450 832 400 846 338 846 C 276 846 226 832 226 816 C 226 800 276 786 338 786 z"></path>
+
+	<!-- Motes coming down with the light. -->
+	<path fill="rgb(255,255,255)" fill-opacity="0.9" d="M 486 640 C 496 646 500 656 498 668 C 486 660 480 650 480 640 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.8" d="M 190 664 C 200 670 204 680 202 692 C 190 684 184 674 184 664 z"></path>
+	<path fill="rgb(255,255,255)" fill-opacity="0.7" d="M 434 712 C 442 718 446 726 444 736 C 434 730 428 722 428 712 z"></path>
+</g>
+</svg>

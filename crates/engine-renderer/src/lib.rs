@@ -10,6 +10,13 @@
 //! Phase 0 / Milestone 2 scope: device, queue, swap chain, render targets, fences, and a
 //! frame that clears and presents. No pipeline state, no geometry, no GPU timing yet.
 
+// Targets with neither backend (there is no GPU path on them) keep the backend-neutral items
+// unused; Windows and macOS each consume them.
+#![cfg_attr(
+    not(any(windows, target_os = "macos")),
+    allow(dead_code, reason = "no GPU backend on this target")
+)]
+
 pub mod adapter;
 pub mod bench;
 pub mod command;
@@ -17,64 +24,146 @@ pub mod culling;
 pub mod depth;
 pub mod descriptor;
 pub mod device;
+mod dynamic_mesh;
 pub mod error;
-// Not behind `debug-overlay`. The font is a bit-pattern table and the atlas is 8 KiB of
-// texels; both are what *game* UI draws text with, and a shipping build that dropped them
-// would have no way to write a health percentage. The developer statistics overlay stays
-// gated — see `overlay` below.
+// Not behind `debug-overlay`. The font is a bit-pattern table and the atlas is the texture
+// every glyph and every ability icon is drawn from; both are what *game* UI is made of, and
+// a shipping build that dropped them would have no way to write a health percentage. The
+// developer statistics overlay stays gated — see `overlay` below.
 pub mod font;
-pub mod font_atlas;
 pub mod frame;
 pub mod gpu_timer;
 pub mod instancing;
+pub mod light_cluster;
 pub mod material;
 pub mod mesh;
 pub mod mesh_pipeline;
+#[cfg(target_os = "macos")]
+pub mod metal;
+pub mod mipmap;
 pub mod offscreen;
 #[cfg(feature = "debug-overlay")]
 pub mod overlay;
+// The Metal backend keeps its own palette table (it holds upload-ring allocations, not GPU
+// addresses) and uses only `pad_palette` from here.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "the D3D12 palette table; Metal keeps its own")
+)]
+mod palette;
+mod parallel;
+pub mod particle_pipeline;
 pub mod pipeline;
+pub mod pipeline_stats;
 pub mod render_list;
+#[cfg(windows)]
 pub mod renderer;
 pub mod resource;
 pub mod scene;
 pub mod shader;
+pub mod shadow;
 pub mod stress;
 pub mod swapchain;
+#[cfg(windows)]
 pub mod sync;
+pub mod text;
+pub mod texture;
+pub mod texture_id;
+pub mod transparency;
+pub mod ui_atlas;
 pub mod ui_pipeline;
 pub mod upload;
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "probes the D3D12 resource paths call; Metal has no use for them"
+    )
+)]
+mod upload_timing;
 
 pub use adapter::{AdapterInfo, select_adapter};
-pub use bench::{BenchHarness, BenchResult, DrawMode};
+#[cfg(windows)]
+pub use bench::BenchHarness;
+pub use bench::{BenchResult, DrawMode};
 pub use culling::{CullStats, Culler};
 pub use device::BACKEND;
 pub use error::RendererError;
-pub use font_atlas::{FontAtlas, GlyphUv};
 pub use frame::{DEFAULT_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT, SyncStats};
 pub use instancing::{InstanceData, UNIT_TRIANGLE};
-pub use material::{Material, MaterialConstants, MaterialDesc};
-pub use mesh::{GpuMesh, Index, MeshData, MeshVertex, VertexStream};
+pub use light_cluster::{LightClusterStats, LightClusters};
+#[cfg(windows)]
+pub use material::Material;
+pub use material::{
+    MATERIAL_TEXTURE_COUNT, MaterialConstants, MaterialDesc, MaterialTextureSet,
+    MaterialTextureSlot, MaterialTextures, SurfaceClass,
+};
+#[cfg(windows)]
+pub use mesh::{GpuMesh, VertexStream};
+pub use mesh::{Index, MeshData, MeshVertex};
+#[cfg(windows)]
 pub use mesh_pipeline::MeshPipeline;
+#[cfg(target_os = "macos")]
+pub use metal::{Renderer, RendererStartup};
 #[cfg(feature = "debug-overlay")]
 pub use overlay::OverlayMetrics;
+pub use particle_pipeline::ParticleConstants;
+#[cfg(windows)]
+pub use particle_pipeline::ParticlePipeline;
 pub use pipeline::{TRIANGLE_VERTICES, Vertex};
 pub use render_list::{RenderList, RenderListEntry};
-pub use renderer::Renderer;
+#[cfg(windows)]
+pub use renderer::{Renderer, RendererStartup};
 pub use scene::{FrameConstants, ObjectConstants};
-pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiPipeline, UiVertex};
+#[cfg(windows)]
+pub use shadow::ShadowRenderer;
+pub use shadow::{ShadowPreset, ShadowSettings, ShadowStats};
+pub use ui_atlas::{AtlasUv, UiAtlas};
+#[cfg(windows)]
+pub use ui_pipeline::UiPipeline;
+pub use ui_pipeline::{UiBatchStats, UiBatcher, UiFrameConstants, UiVertex};
 
 // Re-exported from `engine-render-data`, where these types moved at the Milestone 15
 // checkpoint so a gameplay crate can build a `RenderWorld` without linking D3D12. Kept
 // visible here because `use engine_renderer::RenderWorld` is what every existing caller,
 // test and benchmark writes, and the split was a boundary change rather than an API one.
 pub use engine_render_data::{
-    Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, InstanceStyle, Lighting, MaterialHandle,
-    MeshHandle, Projection, RenderEntity, RenderEntityDesc, RenderWorld, TextAlign, UiColor,
-    UiCommand, UiDrawList, UiRect,
+    Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, InstanceStyle, Lighting, LocalLight,
+    LocalLightKind, MAX_ICON_PIXELS, MaterialHandle, MeshHandle, ParticleBlend, ParticleDrawList,
+    ParticleInstance, Projection, RenderEntity, RenderEntityDesc, RenderWorld, ShadowCasting,
+    TextAlign, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
 };
+pub use parallel::limit_bands_on_this_thread;
 pub use stress::STRESS_LEVELS;
-pub use swapchain::{BACK_BUFFER_FORMAT, FRAME_COUNT};
+#[cfg(windows)]
+pub use swapchain::BACK_BUFFER_FORMAT;
+pub use swapchain::FRAME_COUNT;
+pub use texture::{
+    PreparedTexture, PreparedTextures, TextureHandle, TextureImage, prepare_model_textures,
+    prepare_texture,
+};
+pub use upload_timing::Counters as ResourceCounters;
+
+/// Pipelines, resources and GPU-waiting flushes created so far in the process.
+///
+/// All zero unless the `startup-timing` feature is on. The application diffs two of these
+/// across a frame to say whether a slow frame created a pipeline or waited on an upload.
+#[must_use]
+#[inline]
+pub fn resource_counters() -> ResourceCounters {
+    upload_timing::counters()
+}
+
+/// Logs how many pipeline state objects have been created so far and what they cost.
+///
+/// Behind the `startup-timing` feature; without it this is an empty call. The application
+/// asks for it once, when the first frame is on screen, because mesh pipelines are created
+/// the first time a material variant is drawn and that is the frame it happens on.
+#[inline]
+pub fn log_pipeline_startup_counters() {
+    upload_timing::report_pipelines();
+    upload_timing::report();
+}
 
 /// How the renderer should be created.
 #[derive(Debug, Clone, PartialEq, Eq)]

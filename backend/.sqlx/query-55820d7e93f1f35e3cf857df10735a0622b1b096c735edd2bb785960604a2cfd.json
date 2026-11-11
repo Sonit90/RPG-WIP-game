@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO user_permissions (user_id, permission_id, granted)\n        SELECT $1, p.id, $3 FROM permissions p WHERE p.name = $2\n        ON CONFLICT (user_id, permission_id)\n        DO UPDATE SET granted = EXCLUDED.granted\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "55820d7e93f1f35e3cf857df10735a0622b1b096c735edd2bb785960604a2cfd"
+}

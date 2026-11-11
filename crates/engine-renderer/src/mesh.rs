@@ -9,28 +9,70 @@
 //! the scene changes, never per frame, and a mesh's vertex and index buffers share one
 //! wait — see [`crate::upload::StagingUploader`].
 
-use engine_core::math::{Sphere, Vec2, Vec3};
+use engine_core::math::{Sphere, Vec2, Vec3, Vec4};
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_INDEX_BUFFER_VIEW, D3D12_RESOURCE_STATE_INDEX_BUFFER,
-    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_VERTEX_BUFFER_VIEW, ID3D12Resource,
+    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATES,
+    D3D12_VERTEX_BUFFER_VIEW, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::resource::{GpuBuffer, TrackedResource};
+#[cfg(windows)]
+use crate::resource::{BufferSlice, BufferSource, GpuBuffer, TrackedResource};
+#[cfg(windows)]
 use crate::upload::StagingUploader;
 
-/// One vertex of a mesh: position, normal and texture coordinate.
+#[cfg(windows)]
+/// The state static geometry is left in after its upload.
+///
+/// Vertices, indices and material constants share the renderer's arena chunks, and D3D12
+/// tracks a buffer's state whole — so the state has to cover every way a chunk is read. All
+/// three are read-only states and D3D12 allows them to be combined.
+const GEOMETRY_STATE: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATES(
+    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER.0 | D3D12_RESOURCE_STATE_INDEX_BUFFER.0,
+);
+
+#[cfg(windows)]
+/// The alignment a suballocated geometry buffer starts on, in bytes.
+///
+/// Sixteen: enough for any vertex attribute this engine has, and a multiple of the index
+/// element, so neither a vertex nor an index ever straddles the alignment the hardware wants.
+const GEOMETRY_ALIGNMENT: usize = 16;
+
+/// The vertex colour a mesh gets when nothing authored one: opaque white.
+///
+/// The renderer's copy of `engine_assets::DEFAULT_VERTEX_COLOR`, for the same reason the
+/// vertex types are duplicated — this crate is the one the input layout describes, and it
+/// must not depend on the asset crate to say what a default vertex is.
+pub const DEFAULT_VERTEX_COLOR: [u8; 4] = [255, 255, 255, 255];
+
+/// One vertex of a mesh: position, normal, texture coordinate, tangent and colour.
 ///
 /// `repr(C)` is required — the input layout describes this exact memory layout to the GPU,
 /// so Rust must not be free to reorder the fields.
 ///
-/// 32 bytes, which is two per cache line. Packing the normal into 4 bytes and the UV into 4
-/// would halve that; it is not done because nothing yet is vertex-fetch bound, and an
-/// unmeasured packing is a decoding cost in every shader for a saving nobody has seen.
+/// **52 bytes**, and the field order is the offset table `mesh_vertex_elements` describes:
+///
+/// ```text
+///  0  position  float3
+/// 12  normal    float3
+/// 24  uv        float2
+/// 32  tangent   float4     xyz direction, w handedness
+/// 48  color     unorm8x4
+/// ```
+///
+/// Colour is four bytes rather than four floats deliberately: it is a 0..1 quantity the
+/// hardware can unpack for free through `R8G8B8A8_UNORM`, and sixteen bytes for a tint would
+/// have cost more than the tangent does. The tangent is *not* packed, because a normal map's
+/// frame is what the packing error would show up in first, and nothing has measured that
+/// this vertex is worth compressing yet.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshVertex {
     /// Position in the mesh's local space.
     pub position: Vec3,
@@ -38,17 +80,242 @@ pub struct MeshVertex {
     pub normal: Vec3,
     /// Texture coordinate.
     pub uv: Vec2,
+    /// Tangent direction in XYZ, handedness in W.
+    ///
+    /// Read by every mesh pixel shader: it is the frame a tangent-space normal map is applied
+    /// in, and W says which way the bitangent runs. See `shaders/pbr.hlsli`.
+    pub tangent: Vec4,
+    /// Per-vertex colour, RGBA, read by the GPU as `R8G8B8A8_UNORM`.
+    ///
+    /// Uploaded and described to the input assembler; not read by any shader yet. How
+    /// authored vertex colour combines with a material is its own decision, and nothing in
+    /// this engine authors it yet.
+    pub color: [u8; 4],
+}
+
+impl Default for MeshVertex {
+    /// Written out rather than derived: `[u8; 4]`'s derived default is transparent black,
+    /// and a default vertex colour has to be the multiplicative identity.
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
+            tangent: engine_assets::tangent::fallback(Vec3::ZERO),
+            color: DEFAULT_VERTEX_COLOR,
+        }
+    }
 }
 
 impl MeshVertex {
-    /// Builds a vertex.
+    /// Builds a vertex with a normal-derived tangent and opaque white colour.
+    ///
+    /// Kept at three arguments so the offscreen helpers, the stress scene and the showcase
+    /// geometry that build meshes by hand read the same as they did. Geometry that comes
+    /// from an asset goes through [`MeshVertex::with_tangent`] and
+    /// [`MeshVertex::with_color`] instead, which is what `Renderer::create_model` uses: an
+    /// imported mesh's tangent comes from its UVs, and this constructor has none to consult.
+    ///
+    /// The tangent is `engine_assets::tangent::fallback` — the same deterministic
+    /// perpendicular frame the asset crate gives a vertex whose UVs imply no direction. Not
+    /// the zero vector, deliberately: the vertex format is frozen at this milestone, and
+    /// every vertex buffer the GPU sees should already satisfy "unit XYZ, handedness +-1"
+    /// before anything samples a normal map. A hand-authored mesh full of zeros would be the
+    /// one that renders black on the day something does.
     #[must_use]
-    pub const fn new(position: Vec3, normal: Vec3, uv: Vec2) -> Self {
+    pub fn new(position: Vec3, normal: Vec3, uv: Vec2) -> Self {
         Self {
             position,
             normal,
             uv,
+            tangent: engine_assets::tangent::fallback(normal),
+            color: DEFAULT_VERTEX_COLOR,
         }
+    }
+
+    /// The same vertex with an explicit tangent.
+    #[must_use]
+    pub const fn with_tangent(mut self, tangent: Vec4) -> Self {
+        self.tangent = tangent;
+        self
+    }
+
+    /// The same vertex with an explicit colour.
+    #[must_use]
+    pub const fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
+    }
+}
+
+/// One vertex of a skinned mesh: a rigid vertex plus what moves it.
+///
+/// **76 bytes**, `repr(C)`, and the exact memory the skinned input layout describes. The
+/// field order matches [`MeshVertex`] for its first five fields, so the two layouts share
+/// their first five input elements:
+///
+/// ```text
+///  0  position  float3
+/// 12  normal    float3
+/// 24  uv        float2
+/// 32  tangent   float4
+/// 48  color     unorm8x4
+/// 52  joints    uint16x4     4-byte aligned, which D3D12 requires of an element offset
+/// 60  weights   float4
+/// ```
+///
+/// Joints are `R16G16B16A16_UINT` and weights are `R32G32B32A32_FLOAT`. Packing them to
+/// `R8G8B8A8_UINT` and `R8G8B8A8_UNORM` would make the vertex 60 bytes and is the obvious
+/// later optimization; at one character of a few hundred vertices there is nothing yet to
+/// measure, and `MAX_BONES` would have to come down to 256 first.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinnedVertex {
+    /// Position in the mesh's bind pose, local space.
+    pub position: Vec3,
+    /// Unit normal in the bind pose.
+    pub normal: Vec3,
+    /// Texture coordinate.
+    pub uv: Vec2,
+    /// Tangent direction in XYZ, handedness in W. See [`MeshVertex::tangent`].
+    pub tangent: Vec4,
+    /// Per-vertex colour. See [`MeshVertex::color`].
+    pub color: [u8; 4],
+    /// Indices into the bone palette.
+    pub joints: [u16; 4],
+    /// How much each joint contributes. Sums to one.
+    pub weights: [f32; 4],
+}
+
+impl Default for SkinnedVertex {
+    /// See [`MeshVertex::default`].
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
+            tangent: engine_assets::tangent::fallback(Vec3::ZERO),
+            color: DEFAULT_VERTEX_COLOR,
+            joints: [0; 4],
+            weights: [0.0; 4],
+        }
+    }
+}
+
+impl SkinnedVertex {
+    /// Builds a skinned vertex with a normal-derived tangent and opaque white colour.
+    ///
+    /// The tangent is the same fallback frame [`MeshVertex::new`] uses, for the same reason.
+    #[must_use]
+    pub fn new(
+        position: Vec3,
+        normal: Vec3,
+        uv: Vec2,
+        joints: [u16; 4],
+        weights: [f32; 4],
+    ) -> Self {
+        Self {
+            position,
+            normal,
+            uv,
+            tangent: engine_assets::tangent::fallback(normal),
+            color: DEFAULT_VERTEX_COLOR,
+            joints,
+            weights,
+        }
+    }
+
+    /// The same vertex with an explicit tangent.
+    #[must_use]
+    pub const fn with_tangent(mut self, tangent: Vec4) -> Self {
+        self.tangent = tangent;
+        self
+    }
+
+    /// The same vertex with an explicit colour.
+    #[must_use]
+    pub const fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.color = color;
+        self
+    }
+}
+
+/// A skinned mesh on the CPU.
+///
+/// Separate from [`MeshData`] rather than a variant of it, because the two feed different
+/// pipeline states with different input layouts, and a single type would push the branch
+/// into every consumer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinnedMeshData {
+    vertices: Vec<SkinnedVertex>,
+    indices: Vec<Index>,
+    bounds: Sphere,
+}
+
+impl SkinnedMeshData {
+    /// Builds skinned mesh data, computing its bind-pose bounding sphere.
+    ///
+    /// # Errors
+    ///
+    /// The same checks as [`MeshData::new`], for the same reason: D3D12 does not
+    /// bounds-check an index buffer.
+    pub fn new(vertices: Vec<SkinnedVertex>, indices: Vec<Index>) -> Result<Self, RendererError> {
+        if vertices.is_empty() || indices.is_empty() {
+            return Err(RendererError::InvalidConfig {
+                reason: "a skinned mesh needs at least one vertex and one index".to_owned(),
+            });
+        }
+        if indices.len() % 3 != 0 {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "a triangle list needs a multiple of three indices, got {}",
+                    indices.len()
+                ),
+            });
+        }
+        if let Some(bad) = indices
+            .iter()
+            .find(|index| **index as usize >= vertices.len())
+        {
+            return Err(RendererError::InvalidConfig {
+                reason: format!("index {bad} is past the end of {} vertices", vertices.len()),
+            });
+        }
+
+        let bounds = Sphere::around(vertices.iter().map(|vertex| vertex.position));
+        Ok(Self {
+            vertices,
+            indices,
+            bounds,
+        })
+    }
+
+    /// The vertices.
+    #[must_use]
+    pub fn vertices(&self) -> &[SkinnedVertex] {
+        &self.vertices
+    }
+
+    /// The indices.
+    #[must_use]
+    pub fn indices(&self) -> &[Index] {
+        &self.indices
+    }
+
+    /// The bind-pose bounding sphere.
+    ///
+    /// **Bind pose, not animated pose.** An animated character reaches outside it — an arm
+    /// raised overhead is half a metre past the bounds the T-pose implies — so a caller that
+    /// culls with this must pad it. `engine-presentation` does, and says why.
+    #[must_use]
+    pub fn bounds(&self) -> Sphere {
+        self.bounds
+    }
+
+    /// Triangles, assuming a triangle list.
+    #[must_use]
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
     }
 }
 
@@ -281,6 +548,33 @@ impl MeshData {
         }
     }
 
+    /// A flat unit rectangle lying face up, one metre across and one metre long, running
+    /// from the origin along -Z.
+    ///
+    /// The footprint of a *linear* zone - Firestorm's line of fire. Anchored at one end
+    /// rather than centred, because a line ability starts at the caster and runs forwards,
+    /// and yaw zero faces -Z everywhere else in the project. The transform scales it to the
+    /// ability's own width and length, so the strip drawn is the strip that burns.
+    #[must_use]
+    pub fn strip() -> Self {
+        let vertices = vec![
+            MeshVertex::new(Vec3::new(-0.5, 0.0, 0.0), Vec3::Y, Vec2::new(0.0, 0.0)),
+            MeshVertex::new(Vec3::new(0.5, 0.0, 0.0), Vec3::Y, Vec2::new(1.0, 0.0)),
+            MeshVertex::new(Vec3::new(0.5, 0.0, -1.0), Vec3::Y, Vec2::new(1.0, 1.0)),
+            MeshVertex::new(Vec3::new(-0.5, 0.0, -1.0), Vec3::Y, Vec2::new(0.0, 1.0)),
+        ];
+        // Wound to face up, like the disc, the ring and the sector: the first triangle's
+        // cross product has to point along +Y or the world pass backface-culls the whole
+        // strip and the indicator is simply not there.
+        let indices = vec![0, 1, 2, 0, 2, 3];
+
+        Self {
+            bounds: Sphere::around(vertices.iter().map(|vertex| vertex.position)),
+            vertices,
+            indices,
+        }
+    }
+
     /// A flat sector lying face up: a slice of a disc of `radius`, `half_angle` either side
     /// of -Z, which is the direction a character with zero yaw faces.
     ///
@@ -361,12 +655,15 @@ impl MeshData {
     }
 }
 
+#[cfg(windows)]
 /// An indexed mesh in device-local memory.
 pub struct GpuMesh {
+    /// Kept alive because the view points into it. A range of the renderer's geometry arena
+    /// when the mesh came from there, and a whole resource when it did not — see
+    /// [`BufferSlice`].
+    vertex_buffer: BufferSlice,
     /// Kept alive because the view points into it.
-    vertex_buffer: GpuBuffer,
-    /// Kept alive because the view points into it.
-    index_buffer: GpuBuffer,
+    index_buffer: BufferSlice,
     vertex_view: D3D12_VERTEX_BUFFER_VIEW,
     index_view: D3D12_INDEX_BUFFER_VIEW,
     vertex_count: u32,
@@ -374,6 +671,7 @@ pub struct GpuMesh {
     bounds: Sphere,
 }
 
+#[cfg(windows)]
 impl GpuMesh {
     /// Uploads a mesh and waits for the copy to finish.
     ///
@@ -385,7 +683,7 @@ impl GpuMesh {
     /// Returns [`RendererError::Api`] if any D3D12 call fails.
     pub fn upload(device: &RenderDevice, data: &MeshData) -> Result<Self, RendererError> {
         let mut uploader = StagingUploader::new(device)?;
-        let mesh = Self::queue(device, &mut uploader, data)?;
+        let mesh = Self::queue(device, &mut uploader, &mut BufferSource::Dedicated, data)?;
         uploader.flush(device)?;
         Ok(mesh)
     }
@@ -402,41 +700,133 @@ impl GpuMesh {
         let mut uploader = StagingUploader::new(device)?;
         let mut uploaded = Vec::with_capacity(meshes.len());
         for data in meshes {
-            uploaded.push(Self::queue(device, &mut uploader, data)?);
+            uploaded.push(Self::queue(
+                device,
+                &mut uploader,
+                &mut BufferSource::Dedicated,
+                data,
+            )?);
         }
         uploader.flush(device)?;
         Ok(uploaded)
+    }
+
+    /// Uploads a skinned mesh and waits for the copy to finish.
+    ///
+    /// The result is an ordinary [`GpuMesh`] with a 56-byte stride: a vertex buffer is a
+    /// vertex buffer, and only the input layout the pipeline was created with decides how it
+    /// is read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if any D3D12 call fails.
+    pub fn upload_skinned(
+        device: &RenderDevice,
+        data: &SkinnedMeshData,
+    ) -> Result<Self, RendererError> {
+        let mut uploader = StagingUploader::new(device)?;
+        let mesh = Self::queue_typed(
+            device,
+            &mut uploader,
+            &mut BufferSource::Dedicated,
+            data.vertices(),
+            data.indices(),
+            data.bounds(),
+        )?;
+        uploader.flush(device)?;
+        Ok(mesh)
+    }
+
+    /// Creates both buffers and queues their copies into a caller's uploader.
+    ///
+    /// No flush and therefore no wait: the caller decides when the copies are submitted, so
+    /// a hundred meshes can share one synchronization instead of paying one each. That is
+    /// the whole of [`Renderer::begin_upload_batch`](crate::Renderer::begin_upload_batch).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if any D3D12 call fails.
+    pub fn queue_into(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
+        data: &MeshData,
+    ) -> Result<Self, RendererError> {
+        Self::queue(device, uploader, buffers, data)
+    }
+
+    /// [`GpuMesh::queue_into`] for a skinned mesh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if any D3D12 call fails.
+    pub fn queue_skinned_into(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
+        data: &SkinnedMeshData,
+    ) -> Result<Self, RendererError> {
+        Self::queue_typed(
+            device,
+            uploader,
+            buffers,
+            data.vertices(),
+            data.indices(),
+            data.bounds(),
+        )
     }
 
     /// Creates both buffers and queues their copies, without flushing.
     fn queue(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         data: &MeshData,
     ) -> Result<Self, RendererError> {
-        let vertices = data.vertices();
-        let indices = data.indices();
-
-        let vertex_buffer = GpuBuffer::new_default(device, std::mem::size_of_val(vertices))?;
-        uploader.queue_buffer(
+        Self::queue_typed(
             device,
-            &vertex_buffer,
-            vertices,
-            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-        )?;
+            uploader,
+            buffers,
+            data.vertices(),
+            data.indices(),
+            data.bounds(),
+        )
+    }
 
-        let index_buffer = GpuBuffer::new_default(device, std::mem::size_of_val(indices))?;
-        uploader.queue_buffer(
+    /// The upload itself, over whichever vertex type the caller has.
+    ///
+    /// Generic rather than duplicated: the rigid and skinned paths differ in the stride
+    /// recorded in the view and in nothing else, and two copies of a buffer upload would
+    /// eventually differ in something that matters.
+    fn queue_typed<V: Copy>(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
+        vertices: &[V],
+        indices: &[Index],
+        bounds: Sphere,
+    ) -> Result<Self, RendererError> {
+        // Aligned to the vertex stride, so an address is a whole number of vertices into the
+        // buffer whatever else shares the chunk. The index buffer is aligned to its own
+        // element for the same reason.
+        let vertex_buffer = buffers.allocate(
             device,
-            &index_buffer,
-            indices,
-            D3D12_RESOURCE_STATE_INDEX_BUFFER,
+            std::mem::size_of_val(vertices),
+            size_of::<V>().max(GEOMETRY_ALIGNMENT),
         )?;
+        uploader.queue_slice(device, &vertex_buffer, vertices, GEOMETRY_STATE)?;
+
+        let index_buffer = buffers.allocate(
+            device,
+            std::mem::size_of_val(indices),
+            size_of::<Index>().max(GEOMETRY_ALIGNMENT),
+        )?;
+        uploader.queue_slice(device, &index_buffer, indices, GEOMETRY_STATE)?;
 
         let vertex_view = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: vertex_buffer.gpu_address(),
             SizeInBytes: std::mem::size_of_val(vertices) as u32,
-            StrideInBytes: size_of::<MeshVertex>() as u32,
+            StrideInBytes: size_of::<V>() as u32,
         };
         let index_view = D3D12_INDEX_BUFFER_VIEW {
             BufferLocation: index_buffer.gpu_address(),
@@ -451,8 +841,63 @@ impl GpuMesh {
             index_view,
             vertex_count: vertices.len() as u32,
             index_count: indices.len() as u32,
-            bounds: data.bounds(),
+            bounds,
         })
+    }
+
+    /// An empty mesh over caller-owned buffers, for geometry that is rewritten at run time.
+    ///
+    /// Draws nothing until the first [`GpuMesh::repoint`]. Crate-private: only the dynamic
+    /// mesh facility knows the buffers are upload-heap copies it will keep re-aiming this at.
+    pub(crate) fn empty_over(vertex_buffer: BufferSlice, index_buffer: BufferSlice) -> Self {
+        let mut mesh = Self {
+            vertex_view: D3D12_VERTEX_BUFFER_VIEW::default(),
+            index_view: D3D12_INDEX_BUFFER_VIEW::default(),
+            vertex_buffer,
+            index_buffer,
+            vertex_count: 0,
+            index_count: 0,
+            bounds: Sphere::new(Vec3::ZERO, 0.0),
+        };
+        let (vertex, index) = (mesh.vertex_buffer.clone(), mesh.index_buffer.clone());
+        mesh.repoint(vertex, index, 0, 0, mesh.bounds);
+        mesh
+    }
+
+    /// Re-aims the mesh at `vertex_buffer`/`index_buffer`, holding `vertex_count` vertices and
+    /// `index_count` indices.
+    ///
+    /// The views are what recording reads, and they are copied into the command list at record
+    /// time, so a repoint between frames never disturbs a frame already recorded. A view is
+    /// never given a size of zero even for an empty mesh: the buffers are capacity-sized, so
+    /// the view stays valid, and `index_count` of zero is what suppresses the draw.
+    pub(crate) fn repoint(
+        &mut self,
+        vertex_buffer: BufferSlice,
+        index_buffer: BufferSlice,
+        vertex_count: u32,
+        index_count: u32,
+        bounds: Sphere,
+    ) {
+        let vertex_bytes = (vertex_count as usize * size_of::<MeshVertex>())
+            .clamp(size_of::<MeshVertex>(), vertex_buffer.size());
+        let index_bytes = (index_count as usize * size_of::<Index>())
+            .clamp(size_of::<Index>(), index_buffer.size());
+        self.vertex_view = D3D12_VERTEX_BUFFER_VIEW {
+            BufferLocation: vertex_buffer.gpu_address(),
+            SizeInBytes: vertex_bytes as u32,
+            StrideInBytes: size_of::<MeshVertex>() as u32,
+        };
+        self.index_view = D3D12_INDEX_BUFFER_VIEW {
+            BufferLocation: index_buffer.gpu_address(),
+            SizeInBytes: index_bytes as u32,
+            Format: DXGI_FORMAT_R32_UINT,
+        };
+        self.vertex_buffer = vertex_buffer;
+        self.index_buffer = index_buffer;
+        self.vertex_count = vertex_count;
+        self.index_count = index_count;
+        self.bounds = bounds;
     }
 
     /// The vertex-buffer view to bind.
@@ -491,19 +936,36 @@ impl GpuMesh {
         self.bounds
     }
 
-    /// The vertex buffer, for diagnostics and for tests that read it back.
+    /// The resource the vertices live in, for diagnostics and for tests that read it back.
+    ///
+    /// The whole resource, which is the mesh's own only when it was uploaded on its own:
+    /// a mesh out of the renderer's arena shares its chunk, and
+    /// [`GpuMesh::vertex_slice`] is the range that belongs to this mesh.
     #[must_use]
     pub fn vertex_buffer(&self) -> &GpuBuffer {
+        self.vertex_buffer.buffer()
+    }
+
+    /// The range of [`GpuMesh::vertex_buffer`] this mesh's vertices occupy.
+    #[must_use]
+    pub fn vertex_slice(&self) -> &BufferSlice {
         &self.vertex_buffer
     }
 
-    /// The index buffer, for diagnostics and for tests that read it back.
+    /// The resource the indices live in. See [`GpuMesh::vertex_buffer`].
     #[must_use]
     pub fn index_buffer(&self) -> &GpuBuffer {
+        self.index_buffer.buffer()
+    }
+
+    /// The range of [`GpuMesh::index_buffer`] this mesh's indices occupy.
+    #[must_use]
+    pub fn index_slice(&self) -> &BufferSlice {
         &self.index_buffer
     }
 }
 
+#[cfg(windows)]
 /// A raw, non-indexed vertex buffer in device-local memory.
 ///
 /// This is what the Phase 0 stress scene and the per-instance streams use: geometry that is
@@ -517,6 +979,7 @@ pub struct VertexStream {
     vertex_count: u32,
 }
 
+#[cfg(windows)]
 impl VertexStream {
     /// Uploads `vertices` to a default-heap buffer and waits for the copy to finish.
     ///
@@ -642,6 +1105,50 @@ mod tests {
     const EPSILON: f32 = 1e-4;
 
     #[test]
+    fn every_ground_shape_is_wound_the_same_way_up() {
+        // The bug this test exists for: a strip wound the other way is silently
+        // backface-culled, and a targeting indicator that is simply not drawn looks like a
+        // targeting system that never opened.
+        fn faces_up(mesh: &MeshData) -> bool {
+            mesh.indices().chunks_exact(3).all(|triangle| {
+                let a = mesh.vertices()[triangle[0] as usize].position;
+                let b = mesh.vertices()[triangle[1] as usize].position;
+                let c = mesh.vertices()[triangle[2] as usize].position;
+                let (u, v) = (b - a, c - a);
+                // The +Y component of u x v. Positive means the triangle faces the sky.
+                u.z * v.x - u.x * v.z > 0.0
+            })
+        }
+
+        assert!(faces_up(&MeshData::disc(0.5, 16)), "disc");
+        assert!(faces_up(&MeshData::ring(0.5, 0.05, 16)), "ring");
+        assert!(faces_up(&MeshData::sector(1.0, 0.5, 8)), "sector");
+        assert!(faces_up(&MeshData::strip()), "strip");
+    }
+
+    #[test]
+    fn a_strip_is_a_unit_rectangle_anchored_at_one_end() {
+        // Anchored rather than centred: a linear zone starts at the caster and runs
+        // forwards, and yaw zero faces -Z everywhere else in the project.
+        let strip = MeshData::strip();
+        assert_eq!(strip.triangle_count(), 2);
+        assert!(
+            strip
+                .vertices()
+                .iter()
+                .all(|vertex| vertex.position.x.abs() <= 0.5 + EPSILON
+                    && (-1.0 - EPSILON..=EPSILON).contains(&vertex.position.z))
+        );
+        assert!(
+            strip
+                .vertices()
+                .iter()
+                .any(|vertex| (vertex.position.z + 1.0).abs() < EPSILON),
+            "the strip does not reach its far end"
+        );
+    }
+
+    #[test]
     fn a_mesh_rejects_an_index_past_its_vertices() {
         // D3D12 does not bounds-check indices; an out-of-range one reads whatever follows
         // the buffer and usually draws a spike to the horizon.
@@ -743,9 +1250,34 @@ mod tests {
     fn a_vertex_is_the_size_the_input_layout_describes() {
         // The input layout hard-codes these offsets; a change here without a change there
         // reads the normal as part of the position.
-        assert_eq!(size_of::<MeshVertex>(), 32);
+        assert_eq!(size_of::<MeshVertex>(), 52);
         assert_eq!(std::mem::offset_of!(MeshVertex, position), 0);
         assert_eq!(std::mem::offset_of!(MeshVertex, normal), 12);
         assert_eq!(std::mem::offset_of!(MeshVertex, uv), 24);
+        assert_eq!(std::mem::offset_of!(MeshVertex, tangent), 32);
+        assert_eq!(std::mem::offset_of!(MeshVertex, color), 48);
+    }
+
+    #[test]
+    fn a_vertex_built_without_one_is_opaque_white() {
+        // Vertex colour multiplies, so the default has to be the identity. A derived
+        // `Default` would give transparent black and black out every mesh built by hand.
+        assert_eq!(MeshVertex::default().color, DEFAULT_VERTEX_COLOR);
+        assert_eq!(
+            MeshVertex::new(Vec3::ZERO, Vec3::Y, Vec2::ZERO).color,
+            DEFAULT_VERTEX_COLOR
+        );
+        assert_eq!(SkinnedVertex::default().color, DEFAULT_VERTEX_COLOR);
+        assert_eq!(
+            SkinnedVertex::new(
+                Vec3::ZERO,
+                Vec3::Y,
+                Vec2::ZERO,
+                [0; 4],
+                [1.0, 0.0, 0.0, 0.0]
+            )
+            .color,
+            DEFAULT_VERTEX_COLOR
+        );
     }
 }

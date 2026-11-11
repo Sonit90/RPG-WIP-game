@@ -25,11 +25,14 @@ use engine_core::profiling::Profiler;
 use engine_core::transform::{Transform, write_matrices};
 use engine_render_data::{MaterialHandle, MeshHandle, RenderEntityDesc, RenderWorld};
 use engine_renderer::culling::Culler;
+#[cfg(windows)]
 use engine_renderer::descriptor::{CpuDescriptorHeap, GpuDescriptorHeap};
+#[cfg(windows)]
 use engine_renderer::device::RenderDevice;
 use engine_renderer::render_list::RenderList;
 
 use engine_core::threading::recommended_worker_count;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 
 /// Iterations per sample for the micro-benchmarks.
@@ -78,6 +81,8 @@ fn main() -> ExitCode {
     benchmark_allocators(iterations);
     benchmark_input(iterations);
     benchmark_profiler(iterations);
+    // D3D12 descriptor heaps; Metal binds resources directly and has none.
+    #[cfg(windows)]
     benchmark_descriptors(iterations);
     benchmark_transforms(iterations);
     benchmark_culling();
@@ -307,6 +312,7 @@ fn benchmark_culling() {
                 bounds: Sphere::new(Vec3::ZERO, 1.0),
                 visible: true,
                 style: engine_render_data::InstanceStyle::NEUTRAL,
+                shadow: engine_render_data::ShadowCasting::CASTS_AND_RECEIVES,
             });
         }
 
@@ -334,6 +340,7 @@ fn benchmark_culling() {
     println!();
 }
 
+#[cfg(windows)]
 fn benchmark_descriptors(iterations: u32) {
     println!("-- descriptors --");
 

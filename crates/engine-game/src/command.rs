@@ -16,7 +16,8 @@
 
 use engine_core::math::{Quat, Vec3};
 
-use crate::firemage::TalentId;
+use crate::character::ItemSlot;
+use crate::entity::EntityId;
 
 /// One thing the player wants to happen.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,6 +33,13 @@ pub enum PlayerCommand {
         right: f32,
         /// Where the camera is looking, radians about +Y.
         yaw: f32,
+        /// Whether the camera is steering the character.
+        ///
+        /// True while the look button is held. The character then faces where the *camera*
+        /// looks instead of where it is walking, which is what makes strafing and
+        /// backpedalling keep the enemy in front - and it is the difference between
+        /// retreating from something and turning your back on it.
+        face_camera: bool,
     },
     /// Jump, if the character is on the ground. Edge-triggered.
     Jump,
@@ -47,17 +55,88 @@ pub enum PlayerCommand {
         /// Where the player put the circle.
         position: Vec3,
     },
-    /// Cast Cataclysm at a chosen point. Edge-triggered.
+    /// Use the hero's Ultimate, aimed at a chosen point. Edge-triggered.
+    ///
+    /// For the FireMage's Moving Fire Beam the point is the direction the channel starts in;
+    /// pressed again while the channel runs it ends it.
     UseUltimate {
-        /// Where the player put the circle.
+        /// Where the player put the aim.
         position: Vec3,
     },
-    /// Buy a talent. A menu action, in the command stream so it is ordered with the fight.
-    PurchaseTalent(TalentId),
+    /// Steer the Moving Fire Beam being channelled towards a ground point.
+    ///
+    /// An *intent*, like every command: the simulation turns the beam towards the point at
+    /// its own turn rate and a command with no channel running does nothing. The application
+    /// sends it at most about ten times a second, and only when the point moved.
+    ChannelAim {
+        /// The ground point under the cursor.
+        position: Vec3,
+    },
+    /// Use one of the hero's buttons beside the bar. Edge-triggered.
+    ///
+    /// A class with more abilities than the bar has digits keeps the rest here — see
+    /// [`crate::hero::Hero::extras`]. Indexed rather than named, for the reason
+    /// [`PlayerCommand::UseAbility`] is: what sits in the slot is the hero's business, and a
+    /// replay that named a spell would cast a different one after a swap.
+    UseExtra(usize),
+    /// Buy the active hero's talent in this table row. A menu action, in the command stream so
+    /// it is ordered with the fight.
+    PurchaseTalent(usize),
+    /// Refund every talent of the active hero.
+    ResetTalents,
+    /// Move an item between two slots: equip, unequip, swap or rearrange.
+    ///
+    /// A command like a talent purchase, and for the same reason: dragging a ring onto a
+    /// finger changes what the character's stats are, so it belongs in the same ordered
+    /// stream as the casts those stats decide. A refused move is not an error here — the
+    /// simulation applies what it can, exactly as it does with an ability that cannot be
+    /// cast.
+    MoveItem {
+        /// Where the item is now.
+        from: ItemSlot,
+        /// Where it was dropped.
+        to: ItemSlot,
+    },
     /// Target the nearest living hostile.
     SelectNearestTarget,
-    /// Move to the next living hostile, by distance.
+    /// Move to the next living hostile, by distance, within the class's own reach.
     CycleTarget,
+    /// Select nobody.
+    ///
+    /// What Escape asks for. A target is a thing the player chose, so dropping it is also a
+    /// choice — and nothing picks a new one afterwards.
+    ClearTarget,
+    /// Target the player's own character.
+    ///
+    /// The self-target key. Separate from [`PlayerCommand::SelectTarget`] because the caller
+    /// would otherwise have to know which entity the player is to ask for the one selection
+    /// that is always available.
+    SelectSelf,
+    /// Target a named entity: what clicking a nameplate asks for.
+    ///
+    /// The entity rather than a ray, because a nameplate *is* the entity — the interface
+    /// drew a box and wrote which one it belongs to inside it, and re-deriving that from a
+    /// ray would be answering a question that was already answered. Gameplay still decides
+    /// whether the request is legal, so a caller cannot select a corpse or an ally.
+    SelectTarget {
+        /// Which entity to select.
+        entity: EntityId,
+    },
+    /// Target whatever a ray passes through: the gameplay half of clicking on something.
+    ///
+    /// A ray rather than an entity, so the *rules* of selection — who is hostile, who is
+    /// alive, what shape a body is, which of two overlapping bodies wins — stay in gameplay.
+    /// The caller owns the camera and the cursor and nothing else; it says where the player
+    /// pointed, not what they picked.
+    ///
+    /// A ray that hits nothing changes nothing. Clicking empty floor is not a request to
+    /// have no target.
+    PickTarget {
+        /// Where the ray starts, in world space.
+        origin: Vec3,
+        /// Which way it goes. Need not be normalised.
+        direction: Vec3,
+    },
     /// Restore every dummy and clear the combat session. A developer control.
     ResetDummies,
     /// Put the character down at a position, at rest. A developer control.
@@ -69,9 +148,64 @@ pub enum PlayerCommand {
         /// Where the character's feet should end up.
         position: Vec3,
     },
+    /// Open the boss's chest and take this player's item from it. Edge-triggered.
+    ///
+    /// No target: there is at most one chest, and the rules (it has landed, the player is in
+    /// range and has not already taken their share) are the simulation's. A command that
+    /// fails them does nothing. A full bag mails the item instead.
+    OpenChest,
+    /// Move a letter's item from the current character's mailbox into their bag.
+    ///
+    /// A full bag keeps the letter and says so with [`crate::event::CombatEvent::MailBagFull`].
+    TakeMail {
+        /// Which letter.
+        id: u64,
+    },
+    /// Mark a letter in the current character's mailbox as read.
+    MarkMailRead {
+        /// Which letter.
+        id: u64,
+    },
+    /// Use the active of the trinket worn in trinket slot `n` (`0` is the first). Edge-triggered.
+    ///
+    /// Off the global cooldown: a trinket has a cooldown of its own. Appended last.
+    UseTrinket(usize),
 }
 
 impl PlayerCommand {
+    /// The yaw a [`PlayerCommand::Move`] locks the character's facing to, if it locks it.
+    ///
+    /// `None` means "face the way you are going", which is the ordinary case.
+    ///
+    /// Moving backwards locks too: the character keeps its back to where it is going and
+    /// backpedals, rather than turning round to run. A diagonal backwards faces the opposite
+    /// diagonal, so the stride stays on the line of travel.
+    ///
+    /// A pure strafe locks to the camera's yaw: the character keeps looking ahead and
+    /// sidesteps, rather than turning to face left or right.
+    #[must_use]
+    pub fn facing_lock(self) -> Option<f32> {
+        match self {
+            Self::Move {
+                yaw,
+                face_camera: true,
+                ..
+            } => Some(yaw),
+            Self::Move {
+                forward,
+                right,
+                yaw,
+                ..
+            } if forward.abs() <= f32::EPSILON && right.abs() > f32::EPSILON => Some(yaw),
+            Self::Move { forward, .. } if forward < 0.0 => {
+                let direction = self.move_direction();
+                // Yaw zero faces -Z; this is the yaw that faces `-direction`.
+                Some(direction.x.atan2(direction.z))
+            }
+            _ => None,
+        }
+    }
+
     /// The world-space direction a [`PlayerCommand::Move`] asks for.
     ///
     /// Camera-relative, which is what makes W mean "away from the camera" rather than
@@ -85,6 +219,7 @@ impl PlayerCommand {
             forward,
             right,
             yaw,
+            ..
         } = self
         else {
             return Vec3::ZERO;
@@ -193,6 +328,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         }
         .move_direction();
         assert!(close(direction, -Vec3::Z), "{direction:?}");
@@ -205,6 +341,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: std::f32::consts::FRAC_PI_2,
+            face_camera: false,
         }
         .move_direction();
         // A quarter turn about +Y sends −Z to −X.
@@ -217,9 +354,63 @@ mod tests {
             forward: 0.0,
             right: 1.0,
             yaw: 0.0,
+            face_camera: false,
         }
         .move_direction();
         assert!(close(direction, Vec3::X), "{direction:?}");
+    }
+
+    #[test]
+    fn moving_backwards_keeps_facing_away_from_the_travel() {
+        let yaw = 0.7;
+        let back = PlayerCommand::Move {
+            forward: -1.0,
+            right: 0.0,
+            yaw,
+            face_camera: false,
+        };
+        let facing = back.facing_lock().expect("backwards locks the facing");
+        assert!((facing - yaw).abs() < EPSILON, "{facing}");
+
+        // Diagonal back-left faces forward-right: still directly away from the travel.
+        let diagonal = PlayerCommand::Move {
+            forward: -1.0,
+            right: -1.0,
+            yaw: 0.0,
+            face_camera: false,
+        };
+        let facing = diagonal.facing_lock().expect("backwards locks the facing");
+        let ahead = Vec3::new(-facing.sin(), 0.0, -facing.cos());
+        let travel = diagonal.move_direction();
+        assert!(
+            ahead.dot(travel) < -0.99 * travel.length(),
+            "{ahead:?} {travel:?}"
+        );
+
+        // Forwards and forward diagonals still face the way they go.
+        for (forward, right) in [(1.0, 0.0), (1.0, -1.0), (0.0, 0.0)] {
+            let command = PlayerCommand::Move {
+                forward,
+                right,
+                yaw,
+                face_camera: false,
+            };
+            assert_eq!(command.facing_lock(), None, "{command:?}");
+        }
+    }
+
+    #[test]
+    fn strafing_keeps_facing_ahead() {
+        let yaw = -1.3;
+        for right in [1.0, -1.0] {
+            let command = PlayerCommand::Move {
+                forward: 0.0,
+                right,
+                yaw,
+                face_camera: false,
+            };
+            assert_eq!(command.facing_lock(), Some(yaw), "{command:?}");
+        }
     }
 
     #[test]
@@ -229,6 +420,7 @@ mod tests {
                 forward: 0.0,
                 right: 0.0,
                 yaw: 1.2,
+                face_camera: false,
             }
             .move_direction(),
             Vec3::ZERO
@@ -242,7 +434,8 @@ mod tests {
             !PlayerCommand::Move {
                 forward: 1.0,
                 right: 0.0,
-                yaw: 0.0
+                yaw: 0.0,
+                face_camera: false,
             }
             .is_discrete()
         );

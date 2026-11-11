@@ -1,0 +1,25 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="shoulders_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(20,24,30)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(52,62,76)"></stop>
+	</linearGradient>
+	<radialGradient id="shoulders_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(150,182,214)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(150,182,214)"></stop>
+	</radialGradient>
+	<clipPath id="shoulders_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#shoulders_tile)">
+	<path fill="url(#shoulders_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#shoulders_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(120,138,160)" d="M 60 210 C 116 168 168 156 208 168 L 226 300 C 176 320 112 322 60 306 Z"></path>
+	<path fill="rgb(176,196,220)" d="M 72 214 C 120 182 164 172 198 180 L 206 220 C 168 210 122 218 84 240 Z"></path>
+	<path fill="rgb(66,80,98)" d="M 62 312 C 116 328 178 326 226 308 L 232 344 C 178 364 114 364 66 348 Z"></path>
+	<path fill="rgb(120,138,160)" d="M 452 210 C 396 168 344 156 304 168 L 286 300 C 336 320 400 322 452 306 Z"></path>
+	<path fill="rgb(176,196,220)" d="M 440 214 C 392 182 348 172 314 180 L 306 220 C 344 210 390 218 428 240 Z"></path>
+	<path fill="rgb(66,80,98)" d="M 450 312 C 396 328 334 326 286 308 L 280 344 C 334 364 398 364 446 348 Z"></path>
+</g>
+</svg>

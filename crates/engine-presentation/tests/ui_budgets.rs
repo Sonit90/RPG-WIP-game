@@ -31,6 +31,9 @@ use engine_presentation::snapshot::UiSnapshot;
 use engine_render_data::ui::UiCommand;
 use engine_render_data::{Camera, Projection};
 
+/// One frame of real time, for the nameplate layout's smoothing.
+const FRAME: f32 = 1.0 / 60.0;
+
 const VIEWPORT: (u32, u32) = (1920, 1080);
 
 /// Commands a full combat HUD may produce.
@@ -77,7 +80,7 @@ fn build_frame(simulation: &Simulation, numbers: &FloatingNumbers, now: f32) -> 
     let config = NameplateConfig::default();
     let view_projection = camera_for(simulation);
     let mut plates = NameplateSet::with_capacity(32);
-    plates.build(simulation, &view_projection, VIEWPORT, &config);
+    plates.build(simulation, &view_projection, VIEWPORT, &config, FRAME);
 
     let snapshot = UiSnapshot::build(simulation);
     let mut ui = GameUi::new();
@@ -95,6 +98,7 @@ fn full_numbers(simulation: &Simulation) -> FloatingNumbers {
             Vec3::new((index % 8) as f32, 1.0, -((index / 8) as f32)),
             (index * 7 % 400) as f32 + 1.0,
             index % 20 == 0,
+            index % 3 == 0,
             now,
         );
     }
@@ -155,8 +159,8 @@ fn a_steady_hud_allocates_nothing_after_the_first_frame() {
     let mut snapshot = UiSnapshot::build(&simulation);
 
     for _ in 0..50 {
-        plates.build(&simulation, &view_projection, VIEWPORT, &config);
-        snapshot.refresh(&simulation);
+        plates.build(&simulation, &view_projection, VIEWPORT, &config, FRAME);
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, VIEWPORT);
         ui.push_damage_numbers(&numbers, &view_projection, VIEWPORT, now);
     }
@@ -164,8 +168,8 @@ fn a_steady_hud_allocates_nothing_after_the_first_frame() {
     let plate_capacity = plates.capacity();
 
     for _ in 0..1_000 {
-        plates.build(&simulation, &view_projection, VIEWPORT, &config);
-        snapshot.refresh(&simulation);
+        plates.build(&simulation, &view_projection, VIEWPORT, &config, FRAME);
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, VIEWPORT);
         ui.push_damage_numbers(&numbers, &view_projection, VIEWPORT, now);
     }
@@ -189,10 +193,28 @@ fn the_whole_interface_is_one_batchable_unit() {
 
     for command in ui.list().commands() {
         match command {
+            // An icon belongs here for the same reason text does: it is a region of the one
+            // atlas every other command already samples, so it changes neither the texture
+            // nor the pipeline state and the batch survives it.
             UiCommand::Rect { .. }
             | UiCommand::Outline { .. }
             | UiCommand::RadialFill { .. }
-            | UiCommand::Text { .. } => {}
+            | UiCommand::Icon { .. }
+            | UiCommand::Text { .. }
+            // The map's commands keep the batch too: a clip is a per-vertex attribute, a disc
+            // is a quad with its own circle, and the map picture is the second texture the
+            // one pipeline always has bound, chosen per vertex.
+            | UiCommand::Clip(_)
+            | UiCommand::Disc { .. }
+            | UiCommand::MapImage { .. }
+            | UiCommand::RotatedIcon { .. }
+            // The interface fonts and the rounded panels are the same pipeline and the same
+            // draw: a third texture chosen per vertex, and a shape evaluated per pixel.
+            | UiCommand::Label { .. }
+            // A styled run is the same glyphs twice over, the edge grown further: still the
+            // font texture, still one pipeline.
+            | UiCommand::StyledLabel { .. }
+            | UiCommand::Panel { .. } => {}
         }
     }
     assert_eq!(DRAW_CALLS, 1, "the interface is submitted once");
@@ -211,6 +233,7 @@ fn a_thousand_simultaneous_hits_are_bounded_rather_than_unbounded() {
             Vec3::new(0.0, 1.0, -5.0),
             index as f32 + 1.0,
             false,
+            index % 4 == 0,
             now,
         );
     }
@@ -242,3 +265,127 @@ fn the_hud_survives_a_world_with_nothing_in_it() {
     );
     assert!(ui.list().len() <= COMMAND_BUDGET);
 }
+
+/// Twenty casters and archers around the player, fighting it.
+fn casting_pack() -> Simulation {
+    use engine_game::enemy::EnemyKind;
+    let mut simulation = arena::training_arena(&ArenaConfig::with_group(0));
+    simulation.step_once();
+    let origin = simulation.player_position();
+    let kinds = [
+        EnemyKind::SkeletonBonecaster,
+        EnemyKind::GraveAcolyte,
+        EnemyKind::CryptArcher,
+        EnemyKind::Caster,
+    ];
+    for index in 0..20 {
+        let column = (index % 5) as f32 - 2.0;
+        let row = (index / 5) as f32;
+        simulation.spawn_enemy(
+            kinds[index % kinds.len()],
+            origin + Vec3::new(column * 2.2, 0.0, -10.0 - row * 2.2),
+            0.0,
+        );
+    }
+    simulation
+}
+
+#[test]
+fn a_casting_pack_under_constant_fire_stays_bounded_and_stops_allocating() {
+    // The stress case for the redesigned plates and the combat text together: every plate
+    // carrying a cast bar, the player's damage and the pack's landing every tick, numbers
+    // merging, fanning and being hurried off, plates dying and fading. What must hold is the
+    // shape: a bounded command list, and no allocation once the frame has reached its size.
+    use engine_presentation::damage_numbers::CombatTextFilter;
+    let mut simulation = casting_pack();
+    let view_projection = camera_for(&simulation);
+    let config = NameplateConfig::default();
+    let mut plates = NameplateSet::with_capacity(32);
+    let mut ui = GameUi::new();
+    let mut numbers = FloatingNumbers::new();
+    let mut snapshot = UiSnapshot::build(&simulation);
+    let local = simulation.player().entity;
+
+    let frame = |simulation: &mut Simulation,
+                 plates: &mut NameplateSet,
+                 ui: &mut GameUi,
+                 numbers: &mut FloatingNumbers,
+                 snapshot: &mut UiSnapshot,
+                 tick: usize| {
+        if tick % 12 == 0 {
+            simulation.select_nearest_target();
+            simulation.push_command(PlayerCommand::UseAbility(tick / 12 % 3));
+        }
+        simulation.step_once();
+        let now = simulation.time() as f32;
+        let world = simulation.world();
+        let anchor = |id| world.position(id).map(|p| p + Vec3::new(0.0, 1.3, 0.0));
+        numbers.observe_combat(
+            simulation.events(),
+            local,
+            CombatTextFilter::default(),
+            now,
+            anchor,
+        );
+        numbers.track(anchor);
+        numbers.retire(now);
+        plates.build(simulation, &view_projection, VIEWPORT, &config, FRAME);
+        snapshot.refresh(simulation, None);
+        ui.build(snapshot, plates.plates(), &config, VIEWPORT);
+        ui.push_damage_numbers(numbers, &view_projection, VIEWPORT, now);
+    };
+
+    let mut casting_seen = 0;
+    let mut most_commands = 0;
+    for tick in 0..600 {
+        frame(
+            &mut simulation,
+            &mut plates,
+            &mut ui,
+            &mut numbers,
+            &mut snapshot,
+            tick,
+        );
+        casting_seen = casting_seen.max(
+            plates
+                .plates()
+                .iter()
+                .filter(|plate| plate.cast.is_some())
+                .count(),
+        );
+        most_commands = most_commands.max(ui.list().len());
+    }
+    assert!(
+        casting_seen >= 4,
+        "the pack never cast together: {casting_seen}"
+    );
+    assert!(
+        most_commands <= STRESS_COMMAND_BUDGET,
+        "{most_commands} commands against {STRESS_COMMAND_BUDGET}"
+    );
+
+    // Steady state: the same work, frame after frame, and nothing reallocated.
+    let plate_capacity = plates.capacity();
+    let number_capacity = numbers.numbers().len().max(1);
+    for tick in 600..1200 {
+        frame(
+            &mut simulation,
+            &mut plates,
+            &mut ui,
+            &mut numbers,
+            &mut snapshot,
+            tick,
+        );
+        assert!(numbers.numbers().len() <= MAX_FLOATING_NUMBERS);
+        assert!(ui.list().len() <= STRESS_COMMAND_BUDGET);
+    }
+    assert_eq!(plates.capacity(), plate_capacity, "the plate set regrew");
+    assert!(number_capacity <= MAX_FLOATING_NUMBERS);
+}
+
+/// Commands a pack of twenty casting enemies under constant fire may produce.
+///
+/// Higher than [`COMMAND_BUDGET`] because every plate in it carries a cast bar — an icon, a
+/// fill, a border, a name and a countdown each — and the combat text is at full stream. Still
+/// one draw call: the budget bounds the list, not the batch count.
+const STRESS_COMMAND_BUDGET: usize = 700;

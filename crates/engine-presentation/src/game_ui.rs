@@ -11,13 +11,18 @@
 //!
 //! Commands are pushed in paint order: world-space elements first, screen-space HUD on top.
 
-use engine_core::math::{Mat4, Vec3};
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
+use engine_core::input::Modifiers;
+use engine_core::math::Mat4;
+use engine_render_data::font::UiFont;
+use engine_render_data::ui::{
+    TextAlign, TextStyle, UiClip, UiColor, UiDrawList, UiIcon, UiRect, UiScale,
+};
 
-use crate::damage_numbers::FloatingNumbers;
-use crate::nameplate::{Nameplate, NameplateConfig, project};
+use crate::damage_numbers::{Avoidance, Callout, CombatTextKind, FloatingNumber, FloatingNumbers};
+use crate::nameplate::{Nameplate, NameplateConfig, PlateCastState, PlateRank, project};
 use crate::snapshot::{AbilitySlotView, SlotAvailability, UiSnapshot};
-use engine_game::firemage::{ABILITY_SLOTS, FireAbility, HEAT_HIGH_THRESHOLD, HEAT_MAXIMUM};
+use engine_game::event::AggroChange;
+use engine_game::firemage::{ABILITY_SLOTS, FireAbility, HeatTier, INFERNO_DURATION};
 
 /// Layout constants for the combat HUD, in pixels at any resolution.
 ///
@@ -70,14 +75,120 @@ mod layout {
     pub const RESOURCE_LIFT: f32 = 84.0;
     /// Size of the talent button in the top-right corner.
     pub const TALENT_BUTTON_SIZE: f32 = 44.0;
+    /// Gap between the two corner buttons.
+    pub const CORNER_BUTTON_GAP: f32 = 6.0;
     /// Size of one Ignite stack pip.
     pub const IGNITE_PIP: f32 = 10.0;
     /// Gap between Ignite pips.
     pub const IGNITE_PIP_GAP: f32 = 3.0;
-    /// Width of an ability tooltip.
-    pub const TOOLTIP_WIDTH: f32 = 300.0;
-    /// Height of one tooltip line.
-    pub const TOOLTIP_LINE: f32 = 16.0;
+}
+
+/// Every HUD measurement, converted from its design size to physical pixels once.
+///
+/// The constants in [`layout`] are **logical** pixels — the size the HUD was drawn at, which
+/// is the only unit worth writing a layout in. This is the same set after multiplying by the
+/// player's [`UiScale`], which is what the rest of the file actually positions things with.
+///
+/// A struct rather than a scale applied at each use site, for two reasons. Converting in one
+/// place means a measurement cannot be scaled twice or forgotten — the two mistakes that
+/// produce a HUD that is subtly wrong rather than obviously broken. And it means the
+/// conversion happens once per scale change rather than once per constant per frame, so a
+/// scaled HUD costs the same to lay out as an unscaled one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudMetrics {
+    /// The scale these were derived with.
+    pub scale: UiScale,
+    /// `layout::MARGIN` in physical pixels.
+    pub margin: f32,
+    /// `layout::PLAYER_BAR_WIDTH` in physical pixels.
+    pub player_bar_width: f32,
+    /// `layout::BAR_HEIGHT` in physical pixels.
+    pub bar_height: f32,
+    /// `layout::BAR_GAP` in physical pixels.
+    pub bar_gap: f32,
+    /// `layout::TARGET_FRAME_WIDTH` in physical pixels.
+    pub target_frame_width: f32,
+    /// `layout::TARGET_FRAME_HEIGHT` in physical pixels.
+    pub target_frame_height: f32,
+    /// `layout::TARGET_FRAME_TOP` in physical pixels.
+    pub target_frame_top: f32,
+    /// `layout::SLOT_SIZE` in physical pixels.
+    pub slot_size: f32,
+    /// `layout::SLOT_GAP` in physical pixels.
+    pub slot_gap: f32,
+    /// `layout::ABILITY_BAR_BOTTOM` in physical pixels.
+    pub ability_bar_bottom: f32,
+    /// `layout::CAST_BAR_WIDTH` in physical pixels.
+    pub cast_bar_width: f32,
+    /// `layout::CAST_BAR_HEIGHT` in physical pixels.
+    pub cast_bar_height: f32,
+    /// `layout::CAST_BAR_LIFT` in physical pixels.
+    pub cast_bar_lift: f32,
+    /// `layout::PADDING` in physical pixels.
+    pub padding: f32,
+    /// `layout::WORLD_BAR_HEIGHT` in physical pixels.
+    pub world_bar_height: f32,
+    /// `layout::WORLD_BAR_WIDTH` in physical pixels.
+    pub world_bar_width: f32,
+    /// `layout::ULTIMATE_SIZE` in physical pixels.
+    pub ultimate_size: f32,
+    /// `layout::ULTIMATE_GAP` in physical pixels.
+    pub ultimate_gap: f32,
+    /// `layout::RESOURCE_BAR_WIDTH` in physical pixels.
+    pub resource_bar_width: f32,
+    /// `layout::RESOURCE_BAR_HEIGHT` in physical pixels.
+    pub resource_bar_height: f32,
+    /// `layout::RESOURCE_LIFT` in physical pixels.
+    pub resource_lift: f32,
+    /// `layout::TALENT_BUTTON_SIZE` in physical pixels.
+    pub talent_button_size: f32,
+    /// `layout::CORNER_BUTTON_GAP` in physical pixels.
+    pub corner_button_gap: f32,
+    /// `layout::IGNITE_PIP` in physical pixels.
+    pub ignite_pip: f32,
+    /// `layout::IGNITE_PIP_GAP` in physical pixels.
+    pub ignite_pip_gap: f32,
+}
+
+impl HudMetrics {
+    /// The HUD's measurements at `scale`.
+    #[must_use]
+    pub fn new(scale: UiScale) -> Self {
+        Self {
+            scale,
+            margin: scale.px(layout::MARGIN),
+            player_bar_width: scale.px(layout::PLAYER_BAR_WIDTH),
+            bar_height: scale.px(layout::BAR_HEIGHT),
+            bar_gap: scale.px(layout::BAR_GAP),
+            target_frame_width: scale.px(layout::TARGET_FRAME_WIDTH),
+            target_frame_height: scale.px(layout::TARGET_FRAME_HEIGHT),
+            target_frame_top: scale.px(layout::TARGET_FRAME_TOP),
+            slot_size: scale.px(layout::SLOT_SIZE),
+            slot_gap: scale.px(layout::SLOT_GAP),
+            ability_bar_bottom: scale.px(layout::ABILITY_BAR_BOTTOM),
+            cast_bar_width: scale.px(layout::CAST_BAR_WIDTH),
+            cast_bar_height: scale.px(layout::CAST_BAR_HEIGHT),
+            cast_bar_lift: scale.px(layout::CAST_BAR_LIFT),
+            padding: scale.px(layout::PADDING),
+            world_bar_height: scale.px(layout::WORLD_BAR_HEIGHT),
+            world_bar_width: scale.px(layout::WORLD_BAR_WIDTH),
+            ultimate_size: scale.px(layout::ULTIMATE_SIZE),
+            ultimate_gap: scale.px(layout::ULTIMATE_GAP),
+            resource_bar_width: scale.px(layout::RESOURCE_BAR_WIDTH),
+            resource_bar_height: scale.px(layout::RESOURCE_BAR_HEIGHT),
+            resource_lift: scale.px(layout::RESOURCE_LIFT),
+            talent_button_size: scale.px(layout::TALENT_BUTTON_SIZE),
+            corner_button_gap: scale.px(layout::CORNER_BUTTON_GAP),
+            ignite_pip: scale.px(layout::IGNITE_PIP),
+            ignite_pip_gap: scale.px(layout::IGNITE_PIP_GAP),
+        }
+    }
+}
+
+impl Default for HudMetrics {
+    fn default() -> Self {
+        Self::new(UiScale::default())
+    }
 }
 
 /// How the interface is coloured and sized.
@@ -96,8 +207,6 @@ pub struct UiTheme {
     pub target_outline: UiColor,
     /// Outline thickness in pixels.
     pub outline_pixels: f32,
-    /// Glyph scale for nameplate text.
-    pub plate_text_scale: f32,
     /// Background of any bar.
     pub bar_background: UiColor,
     /// An enemy's health bar.
@@ -120,42 +229,72 @@ pub struct UiTheme {
     pub cooldown_sweep: UiColor,
     /// The cast bar's fill.
     pub cast_fill: UiColor,
-    /// An ordinary damage number.
-    pub damage_number: UiColor,
-    /// A killing blow's damage number.
-    pub killing_number: UiColor,
+    /// Fill of an enemy's cast bar.
+    ///
+    /// A different colour from the player's own: two bars that meant different things and
+    /// looked the same would be one bar the player had to read twice.
+    pub enemy_cast_fill: UiColor,
+    /// Colour of the death notice.
+    pub death_text: UiColor,
+    /// How enemy nameplates are coloured.
+    pub plate: PlateTheme,
+    /// How floating combat text is coloured.
+    pub combat: CombatTextTheme,
+    /// Aggro floating text for gaining it, or being about to: an enemy turning on you.
+    pub aggro_gain_text: UiColor,
+    /// Aggro floating text for losing it, or being about to.
+    pub aggro_loss_text: UiColor,
     /// Glyph scale for HUD text.
     pub hud_text_scale: f32,
-    /// Glyph scale for a damage number.
-    pub damage_text_scale: f32,
-    /// The Heat bar at rest.
+    /// The Heat bar in the first band, where it grants nothing.
     pub heat_low: UiColor,
-    /// The Heat bar when it is running hot.
+    /// The Heat bar in the second band, where it grants +15% damage.
+    pub heat_warm: UiColor,
+    /// The Heat bar in the third band, where it grants +30% and a stat.
     pub heat_high: UiColor,
-    /// The Heat bar while Overheat is running.
-    pub heat_overheated: UiColor,
+    /// The Heat bar while the Inferno State runs.
+    pub heat_inferno: UiColor,
     /// The Ultimate Energy bar.
     pub energy: UiColor,
     /// The Ultimate Energy bar once it is full.
     pub energy_full: UiColor,
+    /// The Warrior's Valor pips: warm gold, for a resource that turns into a buff.
+    pub valor: UiColor,
+    /// The Druid's Mana bar.
+    pub mana: UiColor,
+    /// The Astral Power bar while it is filling.
+    pub astral: UiColor,
+    /// The Astral Power bar once the next compatible spell is armed.
+    ///
+    /// Deliberately the same family as [`UiTheme::slot_empowered`]: "this will be empowered"
+    /// is one idea and it should be one colour, on the resource and on the button.
+    pub astral_armed: UiColor,
     /// An ability that cannot be paid for.
     pub slot_no_resource: UiColor,
+    /// An ability that is switched off entirely.
+    pub slot_disabled: UiColor,
     /// An ability whose target is wrong.
     pub slot_invalid: UiColor,
     /// An ability that is ready and worth pressing right now.
     pub slot_empowered: UiColor,
+    /// What an ability icon is multiplied by normally. White draws the art untouched.
+    pub icon: UiColor,
+    /// What an ability icon is multiplied by when it cannot be used.
+    pub icon_unavailable: UiColor,
     /// The radial sweep drawn over a cooling ability.
     pub cooldown_radial: UiColor,
+    /// The radial sweep drawn over every ability while the global cooldown runs.
+    ///
+    /// Lighter than [`UiTheme::cooldown_radial`]. Half a second is not information the
+    /// player has to read — it is the pulse the bar beats at — so it registers as movement
+    /// without hiding the art or competing with a real cooldown two slots away.
+    pub global_cooldown_radial: UiColor,
+    /// The frame around the ability currently being cast.
+    pub slot_casting: UiColor,
     /// An Ignite stack that is present.
     pub ignite_pip: UiColor,
     /// An Ignite stack that is not there yet.
     pub ignite_pip_empty: UiColor,
-    /// The tooltip panel.
-    pub tooltip_panel: UiColor,
-    /// A tooltip's heading.
-    pub tooltip_title: UiColor,
-    /// A tooltip's body text.
-    pub tooltip_text: UiColor,
 }
 
 impl Default for UiTheme {
@@ -168,7 +307,6 @@ impl Default for UiTheme {
             status: [0.95, 0.62, 0.25, 1.0],
             target_outline: [1.0, 1.0, 1.0, 1.0],
             outline_pixels: 2.0,
-            plate_text_scale: 2.0,
             bar_background: [0.10, 0.10, 0.12, 0.85],
             enemy_health: [0.80, 0.25, 0.22, 1.0],
             enemy_health_low: [0.95, 0.55, 0.15, 1.0],
@@ -182,24 +320,37 @@ impl Default for UiTheme {
             // hiding it, so a cooling ability is still recognisable as itself.
             cooldown_sweep: [0.02, 0.02, 0.03, 0.72],
             cast_fill: [0.92, 0.78, 0.32, 1.0],
-            damage_number: [1.0, 0.92, 0.55, 1.0],
-            killing_number: [1.0, 0.45, 0.30, 1.0],
+            enemy_cast_fill: [0.86, 0.30, 0.24, 1.0],
+            death_text: [0.92, 0.34, 0.30, 1.0],
+            plate: PlateTheme::default(),
+            combat: CombatTextTheme::default(),
+            aggro_gain_text: [1.0, 0.36, 0.26, 1.0],
+            aggro_loss_text: [0.52, 0.78, 1.0, 1.0],
             hud_text_scale: 2.0,
-            damage_text_scale: 2.0,
             heat_low: [0.55, 0.55, 0.60, 1.0],
+            heat_warm: [0.92, 0.72, 0.22, 1.0],
             heat_high: [0.95, 0.55, 0.15, 1.0],
-            heat_overheated: [1.0, 0.35, 0.12, 1.0],
+            heat_inferno: [1.0, 0.30, 0.10, 1.0],
             energy: [0.35, 0.55, 0.95, 1.0],
             energy_full: [0.65, 0.85, 1.0, 1.0],
+            valor: [0.92, 0.76, 0.28, 1.0],
+            mana: [0.30, 0.50, 0.95, 1.0],
+            astral: [0.55, 0.45, 0.85, 1.0],
+            astral_armed: [0.75, 0.85, 1.0, 1.0],
+            slot_disabled: [0.25, 0.25, 0.28, 1.0],
             slot_no_resource: [0.70, 0.18, 0.18, 1.0],
             slot_invalid: [0.60, 0.15, 0.15, 1.0],
-            slot_empowered: [1.0, 0.75, 0.20, 1.0],
+            slot_empowered: [1.0, 0.88, 0.18, 1.0],
+            icon: [1.0, 1.0, 1.0, 1.0],
+            // Dimmed and slightly desaturated by the tint alone; no second copy of the art.
+            icon_unavailable: [0.42, 0.40, 0.44, 1.0],
             cooldown_radial: [0.02, 0.03, 0.05, 0.72],
+            global_cooldown_radial: [0.02, 0.03, 0.05, 0.34],
+            // White, and brighter than any availability colour, because "this is the one
+            // going off right now" has to win against ten other frames.
+            slot_casting: [1.0, 1.0, 1.0, 1.0],
             ignite_pip: [1.0, 0.45, 0.12, 1.0],
             ignite_pip_empty: [0.22, 0.20, 0.20, 1.0],
-            tooltip_panel: [0.05, 0.06, 0.09, 0.96],
-            tooltip_title: [1.0, 0.80, 0.35, 1.0],
-            tooltip_text: [0.88, 0.90, 0.94, 1.0],
         }
     }
 }
@@ -215,6 +366,22 @@ impl UiTheme {
         }
     }
 
+    /// What an ability icon is multiplied by for a given availability.
+    ///
+    /// White draws the art as it was painted. An ability that cannot be paid for or has the
+    /// wrong target is dimmed, which is the convention the genre uses and costs nothing —
+    /// the tint is already travelling with every quad. Cooling is *not* dimmed: the radial
+    /// sweep over the slot already says so, and doing both would say it twice.
+    #[must_use]
+    pub fn icon_tint(&self, availability: SlotAvailability) -> UiColor {
+        match availability {
+            SlotAvailability::NoResource
+            | SlotAvailability::InvalidTarget
+            | SlotAvailability::Disabled => self.icon_unavailable,
+            _ => self.icon,
+        }
+    }
+
     /// The colour an ability slot's frame takes for a given availability.
     #[must_use]
     pub fn slot_color(&self, availability: SlotAvailability) -> UiColor {
@@ -224,6 +391,31 @@ impl UiTheme {
             SlotAvailability::NoResource => self.slot_no_resource,
             SlotAvailability::InvalidTarget => self.slot_invalid,
             SlotAvailability::Empowered => self.slot_empowered,
+            SlotAvailability::Disabled => self.slot_disabled,
+        }
+    }
+
+    /// The colour the Heat bar takes in a given band.
+    ///
+    /// One colour per band, because the bands *are* the mechanic: a player has to be able to
+    /// see which multiplier they are on without reading the number.
+    #[must_use]
+    pub fn heat_color(&self, tier: HeatTier) -> UiColor {
+        match tier {
+            HeatTier::Cold => self.heat_low,
+            HeatTier::Warm => self.heat_warm,
+            HeatTier::Hot => self.heat_high,
+            HeatTier::Inferno => self.heat_inferno,
+        }
+    }
+
+    /// What colour the Astral Power bar is, armed or not.
+    #[must_use]
+    pub fn astral_color(&self, armed: bool) -> UiColor {
+        if armed {
+            self.astral_armed
+        } else {
+            self.astral
         }
     }
 
@@ -241,6 +433,212 @@ impl UiTheme {
     }
 }
 
+/// How an enemy nameplate is coloured.
+///
+/// Its own struct inside [`UiTheme`] because a plate is a component with a palette of its
+/// own — a name, two bars, their borders and their states — and a flat list of twenty more
+/// colours on the theme would bury which of them belong together.
+///
+/// The palette is the genre's, in this game's own values: a warm off-white name, a saturated
+/// red health bar on a near-black ground, an amber cast bar that turns silver when it cannot
+/// be interrupted and red when it was. Rank is carried by the border and the crest as well as
+/// the name's colour, so it does not depend on telling two hues apart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlateTheme {
+    /// An ordinary enemy's name.
+    pub name: UiColor,
+    /// The target's name: brighter than the rest, so the selected plate answers at once.
+    pub name_target: UiColor,
+    /// An elite's name.
+    pub name_elite: UiColor,
+    /// A boss's name.
+    pub name_boss: UiColor,
+    /// The name on a dead enemy's fading plate.
+    pub name_dead: UiColor,
+    /// The status line.
+    pub status: UiColor,
+    /// The dark edge around every letter on a plate.
+    pub text_outline: UiColor,
+    /// Behind a bar's fill.
+    pub bar_background: UiColor,
+    /// A bar's border.
+    pub border: UiColor,
+    /// An elite's health-bar border.
+    pub border_elite: UiColor,
+    /// A boss's health-bar border.
+    pub border_boss: UiColor,
+    /// The target's health-bar border.
+    pub border_target: UiColor,
+    /// The health fill, top edge.
+    pub health_top: UiColor,
+    /// The health fill, bottom edge.
+    pub health_bottom: UiColor,
+    /// The health fill once the enemy is nearly dead, top edge.
+    pub health_low_top: UiColor,
+    /// The health fill once the enemy is nearly dead, bottom edge.
+    pub health_low_bottom: UiColor,
+    /// Health just lost, draining towards the fill.
+    pub trail: UiColor,
+    /// A dead enemy's empty bar.
+    pub health_dead: UiColor,
+    /// Below this fraction the bar takes its low colours.
+    pub low_health: f32,
+    /// The text on the health bar.
+    pub health_text: UiColor,
+    /// An interruptible cast's fill, top edge.
+    pub cast_top: UiColor,
+    /// An interruptible cast's fill, bottom edge.
+    pub cast_bottom: UiColor,
+    /// A cast that cannot be interrupted, top edge.
+    pub cast_locked_top: UiColor,
+    /// A cast that cannot be interrupted, bottom edge.
+    pub cast_locked_bottom: UiColor,
+    /// The border of a cast that cannot be interrupted.
+    pub cast_locked_border: UiColor,
+    /// An interrupted cast's fill.
+    pub cast_interrupted: UiColor,
+    /// A completed cast's fill, as it fades.
+    pub cast_complete: UiColor,
+    /// The text on a cast bar.
+    pub cast_text: UiColor,
+    /// A friendly health fill — the player, the party, the raid — top edge.
+    pub friendly_top: UiColor,
+    /// A friendly health fill, bottom edge.
+    pub friendly_bottom: UiColor,
+    /// A friendly health fill that is dangerously low, top edge.
+    pub friendly_low_top: UiColor,
+    /// A friendly health fill that is dangerously low, bottom edge.
+    pub friendly_low_bottom: UiColor,
+    /// An absorb shield's layer on a health bar, top of its gradient: a pale silver, so a
+    /// shield reads as "not health, but in front of it" on a green bar and a red one alike.
+    pub absorb_top: UiColor,
+    /// An absorb shield's layer, bottom of its gradient.
+    pub absorb_bottom: UiColor,
+    /// The bright edge where a shield bigger than the missing health runs off the bar's end.
+    pub absorb_edge: UiColor,
+    /// The panel every unit frame sits on.
+    pub frame_panel: UiColor,
+    /// The panel's border.
+    pub frame_border: UiColor,
+}
+
+impl Default for PlateTheme {
+    fn default() -> Self {
+        Self {
+            name: [0.98, 0.95, 0.90, 1.0],
+            name_target: [1.0, 1.0, 1.0, 1.0],
+            name_elite: [1.0, 0.88, 0.58, 1.0],
+            name_boss: [1.0, 0.78, 0.34, 1.0],
+            name_dead: [0.62, 0.62, 0.62, 1.0],
+            status: [1.0, 0.72, 0.36, 1.0],
+            text_outline: [0.0, 0.0, 0.0, 0.92],
+            bar_background: [0.035, 0.035, 0.045, 0.92],
+            border: [0.0, 0.0, 0.0, 1.0],
+            border_elite: [0.80, 0.64, 0.30, 1.0],
+            border_boss: [0.96, 0.74, 0.30, 1.0],
+            border_target: [1.0, 1.0, 1.0, 1.0],
+            health_top: [0.90, 0.17, 0.13, 1.0],
+            health_bottom: [0.66, 0.07, 0.05, 1.0],
+            health_low_top: [1.0, 0.44, 0.14, 1.0],
+            health_low_bottom: [0.82, 0.25, 0.05, 1.0],
+            trail: [1.0, 0.86, 0.62, 0.85],
+            health_dead: [0.30, 0.30, 0.30, 1.0],
+            low_health: 0.20,
+            health_text: [1.0, 1.0, 1.0, 1.0],
+            cast_top: [1.0, 0.80, 0.24, 1.0],
+            cast_bottom: [0.88, 0.56, 0.08, 1.0],
+            // Dark enough that the white name printed on it keeps its contrast.
+            cast_locked_top: [0.56, 0.58, 0.64, 1.0],
+            cast_locked_bottom: [0.36, 0.38, 0.44, 1.0],
+            cast_locked_border: [0.86, 0.88, 0.94, 1.0],
+            cast_interrupted: [0.82, 0.13, 0.10, 1.0],
+            // The casting amber, lifted: the bar reads as the same bar, finished.
+            cast_complete: [1.0, 0.88, 0.38, 1.0],
+            cast_text: [1.0, 1.0, 1.0, 1.0],
+            friendly_top: [0.30, 0.82, 0.34, 1.0],
+            friendly_bottom: [0.14, 0.56, 0.18, 1.0],
+            friendly_low_top: [0.96, 0.46, 0.16, 1.0],
+            friendly_low_bottom: [0.78, 0.24, 0.06, 1.0],
+            absorb_top: [0.93, 0.95, 0.98, 0.80],
+            absorb_bottom: [0.66, 0.70, 0.76, 0.80],
+            absorb_edge: [1.0, 1.0, 1.0, 0.95],
+            frame_panel: [0.035, 0.04, 0.055, 0.84],
+            frame_border: [0.0, 0.0, 0.0, 0.9],
+        }
+    }
+}
+
+/// How floating combat text is coloured.
+///
+/// The hierarchy is the genre's: outgoing damage warm gold, a critical a hotter orange,
+/// damage over time a muted amber, healing green, damage taken red. Each is also a different
+/// size and sign (see `damage_numbers`), so no distinction rests on colour alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombatTextTheme {
+    /// An ordinary hit.
+    pub damage: UiColor,
+    /// A critical strike.
+    pub critical: UiColor,
+    /// A tick of damage over time.
+    pub periodic: UiColor,
+    /// Damage the player takes.
+    pub incoming: UiColor,
+    /// Healing.
+    pub heal: UiColor,
+    /// A critical heal.
+    pub heal_critical: UiColor,
+    /// A dodge, a parry or a block.
+    pub avoided: UiColor,
+    /// A shield absorbing damage.
+    pub absorbed: UiColor,
+    /// A spell sent back.
+    pub reflected: UiColor,
+    /// The dark edge around every letter.
+    pub outline: UiColor,
+}
+
+impl Default for CombatTextTheme {
+    fn default() -> Self {
+        Self {
+            damage: [1.0, 0.86, 0.24, 1.0],
+            critical: [1.0, 0.62, 0.12, 1.0],
+            periodic: [0.94, 0.74, 0.42, 1.0],
+            incoming: [1.0, 0.30, 0.22, 1.0],
+            heal: [0.40, 0.96, 0.40, 1.0],
+            heal_critical: [0.64, 1.0, 0.50, 1.0],
+            avoided: [0.94, 0.94, 0.97, 1.0],
+            absorbed: [0.70, 0.84, 1.0, 1.0],
+            reflected: [0.80, 0.66, 1.0, 1.0],
+            outline: [0.0, 0.0, 0.0, 0.9],
+        }
+    }
+}
+
+/// The least a living enemy's cast bar is drawn at, however faded its plate is.
+const CAST_MIN_ALPHA: f32 = 0.9;
+
+/// The top of a line box that puts `font`'s capitals centred on `center_y` at `size`.
+///
+/// Cap height is about 0.72 em in both faces; centring the capitals rather than the line box
+/// is what makes a label sit in the middle of the bar it is printed on.
+pub(crate) fn cap_centred_top(font: UiFont, size: f32, center_y: f32) -> f32 {
+    center_y - font.ascent(size) + size * 0.36
+}
+
+/// The edge every word on a plate is drawn with, at `size` pixels per em.
+///
+/// About a fifteenth of the size, never under a pixel: enough to cut a letter out of a torch
+/// flare, never so much that the letters blur into one dark shape. The slight downward nudge
+/// makes the edge read as a shadow too.
+pub(crate) fn plate_text_style(outline: UiColor, size: f32, embolden: f32) -> TextStyle {
+    TextStyle::outlined(
+        outline,
+        (size * 0.075).max(1.0),
+        (size * 0.05).clamp(0.5, 1.5),
+        size * embolden,
+    )
+}
+
 /// Builds the frame's UI.
 ///
 /// Owns the draw list and its scratch strings across frames, both cleared and never freed,
@@ -249,25 +647,132 @@ impl UiTheme {
 pub struct GameUi {
     list: UiDrawList,
     theme: UiTheme,
+    /// Every measurement, already converted to physical pixels for the current UI scale.
+    metrics: HudMetrics,
     /// Scratch for a plate's title line.
     title: String,
-    /// Scratch for a plate's status line.
+    /// Scratch for the seconds and stacks printed over an aura icon.
     statuses: String,
-    /// Scratch for a tooltip's lines. Reused; never freed.
-    tooltip_lines: Vec<String>,
+    /// Every buff and debuff icon drawn this frame, for the tooltip lookup.
+    aura_hits: crate::ui::aura_row::AuraHits,
+    /// The tooltip over one of them, its wrapped description kept between frames.
+    /// What the open tooltip says, rebuilt in place each frame it is shown.
+    tooltip: crate::ui::tooltip::TooltipModel,
+    /// The open tooltip, wrapped and laid out; wrapped again only when its text changes.
+    tooltip_panel: crate::ui::tooltip::TooltipPanel,
+    /// The labels of the keys that use the two trinkets, set by the application.
+    trinket_keys: [&'static str; 2],
+    /// Where the arranged bar one was drawn last frame, which the Ultimate and the extras
+    /// hang off. `None` before the first arranged frame or with bar one hidden or upright.
+    bar_one: Option<UiRect>,
+    /// Where the minimap is, when the level has one: the corner buttons move to its left
+    /// and the dungeon's progress panel moves under it.
+    minimap: Option<UiRect>,
+    /// Whether the developer "kill the boss" button is shown this frame.
+    #[cfg(feature = "dev-tools")]
+    dev_boss_button: bool,
+    /// How floating combat text is sized and whether criticals are emphasised.
+    combat_text: engine_settings::CombatTextSettings,
+    /// This frame's floating text, laid out and then moved apart. Reused; never freed.
+    combat_layout: Vec<PlacedText>,
+    /// How far each entry has been moved up to clear the others, eased from frame to frame so
+    /// a number that has to make room slides rather than jumps. Keyed by [`text_key`].
+    combat_nudges: Vec<(u64, f32)>,
+    /// The simulated time the nudges were last eased at.
+    combat_nudged_at: f32,
 }
+
+/// One floating entry, laid out for this frame: where it would be, and how big.
+#[derive(Debug, Clone, Copy)]
+struct PlacedText {
+    /// Which entry, in [`FloatingNumbers::numbers`].
+    index: usize,
+    /// Its identity across frames, for the eased nudge.
+    key: u64,
+    /// Its centre where the motion puts it, before any nudge.
+    center: (f32, f32),
+    /// Its size, in pixels per em.
+    size: f32,
+    /// Half its width and half its height, in pixels, with a little air.
+    half: (f32, f32),
+    /// How far up it has to go to clear what was placed before it.
+    push: f32,
+    /// Placed first when it matters more: criticals, then the older.
+    critical: bool,
+    born: f32,
+}
+
+/// An entry's identity from one frame to the next.
+fn text_key(number: &FloatingNumber) -> u64 {
+    u64::from(number.serial)
+}
+
+/// How quickly a nudge follows the room it needs, per second.
+const NUDGE_RATE: f32 = 14.0;
+
+/// How many passes the overlap resolution takes before it settles for what it has.
+const NUDGE_PASSES: usize = 6;
 
 impl GameUi {
     /// Creates a builder with room for a typical frame.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_scale(UiScale::default())
+    }
+
+    /// Creates a builder that lays the HUD out at `scale`.
+    #[must_use]
+    pub fn with_scale(scale: UiScale) -> Self {
         Self {
             list: UiDrawList::with_capacity(512, 4096),
             theme: UiTheme::default(),
+            metrics: HudMetrics::new(scale),
             title: String::with_capacity(32),
             statuses: String::with_capacity(64),
-            tooltip_lines: Vec::with_capacity(8),
+            aura_hits: crate::ui::aura_row::AuraHits::new(),
+            tooltip: crate::ui::tooltip::TooltipModel::new(),
+            tooltip_panel: crate::ui::tooltip::TooltipPanel::new(),
+            trinket_keys: ["", ""],
+            bar_one: None,
+            minimap: None,
+            #[cfg(feature = "dev-tools")]
+            dev_boss_button: false,
+            combat_text: engine_settings::CombatTextSettings::default(),
+            combat_layout: Vec::with_capacity(crate::damage_numbers::MAX_FLOATING_NUMBERS),
+            combat_nudges: Vec::with_capacity(crate::damage_numbers::MAX_FLOATING_NUMBERS),
+            combat_nudged_at: 0.0,
         }
+    }
+
+    /// Lays the HUD out at a new scale from here on.
+    ///
+    /// Recomputing the metrics is the whole of the work, so applying a slider drag costs a
+    /// couple of dozen multiplies rather than anything per-frame. Nothing is cached against
+    /// the old scale, which is what makes the change take effect on the very next frame.
+    pub fn set_scale(&mut self, scale: UiScale) {
+        self.metrics = HudMetrics::new(scale);
+    }
+
+    /// The scale the HUD is being laid out at.
+    #[must_use]
+    pub fn scale(&self) -> UiScale {
+        self.metrics.scale
+    }
+
+    /// Draws floating combat text as `settings` say from here on: its size and whether a
+    /// critical swells. Which categories appear is the observer's business, not the drawing's.
+    pub fn set_combat_text(&mut self, settings: engine_settings::CombatTextSettings) {
+        self.combat_text = settings;
+    }
+
+    /// The HUD's measurements in physical pixels.
+    ///
+    /// Public so that the code deciding what the pointer is over measures the same way the
+    /// code that drew it did — a hit test and a rectangle that disagree is the classic way
+    /// a scaled interface becomes unclickable.
+    #[must_use]
+    pub fn metrics(&self) -> &HudMetrics {
+        &self.metrics
     }
 
     /// The theme, for a caller that wants to change it.
@@ -299,42 +804,464 @@ impl GameUi {
     /// Starts a new frame, discarding the previous one's commands.
     pub fn begin(&mut self) {
         self.list.clear();
+        self.aura_hits.clear();
+    }
+
+    /// Every buff and debuff icon drawn this frame, with the effect each one shows.
+    #[must_use]
+    pub fn aura_hits(&self) -> &crate::ui::aura_row::AuraHits {
+        &self.aura_hits
+    }
+
+    /// The buff or debuff under `pointer`, if the pointer is on one.
+    #[must_use]
+    pub fn aura_at(&self, pointer: (f32, f32)) -> Option<(UiRect, crate::aura::Aura)> {
+        self.aura_hits.at(pointer)
+    }
+
+    /// The tooltip for the buff or debuff under `pointer`, if there is one: its name, what
+    /// kind of effect it is — the dispel school, in its colour — what it does, its stacks and
+    /// how long it has left.
+    ///
+    /// Opened at the pointer, `width` wide — the tooltip dock's width — rather than at the
+    /// dock: an icon is small and the row it sits in is wide, so the panel belongs beside the
+    /// icon being read. It grows away from the nearer screen edges, below and right of the
+    /// pointer in the top-left quarter and above and left of it in the bottom-right.
+    ///
+    /// Drawn last of the HUD, so it is over everything it describes. Returns whether a
+    /// tooltip was drawn.
+    pub fn push_aura_tooltip(
+        &mut self,
+        pointer: (f32, f32),
+        width: f32,
+        viewport: (u32, u32),
+    ) -> bool {
+        let Some((_, aura)) = self.aura_hits.at(pointer) else {
+            return false;
+        };
+        crate::ui::tooltip::fill_aura(&mut self.tooltip, &aura);
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        let (dock, direction) = crate::ui::tooltip::pointer_dock(pointer, width, &kit, viewport);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        );
+        true
     }
 
     /// Appends every nameplate, in the order the set supplies them.
     ///
-    /// The set is already sorted furthest-first, which is exactly what painter's order
-    /// wants: a nearer plate is pushed later and therefore drawn on top. Phase 3 achieved
-    /// the same thing with a per-plate depth value and the depth buffer; sorting once on the
-    /// CPU is both cheaper and the only option once the panels are translucent.
+    /// The set is already sorted furthest first, which is exactly what painter's order wants:
+    /// a nearer plate is pushed later and therefore drawn on top.
+    ///
+    /// Each plate is one component — name, health bar and, while the enemy casts, the cast
+    /// bar hanging under it — laid out in [`crate::nameplate::PlateGeometry`] and drawn here at
+    /// the plate's alpha, every part together. A plate whose bar dimmed while its name stayed
+    /// bright would be less readable than either.
     pub fn push_nameplates(&mut self, plates: &[Nameplate], config: &NameplateConfig) {
         for plate in plates {
-            let rect = UiRect::new(plate.origin.0, plate.origin.1, plate.size.0, plate.size.1);
-            self.list.rect(rect, self.theme.panel);
-            if plate.is_target {
-                self.list
-                    .outline(rect, self.theme.outline_pixels, self.theme.target_outline);
+            if plate.alpha <= 0.01 {
+                continue;
             }
+            self.push_plate_name(plate);
+            self.push_plate_health(plate, config);
+            self.push_plate_auras(plate);
+            self.push_plate_cast(plate);
+        }
+    }
 
-            let text_x = plate.origin.0 + config.padding_pixels;
-            let text_y = plate.origin.1 + config.padding_pixels;
+    /// A sample tooltip in the tooltip dock, for Edit HUD: a tooltip is only ever open while
+    /// the pointer is on something, and its place, width and direction cannot be judged from
+    /// an outline. Returns the panel it drew, so the dock can be made the same size.
+    pub fn push_tooltip_preview(
+        &mut self,
+        dock: UiRect,
+        direction: crate::ui::flow::FlowDirection,
+        viewport: (u32, u32),
+    ) -> UiRect {
+        use crate::ui::tooltip::SectionKind;
+        let model = &mut self.tooltip;
+        model.clear();
+        model.title.push_str("Tooltip");
+        model.tag.push_str("Preview");
+        model.meta[0].0.push_str("Instant");
+        model.meta[0].1.push_str("8 sec cooldown");
+        model
+            .section(SectionKind::Description)
+            .text
+            .push_str("Every ability tooltip opens here; buff and debuff tooltips open at the pointer, this wide. Drag this to move it; set its width and which way it grows in the inspector.");
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        )
+    }
 
-            plate.write_title(&mut self.title);
-            self.list.text_at(
-                (text_x, text_y),
-                &self.title,
-                self.theme.text,
-                self.theme.plate_text_scale,
+    /// A sample row of buffs in the buff bar's rectangle, for Edit HUD.
+    ///
+    /// The bar is empty most of the time, and an empty rectangle cannot be judged for place or
+    /// size: while the editor is open and nothing is running, this is what fills it.
+    pub fn push_buff_bar_preview(&mut self, flow: &crate::ui::flow::Flow) {
+        self.push_aura_preview(flow, false);
+    }
+
+    /// Ten sample effects in a block of aura icons, for Edit HUD: buffs, or debuffs with
+    /// stacks, so a block can be placed and sized against what it will hold.
+    pub fn push_aura_preview(&mut self, flow: &crate::ui::flow::Flow, harmful: bool) {
+        use crate::aura::{Aura, AuraKind};
+        use engine_game::status::StatusKind;
+        const fn sample(kind: AuraKind, stacks: u8, remaining: f32) -> Aura {
+            Aura {
+                kind,
+                stacks,
+                remaining,
+                duration: 12.0,
+                indefinite: false,
+                amount: 0.0,
+                talented: false,
+            }
+        }
+        const BUFFS: [Aura; 10] = [
+            sample(AuraKind::FlameShield, 1, 4.0),
+            sample(AuraKind::Status(StatusKind::Rejuvenation), 1, 11.0),
+            sample(AuraKind::ShieldBlock, 1, 3.0),
+            sample(AuraKind::Status(StatusKind::Recuperating), 3, 7.0),
+            sample(AuraKind::Status(StatusKind::WildRush), 1, 5.0),
+            sample(AuraKind::Status(StatusKind::Lifebloom), 3, 6.0),
+            sample(AuraKind::Status(StatusKind::Fortitude), 1, 9.0),
+            sample(AuraKind::Status(StatusKind::BattleShout), 1, 10.0),
+            sample(AuraKind::Status(StatusKind::ArcaneIntellect), 1, 8.0),
+            sample(AuraKind::Status(StatusKind::Regeneration), 1, 2.0),
+        ];
+        const DEBUFFS: [Aura; 10] = [
+            sample(AuraKind::Ignite, 5, 6.0),
+            sample(AuraKind::Status(StatusKind::Poisoned), 1, 9.0),
+            sample(AuraKind::Status(StatusKind::Rended), 3, 4.0),
+            sample(AuraKind::Status(StatusKind::Bleeding), 2, 5.0),
+            sample(AuraKind::Status(StatusKind::Crippled), 1, 3.0),
+            sample(AuraKind::Status(StatusKind::Sundered), 2, 8.0),
+            sample(AuraKind::Status(StatusKind::CurseOfWeakness), 1, 11.0),
+            sample(AuraKind::Status(StatusKind::WitheringPlague), 1, 7.0),
+            sample(AuraKind::Status(StatusKind::MagicVulnerability), 1, 10.0),
+            sample(AuraKind::Scorched, 1, 2.0),
+        ];
+        crate::ui::aura_row::push_aura_block(
+            &mut self.list,
+            &mut self.aura_hits,
+            flow,
+            if harmful {
+                DEBUFFS.iter()
+            } else {
+                BUFFS.iter()
+            },
+            &mut self.statuses,
+        );
+    }
+
+    /// A plate's buffs and debuffs: centred rows of icons, the debuffs over the name and the
+    /// buffs under the health bar.
+    fn push_plate_auras(&mut self, plate: &Nameplate) {
+        use crate::ui::aura_row::{AuraGrow, push_aura_row};
+        if let Some((origin, style)) = plate.debuff_row() {
+            push_aura_row(
+                &mut self.list,
+                &mut self.aura_hits,
+                plate.auras.debuffs(),
+                origin,
+                AuraGrow::Centered,
+                style.faded(plate.alpha),
+                &mut self.statuses,
             );
+        }
+        if let Some((origin, style)) = plate.buff_row() {
+            push_aura_row(
+                &mut self.list,
+                &mut self.aura_hits,
+                plate.auras.buffs(),
+                origin,
+                AuraGrow::Centered,
+                style.faded(plate.alpha),
+                &mut self.statuses,
+            );
+        }
+    }
 
-            if plate.write_statuses(&mut self.statuses) {
-                self.list.text_at(
-                    (text_x, text_y + config.line_advance_pixels),
-                    &self.statuses,
-                    self.theme.status,
-                    self.theme.plate_text_scale,
-                );
+    /// A plate's name — crest first, for an elite or a boss.
+    fn push_plate_name(&mut self, plate: &Nameplate) {
+        let theme = self.theme.plate;
+        let geometry = &plate.geometry;
+        let alpha = plate.alpha;
+        let (x, y) = plate.origin;
+        let outline = faded(theme.text_outline, alpha);
+
+        let color = if plate.dead {
+            theme.name_dead
+        } else if plate.is_target {
+            theme.name_target
+        } else {
+            match plate.rank {
+                PlateRank::Boss => theme.name_boss,
+                PlateRank::Elite => theme.name_elite,
+                PlateRank::Normal => theme.name,
             }
+        };
+        let size = geometry.name_size;
+        let center = y + geometry.name_top + size * 0.59;
+        crate::ui::map_style::write_title_case(&mut self.title, plate.name);
+        // The name and its crest are centred together over the plate.
+        let left = x + ((plate.size.0 - geometry.name_width) * 0.5).round();
+        let mut text_x = left;
+        if let Some((crest, edge)) = geometry.crest {
+            self.list.icon(
+                UiRect::new(left, (center - edge * 0.5).round(), edge, edge),
+                crest,
+                faded([1.0, 1.0, 1.0, 1.0], alpha),
+            );
+            text_x = left + edge + (4.0 * geometry.scale).round();
+        }
+        self.list.styled_label(
+            (text_x, cap_centred_top(UiFont::SemiBold, size, center)),
+            &self.title,
+            faded(color, alpha),
+            UiFont::SemiBold,
+            size,
+            TextAlign::Left,
+            // A touch heavier than the face: SemiBold, thickened, reads as Bold on the plate.
+            plate_text_style(outline, size, 0.025),
+        );
+    }
+
+    /// A plate's health bar: ground, recent-damage trail, fill, border and text.
+    fn push_plate_health(&mut self, plate: &Nameplate, config: &NameplateConfig) {
+        let theme = self.theme.plate;
+        let geometry = &plate.geometry;
+        let alpha = plate.alpha;
+        let bar = plate.bar_rect();
+        let border = geometry.border;
+        let inner = bar.inset(border);
+
+        self.list.rect(inner, faded(theme.bar_background, alpha));
+        let fraction = plate.health_fraction.clamp(0.0, 1.0);
+        let trail = plate.trail_fraction.clamp(fraction, 1.0);
+        if trail > fraction + 0.001 {
+            let start = inner.x + (inner.width * fraction).round();
+            let end = inner.x + (inner.width * trail).round();
+            self.list.rect(
+                UiRect::new(start, inner.y, end - start, inner.height),
+                faded(theme.trail, alpha),
+            );
+        }
+        if plate.dead {
+            self.list
+                .rect(inner, faded(theme.health_dead, alpha * 0.35));
+        } else if fraction > 0.0 {
+            let (top, bottom) = if plate.immune {
+                crate::ui::frame_style::IMMUNE_FILL
+            } else if fraction <= theme.low_health {
+                (theme.health_low_top, theme.health_low_bottom)
+            } else {
+                (theme.health_top, theme.health_bottom)
+            };
+            let fill = UiRect::new(
+                inner.x,
+                inner.y,
+                (inner.width * fraction).round().max(1.0),
+                inner.height,
+            );
+            self.list
+                .panel(fill, 0.0, faded(top, alpha), faded(bottom, alpha));
+            let layers = crate::ui::frame_style::HealthLayers {
+                absorb: crate::ui::frame_style::HealthLayers::of(
+                    plate.health,
+                    plate.max_health,
+                    plate.absorb,
+                )
+                .absorb,
+                ..crate::ui::frame_style::HealthLayers::health(fraction)
+            };
+            crate::ui::frame_style::push_absorb_layer(&mut self.list, inner, layers, &theme, alpha);
+        }
+        let border_color = if plate.immune {
+            crate::ui::frame_style::IMMUNE_OUTLINE
+        } else if plate.is_target {
+            theme.border_target
+        } else {
+            match plate.rank {
+                PlateRank::Boss => theme.border_boss,
+                PlateRank::Elite => theme.border_elite,
+                PlateRank::Normal => theme.border,
+            }
+        };
+        self.list.outline(bar, border, faded(border_color, alpha));
+
+        if plate.write_health_text(config.health_text, &mut self.title) {
+            let size = geometry.health_text_size;
+            let center = inner.y + inner.height * 0.5;
+            self.list.styled_label(
+                (
+                    inner.x + inner.width * 0.5,
+                    cap_centred_top(UiFont::SemiBold, size, center),
+                ),
+                &self.title,
+                faded(theme.health_text, alpha),
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                plate_text_style(faded(theme.text_outline, alpha), size, 0.0),
+            );
+        }
+    }
+
+    /// A plate's cast bar, under its health bar: the school icon, the fill, the spell's name
+    /// and the seconds left.
+    ///
+    /// A cast that cannot be interrupted is silver with a lock on its icon; an interrupted
+    /// one is red, frozen where it stopped, and says so.
+    fn push_plate_cast(&mut self, plate: &Nameplate) {
+        let (Some(cast), Some(rect)) = (plate.cast, plate.cast_rect()) else {
+            return;
+        };
+        let theme = self.theme.plate;
+        let geometry = &plate.geometry;
+        // A cast is the one thing on a dimmed plate the player may have to act on — it is
+        // what an interrupt is for — so it keeps nearly full strength while its plate is
+        // faded for not being the target. A dead enemy's plate still takes its bar with it.
+        let plate_alpha = if plate.dead {
+            plate.alpha
+        } else {
+            plate.alpha.max(CAST_MIN_ALPHA)
+        };
+        let alpha = plate_alpha * cast.alpha;
+        if alpha <= 0.01 {
+            return;
+        }
+        let border = geometry.border;
+        let edge = rect.height;
+        let icon_frame = UiRect::new(rect.x, rect.y, edge, edge);
+        // The icon and the bar share the border between them.
+        let bar = UiRect::new(
+            rect.x + edge - border,
+            rect.y,
+            rect.width - edge + border,
+            edge,
+        );
+        let inner = bar.inset(border);
+        let locked = !cast.interruptible;
+
+        self.list.rect(inner, faded(theme.bar_background, alpha));
+        let (top, bottom) = match cast.state {
+            PlateCastState::Interrupted => (theme.cast_interrupted, theme.cast_interrupted),
+            PlateCastState::Completed if locked => {
+                (theme.cast_locked_top, theme.cast_locked_bottom)
+            }
+            PlateCastState::Completed => (theme.cast_complete, theme.cast_bottom),
+            PlateCastState::Casting if locked => (theme.cast_locked_top, theme.cast_locked_bottom),
+            PlateCastState::Casting => (theme.cast_top, theme.cast_bottom),
+        };
+        let fraction = cast.fraction.clamp(0.0, 1.0);
+        if fraction > 0.0 {
+            let fill = UiRect::new(
+                inner.x,
+                inner.y,
+                (inner.width * fraction).round().max(1.0),
+                inner.height,
+            );
+            self.list
+                .panel(fill, 0.0, faded(top, alpha), faded(bottom, alpha));
+        }
+        let border_color = if locked {
+            theme.cast_locked_border
+        } else {
+            theme.border
+        };
+        self.list.outline(bar, border, faded(border_color, alpha));
+        self.list
+            .icon(icon_frame.inset(border), cast.icon, faded([1.0; 4], alpha));
+        self.list
+            .outline(icon_frame, border, faded(border_color, alpha));
+        if locked {
+            // The lock in the icon's corner: interruptibility said with a shape as well as a
+            // colour.
+            let lock = (edge * 0.62).round();
+            self.list.icon(
+                UiRect::new(
+                    icon_frame.right() - lock + border,
+                    icon_frame.bottom() - lock + border,
+                    lock,
+                    lock,
+                ),
+                UiIcon::Lock,
+                faded([1.0; 4], alpha),
+            );
+        }
+
+        let size = geometry.cast_text_size;
+        let center = inner.y + inner.height * 0.5;
+        let top_y = cap_centred_top(UiFont::SemiBold, size, center);
+        let style = plate_text_style(faded(theme.text_outline, alpha), size, 0.0);
+        let pad = (4.0 * geometry.scale).round();
+        let text_color = faded(theme.cast_text, alpha);
+
+        if cast.state == PlateCastState::Interrupted {
+            self.list.styled_label(
+                (inner.x + inner.width * 0.5, top_y),
+                "Interrupted",
+                text_color,
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                style,
+            );
+            return;
+        }
+
+        // The seconds left, right-aligned; then the name, cut where it would reach them.
+        let mut name_right = inner.right() - pad;
+        if cast.state == PlateCastState::Casting {
+            self.title.clear();
+            write_tenths(&mut self.title, cast.remaining);
+            let time_width = UiFont::SemiBold.width(&self.title, size);
+            self.list.styled_label(
+                (inner.right() - pad, top_y),
+                &self.title,
+                text_color,
+                UiFont::SemiBold,
+                size,
+                TextAlign::Right,
+                style,
+            );
+            name_right -= time_width + pad;
+        }
+        crate::ui::map_style::write_title_case(&mut self.title, cast.name);
+        let name_x = inner.x + pad;
+        let fits = UiFont::SemiBold.width(&self.title, size) <= name_right - name_x;
+        if !fits {
+            self.list.clip(UiClip::rect(UiRect::new(
+                name_x - pad,
+                bar.y - edge,
+                (name_right - name_x + pad).max(0.0),
+                edge * 3.0,
+            )));
+        }
+        self.list.styled_label(
+            (name_x, top_y),
+            &self.title,
+            text_color,
+            UiFont::SemiBold,
+            size,
+            TextAlign::Left,
+            style,
+        );
+        if !fits {
+            self.list.clip(UiClip::NONE);
         }
     }
 
@@ -352,16 +1279,303 @@ impl GameUi {
         self.begin();
         // World-space first, screen-space on top: painter's order makes "the HUD is in
         // front of the world" a property of this ordering rather than of a depth value.
-        self.push_world_health_bars(plates);
         self.push_nameplates(plates, config);
         self.push_target_frame(snapshot, viewport);
         self.push_player_bars(snapshot, viewport);
         self.push_resource_bars(snapshot, viewport);
         self.push_ability_bar(snapshot, viewport);
+        self.push_trinket_buttons(snapshot, viewport);
         self.push_talent_button(snapshot, viewport);
+        self.push_character_button(viewport);
+        self.push_mailbox_button(snapshot, viewport);
+        self.push_recount_button(viewport);
+        #[cfg(feature = "dev-tools")]
+        self.push_dev_boss_button(viewport);
         self.push_cast_bar(snapshot, viewport);
+        self.push_enemy_cast_bar(snapshot, viewport);
+        self.push_dungeon_progress(snapshot, viewport);
         self.push_notification(snapshot, viewport);
+        self.push_death_notice(snapshot, viewport);
         &self.list
+    }
+
+    /// Builds a whole frame of UI from an arranged HUD.
+    ///
+    /// The counterpart to [`GameUi::build`] for a game that has a [`HudLayout`]: the fixed
+    /// target frame, the fixed player bars and the one centred ability bar are replaced by
+    /// the movable frames and the eight arranged bars. Everything that is not arrangeable —
+    /// nameplates, the cast bars, the talent button, the notices — is drawn identically,
+    /// because none of it is something the player positions.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a frame of UI reads from this many independent sources"
+    )]
+    pub fn build_arranged(
+        &mut self,
+        snapshot: &UiSnapshot,
+        plates: &[Nameplate],
+        config: &NameplateConfig,
+        layout: &crate::ui::hud_layout::HudLayout,
+        bars: &crate::ui::action_bar::ActionBarSet,
+        scratch: &mut crate::ui::unit_frame::FrameScratch,
+        viewport: (u32, u32),
+    ) -> &UiDrawList {
+        self.begin();
+        self.push_nameplates(plates, config);
+
+        // The arranged HUD. The theme and the scale are copied out first: the frames are
+        // drawn into this list, and the borrow checker is right that reading them off `self`
+        // while lending the list out would be two borrows of one thing.
+        let theme = self.theme;
+        let scale = self.metrics.scale;
+        crate::ui::unit_frame::push_frames(
+            &mut self.list,
+            layout,
+            snapshot,
+            &theme,
+            scratch,
+            &mut self.aura_hits,
+            scale,
+            viewport,
+        );
+        let first = crate::ui::hud_layout::HudElementId::ActionBar(0);
+        self.bar_one = (layout.is_enabled(first)
+            && layout.orientation(0) == engine_settings::hud::HudOrientation::Horizontal)
+            .then(|| layout.rect_of(first, scale, viewport));
+        self.push_action_bars(snapshot, layout, bars, viewport);
+        // Not arrangeable, and drawn here for the same reason the cast bar is: the Ultimate
+        // and the extras have a place of their own beside the bar, and the application
+        // hit-tests them at exactly these rectangles.
+        self.push_side_buttons(snapshot, viewport);
+        self.push_trinket_buttons(snapshot, viewport);
+
+        self.push_talent_button(snapshot, viewport);
+        self.push_character_button(viewport);
+        self.push_mailbox_button(snapshot, viewport);
+        self.push_recount_button(viewport);
+        #[cfg(feature = "dev-tools")]
+        self.push_dev_boss_button(viewport);
+        // The player's cast bar is an arranged element too: wherever, and whatever size,
+        // the player put it in Edit HUD.
+        if layout.is_enabled(crate::ui::hud_layout::HudElementId::CastBar) {
+            let rect = layout.rect_of(
+                crate::ui::hud_layout::HudElementId::CastBar,
+                scale,
+                viewport,
+            );
+            self.push_cast_bar_in(snapshot, rect);
+        }
+        self.push_enemy_cast_bar(snapshot, viewport);
+        self.push_dungeon_progress(snapshot, viewport);
+        self.push_notification(snapshot, viewport);
+        self.push_death_notice(snapshot, viewport);
+        &self.list
+    }
+
+    /// The dungeon's progress panel, at the right edge of the screen.
+    ///
+    /// ```text
+    /// GRAVEYARD CRYPT
+    /// COMPLETION
+    /// ████████████████░░░░ 82%
+    /// REQUIRED: 100%
+    /// ```
+    ///
+    /// Drawn only in a dungeon, from the snapshot the run was read into this frame. At 100 %
+    /// the last line says the way is open; during the boss it counts his adds; at the end it
+    /// says how long the run took. Built from the same primitives as every other panel —
+    /// a rectangle, a bar and text — so it scales and themes with the rest of the HUD.
+    pub fn push_dungeon_progress(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        use crate::ui::map_style::{MapStyle, color, radius, type_scale};
+        let Some(dungeon) = snapshot.dungeon.as_ref() else {
+            return;
+        };
+        let scale = self.metrics.scale;
+        let style = MapStyle::new(scale);
+        let width = scale.px(232.0);
+        let pad = scale.px(14.0);
+        let x = viewport.0 as f32 - width - scale.px(20.0);
+        // Under the minimap when there is one, so the two stack down the right-hand edge.
+        let y = self
+            .minimap
+            .map_or(scale.px(150.0), |minimap| minimap.bottom() + scale.px(14.0));
+        let height = pad * 2.0
+            + style.line(type_scale::HEADING)
+            + style.line(type_scale::LABEL)
+            + scale.px(6.0 + 10.0)
+            + style.line(type_scale::META);
+        let panel = UiRect::new(x, y, width, height);
+        let corner = scale.px(radius::CARD);
+        self.list.shadow(
+            panel,
+            corner,
+            scale.px(14.0),
+            color::alpha(color::SHADOW, 0.7),
+        );
+        self.list.panel(
+            panel,
+            corner,
+            color::alpha(color::SURFACE_1, 0.94),
+            color::alpha(color::SURFACE_0_BOTTOM, 0.94),
+        );
+        self.list
+            .panel_stroke(panel, corner, scale.px(1.0), color::BORDER_STRONG);
+
+        let left = x + pad;
+        let mut row = y + pad - scale.px(2.0);
+        self.list.label(
+            (left, row),
+            &dungeon.name,
+            color::TEXT_TITLE,
+            engine_render_data::font::UiFont::Display,
+            style.size(type_scale::HEADING),
+            TextAlign::Left,
+        );
+        row += style.line(type_scale::HEADING);
+        self.title.clear();
+        write_integer(&mut self.title, i64::from(dungeon.percent));
+        self.title.push('%');
+        self.list.label(
+            (left, row),
+            "COMPLETION",
+            color::TEXT_MUTED,
+            type_scale::LABEL.font,
+            style.size(type_scale::LABEL),
+            TextAlign::Left,
+        );
+        self.list.label(
+            (x + width - pad, row - scale.px(1.0)),
+            &self.title,
+            color::TEXT_PRIMARY,
+            type_scale::HEADING.font,
+            style.size(type_scale::UI),
+            TextAlign::Right,
+        );
+        row += style.line(type_scale::LABEL) + scale.px(4.0);
+
+        let bar = UiRect::new(left, row, width - pad * 2.0, scale.px(6.0));
+        self.list.panel(
+            bar,
+            bar.height * 0.5,
+            [1.0, 1.0, 1.0, 0.08],
+            [1.0, 1.0, 1.0, 0.08],
+        );
+        let fraction = dungeon.fraction.clamp(0.0, 1.0);
+        if fraction > 0.0 {
+            let fill = UiRect::new(
+                bar.x,
+                bar.y,
+                (bar.width * fraction).max(bar.height),
+                bar.height,
+            );
+            let (top, bottom) = if dungeon.unlocked {
+                (color::VERDANT, color::alpha(color::VERDANT, 0.8))
+            } else {
+                (color::BRONZE_BRIGHT, color::BRONZE)
+            };
+            self.list.panel(fill, bar.height * 0.5, top, bottom);
+        }
+        row += bar.height + scale.px(10.0);
+
+        self.title.clear();
+        let tint = if dungeon.completed {
+            self.title.push_str("DUNGEON COMPLETED  ");
+            // Minutes and seconds: a run is timed the way a player would say it.
+            let total = dungeon.finished_after.unwrap_or(0.0).max(0.0).round() as i64;
+            write_integer(&mut self.title, total / 60);
+            self.title.push(':');
+            if total % 60 < 10 {
+                self.title.push('0');
+            }
+            write_integer(&mut self.title, total % 60);
+            color::VERDANT
+        } else if dungeon.boss_engaged {
+            self.title.push_str("THE STEWARD'S GUESTS: ");
+            write_integer(
+                &mut self.title,
+                i64::try_from(dungeon.adds_alive).unwrap_or(i64::MAX),
+            );
+            color::CRIMSON
+        } else if dungeon.unlocked {
+            self.title.push_str("THE PATH TO THE CRYPT LORD IS OPEN");
+            color::VERDANT
+        } else {
+            self.title.push_str("REQUIRED: 100%");
+            color::TEXT_MUTED
+        };
+        self.list.label(
+            (left, row),
+            &self.title,
+            tint,
+            type_scale::META.font,
+            style.size(type_scale::META),
+            TextAlign::Left,
+        );
+    }
+
+    /// Every enabled action bar, wherever the layout puts it.
+    ///
+    /// A disabled bar is not drawn and, because the application hit-tests against the same
+    /// `layout`, it is not clickable either — which is what "a disabled bar consumes no
+    /// interaction space" means in practice.
+    ///
+    /// A slot's key comes from the bar, not from the snapshot: the snapshot's `key` is the
+    /// class's fixed digit hint, and the whole point of this system is that the player may
+    /// have changed it.
+    pub fn push_action_bars(
+        &mut self,
+        snapshot: &UiSnapshot,
+        layout: &crate::ui::hud_layout::HudLayout,
+        bars: &crate::ui::action_bar::ActionBarSet,
+        viewport: (u32, u32),
+    ) {
+        use crate::ui::action_bar;
+        use crate::ui::hud_layout::HudElementId;
+
+        let scale = self.metrics.scale;
+        let text = scale.text(self.theme.hud_text_scale * 0.5);
+        let outline = scale.px(self.theme.outline_pixels);
+        for index in 0..engine_settings::hud::ACTION_BARS {
+            let id = HudElementId::ActionBar(index);
+            if !layout.is_enabled(id) {
+                continue;
+            }
+            let Some(bar) = bars.bar(index) else {
+                continue;
+            };
+            let shape = layout.bar_shape(index);
+            let rect = layout.rect_of(id, scale, viewport);
+            for (slot_index, slot) in bar.slots().iter().enumerate() {
+                let Some(cell) = action_bar::slot_rect(rect, shape, slot_index) else {
+                    continue;
+                };
+                let Some(view) = slot
+                    .ability
+                    .and_then(|ability| snapshot.ability_view(ability))
+                else {
+                    // An empty slot is still drawn. It is where the player drops the next
+                    // spell, and a bar that showed only what was in it would be a bar that
+                    // got harder to fill the emptier it was.
+                    self.list.rect(cell, self.theme.panel);
+                    self.list.outline(cell, outline, self.theme.slot_disabled);
+                    if let Some(key) = slot.key {
+                        self.title.clear();
+                        key.write_label(&mut self.title);
+                        self.list.text_at(
+                            (cell.x + scale.px(3.0), cell.y + scale.px(3.0)),
+                            &self.title,
+                            self.theme.text,
+                            text,
+                        );
+                    }
+                    continue;
+                };
+                let mut view = *view;
+                view.key = slot.key.map_or("", |chord| chord.key.label());
+                view.key_modifiers = slot.key.map_or(Modifiers::none(), |chord| chord.modifiers);
+                self.push_ability_button(cell, &view, text);
+            }
+        }
     }
 
     /// The target frame: name, health and distance for the current target.
@@ -375,19 +1589,25 @@ impl GameUi {
         };
         let width = viewport.0 as f32;
         let frame = UiRect::new(
-            (width - layout::TARGET_FRAME_WIDTH) * 0.5,
-            layout::TARGET_FRAME_TOP,
-            layout::TARGET_FRAME_WIDTH,
-            layout::TARGET_FRAME_HEIGHT,
+            (width - self.metrics.target_frame_width) * 0.5,
+            self.metrics.target_frame_top,
+            self.metrics.target_frame_width,
+            self.metrics.target_frame_height,
         );
         self.list.rect(frame, self.theme.panel);
         if target.ignite_at_maximum {
             // A full burn is the thing the player is waiting for; the frame says so.
-            self.list
-                .outline(frame, self.theme.outline_pixels, self.theme.slot_empowered);
+            self.list.outline(
+                frame,
+                self.metrics.scale.px(self.theme.outline_pixels),
+                self.theme.slot_empowered,
+            );
         } else {
-            self.list
-                .outline(frame, self.theme.outline_pixels, self.theme.target_outline);
+            self.list.outline(
+                frame,
+                self.metrics.scale.px(self.theme.outline_pixels),
+                self.theme.target_outline,
+            );
         }
 
         self.title.clear();
@@ -396,17 +1616,20 @@ impl GameUi {
         write_integer(&mut self.title, i64::from(target.health_percent()));
         self.title.push('%');
         self.list.text_at(
-            (frame.x + layout::PADDING, frame.y + layout::PADDING),
+            (
+                frame.x + self.metrics.padding,
+                frame.y + self.metrics.padding,
+            ),
             &self.title,
             self.theme.text,
-            self.theme.hud_text_scale,
+            self.metrics.scale.text(self.theme.hud_text_scale),
         );
 
         let bar = UiRect::new(
-            frame.x + layout::PADDING,
-            frame.y + layout::PADDING + 18.0,
-            frame.width - layout::PADDING * 2.0,
-            layout::BAR_HEIGHT,
+            frame.x + self.metrics.padding,
+            frame.y + self.metrics.padding + 18.0,
+            frame.width - self.metrics.padding * 2.0,
+            self.metrics.bar_height,
         );
         let fill = self.theme.enemy_health_color(target.health_fraction());
         self.list.bar(
@@ -418,10 +1641,41 @@ impl GameUi {
 
         // Ignite stacks, drawn against the *current* maximum rather than a hardcoded five.
         self.push_ignite_stacks(
-            frame.x + layout::PADDING,
-            bar.bottom() + 5.0,
+            frame.x + self.metrics.padding,
+            bar.bottom() + self.metrics.scale.px(5.0),
             target.ignite_stacks,
             snapshot.ignite_max,
+        );
+
+        // ...and the same thing in words, because counting pips at a glance is not a thing
+        // a player should have to do to know whether Detonate is available. The maximum is
+        // the configuration's, never a literal five.
+        self.title.clear();
+        if target.ignite_at_maximum {
+            self.title.push_str("MAX IGNITE");
+        } else {
+            self.title.push_str("IGNITE ");
+            write_integer(&mut self.title, i64::from(target.ignite_stacks));
+            self.title.push_str(" / ");
+            write_integer(&mut self.title, i64::from(snapshot.ignite_max));
+        }
+        let colour = if target.ignite_at_maximum {
+            self.theme.slot_empowered
+        } else {
+            self.theme.text
+        };
+        self.list.text_at(
+            (
+                frame.x
+                    + self.metrics.padding
+                    + f32::from(snapshot.ignite_max)
+                        * (self.metrics.ignite_pip + self.metrics.ignite_pip_gap)
+                    + self.metrics.scale.px(6.0),
+                bar.bottom() + self.metrics.scale.px(3.0),
+            ),
+            &self.title,
+            colour,
+            self.metrics.scale.text(self.theme.hud_text_scale * 0.75),
         );
     }
 
@@ -432,10 +1686,10 @@ impl GameUi {
     pub fn push_ignite_stacks(&mut self, x: f32, y: f32, stacks: u8, maximum: u8) {
         for index in 0..maximum {
             let pip = UiRect::new(
-                x + f32::from(index) * (layout::IGNITE_PIP + layout::IGNITE_PIP_GAP),
+                x + f32::from(index) * (self.metrics.ignite_pip + self.metrics.ignite_pip_gap),
                 y,
-                layout::IGNITE_PIP,
-                layout::IGNITE_PIP,
+                self.metrics.ignite_pip,
+                self.metrics.ignite_pip,
             );
             let colour = if index < stacks {
                 self.theme.ignite_pip
@@ -449,10 +1703,10 @@ impl GameUi {
     /// The player's health, Heat and Ultimate Energy.
     pub fn push_player_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         let height = viewport.1 as f32;
-        let x = layout::MARGIN;
-        let mut y = height - layout::MARGIN - layout::BAR_HEIGHT;
+        let x = self.metrics.margin;
+        let mut y = height - self.metrics.margin - self.metrics.bar_height;
 
-        let bar = UiRect::new(x, y, layout::PLAYER_BAR_WIDTH, layout::BAR_HEIGHT);
+        let bar = UiRect::new(x, y, self.metrics.player_bar_width, self.metrics.bar_height);
         let fraction = snapshot.player.health_fraction();
         self.list.bar(
             bar,
@@ -464,15 +1718,18 @@ impl GameUi {
         self.title.push_str("HP ");
         write_integer(&mut self.title, snapshot.player.health as i64);
         self.list.text_at(
-            (bar.x + 4.0, bar.y + 3.0),
+            (
+                bar.x + self.metrics.scale.px(4.0),
+                bar.y + self.metrics.scale.px(3.0),
+            ),
             &self.title,
             self.theme.text,
-            1.0,
+            self.metrics.scale.text(1.0),
         );
 
         // Flame Shield and haste are worth a word: both change how the fight is going.
         if snapshot.player.shielded || snapshot.player.hasted {
-            y -= layout::BAR_HEIGHT + layout::BAR_GAP;
+            y -= self.metrics.bar_height + self.metrics.bar_gap;
             self.title.clear();
             if snapshot.player.shielded {
                 self.title.push_str("SHIELDED ");
@@ -481,73 +1738,85 @@ impl GameUi {
                 self.title.push_str("HASTE");
             }
             self.list.text_at(
-                (x, y + 4.0),
+                (x, y + self.metrics.scale.px(4.0)),
                 &self.title,
                 self.theme.slot_empowered,
-                self.theme.hud_text_scale * 0.5,
+                self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
             );
         }
     }
 
     /// The Heat and Ultimate Energy bars, above the ability bar.
+    ///
+    /// Or the Druid's Mana and Astral Power, which occupy the same two rows: the hero the
+    /// player *is* decides which pair is drawn, and neither class is shown a bar that can
+    /// never move.
     pub fn push_resource_bars(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
-        let x = (width - layout::RESOURCE_BAR_WIDTH) * 0.5;
-        let bottom = height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE;
+        let x = (width - self.metrics.resource_bar_width) * 0.5;
+        let bottom = height - self.metrics.ability_bar_bottom - self.metrics.slot_size;
+
+        if snapshot.player.druid.active {
+            self.push_druid_bars(snapshot, x, bottom);
+            return;
+        }
 
         // Heat: neutral when cold, orange when hot, and obviously different at the cap.
         let heat_rect = UiRect::new(
             x,
-            bottom - layout::RESOURCE_LIFT,
-            layout::RESOURCE_BAR_WIDTH,
-            layout::RESOURCE_BAR_HEIGHT,
+            bottom - self.metrics.resource_lift,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
         );
-        let heat_colour = if snapshot.player.overheated {
-            self.theme.heat_overheated
-        } else if snapshot.player.heat_is_high() {
-            self.theme.heat_high
+        let heat_colour = self.theme.heat_color(snapshot.player.heat_tier);
+        // The Inferno State has spent the bar, so the bar it is drawn on is the *state's*
+        // remaining time: a full bar draining is what the player has to read, not a Heat
+        // value that is sitting at zero.
+        let fill = if snapshot.player.in_inferno() {
+            (snapshot.player.inferno_remaining / INFERNO_DURATION).clamp(0.0, 1.0)
         } else {
-            self.theme.heat_low
+            snapshot.player.heat_fraction()
         };
-        self.list.bar(
-            heat_rect,
-            snapshot.player.heat_fraction(),
-            self.theme.bar_background,
-            heat_colour,
-        );
-        if snapshot.player.overheated {
-            self.list
-                .outline(heat_rect, 2.0, self.theme.heat_overheated);
+        self.list
+            .bar(heat_rect, fill, self.theme.bar_background, heat_colour);
+        if snapshot.player.in_inferno() {
+            self.list.outline(heat_rect, 3.0, self.theme.heat_inferno);
         }
-        // The Overheat threshold, marked on the bar so the range is readable at a glance.
-        let threshold = UiRect::new(
-            heat_rect.x + heat_rect.width * (HEAT_HIGH_THRESHOLD / HEAT_MAXIMUM) - 1.0,
-            heat_rect.y,
-            2.0,
-            heat_rect.height,
-        );
-        self.list.rect(threshold, self.theme.text);
+        // The two band thresholds, marked so the ranges are readable at a glance.
+        for threshold in snapshot.player.heat_thresholds() {
+            let marker = UiRect::new(
+                heat_rect.x + heat_rect.width * threshold - self.metrics.scale.px(1.0),
+                heat_rect.y,
+                self.metrics.scale.px(2.0),
+                heat_rect.height,
+            );
+            self.list.rect(marker, self.theme.text);
+        }
 
         self.title.clear();
-        self.title.push_str("HEAT ");
-        write_integer(&mut self.title, snapshot.player.heat as i64);
-        self.title.push_str(" / 100");
-        if snapshot.player.overheated {
-            self.title.push_str("  OVERHEAT");
+        if snapshot.player.in_inferno() {
+            self.title.push_str("INFERNO ");
+            write_tenths(&mut self.title, snapshot.player.inferno_remaining);
+            self.title.push_str(" S");
+        } else {
+            self.title.push_str("HEAT ");
+            write_integer(&mut self.title, snapshot.player.heat as i64);
+            self.title.push_str(" / 100  ");
+            self.title.push_str(snapshot.player.heat_tier.as_str());
         }
         self.list.text_at(
-            (heat_rect.x, heat_rect.y - 14.0),
+            (heat_rect.x, heat_rect.y - self.metrics.scale.px(14.0)),
             &self.title,
             self.theme.text,
-            1.0,
+            self.metrics.scale.text(1.0),
         );
 
         // Ultimate Energy.
         let energy_rect = UiRect::new(
             x,
             heat_rect.bottom() + 20.0,
-            layout::RESOURCE_BAR_WIDTH,
-            layout::RESOURCE_BAR_HEIGHT,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
         );
         let energy_colour = if snapshot.player.ultimate_ready {
             self.theme.energy_full
@@ -571,136 +1840,679 @@ impl GameUi {
             self.title.push_str("  READY");
         }
         self.list.text_at(
-            (energy_rect.x, energy_rect.y - 14.0),
+            (energy_rect.x, energy_rect.y - self.metrics.scale.px(14.0)),
             &self.title,
             self.theme.text,
-            1.0,
+            self.metrics.scale.text(1.0),
         );
+    }
+
+    /// **The Druid's two bars**: Mana, and the Astral Power that arms a spell.
+    ///
+    /// The Astral bar says three things at once and says each of them once: how much is
+    /// banked, whether the button can be pressed, and whether the next compatible spell is
+    /// already armed. All three are read off the snapshot rather than worked out here.
+    fn push_druid_bars(&mut self, snapshot: &UiSnapshot, x: f32, bottom: f32) {
+        let druid = snapshot.player.druid;
+        let mana_rect = UiRect::new(
+            x,
+            bottom - self.metrics.resource_lift,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
+        );
+        self.list.bar(
+            mana_rect,
+            druid.mana_fraction(),
+            self.theme.bar_background,
+            self.theme.mana,
+        );
+        self.title.clear();
+        self.title.push_str("MANA ");
+        write_integer(&mut self.title, druid.mana as i64);
+        self.title.push_str(" / ");
+        write_integer(&mut self.title, druid.max_mana as i64);
+        self.list.text_at(
+            (mana_rect.x, mana_rect.y - self.metrics.scale.px(14.0)),
+            &self.title,
+            self.theme.text,
+            self.metrics.scale.text(1.0),
+        );
+
+        let astral_rect = UiRect::new(
+            x,
+            mana_rect.bottom() + 20.0,
+            self.metrics.resource_bar_width,
+            self.metrics.resource_bar_height,
+        );
+        self.list.bar(
+            astral_rect,
+            druid.astral_fraction(),
+            self.theme.bar_background,
+            self.theme.astral_color(druid.armed),
+        );
+        if druid.armed {
+            // The armed bar is outlined as well as recoloured: the state changes what the
+            // *next* cast does, and it has to be findable without looking for it.
+            self.list.outline(astral_rect, 3.0, self.theme.astral_armed);
+        }
+        self.title.clear();
+        self.title.push_str("ASTRAL POWER ");
+        write_integer(&mut self.title, druid.astral as i64);
+        self.title.push_str(" / ");
+        write_integer(&mut self.title, druid.astral_cost() as i64);
+        if druid.armed {
+            self.title.push_str("  ARMED");
+        } else if druid.can_arm {
+            self.title.push_str("  READY");
+        }
+        self.list.text_at(
+            (astral_rect.x, astral_rect.y - self.metrics.scale.px(14.0)),
+            &self.title,
+            self.theme.text,
+            self.metrics.scale.text(1.0),
+        );
+    }
+
+    /// **The buttons beside the bar**: the Ultimate, and the hero's extras after it.
+    ///
+    /// Drawn by both HUD paths, because neither is arrangeable: the Ultimate has always sat
+    /// beside the bar and the extras are the same idea for a class with more abilities than
+    /// the keyboard has digits.
+    pub fn push_side_buttons(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let text = self.metrics.scale.text(self.theme.hud_text_scale * 0.5);
+        // A hero with no Ultimate draws no Ultimate: an empty button beside the bar reads as
+        // a spell that has not loaded, not as a class that has none.
+        if let Some(ultimate) = snapshot.ultimate.as_ref() {
+            let rect = self.ultimate_rect(viewport);
+            self.push_ability_button(rect, ultimate, text);
+            if snapshot.player.ultimate_ready {
+                // The Ultimate glows when it can be used: it is the one button worth finding
+                // without looking for it.
+                self.list.outline(
+                    rect.inset(-self.metrics.scale.px(3.0)),
+                    self.metrics.scale.px(3.0),
+                    self.theme.energy_full,
+                );
+            }
+        }
+        for (index, extra) in snapshot.extras.iter().enumerate() {
+            let Some(view) = extra else {
+                continue;
+            };
+            let rect = self.extra_rect(index, viewport);
+            self.push_ability_button(rect, view, text);
+        }
     }
 
     /// The ten-slot ability bar, and the Ultimate beside it.
     pub fn push_ability_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
         for (slot, view) in snapshot.abilities.iter().enumerate() {
-            let rect = Self::slot_rect(slot, viewport);
-            self.push_ability_button(rect, view, self.theme.hud_text_scale * 0.5);
+            // A slot the current hero does not fill draws nothing at all. An empty *frame*
+            // belongs to the arrangeable action bars, where it is a place to drop a spell;
+            // this fixed bar is a readout of what the hero has.
+            let Some(view) = view else {
+                continue;
+            };
+            let rect = self.slot_rect(slot, viewport);
+            self.push_ability_button(
+                rect,
+                view,
+                self.metrics.scale.text(self.theme.hud_text_scale * 0.5),
+            );
         }
 
-        let rect = Self::ultimate_rect(viewport);
-        self.push_ability_button(rect, &snapshot.ultimate, self.theme.hud_text_scale * 0.5);
-        if snapshot.player.ultimate_ready {
-            // The Ultimate glows when it can be used: it is the one button worth finding
-            // without looking for it.
-            self.list
-                .outline(rect.inset(-3.0), 3.0, self.theme.energy_full);
-        }
+        self.push_side_buttons(snapshot, viewport);
     }
 
     /// One ability button: icon plate, state colour, cooldown sweep, charges and key.
     pub fn push_ability_button(&mut self, rect: UiRect, view: &AbilitySlotView, scale: f32) {
-        self.list.rect(rect, self.theme.panel);
-        let border = self.theme.slot_color(view.availability);
-        self.list.outline(rect, self.theme.outline_pixels, border);
+        let _ = scale;
+        let px = |logical: f32| self.metrics.scale.px(logical);
+        let corner = px(5.0);
+        // A recessed well, so an empty corner of the art still reads as a button.
+        self.list.panel(
+            rect,
+            corner,
+            [0.07, 0.08, 0.10, 0.92],
+            [0.03, 0.035, 0.045, 0.92],
+        );
 
-        // The name, abbreviated to what fits the plate.
-        self.title.clear();
-        for character in view.name.chars().take(ABILITY_ABBREVIATION) {
-            self.title.push(character);
+        // Art if the ability has any, its name if it does not: the art *is* the label.
+        let art = rect.inset(px(2.0));
+        match icon_for(view.ability) {
+            Some(icon) => self
+                .list
+                .icon(art, icon, self.theme.icon_tint(view.availability)),
+            None => {
+                crate::ui::map_style::write_title_case(&mut self.title, view.name);
+                // As large as fits across the button, never larger than a quarter of it.
+                let at_one = UiFont::SemiBold.width(&self.title, 1.0).max(1e-3);
+                let size = (rect.height * 0.24)
+                    .min((rect.width - px(6.0)) / at_one)
+                    .max(7.0);
+                self.list.styled_label(
+                    (
+                        rect.x + rect.width * 0.5,
+                        cap_centred_top(UiFont::SemiBold, size, rect.y + rect.height * 0.5),
+                    ),
+                    &self.title,
+                    self.theme.text,
+                    UiFont::SemiBold,
+                    size,
+                    TextAlign::Center,
+                    plate_text_style([0.0, 0.0, 0.0, 0.9], size, 0.0),
+                );
+            }
         }
-        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
-        self.list
-            .text_aligned(origin, &self.title, self.theme.text, scale, align);
 
-        // The cooldown, as a radial sweep over what is left.
-        if view.is_cooling() {
-            // The dark part starts where the elapsed part ended, so its leading edge sweeps
-            // clockwise from twelve o'clock as the cooldown runs down.
+        // The global cooldown, as a lighter sweep. Starting any ability locks every slot, so
+        // every slot says so — a bar where only the pressed button reacts reads as though
+        // the others were still available.
+        if view.shows_global_cooldown() {
             self.list.radial_from(
-                rect,
+                art,
+                view.global_cooldown_fraction,
+                1.0 - view.global_cooldown_fraction,
+                self.theme.global_cooldown_radial,
+            );
+        }
+
+        // The ability's own cooldown, as a radial sweep over what is left, with the seconds
+        // until it is back. The global cooldown gets no number: it is the same on every
+        // button and over before a number on eleven of them could be read.
+        if view.is_cooling() {
+            self.list.radial_from(
+                art,
                 view.cooldown_fraction,
                 1.0 - view.cooldown_fraction,
                 self.theme.cooldown_radial,
             );
             self.title.clear();
-            write_tenths(&mut self.title, view.cooldown_remaining);
-            let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height - 14.0);
-            self.list
-                .text_aligned(origin, &self.title, self.theme.text, scale, align);
-        }
-
-        // Charges, only where there is more than one.
-        if view.shows_charges() {
-            self.title.clear();
-            write_integer(&mut self.title, i64::from(view.charges));
-            self.title.push('/');
-            write_integer(&mut self.title, i64::from(view.max_charges));
-            self.list.text_at(
-                (rect.x + 3.0, rect.bottom() - 10.0),
+            write_seconds(&mut self.title, view.cooldown_remaining);
+            let size = (rect.height * 0.40).max(10.0);
+            self.list.styled_label(
+                (
+                    rect.x + rect.width * 0.5,
+                    cap_centred_top(UiFont::SemiBold, size, rect.y + rect.height * 0.52),
+                ),
                 &self.title,
-                self.theme.text,
-                scale,
+                [1.0, 0.97, 0.90, 1.0],
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                plate_text_style([0.0, 0.0, 0.0, 0.95], size, 0.04),
             );
         }
 
-        // The key that casts it.
-        self.list.text_at(
-            (rect.x + 3.0, rect.y + 3.0),
-            view.key,
-            self.theme.text,
-            scale,
+        // The edge says what pressing it would do: quiet when it is simply ready, coloured
+        // when it is refused or empowered, white while it is the ability in progress.
+        let active = view.shows_active_frame();
+        // **Empowerable is said whatever else is true.** A press that will spend Astral Power
+        // is outlined in yellow even while the button is cooling or the target is wrong:
+        // what the resource will buy is worth knowing before it is usable.
+        let empowerable = view.spends_astral || view.availability == SlotAvailability::Empowered;
+        let border = if active {
+            self.theme.slot_casting
+        } else if empowerable {
+            self.theme.slot_empowered
+        } else {
+            self.theme.slot_color(view.availability)
+        };
+        let width = if active || empowerable || view.availability != SlotAvailability::Ready {
+            px(2.0).max(2.0)
+        } else {
+            px(1.0).max(1.0)
+        };
+        if active || empowerable {
+            self.list.glow(rect, corner, px(7.0), faded(border, 0.45));
+        }
+        self.list.panel_stroke(rect, corner, width, border);
+
+        // Charges, bottom right, only where there is more than one.
+        let small = (rect.height * 0.26).max(9.0);
+        let edge = plate_text_style([0.0, 0.0, 0.0, 0.95], small, 0.02);
+        if view.shows_charges() {
+            self.title.clear();
+            write_integer(&mut self.title, i64::from(view.charges));
+            self.list.styled_label(
+                (
+                    rect.right() - px(4.0),
+                    cap_centred_top(UiFont::SemiBold, small, rect.bottom() - small * 0.6),
+                ),
+                &self.title,
+                self.theme.text,
+                UiFont::SemiBold,
+                small,
+                TextAlign::Right,
+                edge,
+            );
+        }
+
+        // The key that casts it, top left, with whatever has to be held for it in front.
+        self.title.clear();
+        self.title.push_str(view.key_modifiers.label_prefix());
+        self.title.push_str(view.key);
+        self.list.styled_label(
+            (
+                rect.x + px(4.0),
+                cap_centred_top(UiFont::SemiBold, small, rect.y + small * 0.65),
+            ),
+            &self.title,
+            [0.92, 0.92, 0.90, 1.0],
+            UiFont::SemiBold,
+            small,
+            TextAlign::Left,
+            edge,
         );
     }
 
     /// Where bar slot `slot` sits.
     #[must_use]
-    pub fn slot_rect(slot: usize, viewport: (u32, u32)) -> UiRect {
+    pub fn slot_rect(&self, slot: usize, viewport: (u32, u32)) -> UiRect {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         let count = ABILITY_SLOTS as f32;
-        let total = count * layout::SLOT_SIZE + (count - 1.0) * layout::SLOT_GAP;
+        let total = count * self.metrics.slot_size + (count - 1.0) * self.metrics.slot_gap;
         // The bar is centred, and the Ultimate hangs off its right-hand end.
-        let start = (width - total - layout::ULTIMATE_GAP - layout::ULTIMATE_SIZE) * 0.5;
+        let start = (width - total - self.metrics.ultimate_gap - self.metrics.ultimate_size) * 0.5;
         UiRect::new(
-            start + slot as f32 * (layout::SLOT_SIZE + layout::SLOT_GAP),
-            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE,
-            layout::SLOT_SIZE,
-            layout::SLOT_SIZE,
+            start + slot as f32 * (self.metrics.slot_size + self.metrics.slot_gap),
+            height - self.metrics.ability_bar_bottom - self.metrics.slot_size,
+            self.metrics.slot_size,
+            self.metrics.slot_size,
         )
     }
 
     /// Where the Ultimate button sits: larger, and separated from the bar.
     #[must_use]
-    pub fn ultimate_rect(viewport: (u32, u32)) -> UiRect {
-        let last = Self::slot_rect(ABILITY_SLOTS - 1, viewport);
+    pub fn ultimate_rect(&self, viewport: (u32, u32)) -> UiRect {
+        // Beside bar one wherever the player put it: the fixed bar's position was where the
+        // button used to hang, and an arranged bar drawn elsewhere left it on top of slot ten.
+        if let Some(bar) = self.bar_one {
+            let size = bar.height.min(bar.width);
+            return UiRect::new(
+                bar.right() + self.metrics.ultimate_gap,
+                bar.y + (bar.height - size) * 0.5,
+                size,
+                size,
+            );
+        }
+        let last = self.slot_rect(ABILITY_SLOTS - 1, viewport);
         let height = viewport.1 as f32;
         UiRect::new(
-            last.right() + layout::ULTIMATE_GAP,
-            height - layout::ABILITY_BAR_BOTTOM - layout::ULTIMATE_SIZE,
-            layout::ULTIMATE_SIZE,
-            layout::ULTIMATE_SIZE,
+            last.right() + self.metrics.ultimate_gap,
+            height - self.metrics.ability_bar_bottom - self.metrics.ultimate_size,
+            self.metrics.ultimate_size,
+            self.metrics.ultimate_size,
+        )
+    }
+
+    /// Where trinket button `index` sits: a row above the Ultimate and the extras.
+    #[must_use]
+    pub fn trinket_rect(&self, index: usize, viewport: (u32, u32)) -> UiRect {
+        let ultimate = self.ultimate_rect(viewport);
+        let size = self.metrics.slot_size;
+        let gap = self.metrics.slot_gap;
+        UiRect::new(
+            ultimate.x + (size + gap) * index as f32,
+            ultimate.y - size - gap,
+            size,
+            size,
+        )
+    }
+
+    /// Tells the HUD which keys use the trinkets, for the label on each button.
+    pub fn set_trinket_keys(&mut self, keys: [&'static str; 2]) {
+        self.trinket_keys = keys;
+    }
+
+    /// The two trinket buttons, for whichever slots have a trinket with an active.
+    pub fn push_trinket_buttons(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        for view in snapshot.trinkets.iter().flatten() {
+            let rect = self.trinket_rect(view.index, viewport);
+            self.push_trinket_button(rect, view);
+        }
+    }
+
+    /// One trinket button: its picture, a cooldown sweep with the seconds left, a glow while
+    /// the effect it left is up, and the key that uses it.
+    pub fn push_trinket_button(&mut self, rect: UiRect, view: &crate::snapshot::TrinketView) {
+        let px = |logical: f32| self.metrics.scale.px(logical);
+        let corner = px(5.0);
+        self.list.panel(
+            rect,
+            corner,
+            [0.07, 0.08, 0.10, 0.92],
+            [0.03, 0.035, 0.045, 0.92],
+        );
+        let art = rect.inset(px(2.0));
+        let tint = if view.is_cooling() {
+            self.theme.icon_tint(SlotAvailability::Cooling)
+        } else {
+            self.theme.icon_tint(SlotAvailability::Ready)
+        };
+        self.list.icon(
+            art,
+            crate::ui::character_menu::icon_for_item(view.icon),
+            tint,
+        );
+        if view.is_cooling() {
+            let fraction = view.cooldown_fraction();
+            self.list
+                .radial_from(art, fraction, 1.0 - fraction, self.theme.cooldown_radial);
+            self.title.clear();
+            write_seconds(&mut self.title, view.cooldown_remaining);
+            let size = (rect.height * 0.34).max(9.0);
+            self.list.styled_label(
+                (
+                    rect.x + rect.width * 0.5,
+                    cap_centred_top(UiFont::SemiBold, size, rect.y + rect.height * 0.52),
+                ),
+                &self.title,
+                [1.0, 0.97, 0.90, 1.0],
+                UiFont::SemiBold,
+                size,
+                TextAlign::Center,
+                plate_text_style([0.0, 0.0, 0.0, 0.95], size, 0.04),
+            );
+        }
+        let border = if view.is_active() {
+            self.theme.slot_casting
+        } else if view.is_cooling() {
+            self.theme.slot_color(SlotAvailability::Cooling)
+        } else {
+            self.theme.slot_color(SlotAvailability::Ready)
+        };
+        if view.is_active() {
+            // The buff glow, for as long as the ward or the shield stands.
+            self.list.glow(rect, corner, px(7.0), faded(border, 0.55));
+        }
+        let width = if view.is_active() || view.is_cooling() {
+            px(2.0).max(2.0)
+        } else {
+            px(1.0).max(1.0)
+        };
+        self.list.panel_stroke(rect, corner, width, border);
+        let small = (rect.height * 0.26).max(9.0);
+        let edge = plate_text_style([0.0, 0.0, 0.0, 0.95], small, 0.02);
+        let key = self.trinket_keys.get(view.index).copied().unwrap_or("");
+        self.list.styled_label(
+            (
+                rect.x + px(4.0),
+                cap_centred_top(UiFont::SemiBold, small, rect.y + small * 0.65),
+            ),
+            key,
+            [0.92, 0.92, 0.90, 1.0],
+            UiFont::SemiBold,
+            small,
+            TextAlign::Left,
+            edge,
+        );
+    }
+
+    /// Where the hero's `index`th extra button sits: after the Ultimate, in a row.
+    #[must_use]
+    pub fn extra_rect(&self, index: usize, viewport: (u32, u32)) -> UiRect {
+        let ultimate = self.ultimate_rect(viewport);
+        let step = ultimate.width + self.metrics.slot_gap;
+        UiRect::new(
+            ultimate.x + step * (index as f32 + 1.0),
+            ultimate.y,
+            ultimate.width,
+            ultimate.height,
         )
     }
 
     /// Where the talent button sits: the top-right corner.
     #[must_use]
-    pub fn talent_button_rect(viewport: (u32, u32)) -> UiRect {
+    pub fn talent_button_rect(&self, viewport: (u32, u32)) -> UiRect {
         let width = viewport.0 as f32;
+        // The minimap owns the corner when there is one; the buttons sit on its left, level
+        // with its banner, the way the genre hangs buttons off the minimap's edge.
+        let right = self.minimap.map_or(width - self.metrics.margin, |minimap| {
+            minimap.x - self.metrics.corner_button_gap
+        });
         UiRect::new(
-            width - layout::MARGIN - layout::TALENT_BUTTON_SIZE,
-            layout::MARGIN,
-            layout::TALENT_BUTTON_SIZE,
-            layout::TALENT_BUTTON_SIZE,
+            right - self.metrics.talent_button_size,
+            self.metrics.margin,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
         )
+    }
+
+    /// Tells the HUD where the minimap is this frame, or that there is none.
+    ///
+    /// The minimap is drawn by `ui::dungeon_map`; the HUD only keeps out of its way.
+    pub fn set_minimap_bounds(&mut self, bounds: Option<UiRect>) {
+        self.minimap = bounds;
+    }
+
+    /// Shows or hides the developer boss button for this frame.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_dev_boss_button(&mut self, shown: bool) {
+        self.dev_boss_button = shown;
+    }
+
+    /// Where the developer boss button sits: under the row of corner buttons, as wide as the
+    /// three of them.
+    #[cfg(feature = "dev-tools")]
+    #[must_use]
+    pub fn dev_boss_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let talent = self.talent_button_rect(viewport);
+        let mailbox = self.mailbox_button_rect(viewport);
+        let height = self.metrics.talent_button_size * 0.5;
+        UiRect::new(
+            mailbox.x,
+            talent.bottom() + self.metrics.corner_button_gap,
+            talent.right() - mailbox.x,
+            height,
+        )
+    }
+
+    /// The developer boss button: deliberately unlike the game's own buttons, a muted dark
+    /// slab with an orange dashed outline, so it cannot be mistaken for game UI.
+    #[cfg(feature = "dev-tools")]
+    pub fn push_dev_boss_button(&mut self, viewport: (u32, u32)) {
+        if !self.dev_boss_button {
+            return;
+        }
+        const ORANGE: [f32; 4] = [0.95, 0.55, 0.12, 0.9];
+        let rect = self.dev_boss_button_rect(viewport);
+        self.list.rect(rect, [0.10, 0.09, 0.08, 0.72]);
+        // The dashed outline: dashes along each edge, a gap between them.
+        let thickness = self.metrics.scale.px(2.0).max(1.0);
+        let dash = self.metrics.scale.px(8.0);
+        let step = dash * 1.7;
+        let mut x = rect.x;
+        while x < rect.right() {
+            let length = dash.min(rect.right() - x);
+            self.list
+                .rect(UiRect::new(x, rect.y, length, thickness), ORANGE);
+            self.list.rect(
+                UiRect::new(x, rect.bottom() - thickness, length, thickness),
+                ORANGE,
+            );
+            x += step;
+        }
+        let mut y = rect.y;
+        while y < rect.bottom() {
+            let length = dash.min(rect.bottom() - y);
+            self.list
+                .rect(UiRect::new(rect.x, y, thickness, length), ORANGE);
+            self.list.rect(
+                UiRect::new(rect.right() - thickness, y, thickness, length),
+                ORANGE,
+            );
+            y += step;
+        }
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 8.0);
+        self.list
+            .text_aligned(origin, "DEV: KILL BOSS", ORANGE, 1.5, align);
+    }
+
+    /// Where the character button sits: beside the talent button, further left.
+    ///
+    /// The same size and the same row, because the two are the same kind of thing — a window
+    /// the player opens — and a corner that mixes button sizes reads as two unrelated
+    /// controls that happen to be next to each other.
+    #[must_use]
+    pub fn character_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let talent = self.talent_button_rect(viewport);
+        UiRect::new(
+            talent.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            talent.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// The character button, which opens the character sheet.
+    pub fn push_character_button(&mut self, viewport: (u32, u32)) {
+        let rect = self.character_button_rect(viewport);
+        self.list.rect(rect, self.theme.panel);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            self.theme.target_outline,
+        );
+
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "CHR", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "C", self.theme.target_outline, 1.5, align);
+    }
+
+    /// Where the mailbox button sits: beside the character button, further left.
+    #[must_use]
+    pub fn mailbox_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let character = self.character_button_rect(viewport);
+        UiRect::new(
+            character.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            character.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// Where the Recount button sits: beside the mailbox button, further left.
+    #[must_use]
+    pub fn recount_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let mailbox = self.mailbox_button_rect(viewport);
+        UiRect::new(
+            mailbox.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            mailbox.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// Where the Modifier button sits: beside the Recount button, further left.
+    #[must_use]
+    pub fn modifier_button_rect(&self, viewport: (u32, u32)) -> UiRect {
+        let recount = self.recount_button_rect(viewport);
+        UiRect::new(
+            recount.x - self.metrics.corner_button_gap - self.metrics.talent_button_size,
+            recount.y,
+            self.metrics.talent_button_size,
+            self.metrics.talent_button_size,
+        )
+    }
+
+    /// The Modifier button, which opens the key's modifiers and the reroll. Drawn only while the
+    /// player is in a dungeon run (the application decides), lit while a reroll is available.
+    pub fn push_modifier_button(&mut self, viewport: (u32, u32), ready: bool) {
+        let rect = self.modifier_button_rect(viewport);
+        self.list.rect(rect, self.theme.panel);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            if ready {
+                self.theme.slot_empowered
+            } else {
+                self.theme.target_outline
+            },
+        );
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "KEY", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "K", self.theme.target_outline, 1.5, align);
+    }
+
+    /// The Recount button, which opens the combat statistics window.
+    pub fn push_recount_button(&mut self, viewport: (u32, u32)) {
+        let rect = self.recount_button_rect(viewport);
+        self.list.rect(rect, self.theme.panel);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            self.theme.target_outline,
+        );
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "REC", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "O", self.theme.target_outline, 1.5, align);
+    }
+
+    /// The mailbox button, with a badge counting the letters not yet read.
+    pub fn push_mailbox_button(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let rect = self.mailbox_button_rect(viewport);
+        let unread = snapshot.mail_unread;
+        self.list.rect(rect, self.theme.panel);
+        let border = if unread > 0 {
+            self.theme.slot_empowered
+        } else {
+            self.theme.target_outline
+        };
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            border,
+        );
+
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
+        self.list
+            .text_aligned(origin, "MAIL", self.theme.text, 1.5, align);
+        let (origin, align) = centered(rect.x + rect.width * 0.5, rect.bottom() - 16.0);
+        self.list
+            .text_aligned(origin, "J", self.theme.target_outline, 1.5, align);
+
+        if unread > 0 {
+            // A pill hanging off the top-right corner, like the badge on any mail icon.
+            self.title.clear();
+            if unread > 9 {
+                self.title.push_str("9+");
+            } else {
+                write_integer(&mut self.title, i64::from(unread));
+            }
+            let radius = self.metrics.scale.px(11.0);
+            let centre = (rect.right() - radius * 0.1, rect.y + radius * 0.1);
+            self.list.disc(centre, radius + 1.0, [0.0, 0.0, 0.0, 0.7]);
+            self.list.disc(centre, radius, [0.86, 0.30, 0.26, 1.0]);
+            let (origin, align) = centered(centre.0, centre.1 - 7.0);
+            self.list
+                .text_aligned(origin, &self.title, [1.0, 1.0, 1.0, 1.0], 1.5, align);
+        }
     }
 
     /// The talent button, with the points waiting to be spent.
     pub fn push_talent_button(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
-        let rect = Self::talent_button_rect(viewport);
+        let rect = self.talent_button_rect(viewport);
         self.list.rect(rect, self.theme.panel);
         let border = if snapshot.talent_points > 0 {
             self.theme.slot_empowered
         } else {
             self.theme.target_outline
         };
-        self.list.outline(rect, self.theme.outline_pixels, border);
+        self.list.outline(
+            rect,
+            self.metrics.scale.px(self.theme.outline_pixels),
+            border,
+        );
 
         let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 8.0);
         self.list
@@ -713,31 +2525,215 @@ impl GameUi {
             .text_aligned(origin, &self.title, border, 1.5, align);
     }
 
-    /// The cast bar, above the ability bar.
+    /// The cast bar, above the ability bar, where the fixed HUD puts it.
     pub fn push_cast_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        let rect = UiRect::new(
+            (width - self.metrics.cast_bar_width) * 0.5,
+            height
+                - self.metrics.ability_bar_bottom
+                - self.metrics.slot_size
+                - self.metrics.cast_bar_lift,
+            self.metrics.cast_bar_width,
+            self.metrics.cast_bar_height,
+        );
+        self.push_cast_bar_in(snapshot, rect);
+    }
+
+    /// The player's cast bar in `rect`: the rectangle the arranged HUD gave it.
+    ///
+    /// Drawn exactly as an enemy's cast bar is on its nameplate — the spell's icon, an amber
+    /// fill, the name on the left and the seconds left on the right, in the edged face — so
+    /// "a cast" looks like one thing wherever it is on the screen. Everything inside is sized
+    /// from the rectangle, so a bar the player made taller or wider in Edit HUD keeps its
+    /// proportions.
+    pub fn push_cast_bar_in(&mut self, snapshot: &UiSnapshot, rect: UiRect) {
         let Some(cast) = snapshot.cast else {
             return;
         };
-        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        self.push_cast_strip(
+            rect,
+            icon_for(cast.ability),
+            cast.name,
+            cast.fraction(),
+            Some(cast.remaining()),
+            1.0,
+        );
+    }
+
+    /// What the cast bar looks like while Edit HUD is open and nothing is being cast: a
+    /// sample cast, so the player can see the style they are setting rather than an outline.
+    pub fn push_cast_bar_preview(&mut self, rect: UiRect) {
+        self.push_cast_strip(
+            rect,
+            Some(UiIcon::Firebolt),
+            "CAST BAR",
+            0.6,
+            Some(1.2),
+            0.85,
+        );
+    }
+
+    /// The strip itself: icon, fill, name and countdown.
+    fn push_cast_strip(
+        &mut self,
+        rect: UiRect,
+        icon: Option<UiIcon>,
+        name: &str,
+        fraction: f32,
+        remaining: Option<f32>,
+        alpha: f32,
+    ) {
+        let theme = self.theme.plate;
         let rect = UiRect::new(
-            (width - layout::CAST_BAR_WIDTH) * 0.5,
-            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE - layout::CAST_BAR_LIFT,
-            layout::CAST_BAR_WIDTH,
-            layout::CAST_BAR_HEIGHT,
+            rect.x.round(),
+            rect.y.round(),
+            rect.width.round(),
+            rect.height.round().max(6.0),
+        );
+        let border = (rect.height / 20.0).round().clamp(1.0, 2.0);
+        let edge = rect.height;
+        let (bar, icon_frame) = match icon {
+            Some(_) => (
+                UiRect::new(
+                    rect.x + edge - border,
+                    rect.y,
+                    rect.width - edge + border,
+                    edge,
+                ),
+                Some(UiRect::new(rect.x, rect.y, edge, edge)),
+            ),
+            None => (rect, None),
+        };
+        let inner = bar.inset(border);
+        self.list.rect(inner, faded(theme.bar_background, alpha));
+        let fraction = fraction.clamp(0.0, 1.0);
+        if fraction > 0.0 {
+            self.list.panel(
+                UiRect::new(
+                    inner.x,
+                    inner.y,
+                    (inner.width * fraction).round().max(1.0),
+                    inner.height,
+                ),
+                0.0,
+                faded(theme.cast_top, alpha),
+                faded(theme.cast_bottom, alpha),
+            );
+        }
+        self.list.outline(bar, border, faded(theme.border, alpha));
+        if let (Some(icon), Some(frame)) = (icon, icon_frame) {
+            self.list
+                .icon(frame.inset(border), icon, faded([1.0; 4], alpha));
+            self.list.outline(frame, border, faded(theme.border, alpha));
+        }
+
+        let size = (inner.height * 0.66).clamp(8.0, 28.0);
+        let centre = inner.y + inner.height * 0.5;
+        let top = cap_centred_top(UiFont::SemiBold, size, centre);
+        let style = plate_text_style(faded(theme.text_outline, alpha), size, 0.02);
+        let pad = (size * 0.4).round();
+        let mut name_right = inner.right() - pad;
+        if let Some(remaining) = remaining {
+            self.title.clear();
+            write_tenths(&mut self.title, remaining);
+            name_right -= UiFont::SemiBold.width(&self.title, size) + pad;
+            self.list.styled_label(
+                (inner.right() - pad, top),
+                &self.title,
+                faded(theme.cast_text, alpha),
+                UiFont::SemiBold,
+                size,
+                TextAlign::Right,
+                style,
+            );
+        }
+        crate::ui::map_style::write_title_case(&mut self.title, name);
+        let name_x = inner.x + pad;
+        let fits = UiFont::SemiBold.width(&self.title, size) <= name_right - name_x;
+        if !fits {
+            self.list.clip(UiClip::rect(UiRect::new(
+                inner.x,
+                rect.y - edge,
+                (name_right - inner.x).max(0.0),
+                edge * 3.0,
+            )));
+        }
+        self.list.styled_label(
+            (name_x, top),
+            &self.title,
+            faded(theme.cast_text, alpha),
+            UiFont::SemiBold,
+            size,
+            TextAlign::Left,
+            style,
+        );
+        if !fits {
+            self.list.clip(UiClip::NONE);
+        }
+    }
+
+    /// The target's cast bar, under the target frame.
+    ///
+    /// The same widget as the player's own, drawn at the top of the screen instead of the
+    /// bottom, because it answers the same question about somebody else: *what is being
+    /// cast, and how long have I got*. An interruptible cast says so, which is what makes
+    /// the interrupt foundation visible to a player rather than only to a test.
+    pub fn push_enemy_cast_bar(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        let Some(cast) = snapshot.target.and_then(|target| target.casting) else {
+            return;
+        };
+        let width = viewport.0 as f32;
+        let rect = UiRect::new(
+            (width - self.metrics.cast_bar_width) * 0.5,
+            self.metrics.target_frame_top + self.metrics.target_frame_height + 6.0,
+            self.metrics.cast_bar_width,
+            self.metrics.cast_bar_height,
         );
         self.list.bar(
             rect,
             cast.fraction(),
             self.theme.bar_background,
-            self.theme.cast_fill,
+            self.theme.enemy_cast_fill,
         );
         self.title.clear();
         self.title.push_str(cast.name);
         self.title.push(' ');
         write_tenths(&mut self.title, cast.remaining());
+        if cast.interruptible {
+            self.title.push_str(" !");
+        }
         let (origin, align) = centered(rect.x + rect.width * 0.5, rect.y + 3.0);
         self.list
             .text_aligned(origin, &self.title, self.theme.text, 1.0, align);
+    }
+
+    /// The death notice, across the middle of the screen.
+    ///
+    /// Deliberately plain: a line of text and nothing that has to be dismissed. The state it
+    /// reports is the simulation's, so it appears and disappears with the thing it describes
+    /// rather than with a timer of its own.
+    pub fn push_death_notice(&mut self, snapshot: &UiSnapshot, viewport: (u32, u32)) {
+        if snapshot.player.alive {
+            return;
+        }
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        let (origin, align) = centered(width * 0.5, height * 0.42);
+        self.list.text_aligned(
+            origin,
+            "YOU DIED",
+            self.theme.death_text,
+            self.metrics.scale.text(self.theme.hud_text_scale * 2.0),
+            align,
+        );
+        let (origin, align) = centered(width * 0.5, height * 0.42 + self.metrics.bar_height * 2.0);
+        self.list.text_aligned(
+            origin,
+            "PRESS BACKSPACE TO RETURN - WHAT YOU KILLED STAYS DEAD",
+            self.theme.text,
+            self.metrics.scale.text(self.theme.hud_text_scale * 0.8),
+            align,
+        );
     }
 
     /// Why the last ability was refused, above the cast bar.
@@ -751,172 +2747,88 @@ impl GameUi {
         let (width, height) = (viewport.0 as f32, viewport.1 as f32);
         // Above the resource bars, where nothing else is drawn: a refusal that overlapped
         // the energy readout would be two messages fighting for one line.
-        let y =
-            height - layout::ABILITY_BAR_BOTTOM - layout::SLOT_SIZE - layout::RESOURCE_LIFT - 34.0;
-        let (origin, align) = centered(width * 0.5, y);
-        self.list.text_aligned(
-            origin,
-            error.as_str(),
-            self.theme.slot_invalid,
-            self.theme.hud_text_scale * 0.75,
-            align,
+        let y = height
+            - self.metrics.ability_bar_bottom
+            - self.metrics.slot_size
+            - self.metrics.resource_lift
+            - 34.0;
+        let size = self.metrics.scale.px(17.0);
+        self.list.styled_label(
+            (width * 0.5, cap_centred_top(UiFont::SemiBold, size, y)),
+            error.message(),
+            [1.0, 0.36, 0.30, 1.0],
+            UiFont::SemiBold,
+            size,
+            TextAlign::Center,
+            plate_text_style([0.0, 0.0, 0.0, 0.9], size, 0.03),
         );
     }
 
-    /// An ability tooltip, anchored above `anchor`.
+    /// An ability tooltip, opened from the tooltip dock.
     ///
-    /// Every line is generated from the ability's own definition and from the *current*
-    /// Ignite maximum, so a tooltip cannot drift from what the ability does and Fire
-    /// Detonation's requirement follows Infernal Capacity without a second string.
+    /// Every line is generated from the ability's own definition and the live slot view —
+    /// see [`crate::ui::tooltip::fill_ability`] — so a tooltip cannot drift from what the
+    /// ability does. Drawn at `dock`, the rectangle the HUD layout resolves for
+    /// [`HudElementId::Tooltip`](crate::ui::hud_layout::HudElementId::Tooltip), growing in
+    /// `direction`; never where the pointer happens to be.
     pub fn push_ability_tooltip(
         &mut self,
-        anchor: UiRect,
+        dock: UiRect,
+        direction: crate::ui::flow::FlowDirection,
         view: &AbilitySlotView,
-        ignite_max: u8,
+        context: crate::ui::tooltip::AbilityContext,
         viewport: (u32, u32),
-    ) {
-        let definition = view.ability.definition();
-        self.tooltip_lines.clear();
-
-        let mut line = String::new();
-        line.push_str(definition.description);
-        self.tooltip_lines.push(line);
-
-        let mut line = String::new();
-        if definition.cast_time > 0.0 {
-            line.push_str("CAST ");
-            write_tenths(&mut line, definition.cast_time);
-            line.push_str(" S  ");
-        } else {
-            line.push_str("INSTANT  ");
-        }
-        if definition.cooldown > 0.0 {
-            line.push_str("CD ");
-            write_tenths(&mut line, definition.cooldown);
-            line.push_str(" S");
-        }
-        self.tooltip_lines.push(line);
-
-        let mut line = String::new();
-        if definition.range > 0.0 {
-            line.push_str("RANGE ");
-            write_integer(&mut line, definition.range as i64);
-            line.push_str(" M  ");
-        }
-        if definition.radius > 0.0 {
-            line.push_str("RADIUS ");
-            write_integer(&mut line, definition.radius as i64);
-            line.push_str(" M");
-        }
-        if !line.is_empty() {
-            self.tooltip_lines.push(line);
-        }
-
-        if view.max_charges > 1 {
-            let mut line = String::new();
-            line.push_str("CHARGES ");
-            write_integer(&mut line, i64::from(view.charges));
-            line.push('/');
-            write_integer(&mut line, i64::from(view.max_charges));
-            self.tooltip_lines.push(line);
-        }
-
-        if definition.duration > 0.0 {
-            let mut line = String::new();
-            line.push_str("DURATION ");
-            write_tenths(&mut line, definition.duration);
-            line.push_str(" S");
-            self.tooltip_lines.push(line);
-        }
-
-        let mut line = String::new();
-        if definition.heat > 0.0 {
-            line.push_str("HEAT +");
-            write_integer(&mut line, definition.heat as i64);
-            line.push_str("  ");
-        }
-        if definition.energy > 0.0 {
-            line.push_str("ENERGY +");
-            write_integer(&mut line, definition.energy as i64);
-        }
-        if definition.energy_cost > 0.0 {
-            line.push_str("COSTS ");
-            write_integer(&mut line, definition.energy_cost as i64);
-            line.push_str(" ENERGY");
-        }
-        if !line.is_empty() {
-            self.tooltip_lines.push(line);
-        }
-
-        if definition.ignite_stacks > 0 {
-            let mut line = String::new();
-            line.push_str("APPLIES ");
-            write_integer(&mut line, i64::from(definition.ignite_stacks));
-            line.push_str(" IGNITE");
-            self.tooltip_lines.push(line);
-        }
-
-        if view.ability == FireAbility::FireDetonation {
-            // The requirement, stated in the numbers that are true right now.
-            let mut line = String::new();
-            line.push_str("REQUIRES ");
-            write_integer(&mut line, i64::from(ignite_max));
-            line.push_str(" IGNITE STACKS");
-            self.tooltip_lines.push(line);
-        }
-
-        let height = layout::TOOLTIP_LINE * (self.tooltip_lines.len() as f32 + 1.0) + 10.0;
-        let width = layout::TOOLTIP_WIDTH;
-        let x = (anchor.x + anchor.width * 0.5 - width * 0.5)
-            .clamp(4.0, (viewport.0 as f32 - width - 4.0).max(4.0));
-        let y = (anchor.y - height - 8.0).max(4.0);
-        let panel = UiRect::new(x, y, width, height);
-
-        self.list.rect(panel, self.theme.tooltip_panel);
-        self.list
-            .outline(panel, self.theme.outline_pixels, self.theme.target_outline);
-        self.list.text_at(
-            (panel.x + 8.0, panel.y + 6.0),
-            view.name,
-            self.theme.tooltip_title,
-            1.5,
-        );
-        for (index, line) in self.tooltip_lines.iter().enumerate() {
-            self.list.text_at(
-                (
-                    panel.x + 8.0,
-                    panel.y + 6.0 + layout::TOOLTIP_LINE * (index as f32 + 1.4),
-                ),
-                line,
-                self.theme.tooltip_text,
-                1.0,
-            );
-        }
+    ) -> UiRect {
+        crate::ui::tooltip::fill_ability(&mut self.tooltip, view, context);
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        )
     }
 
-    /// A small health bar over every enemy that has a plate.
-    pub fn push_world_health_bars(&mut self, plates: &[Nameplate]) {
-        for plate in plates {
-            let bar = UiRect::new(
-                plate.origin.0 + (plate.size.0 - layout::WORLD_BAR_WIDTH) * 0.5,
-                plate.origin.1 - layout::WORLD_BAR_HEIGHT - 3.0,
-                layout::WORLD_BAR_WIDTH,
-                layout::WORLD_BAR_HEIGHT,
-            );
-            self.list.bar(
-                bar,
-                plate.health_fraction,
-                self.theme.bar_background,
-                self.theme.enemy_health_color(plate.health_fraction),
-            );
-        }
+    /// The tooltip for a trinket button, docked like an ability's.
+    pub fn push_trinket_tooltip(
+        &mut self,
+        dock: UiRect,
+        direction: crate::ui::flow::FlowDirection,
+        view: &crate::snapshot::TrinketView,
+        viewport: (u32, u32),
+    ) -> UiRect {
+        let key = self.trinket_keys.get(view.index).copied().unwrap_or("");
+        crate::ui::tooltip::fill_trinket(&mut self.tooltip, view, key);
+        let kit = crate::ui::kit::Kit::new(self.metrics.scale);
+        self.tooltip_panel.push(
+            &mut self.list,
+            &self.tooltip,
+            dock,
+            direction,
+            &kit,
+            viewport,
+        )
     }
 
-    /// Floating damage numbers, projected through the camera.
+    /// Floating combat text, projected through the camera.
     ///
-    /// A number behind the camera is skipped rather than drawn: a point behind the eye still
-    /// divides to a finite screen position, and drawing it produces a mirrored ghost — the
-    /// same bug the nameplates avoid, avoided the same way.
+    /// Each entry's anchor is projected to the screen and everything after that is in screen
+    /// pixels — the rise, the lanes, the swell, the size — so a number reads the same at two
+    /// metres and at forty. An anchor behind the camera is skipped rather than drawn: a point
+    /// behind the eye still divides to a finite screen position, and drawing it produces a
+    /// mirrored ghost — the same bug the nameplates avoid, avoided the same way.
+    ///
+    /// Criticals are drawn after everything else, so the number that matters most is never
+    /// under an ordinary one.
+    ///
+    /// **Nothing is drawn on top of anything else if there is room to avoid it.** Every entry
+    /// is measured where its motion puts it, then the entries are placed in order of
+    /// importance — criticals first, then the older — and each one that would cover an
+    /// entry already placed is moved *up* until it clears, the way it is already moving. The
+    /// room each one needs is eased from frame to frame, so a number making way slides rather
+    /// than jumps, and one whose neighbour faded drifts back down.
     pub fn push_damage_numbers(
         &mut self,
         numbers: &FloatingNumbers,
@@ -924,43 +2836,253 @@ impl GameUi {
         viewport: (u32, u32),
         now: f32,
     ) {
-        for number in numbers.numbers() {
-            let world: Vec3 = number.position(now);
-            let Some((x, y)) = project(world, view_projection, viewport) else {
+        self.layout_combat_text(numbers, view_projection, viewport, now);
+        let layout = std::mem::take(&mut self.combat_layout);
+        for critical_pass in [false, true] {
+            for placed in &layout {
+                if placed.critical != critical_pass {
+                    continue;
+                }
+                let Some(number) = numbers.numbers().get(placed.index) else {
+                    continue;
+                };
+                let nudge = self
+                    .combat_nudges
+                    .iter()
+                    .find(|(key, _)| *key == placed.key)
+                    .map_or(0.0, |(_, nudge)| *nudge);
+                self.push_combat_text(
+                    number,
+                    (placed.center.0, placed.center.1 - nudge),
+                    placed.size,
+                    now,
+                );
+            }
+        }
+        self.combat_layout = layout;
+    }
+
+    /// Measures every visible entry and works out how far up each has to go to clear the ones
+    /// placed before it; eases the stored nudges towards that.
+    fn layout_combat_text(
+        &mut self,
+        numbers: &FloatingNumbers,
+        view_projection: &Mat4,
+        viewport: (u32, u32),
+        now: f32,
+    ) {
+        self.combat_layout.clear();
+        let emphasis = self.combat_text.critical_emphasis;
+        let scale = self.metrics.scale.factor() * self.combat_text.size_scale();
+        let (width, height) = (viewport.0 as f32, viewport.1 as f32);
+        for (index, number) in numbers.numbers().iter().enumerate() {
+            let Some((x, y)) = project(number.origin, view_projection, viewport) else {
                 continue;
             };
-            let alpha = number.alpha(now);
-            if alpha <= 0.0 {
+            let frame = number.frame(now, emphasis);
+            if frame.alpha <= 0.0 {
                 continue;
             }
-            let mut color = if number.killed {
-                self.theme.killing_number
-            } else {
-                self.theme.damage_number
-            };
-            // The fade lives in the alpha channel, which only works because the UI blends.
-            color[3] = alpha;
-
-            self.title.clear();
-            write_integer(&mut self.title, number.amount.round() as i64);
-            // A killing blow is bigger as well as differently coloured, so it reads without
-            // the player having to distinguish two shades mid-fight.
-            let scale = if number.killed {
-                self.theme.damage_text_scale * 1.4
-            } else {
-                self.theme.damage_text_scale
-            };
-            self.list
-                .text_aligned((x, y), &self.title, color, scale, TextAlign::Center);
+            let size = number.design_size(emphasis) * frame.scale * scale;
+            let center = (x + frame.offset.0 * scale, y + frame.offset.1 * scale);
+            if center.0 < -size * 4.0
+                || center.0 > width + size * 4.0
+                || center.1 < -size
+                || center.1 > height + size
+            {
+                continue;
+            }
+            number.write_text(&mut self.title);
+            let text_width = UiFont::SemiBold.width(&self.title, size);
+            // A little air around each: two numbers touching read as one longer number.
+            let air = size * 0.1;
+            self.combat_layout.push(PlacedText {
+                index,
+                key: text_key(number),
+                center,
+                size,
+                half: (text_width * 0.5 + air, size * 0.45 + air),
+                push: 0.0,
+                critical: number.critical,
+                born: number.born,
+            });
         }
+
+        // Each starts from where it was last frame, relaxing back towards its own place: a
+        // number that had to make room drifts down as the room frees up rather than dropping.
+        let elapsed = (now - self.combat_nudged_at).clamp(0.0, 0.25);
+        self.combat_nudged_at = now;
+        let relax = (-NUDGE_RATE * elapsed).exp();
+        for placed in &mut self.combat_layout {
+            placed.push = self
+                .combat_nudges
+                .iter()
+                .find(|(key, _)| *key == placed.key)
+                .map_or(0.0, |(_, nudge)| nudge * relax);
+        }
+
+        // Most important first: a critical keeps its place, and an older number is not
+        // shoved aside by one that just appeared.
+        self.combat_layout.sort_by(|a, b| {
+            b.critical
+                .cmp(&a.critical)
+                .then(a.born.total_cmp(&b.born))
+                .then(a.key.cmp(&b.key))
+        });
+        let count = self.combat_layout.len();
+        for current in 1..count {
+            for _ in 0..NUDGE_PASSES {
+                let mut moved = false;
+                for earlier in 0..current {
+                    let (a, b) = (self.combat_layout[earlier], self.combat_layout[current]);
+                    let (ax, ay) = (a.center.0, a.center.1 - a.push);
+                    let (bx, by) = (b.center.0, b.center.1 - b.push);
+                    let overlap_x = a.half.0 + b.half.0 - (ax - bx).abs();
+                    let overlap_y = a.half.1 + b.half.1 - (ay - by).abs();
+                    if overlap_x > 0.0 && overlap_y > 0.0 {
+                        // Up past the one it covers: its bottom to the other's top.
+                        let needed = (by + b.half.1) - (ay - a.half.1);
+                        self.combat_layout[current].push += needed.max(0.5);
+                        moved = true;
+                    }
+                }
+                if !moved {
+                    break;
+                }
+            }
+        }
+
+        // What was drawn is what is remembered.
+        self.combat_nudges.clear();
+        for placed in &self.combat_layout {
+            self.combat_nudges.push((placed.key, placed.push));
+        }
+    }
+
+    /// One floating entry, drawn centred on `center` at `size`.
+    fn push_combat_text(
+        &mut self,
+        number: &FloatingNumber,
+        center: (f32, f32),
+        size: f32,
+        now: f32,
+    ) {
+        let emphasis = self.combat_text.critical_emphasis;
+        let frame = number.frame(now, emphasis);
+        if frame.alpha <= 0.0 {
+            return;
+        }
+
+        let theme = self.theme.combat;
+        let color = match number.kind {
+            CombatTextKind::Damage if number.critical => theme.critical,
+            CombatTextKind::Damage => theme.damage,
+            CombatTextKind::Periodic => theme.periodic,
+            CombatTextKind::Incoming => theme.incoming,
+            CombatTextKind::Heal if number.critical => theme.heal_critical,
+            CombatTextKind::Heal => theme.heal,
+            CombatTextKind::Avoided(Avoidance::Absorb) => theme.absorbed,
+            CombatTextKind::Avoided(Avoidance::Reflect) => theme.reflected,
+            CombatTextKind::Avoided(_) => theme.avoided,
+            CombatTextKind::Aggro(AggroChange::Gained | AggroChange::Gaining) => {
+                self.theme.aggro_gain_text
+            }
+            CombatTextKind::Aggro(_) => self.theme.aggro_loss_text,
+            CombatTextKind::Callout(Callout::Immune) => theme.absorbed,
+            CombatTextKind::Callout(Callout::Vulnerable) => self.theme.aggro_gain_text,
+        };
+        number.write_text(&mut self.title);
+        // Numbers are drawn heavier than words: a digit is read by its shape at a glance, and
+        // weight is what makes the shape carry.
+        let embolden = if number.kind.is_amount() { 0.045 } else { 0.03 };
+        let style = TextStyle::outlined(
+            faded(theme.outline, frame.alpha),
+            (size * 0.07).max(1.0),
+            (size * 0.045).clamp(0.75, 2.0),
+            size * embolden,
+        );
+        self.list.styled_label(
+            (center.0, cap_centred_top(UiFont::SemiBold, size, center.1)),
+            &self.title,
+            faded(color, frame.alpha),
+            UiFont::SemiBold,
+            size,
+            TextAlign::Center,
+            style,
+        );
     }
 }
 
-/// Characters of an ability's name shown in its slot.
+/// The picture that stands for an ability, if one has been drawn.
 ///
-/// Four fits a 48-pixel slot at half scale and is enough to tell one placeholder from
-/// another. Replaced by an icon when there are textures; the layout does not change.
-const ABILITY_ABBREVIATION: usize = 4;
+/// The map lives here, in the layer that decides what the HUD *looks* like, rather than on
+/// [`FireAbility`] itself: `engine-game` must never learn that a picture exists, and it is
+/// the same rule that keeps a colour out of the simulation.
+///
+/// `None` is the ordinary answer for most of the bar today. Those slots fall back to their
+/// abbreviated name, so an ability without art is legible rather than blank.
+#[must_use]
+pub fn icon_for(ability: FireAbility) -> Option<UiIcon> {
+    match ability {
+        FireAbility::Firebolt => Some(UiIcon::Firebolt),
+        FireAbility::Meteor => Some(UiIcon::Meteor),
+        // The cone that spreads Ignite; the art is named for the shape, the ability for
+        // what it does.
+        FireAbility::FlameCone => Some(UiIcon::FlameCone),
+        FireAbility::FlameLance => Some(UiIcon::FlameLance),
+        FireAbility::Pyroblast => Some(UiIcon::Pyroblast),
+        FireAbility::Firestorm => Some(UiIcon::Firestorm),
+        FireAbility::Detonate => Some(UiIcon::Detonate),
+        FireAbility::FireMastery => Some(UiIcon::FireMastery),
+        FireAbility::FlameShield => Some(UiIcon::FlameShield),
+        FireAbility::Blink => Some(UiIcon::Blink),
+        FireAbility::FireBeam => Some(UiIcon::FireBeam),
+        FireAbility::Recuperate => Some(UiIcon::Recuperate),
+        FireAbility::WarStomp => Some(UiIcon::WarStomp),
+        FireAbility::ColossusStrike => Some(UiIcon::ColossusStrike),
+        FireAbility::ShieldCharge => Some(UiIcon::ShieldCharge),
+        FireAbility::ShieldBash => Some(UiIcon::ShieldBash),
+        FireAbility::ShieldBlock => Some(UiIcon::ShieldBlock),
+        FireAbility::PunctureBlood => Some(UiIcon::PunctureBlood),
+        FireAbility::Adrenaline => Some(UiIcon::Adrenaline),
+        FireAbility::BattleTrance => Some(UiIcon::BattleTrance),
+        FireAbility::SpellReflect => Some(UiIcon::SpellReflect),
+        FireAbility::LastStand => Some(UiIcon::LastStand),
+        // No art yet: the slot shows the abbreviated name until an icon is drawn.
+        FireAbility::Taunt => Some(UiIcon::Taunt),
+        FireAbility::Moonfire => Some(UiIcon::Moonfire),
+        FireAbility::Sunfire => Some(UiIcon::Sunfire),
+        FireAbility::Wrath => Some(UiIcon::Wrath),
+        FireAbility::Rejuvenation => Some(UiIcon::Rejuvenation),
+        FireAbility::Regrowth => Some(UiIcon::Regrowth),
+        FireAbility::Lifebloom => Some(UiIcon::Lifebloom),
+        FireAbility::WildGrowth => Some(UiIcon::WildGrowth),
+        FireAbility::Swiftmend => Some(UiIcon::Swiftmend),
+        FireAbility::Nourish => Some(UiIcon::Nourish),
+        FireAbility::NaturesCleanse => Some(UiIcon::NaturesCleanse),
+        FireAbility::WildRush => Some(UiIcon::WildRush),
+        FireAbility::AstralPower => Some(UiIcon::AstralPower),
+        FireAbility::Tranquility => Some(UiIcon::Tranquility),
+        // Ignite is credited damage rather than a cast - it has a row so the meter can name
+        // it. A slot with no icon draws its abbreviated name, which is the fallback every
+        // ability had before the icon sets were painted.
+        FireAbility::Ignite => None,
+    }
+}
+
+/// `color` with its alpha multiplied by `alpha`.
+///
+/// Multiplied rather than replaced: a colour that was already translucent — a panel behind a
+/// nameplate is — must not become *more* opaque because the plate was told to fade.
+#[must_use]
+pub fn faded(color: UiColor, alpha: f32) -> UiColor {
+    let alpha = if alpha.is_finite() {
+        alpha.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    [color[0], color[1], color[2], color[3] * alpha]
+}
 
 /// Writes an integer into `out` without allocating.
 ///
@@ -977,6 +3099,24 @@ pub fn write_integer(out: &mut String, value: i64) {
 pub fn write_tenths(out: &mut String, value: f32) {
     use std::fmt::Write;
     let _ = write!(out, "{value:.1}");
+}
+
+/// Writes a countdown into `out`: whole seconds while there is more than one, tenths below.
+///
+/// A cooldown is read at a glance in the middle of a fight, and "18" is read faster than
+/// "18.0" — four characters across a 48-pixel button is already most of its width. Under a
+/// second the tenth is the only part carrying any information, so that is when it appears.
+///
+/// Rounded *up*, so the number never reads zero while the ability is still refusing. A
+/// button showing "0" that cannot be pressed is a bug report.
+pub fn write_seconds(out: &mut String, value: f32) {
+    use std::fmt::Write;
+    let value = value.max(0.0);
+    if value >= 1.0 {
+        let _ = write!(out, "{}", value.ceil() as i64);
+    } else {
+        let _ = write!(out, "{:.1}", (value * 10.0).ceil() / 10.0);
+    }
 }
 
 /// Centres a line of text horizontally on `x`, in the same units the list uses.
@@ -997,8 +3137,10 @@ mod tests {
     use crate::snapshot::UiSnapshot;
     use engine_core::math::Mat4;
     use engine_game::arena::{self, ArenaConfig};
+    use engine_game::hero::Hero;
     use engine_game::sim::Simulation;
-    use engine_render_data::ui::UiCommand;
+    use engine_render_data::ui::{MAX_ICON_PIXELS, UiCommand};
+    use engine_settings::{UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP};
 
     const VIEWPORT: (u32, u32) = (1920, 1080);
 
@@ -1024,12 +3166,48 @@ mod tests {
     fn plates(simulation: &Simulation) -> (NameplateSet, NameplateConfig) {
         let config = NameplateConfig::default();
         let mut set = NameplateSet::with_capacity(32);
-        set.build(simulation, &view_projection(), VIEWPORT, &config);
+        set.build(
+            simulation,
+            &view_projection(),
+            VIEWPORT,
+            &config,
+            1.0 / 60.0,
+        );
         (set, config)
     }
 
+    /// Every styled run in the built list: its text, colour and size.
+    fn styled(ui: &GameUi) -> Vec<(String, UiColor, f32)> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::StyledLabel {
+                    range, color, size, ..
+                } => Some((ui.list().text_of(*range).to_owned(), *color, *size)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every outline in the built list, with its colour.
+    fn outlines(ui: &GameUi) -> Vec<(UiRect, UiColor)> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Outline { rect, color, .. } => Some((*rect, *color)),
+                // A rounded edge is an outline too.
+                UiCommand::Panel {
+                    rect, stroke, top, ..
+                } if *stroke > 0.0 => Some((*rect, *top)),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_nameplate_becomes_a_panel_and_its_text() {
+    fn a_nameplate_is_a_bold_outlined_name_over_a_real_health_bar() {
         let simulation = sim();
         let (set, config) = plates(&simulation);
         assert!(!set.plates().is_empty(), "the arena has visible enemies");
@@ -1038,39 +3216,171 @@ mod tests {
         ui.begin();
         ui.push_nameplates(set.plates(), &config);
 
-        let rects = ui
-            .list()
-            .commands()
-            .iter()
-            .filter(|command| matches!(command, UiCommand::Rect { .. }))
-            .count();
-        let texts = ui
-            .list()
-            .commands()
-            .iter()
-            .filter(|command| matches!(command, UiCommand::Text { .. }))
-            .count();
-        assert_eq!(rects, set.plates().len(), "one panel per plate");
-        assert!(texts >= set.plates().len(), "at least a title per plate");
+        // No bitmap text at all: every word on a plate is set in the interface font.
+        assert!(
+            texts(&ui).is_empty(),
+            "a plate drew bitmap text: {:?}",
+            texts(&ui)
+        );
+        let labels = styled(&ui);
+        for plate in set.plates() {
+            let name = crate::ui::map_style::title_case(plate.name);
+            let (_, _, size) = labels
+                .iter()
+                .find(|(text, _, _)| *text == name)
+                .unwrap_or_else(|| panic!("no name {name:?} in {labels:?}"));
+            assert!(*size >= 14.0, "the name is readable: {size}");
+            // The bar is a real bar: wide, tall, bordered, and under the name.
+            let bar = plate.bar_rect();
+            assert!(bar.width >= 120.0 && bar.height >= 12.0, "{bar:?}");
+            assert!(bar.y > plate.origin.1 + plate.geometry.name_top);
+            assert!(
+                outlines(&ui).iter().any(|(rect, _)| *rect == bar),
+                "the bar has a border"
+            );
+        }
+        // Every label carries a dark edge, so it reads over anything the world draws.
+        for command in ui.list().commands() {
+            if let UiCommand::StyledLabel { style, .. } = command {
+                assert!(style.has_outline(), "an unedged label: {style:?}");
+            }
+        }
     }
 
     #[test]
-    fn exactly_one_plate_is_outlined_and_it_is_the_target() {
+    fn exactly_one_plate_is_outlined_in_white_and_it_is_the_target() {
         let simulation = sim();
         let (set, config) = plates(&simulation);
         let mut ui = GameUi::new();
         ui.begin();
         ui.push_nameplates(set.plates(), &config);
 
-        let outlines = ui
-            .list()
-            .commands()
+        let white = ui.theme().plate.border_target;
+        let lit: Vec<UiRect> = outlines(&ui)
+            .into_iter()
+            .filter(|(_, color)| *color == white)
+            .map(|(rect, _)| rect)
+            .collect();
+        let targets: Vec<_> = set
+            .plates()
             .iter()
-            .filter(|command| matches!(command, UiCommand::Outline { .. }))
-            .count();
-        let targets = set.plates().iter().filter(|plate| plate.is_target).count();
-        assert_eq!(outlines, targets);
-        assert!(targets <= 1, "at most one plate is the target's");
+            .filter(|plate| plate.is_target)
+            .collect();
+        assert!(targets.len() <= 1, "at most one plate is the target's");
+        assert_eq!(lit.len(), targets.len());
+        if let Some(target) = targets.first() {
+            assert_eq!(lit[0], target.bar_rect());
+        }
+    }
+
+    #[test]
+    fn a_cast_bar_hangs_under_its_health_bar_and_says_what_and_how_long() {
+        use crate::nameplate::{PlateCast, PlateGeometry};
+        use engine_game::enemy::EnemyAbility;
+        let simulation = sim();
+        let (set, config) = plates(&simulation);
+        let mut plate = set.plates()[0];
+        // The same plate, casting: a cast is only ever laid out by the set, so the geometry
+        // is rebuilt the way the set would build it.
+        let metrics = plate.rank.metrics();
+        let name_width = UiFont::SemiBold.width(
+            &crate::ui::map_style::title_case(plate.name),
+            metrics.name_size,
+        );
+        plate.geometry = PlateGeometry::new(
+            metrics,
+            plate.rank.crest(),
+            name_width,
+            plate.geometry.scale,
+            plate.auras.debuffs().count(),
+            plate.auras.buffs().count(),
+            true,
+        );
+        plate.size = plate.geometry.size();
+        let ability = EnemyAbility::ALL
+            .into_iter()
+            .find(|ability| {
+                ability.definition().cast_time > 1.0 && ability.definition().interruptible
+            })
+            .expect("the roster has an interruptible cast");
+        let cast = PlateCast {
+            ability,
+            name: ability.name(),
+            icon: UiIcon::AbilityArcane,
+            fraction: 0.4,
+            remaining: 1.4,
+            interruptible: true,
+            state: PlateCastState::Casting,
+            alpha: 1.0,
+        };
+        plate.cast = Some(cast);
+
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        let bar = plate.bar_rect();
+        let cast_rect = plate.cast_rect().expect("a casting plate has a cast bar");
+        assert!(
+            cast_rect.y >= bar.bottom(),
+            "the cast bar is under the health bar"
+        );
+        assert!(cast_rect.y - bar.bottom() <= 8.0, "and directly under it");
+        assert_eq!(cast_rect.width, bar.width);
+        let labels = styled(&ui);
+        let name = crate::ui::map_style::title_case(ability.name());
+        assert!(
+            labels.iter().any(|(text, _, _)| *text == name),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|(text, _, _)| text == "1.4"),
+            "{labels:?}"
+        );
+        assert!(
+            icons(&ui)
+                .iter()
+                .any(|(icon, _)| *icon == UiIcon::AbilityArcane)
+        );
+        assert!(!icons(&ui).iter().any(|(icon, _)| *icon == UiIcon::Lock));
+
+        // Not interruptible: a lock and a silver border.
+        plate.cast = Some(PlateCast {
+            interruptible: false,
+            ..cast
+        });
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        assert!(icons(&ui).iter().any(|(icon, _)| *icon == UiIcon::Lock));
+        let silver = ui.theme().plate.cast_locked_border;
+        assert!(outlines(&ui).iter().any(|(_, color)| *color == silver));
+
+        // Interrupted: it says so, and prints no countdown.
+        plate.cast = Some(PlateCast {
+            state: PlateCastState::Interrupted,
+            ..cast
+        });
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        let labels = styled(&ui);
+        assert!(
+            labels.iter().any(|(text, _, _)| text == "Interrupted"),
+            "{labels:?}"
+        );
+        assert!(!labels.iter().any(|(text, _, _)| text == "1.4"));
+    }
+
+    #[test]
+    fn a_plate_with_no_cast_draws_no_cast_bar_and_leaves_no_gap() {
+        let simulation = sim();
+        let (set, config) = plates(&simulation);
+        let plate = set.plates()[0];
+        assert!(plate.cast.is_none());
+        assert!(plate.cast_rect().is_none());
+        assert_eq!(plate.size.1, plate.bar_rect().bottom() - plate.origin.1);
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_nameplates(&[plate], &config);
+        assert!(!styled(&ui).iter().any(|(text, _, _)| text == "Interrupted"));
     }
 
     #[test]
@@ -1100,11 +3410,9 @@ mod tests {
         let mut ui = GameUi::new();
         ui.begin();
         ui.push_nameplates(set.plates(), &config);
-        // The first panel pushed belongs to the furthest plate.
-        let UiCommand::Rect { rect, .. } = ui.list().commands()[0] else {
-            panic!("the first command is a panel");
-        };
-        assert_eq!(rect.x, set.plates()[0].origin.0);
+        // The first bar drawn belongs to the furthest plate.
+        let first_outline = outlines(&ui)[0].0;
+        assert_eq!(first_outline, set.plates()[0].bar_rect());
     }
 
     #[test]
@@ -1137,6 +3445,41 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 UiCommand::Rect { rect, .. } => Some(*rect),
+                // A filled rounded surface is a background as much as a rectangle is.
+                UiCommand::Panel {
+                    rect,
+                    stroke,
+                    feather,
+                    ..
+                } if *stroke <= 0.0 && *feather <= 0.0 => Some(*rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every run of text in the list, bitmap and proportional alike.
+    fn all_texts(ui: &GameUi) -> Vec<String> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Text { range, .. }
+                | UiCommand::Label { range, .. }
+                | UiCommand::StyledLabel { range, .. } => {
+                    Some(ui.list().text_of(*range).to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every icon in the built list, with the rectangle it fills.
+    fn icons(ui: &GameUi) -> Vec<(UiIcon, UiRect)> {
+        ui.list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Icon { rect, icon, .. } => Some((*icon, *rect)),
                 _ => None,
             })
             .collect()
@@ -1154,12 +3497,298 @@ mod tests {
             .collect()
     }
 
+    /// Every run of proportional text, joined with spaces: what a wrapped tooltip *says*,
+    /// whichever line a phrase happened to land on.
+    fn said(ui: &GameUi) -> String {
+        let mut out = String::new();
+        for command in ui.list().commands() {
+            if let UiCommand::Label { range, .. } | UiCommand::StyledLabel { range, .. } = command {
+                out.push_str(ui.list().text_of(*range));
+                out.push(' ');
+            }
+        }
+        out
+    }
+
+    /// A `GameUi` with the metrics a frame would have, for asking about rectangles.
+    fn ui_for(_simulation: &Simulation) -> GameUi {
+        GameUi::new()
+    }
+
     fn built(simulation: &Simulation) -> GameUi {
         let (set, config) = plates(simulation);
         let mut ui = GameUi::new();
         let snapshot = UiSnapshot::build(simulation);
         ui.build(&snapshot, set.plates(), &config, VIEWPORT);
         ui
+    }
+
+    /// The same arena, played as the Druid.
+    fn druid_sim() -> Simulation {
+        let mut simulation = sim();
+        assert!(simulation.set_hero(Hero::Druid));
+        simulation
+    }
+
+    #[test]
+    fn the_druid_gets_mana_and_astral_power_instead_of_heat() {
+        let mut simulation = druid_sim();
+        let found = texts(&built(&simulation));
+        assert!(
+            found.iter().any(|text| text.starts_with("MANA")),
+            "no mana bar: {found:?}"
+        );
+        assert!(
+            found.iter().any(|text| text.starts_with("ASTRAL POWER")),
+            "no astral bar: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|text| text.starts_with("HEAT")),
+            "the Druid was shown a bar it can never move: {found:?}"
+        );
+
+        // Armed, and the bar says so where the player is already looking.
+        simulation
+            .druid_mut()
+            .astral
+            .gain(engine_game::druid::tuning::ASTRAL_MAXIMUM);
+        simulation
+            .cast(engine_game::firemage::FireAbility::AstralPower)
+            .expect("a full bar arms");
+        let found = texts(&built(&simulation));
+        assert!(
+            found.iter().any(|text| text.contains("ARMED")),
+            "the armed state is invisible: {found:?}"
+        );
+    }
+
+    /// The arena with the Group Absorb trinket in the first slot.
+    fn trinket_sim() -> Simulation {
+        use engine_game::character::{EquipSlot, ItemStack, item_by_key};
+        engine_realm::loot::ensure_items_registered();
+        let mut simulation = sim();
+        let id = item_by_key("aegis_of_the_last_vigil")
+            .expect("the shipped trinket")
+            .id;
+        let hero = simulation.hero();
+        simulation
+            .roster_mut()
+            .sheet_mut(hero)
+            .equipment_mut()
+            .equip(EquipSlot::Trinket1, ItemStack::one(id))
+            .expect("a trinket fits");
+        simulation.refresh_character();
+        // Past the short cooldown that putting a trinket on starts.
+        simulation.step_many(31 * 60);
+        simulation
+    }
+
+    #[test]
+    fn a_worn_trinket_draws_a_button_with_its_key_cooldown_and_glow_and_a_tooltip() {
+        let mut simulation = trinket_sim();
+        let (set, config) = plates(&simulation);
+        let draw = |simulation: &Simulation| {
+            let mut ui = GameUi::new();
+            ui.set_trinket_keys(["T", "Y"]);
+            let snapshot = UiSnapshot::build(simulation);
+            ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+            (ui, snapshot)
+        };
+
+        // Only the worn slot with an active has a button, and it sits above the Ultimate.
+        let (ui, snapshot) = draw(&simulation);
+        assert!(snapshot.trinkets[0].is_some() && snapshot.trinkets[1].is_none());
+        let rect = ui.trinket_rect(0, VIEWPORT);
+        assert!(rect.bottom() < ui.ultimate_rect(VIEWPORT).y);
+        assert!(ui.trinket_rect(1, VIEWPORT).x > rect.x);
+        assert!(said(&ui).split(' ').any(|word| word == "T"), "no key label");
+        let icons_before = ui
+            .list()
+            .commands()
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    UiCommand::Icon {
+                        icon: engine_render_data::ui::UiIcon::TrinketAbsorb,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(icons_before, 1, "the trinket's own picture is drawn");
+        assert!(!snapshot.trinkets[0].expect("worn").is_cooling());
+
+        // Used: the sweep, the seconds, and the glow while the shield stands.
+        simulation.use_trinket(0).expect("ready");
+        simulation.step_once();
+        let (ui, snapshot) = draw(&simulation);
+        let view = snapshot.trinkets[0].expect("worn");
+        assert!(view.is_cooling() && view.is_active());
+        let found = said(&ui);
+        assert!(found.split(' ').any(|word| word == "120"), "{found}");
+
+        // The tooltip says what it does, how long it cools and how far it reaches.
+        let mut ui = GameUi::new();
+        ui.set_trinket_keys(["T", "Y"]);
+        ui.push_trinket_tooltip(
+            UiRect::new(1500.0, 950.0, 380.0, 64.0),
+            crate::ui::flow::FlowDirection::READING,
+            &view,
+            VIEWPORT,
+        );
+        let found = said(&ui);
+        assert!(
+            found.contains("Shields party members within 30 m"),
+            "{found}"
+        );
+        assert!(found.contains("120 sec cooldown"), "{found}");
+        assert!(found.contains("30 m radius"), "{found}");
+    }
+
+    #[test]
+    fn a_hero_with_extra_buttons_draws_them_beside_the_ultimate() {
+        let simulation = druid_sim();
+        let ultimate = ui_for(&simulation).ultimate_rect(VIEWPORT);
+        let first = ui_for(&simulation).extra_rect(0, VIEWPORT);
+        let second = ui_for(&simulation).extra_rect(1, VIEWPORT);
+        // In a row, after the Ultimate, and not on top of each other.
+        assert!(first.x > ultimate.x);
+        assert!(second.x > first.x);
+        assert_eq!(first.y, ultimate.y);
+
+        let snapshot = UiSnapshot::build(&simulation);
+        let names: Vec<&str> = snapshot
+            .extras
+            .iter()
+            .flatten()
+            .map(|view| view.name)
+            .collect();
+        assert_eq!(names, ["WILD RUSH", "ASTRAL POWER"]);
+        assert_eq!(
+            snapshot.ultimate.expect("the druid has one").name,
+            "TRANQUILITY"
+        );
+    }
+
+    #[test]
+    fn an_astral_tooltip_says_what_the_next_cast_will_do() {
+        use engine_game::firemage::FireAbility;
+        let mut simulation = druid_sim();
+        simulation
+            .druid_mut()
+            .astral
+            .gain(engine_game::druid::tuning::ASTRAL_MAXIMUM);
+        simulation
+            .cast(FireAbility::AstralPower)
+            .expect("a full bar arms");
+        let snapshot = UiSnapshot::build(&simulation);
+        let view = *snapshot
+            .ability_view(FireAbility::Moonfire)
+            .expect("moonfire is on the bar");
+
+        let mut ui = GameUi::new();
+        ui.push_ability_tooltip(
+            UiRect::new(1500.0, 950.0, 380.0, 64.0),
+            crate::ui::flow::FlowDirection::READING,
+            &view,
+            tooltip_context(&snapshot),
+            VIEWPORT,
+        );
+        let found = said(&ui);
+        assert!(
+            found.contains("Costs 150 Mana"),
+            "the cost is missing: {found}"
+        );
+        assert!(
+            found.contains("Generates 12 Astral Power"),
+            "what it generates is missing: {found}"
+        );
+        assert!(found.contains("Ready: Astral Power is armed"), "{found}");
+        assert!(
+            found.contains("EMPOWERED EFFECT"),
+            "the empowered section is missing: {found}"
+        );
+        assert!(
+            found.contains("burn never expires."),
+            "what the empowerment does is missing: {found}"
+        );
+        // And the bar's highlight says the next press is the empowered one.
+        assert_eq!(view.availability, SlotAvailability::Empowered);
+        assert!(view.spends_astral);
+    }
+
+    fn tooltip_context(snapshot: &UiSnapshot) -> crate::ui::tooltip::AbilityContext {
+        crate::ui::tooltip::AbilityContext {
+            astral_armed: snapshot.player.druid.armed,
+            ignite_max: snapshot.ignite_max,
+            mastery: snapshot.player.mastery,
+        }
+    }
+
+    #[test]
+    fn a_warrior_tooltip_says_which_abilities_pay_valor() {
+        use engine_game::firemage::FireAbility;
+        let simulation = {
+            let mut simulation = sim();
+            assert!(simulation.set_hero(engine_game::hero::Hero::Warrior));
+            simulation
+        };
+        for (ability, pays) in [
+            (FireAbility::ColossusStrike, true),
+            (FireAbility::WarStomp, true),
+            (FireAbility::ShieldCharge, true),
+            (FireAbility::ShieldBlock, false),
+        ] {
+            let snapshot = UiSnapshot::build(&simulation);
+            let view = *snapshot.ability_view(ability).expect("on the bar");
+            let mut ui = GameUi::new();
+            ui.push_ability_tooltip(
+                UiRect::new(1500.0, 950.0, 380.0, 64.0),
+                crate::ui::flow::FlowDirection::READING,
+                &view,
+                tooltip_context(&snapshot),
+                VIEWPORT,
+            );
+            let found = said(&ui);
+            assert_eq!(
+                found.contains("Generates 1 Valor"),
+                pays,
+                "{ability:?}: {found}"
+            );
+            assert!(
+                !found.contains("EMPOWERED EFFECT"),
+                "the Warrior has no empowered form: {found}"
+            );
+            assert!(!found.contains("SMASHES"), "{found}");
+        }
+    }
+
+    #[test]
+    fn a_druid_heal_tooltip_prints_healing_rather_than_damage() {
+        use engine_game::firemage::FireAbility;
+        let simulation = druid_sim();
+        let snapshot = UiSnapshot::build(&simulation);
+        let view = *snapshot
+            .ability_view(FireAbility::Regrowth)
+            .expect("regrowth is on the bar");
+        assert_eq!(view.damage, 0.0);
+        assert!(view.healing > 0.0);
+
+        let mut ui = GameUi::new();
+        ui.push_ability_tooltip(
+            UiRect::new(1500.0, 950.0, 380.0, 64.0),
+            crate::ui::flow::FlowDirection::READING,
+            &view,
+            tooltip_context(&snapshot),
+            VIEWPORT,
+        );
+        let found = said(&ui);
+        assert!(found.contains("Healing "), "{found}");
+        assert!(
+            !found.contains("Damage "),
+            "a heal claimed to deal damage: {found}"
+        );
     }
 
     #[test]
@@ -1242,10 +3871,10 @@ mod tests {
             found.iter().any(|text| text.contains('%')),
             "and reports a percentage: {found:?}"
         );
-        assert!(
-            found.iter().any(|text| text.ends_with('M')),
-            "and a distance: {found:?}"
-        );
+        // The frame carries no distance: it never wrote one, and the assertion that claimed
+        // it did was matching an ability slot's abbreviated name ("FLAM") instead. Now that
+        // every slot draws art there is nothing left to match, so the claim is gone rather
+        // than restated against a different accident.
     }
 
     #[test]
@@ -1301,14 +3930,429 @@ mod tests {
     #[test]
     fn the_ability_bar_draws_every_slot_with_its_hotkey() {
         let ui = built(&sim());
-        let found = texts(&ui);
+        let found = all_texts(&ui);
         for digit in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"] {
             assert!(
                 found.iter().any(|text| text == digit),
                 "slot {digit} is missing: {found:?}"
             );
         }
-        assert!(found.iter().any(|text| text == "FIRE"), "{found:?}");
+        // Every ability on the bar has art now, so no slot falls back to its abbreviated
+        // name. The fallback is covered by the test that pairs art against names, which
+        // reads `icon_for` rather than assuming which abilities are drawn.
+    }
+
+    #[test]
+    fn the_abilities_that_have_art_draw_it_in_their_own_slot() {
+        let ui = built(&sim());
+        let drawn = icons(&ui);
+
+        // Each icon appears exactly once, in the slot the bar order puts it in, filling the
+        // plate inside its frame.
+        let outline = ui.scale().px(UiTheme::default().outline_pixels);
+        let art = [
+            (FireAbility::Firebolt, UiIcon::Firebolt),
+            (FireAbility::Meteor, UiIcon::Meteor),
+            (FireAbility::FlameCone, UiIcon::FlameCone),
+            (FireAbility::FlameLance, UiIcon::FlameLance),
+            (FireAbility::Pyroblast, UiIcon::Pyroblast),
+            (FireAbility::Firestorm, UiIcon::Firestorm),
+            (FireAbility::Detonate, UiIcon::Detonate),
+            (FireAbility::FireMastery, UiIcon::FireMastery),
+            (FireAbility::FlameShield, UiIcon::FlameShield),
+            (FireAbility::Blink, UiIcon::Blink),
+        ];
+        for (ability, expected) in art {
+            let slot = Hero::default()
+                .abilities()
+                .iter()
+                .position(|candidate| *candidate == ability)
+                .expect("the ability is on the bar");
+            let matched: Vec<_> = drawn.iter().filter(|(icon, _)| *icon == expected).collect();
+            assert_eq!(
+                matched.len(),
+                1,
+                "{expected:?} was drawn {} times",
+                matched.len()
+            );
+            assert_eq!(
+                matched[0].1,
+                ui.slot_rect(slot, VIEWPORT).inset(outline),
+                "{expected:?} is not in slot {slot}"
+            );
+        }
+        assert_eq!(
+            drawn
+                .iter()
+                .filter(|(icon, _)| *icon == UiIcon::FireBeam)
+                .count(),
+            1,
+            "the Ultimate button wears its art"
+        );
+        assert_eq!(
+            drawn.len(),
+            // The ten on the bar and the Ultimate beside it.
+            art.len() + 1,
+            "something drew an icon nobody asked for"
+        );
+    }
+
+    #[test]
+    fn a_slot_with_art_shows_the_art_instead_of_its_name() {
+        // Both would be unreadable: a 5x7 bitmap font over a painted flame. Checked by
+        // position rather than by string, because several abilities abbreviate to "FIRE"
+        // and only one of them has art.
+        let ui = built(&sim());
+        let names: Vec<(f32, f32)> = ui
+            .list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                UiCommand::Text {
+                    origin,
+                    align: TextAlign::Center,
+                    ..
+                } => Some(*origin),
+                _ => None,
+            })
+            .collect();
+
+        for (slot, ability) in Hero::default().abilities().iter().enumerate() {
+            let rect = ui.slot_rect(slot, VIEWPORT);
+            // Where `push_ability_button` centres a name.
+            let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5 - 4.0);
+            let labelled = names.contains(&centre);
+            assert_eq!(
+                labelled,
+                icon_for(*ability).is_none(),
+                "slot {slot} ({ability:?}) draws both a name and an icon, or neither"
+            );
+        }
+    }
+
+    #[test]
+    fn no_icon_is_ever_drawn_larger_than_the_art_was_rasterized_for() {
+        // The check that keeps `MAX_ICON_PIXELS` honest. `engine-renderer` rasterizes its
+        // icons to exactly that size and asserts it at compile time; this is the other half,
+        // that nothing here lays one out bigger. Without it, growing a slot or raising the
+        // maximum UI scale would quietly start magnifying the art.
+        let simulation = sim();
+        for factor in [UI_SCALE_MIN, 1.0, UI_SCALE_MAX] {
+            let scale = UiScale::new(factor);
+            let (set, config) = plates(&simulation);
+            let mut ui = GameUi::with_scale(scale);
+            let snapshot = UiSnapshot::build(&simulation);
+            ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+
+            for (icon, rect) in icons(&ui) {
+                let largest = rect.width.max(rect.height);
+                assert!(
+                    largest <= MAX_ICON_PIXELS as f32,
+                    "{icon:?} is {largest} pixels at scale {factor}, past the {MAX_ICON_PIXELS} \
+                     the art is rasterized for"
+                );
+            }
+        }
+
+        // The Ultimate is the biggest plate that can carry one, so it is what the constant
+        // has to cover. Checked directly as well, in case no icon is on it yet.
+        let ui = GameUi::with_scale(UiScale::new(UI_SCALE_MAX));
+        let ultimate = ui.ultimate_rect(VIEWPORT);
+        assert!(
+            ultimate.width.max(ultimate.height) <= MAX_ICON_PIXELS as f32,
+            "the Ultimate button is bigger than the icon art allows for"
+        );
+    }
+
+    #[test]
+    fn the_scale_the_player_can_choose_is_one_the_renderer_can_draw() {
+        // Two ranges, deliberately: what the slider offers, and what the layout and the
+        // atlas are built to support. The first must sit inside the second, and this is the
+        // only place that can see both.
+        const { assert!(UI_SCALE_MIN >= UiScale::MIN, "the slider goes below MIN") };
+        const { assert!(UI_SCALE_MAX <= UiScale::MAX, "the slider goes above MAX") };
+        const { assert!(UI_SCALE_MIN < UI_SCALE_MAX) };
+
+        // And a value from the slider survives the trip into a scale unchanged, so what is
+        // saved is what is drawn.
+        for factor in [UI_SCALE_MIN, 1.0, 1.25, UI_SCALE_MAX] {
+            assert_eq!(
+                UiScale::new(factor).factor(),
+                factor,
+                "{factor} was clamped"
+            );
+        }
+    }
+
+    #[test]
+    fn every_measurement_grows_with_the_scale_and_the_layout_keeps_its_shape() {
+        let small = HudMetrics::new(UiScale::new(1.0));
+        let large = HudMetrics::new(UiScale::new(2.0));
+
+        assert_eq!(large.slot_size, small.slot_size * 2.0);
+        assert_eq!(large.ultimate_size, small.ultimate_size * 2.0);
+        assert_eq!(large.margin, small.margin * 2.0);
+
+        // The bar stays centred and stays a bar: bigger slots, same arrangement.
+        let wide = GameUi::with_scale(UiScale::new(2.0));
+        let narrow = GameUi::with_scale(UiScale::new(1.0));
+        for slot in 1..ABILITY_SLOTS {
+            let step =
+                |ui: &GameUi| ui.slot_rect(slot, VIEWPORT).x - ui.slot_rect(slot - 1, VIEWPORT).x;
+            assert!(
+                (step(&wide) - step(&narrow) * 2.0).abs() < 1.0,
+                "slot {slot} is not twice as far along at twice the scale"
+            );
+        }
+    }
+
+    #[test]
+    fn what_the_hud_draws_and_what_a_click_is_tested_against_are_the_same_rectangle() {
+        // The bug a scaled interface invites: the draw uses one scale and the hit test uses
+        // another, and buttons stop working somewhere other than where they look.
+        let simulation = sim();
+        let scale = UiScale::new(1.5);
+        let (set, config) = plates(&simulation);
+        let mut ui = GameUi::with_scale(scale);
+        let snapshot = UiSnapshot::build(&simulation);
+        ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+
+        // Every slot the bar drew has a background rectangle at exactly the rectangle the
+        // hit test would use.
+        let drawn = rects(&ui);
+        for slot in 0..ABILITY_SLOTS {
+            let rect = ui.slot_rect(slot, VIEWPORT);
+            assert!(
+                drawn.contains(&rect),
+                "slot {slot} is hit-tested at {rect:?}, which nothing drew"
+            );
+        }
+    }
+
+    #[test]
+    fn text_stays_at_a_whole_glyph_scale_however_the_interface_is_sized() {
+        // The font is a bitmap sampled with a point filter: a fractional scale makes some
+        // rows of a letter a pixel taller than others. Every scale the slider can produce
+        // must still come out whole.
+        let mut factor = UI_SCALE_MIN;
+        while factor <= UI_SCALE_MAX {
+            let scale = UiScale::new(factor);
+            for logical in [1.0, 1.5, 2.0, 3.0] {
+                let drawn = scale.text(logical);
+                assert_eq!(drawn, drawn.round(), "{logical} at {factor} is fractional");
+                assert!(drawn >= 1.0, "{logical} at {factor} vanished");
+            }
+            factor += UI_SCALE_STEP;
+        }
+    }
+
+    #[test]
+    fn every_slot_shows_the_global_cooldown_while_it_runs() {
+        // The point of the change: starting one ability locks the whole bar, so the whole
+        // bar has to say so. A bar where only the pressed button reacts reads as though the
+        // others were still available.
+        // Flame Shield: instant, so it lands and takes its own cooldown while the shared
+        // one runs on everything else. Everything that *is* held by the shared timer, that
+        // is: Blink, Detonate and Fire Mastery are not, and must not pretend to be.
+        let mut simulation = sim();
+        simulation
+            .cast(FireAbility::FlameShield)
+            .expect("Flame Shield is ready");
+
+        let snapshot = UiSnapshot::build(&simulation);
+        for view in snapshot.abilities.iter().flatten() {
+            assert_eq!(
+                view.is_on_global_cooldown(),
+                view.ability.definition().on_global_cooldown,
+                "{:?}",
+                view.ability
+            );
+        }
+        assert!(
+            snapshot
+                .ultimate
+                .is_some_and(|view| view.is_on_global_cooldown()),
+            "the Ultimate is on the same shared timer"
+        );
+
+        // The slot that is merely waiting draws the shared sweep; the one that is also on
+        // its own cooldown draws that instead, so the wash is never doubled.
+        let cooling: Vec<_> = snapshot
+            .abilities
+            .iter()
+            .flatten()
+            .filter(|view| view.is_cooling())
+            .collect();
+        assert!(!cooling.is_empty(), "nothing went on its own cooldown");
+        for view in cooling {
+            assert!(
+                !view.shows_global_cooldown(),
+                "{:?} draws both",
+                view.ability
+            );
+        }
+    }
+
+    #[test]
+    fn the_ability_being_cast_is_framed_in_white_and_no_other_is() {
+        let mut simulation = sim();
+        // Pyroblast: the longest cast in the class, so it is still running next frame.
+        simulation.cast(FireAbility::Pyroblast).expect("in range");
+        simulation.step_once();
+
+        let ui = built(&simulation);
+        let casting = Hero::default()
+            .abilities()
+            .iter()
+            .position(|ability| *ability == FireAbility::Pyroblast)
+            .expect("Pyroblast is on the bar");
+        let slot = ui.slot_rect(casting, VIEWPORT);
+        let white = UiTheme::default().slot_casting;
+
+        let framed: Vec<UiRect> = outlines(&ui)
+            .into_iter()
+            .filter(|(_, color)| *color == white)
+            .map(|(rect, _)| rect)
+            .collect();
+        assert!(
+            framed.contains(&slot),
+            "the casting slot has no white frame: {framed:?}"
+        );
+
+        // No other slot took one.
+        for other in 0..ABILITY_SLOTS {
+            if other == casting {
+                continue;
+            }
+            let rect = ui.slot_rect(other, VIEWPORT);
+            assert!(
+                !framed.contains(&rect),
+                "slot {other} is framed as though it were casting"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ability_whose_area_is_being_placed_is_framed_like_one_being_cast() {
+        // Aiming a Meteor and casting a Pyroblast are the same answer to "what am I doing",
+        // so the bar gives them the same frame. Without it the only sign that a placement is
+        // open is the circle on the ground, which is where the player is not looking.
+        let simulation = sim();
+        let aimed = FireAbility::Meteor;
+        let snapshot = UiSnapshot::build_aiming(&simulation, Some(aimed));
+
+        let slot = Hero::default()
+            .abilities()
+            .iter()
+            .position(|ability| *ability == aimed)
+            .expect("Meteor is on the bar");
+        let Some(view) = snapshot.abilities[slot] else {
+            panic!("the mage's Meteor slot is filled");
+        };
+        assert!(view.aiming);
+        assert!(view.shows_active_frame());
+        assert!(!view.casting, "an unconfirmed placement is not a cast");
+
+        // Exactly one slot, and it is that one.
+        let framed = snapshot
+            .abilities
+            .iter()
+            .flatten()
+            .filter(|view| view.shows_active_frame())
+            .count();
+        assert_eq!(framed, 1, "{framed} slots claim to be active");
+        assert!(
+            !snapshot
+                .ultimate
+                .is_some_and(|view| view.shows_active_frame())
+        );
+
+        // And it reaches the drawn frame, not just the view.
+        let (set, config) = plates(&simulation);
+        let mut ui = GameUi::new();
+        ui.build(&snapshot, set.plates(), &config, VIEWPORT);
+        let white = UiTheme::default().slot_casting;
+        let rect = ui.slot_rect(slot, VIEWPORT);
+        assert!(
+            outlines(&ui)
+                .iter()
+                .any(|(drawn, color)| *drawn == rect && *color == white),
+            "the aimed slot has no white frame"
+        );
+    }
+
+    #[test]
+    fn nothing_is_framed_when_the_player_is_neither_casting_nor_aiming() {
+        let snapshot = UiSnapshot::build(&sim());
+        assert!(
+            snapshot
+                .abilities
+                .iter()
+                .flatten()
+                .all(|view| !view.shows_active_frame()),
+            "a slot is framed with nothing happening"
+        );
+    }
+
+    #[test]
+    fn a_cooling_slot_prints_the_seconds_left_and_a_global_cooldown_prints_nothing() {
+        let mut simulation = sim();
+        simulation.cast(FireAbility::Blink).expect("Blink is ready");
+        let ui = built(&simulation);
+        let printed = all_texts(&ui);
+
+        // Blink's own cooldown is twenty seconds, printed as whole ones.
+        assert!(
+            printed.iter().any(|text| text == "20"),
+            "no countdown on the cooling slot: {printed:?}"
+        );
+
+        // Every other slot is held only by the shared half-second timer, and half a second
+        // counted in tenths on eleven buttons at once is the noise this avoids.
+        assert!(
+            !printed.iter().any(|text| text.starts_with("0.")),
+            "the global cooldown printed a number: {printed:?}"
+        );
+    }
+
+    #[test]
+    fn a_countdown_reads_in_whole_seconds_until_the_last_one() {
+        // Four characters across a 48-pixel button is most of its width, and "18" is read
+        // faster than "18.0" in the middle of a fight.
+        let mut out = String::new();
+        for (value, expected) in [
+            (18.0, "18"),
+            (17.4, "18"),
+            (1.0, "1"),
+            (0.95, "1.0"),
+            (0.44, "0.5"),
+            (0.04, "0.1"),
+            (0.0, "0.0"),
+        ] {
+            out.clear();
+            write_seconds(&mut out, value);
+            assert_eq!(out, expected, "{value}");
+        }
+
+        // Never zero while the ability is still refusing: a button showing "0" that cannot
+        // be pressed is a bug report.
+        out.clear();
+        write_seconds(&mut out, 0.001);
+        assert_ne!(out, "0.0");
+    }
+
+    #[test]
+    fn an_icon_is_dimmed_when_its_ability_cannot_be_used_but_not_while_it_cools() {
+        // The cooldown already has a radial sweep over it; dimming as well would say the
+        // same thing twice, and would make "cooling" and "cannot afford" look alike.
+        let theme = UiTheme::default();
+        assert_eq!(theme.icon_tint(SlotAvailability::Ready), theme.icon);
+        assert_eq!(theme.icon_tint(SlotAvailability::Cooling), theme.icon);
+        assert_eq!(
+            theme.icon_tint(SlotAvailability::NoResource),
+            theme.icon_unavailable
+        );
+        assert_ne!(theme.icon, theme.icon_unavailable);
     }
 
     #[test]
@@ -1318,7 +4362,8 @@ mod tests {
         simulation.step_once();
 
         let ui = built(&simulation);
-        let found = texts(&ui);
+        let mut found = texts(&ui);
+        found.extend(styled(&ui).into_iter().map(|(text, _, _)| text));
         assert!(
             found.iter().any(|text| text.contains('.')),
             "a remaining time should be drawn: {found:?}"
@@ -1359,55 +4404,71 @@ mod tests {
             .expect("in range");
         simulation.step_many(20);
 
+        // Drawn as an enemy's cast is on its nameplate: the name, and the seconds left.
         let ui = built(&simulation);
-        let found = texts(&ui);
+        let found: Vec<String> = styled(&ui).into_iter().map(|(text, _, _)| text).collect();
         assert!(
-            found.iter().any(|text| text.starts_with("PYROBLAST")),
-            "the cast bar names the ability and its remaining time: {found:?}"
+            found.iter().any(|text| text == "Pyroblast"),
+            "the cast bar names the ability: {found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|text| text.contains('.') && text.parse::<f32>().is_ok()),
+            "the cast bar prints the time left: {found:?}"
+        );
+        assert!(
+            icons(&ui)
+                .iter()
+                .any(|(icon, _)| *icon == UiIcon::Pyroblast)
         );
     }
 
     #[test]
-    fn every_enemy_plate_carries_a_world_space_health_bar() {
+    fn a_damaged_plate_shows_its_recent_damage_as_a_trail() {
         let simulation = sim();
-        let (set, _config) = plates(&simulation);
+        let (set, config) = plates(&simulation);
+        let mut plate = set.plates()[0];
+        plate.health_fraction = 0.5;
+        plate.trail_fraction = 0.8;
         let mut ui = GameUi::new();
         ui.begin();
-        ui.push_world_health_bars(set.plates());
-
-        // Two rectangles per bar: background and fill.
-        assert_eq!(rects(&ui).len(), set.plates().len() * 2);
-        // Each sits above its plate.
-        for (bar, plate) in rects(&ui).chunks(2).zip(set.plates()) {
-            assert!(bar[0].y < plate.origin.1, "the bar sits above the plate");
-        }
+        ui.push_nameplates(&[plate], &config);
+        let inner = plate.bar_rect().inset(plate.geometry.border);
+        let trail = rects(&ui)
+            .into_iter()
+            .find(|rect| rect.x > inner.x && rect.height == inner.height)
+            .expect("a trail between the fill and where the health was");
+        let expected = inner.width * 0.3;
+        assert!((trail.width - expected).abs() <= 1.0, "{trail:?}");
     }
 
     #[test]
-    fn a_damage_number_is_drawn_where_it_projects_and_fades_in_its_alpha() {
+    fn a_damage_number_is_bold_outlined_large_and_fades_in_its_alpha() {
         let mut numbers = FloatingNumbers::new();
         numbers.push(
             engine_game::entity::EntityId::new(1, 1),
             engine_core::math::Vec3::new(0.0, 1.0, -12.0),
             45.0,
             false,
+            false,
             0.0,
         );
 
         let mut ui = GameUi::new();
+        let drawn = |ui: &GameUi| styled(ui);
         ui.begin();
-        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.0);
-        let fresh: Vec<_> = ui
-            .list()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                UiCommand::Text { color, .. } => Some(color[3]),
-                _ => None,
-            })
-            .collect();
+        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.1);
+        let fresh = drawn(&ui);
         assert_eq!(fresh.len(), 1, "one number was drawn");
-        assert_eq!(fresh[0], 1.0, "a new number is opaque");
+        assert_eq!(fresh[0].0, "45");
+        assert_eq!(fresh[0].1[3], 1.0, "a number in flight is opaque");
+        assert!(
+            fresh[0].2 >= 24.0,
+            "a hit is large enough to notice: {}",
+            fresh[0].2
+        );
+        assert!(texts(&ui).is_empty(), "no bitmap digits");
 
         ui.begin();
         ui.push_damage_numbers(
@@ -1416,16 +4477,158 @@ mod tests {
             VIEWPORT,
             crate::damage_numbers::NUMBER_LIFETIME * 0.9,
         );
-        let faded: Vec<_> = ui
-            .list()
+        let faded = drawn(&ui);
+        assert!(
+            faded[0].1[3] < 1.0,
+            "an old number has faded: {}",
+            faded[0].1[3]
+        );
+    }
+
+    /// Every styled label's box: text, left, top, width, height.
+    fn label_boxes(ui: &GameUi) -> Vec<(String, UiRect)> {
+        ui.list()
             .commands()
             .iter()
             .filter_map(|command| match command {
-                UiCommand::Text { color, .. } => Some(color[3]),
+                UiCommand::StyledLabel {
+                    range,
+                    size,
+                    origin,
+                    font,
+                    ..
+                } => {
+                    let text = ui.list().text_of(*range).to_owned();
+                    let width = font.width(&text, *size);
+                    // Centred text: the origin is the middle; the cap band is about 0.72 em.
+                    Some((
+                        text,
+                        UiRect::new(
+                            origin.0 - width * 0.5,
+                            origin.1 + size * 0.2,
+                            width,
+                            size * 0.72,
+                        ),
+                    ))
+                }
                 _ => None,
             })
+            .collect()
+    }
+
+    #[test]
+    fn a_burst_of_numbers_on_two_neighbours_never_draws_one_over_another() {
+        let mut numbers = FloatingNumbers::new();
+        let origin = engine_core::math::Vec3::new(0.0, 1.0, -12.0);
+        let beside = engine_core::math::Vec3::new(0.4, 1.0, -12.0);
+        // Twelve hits in one instant on two enemies standing shoulder to shoulder: the worst
+        // pile the lanes and bursts cannot spread on their own.
+        for index in 0..6 {
+            let amount = 1000.0 + index as f32 * 111.0;
+            numbers.push(
+                engine_game::entity::EntityId::new(1, 1),
+                origin,
+                amount,
+                false,
+                index == 2,
+                0.0,
+            );
+            numbers.push(
+                engine_game::entity::EntityId::new(2, 1),
+                beside,
+                amount + 7.0,
+                false,
+                false,
+                0.0,
+            );
+        }
+        let mut ui = GameUi::new();
+        for frame in 1..=40 {
+            let now = frame as f32 / 60.0;
+            ui.begin();
+            ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, now);
+            let boxes = label_boxes(&ui);
+            assert!(boxes.len() >= 10, "{}", boxes.len());
+            for (index, (text_a, a)) in boxes.iter().enumerate() {
+                for (text_b, b) in &boxes[index + 1..] {
+                    let overlap_x = a.x.max(b.x) < a.right().min(b.right()) - 0.5;
+                    let overlap_y = a.y.max(b.y) < a.bottom().min(b.bottom()) - 0.5;
+                    assert!(
+                        !(overlap_x && overlap_y),
+                        "frame {frame}: {text_a} {a:?} is over {text_b} {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_critical_is_drawn_bigger_hotter_and_on_top() {
+        let mut numbers = FloatingNumbers::new();
+        let enemy = engine_game::entity::EntityId::new(1, 1);
+        let origin = engine_core::math::Vec3::new(0.0, 1.0, -12.0);
+        numbers.push(enemy, origin, 90.0, false, true, 0.0);
+        numbers.push(enemy, origin, 45.0, false, false, 0.0);
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.5);
+        let drawn = styled(&ui);
+        assert_eq!(drawn.len(), 2);
+        // The critical is drawn last, whatever order it arrived in.
+        assert_eq!(drawn[1].0, "90");
+        assert_eq!(drawn[1].1, ui.theme().combat.critical);
+        assert!(drawn[1].2 > drawn[0].2 * 1.3, "{drawn:?}");
+    }
+
+    #[test]
+    fn the_combat_text_size_setting_and_the_interface_scale_both_grow_the_text() {
+        let mut numbers = FloatingNumbers::new();
+        numbers.push(
+            engine_game::entity::EntityId::new(1, 1),
+            engine_core::math::Vec3::new(0.0, 1.0, -12.0),
+            45.0,
+            false,
+            false,
+            0.0,
+        );
+        let size_at = |scale: f32, percent: f32| {
+            let mut ui = GameUi::with_scale(UiScale::new(scale));
+            ui.set_combat_text(engine_settings::CombatTextSettings {
+                size: percent,
+                ..engine_settings::CombatTextSettings::default()
+            });
+            ui.begin();
+            ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.5);
+            styled(&ui)[0].2
+        };
+        let base = size_at(1.0, 100.0);
+        assert!((size_at(2.0, 100.0) - base * 2.0).abs() < 0.01);
+        assert!((size_at(1.0, 150.0) - base * 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn aggro_text_is_drawn_as_words_in_its_own_colours() {
+        let mut numbers = FloatingNumbers::new();
+        let enemy = engine_game::entity::EntityId::new(1, 1);
+        let origin = engine_core::math::Vec3::new(0.0, 1.0, -12.0);
+        numbers.push_aggro(enemy, origin, AggroChange::Gaining, 0.0);
+        numbers.push_aggro(enemy, origin, AggroChange::Losing, 0.0);
+
+        let mut ui = GameUi::new();
+        ui.begin();
+        ui.push_damage_numbers(&numbers, &view_projection(), VIEWPORT, 0.2);
+        let drawn: Vec<(String, UiColor)> = styled(&ui)
+            .into_iter()
+            .map(|(text, color, _)| (text, color))
             .collect();
-        assert!(faded[0] < 1.0, "an old number has faded: {}", faded[0]);
+        let theme = ui.theme();
+        assert_eq!(
+            drawn,
+            [
+                ("Gaining Aggro".to_owned(), theme.aggro_gain_text),
+                ("Losing Aggro".to_owned(), theme.aggro_loss_text),
+            ]
+        );
     }
 
     #[test]
@@ -1437,6 +4640,7 @@ mod tests {
             engine_game::entity::EntityId::new(1, 1),
             engine_core::math::Vec3::new(0.0, 1.0, 400.0),
             45.0,
+            false,
             false,
             0.0,
         );
@@ -1469,7 +4673,10 @@ mod tests {
         let slot_left = |ui: &GameUi| {
             rects(ui)
                 .into_iter()
-                .filter(|rect| rect.width == layout::SLOT_SIZE && rect.height == layout::SLOT_SIZE)
+                .filter(|rect| {
+                    let slot = ui.metrics().slot_size;
+                    rect.width == slot && rect.height == slot
+                })
                 .map(|rect| rect.x)
                 .fold(f32::MAX, f32::min)
         };
@@ -1483,7 +4690,7 @@ mod tests {
         let player_bar = |ui: &GameUi| {
             rects(ui)
                 .into_iter()
-                .find(|rect| rect.width == layout::PLAYER_BAR_WIDTH)
+                .find(|rect| rect.width == ui.metrics().player_bar_width)
                 .expect("the player health bar is present")
         };
         assert!(player_bar(&large).y > player_bar(&small).y);

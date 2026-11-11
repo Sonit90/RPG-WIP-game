@@ -118,6 +118,7 @@ impl Culler {
         let meshes = world.meshes();
         let materials = world.materials();
         let styles = world.styles();
+        let shadow = world.shadow_casting();
 
         for (slot, visible) in world.visible_flags().iter().enumerate() {
             if *visible {
@@ -127,6 +128,7 @@ impl Culler {
                     meshes[slot],
                     materials[slot],
                     styles[slot],
+                    shadow[slot].receives,
                 );
             }
         }
@@ -258,6 +260,7 @@ fn cull_range(
     let meshes = world.meshes();
     let materials = world.materials();
     let styles = world.styles();
+    let shadow = world.shadow_casting();
     let flags = world.visible_flags();
 
     for slot in range {
@@ -271,6 +274,7 @@ fn cull_range(
                 meshes[slot],
                 materials[slot],
                 styles[slot],
+                shadow[slot].receives,
             );
         }
     }
@@ -303,6 +307,7 @@ mod tests {
             bounds: Sphere::new(Vec3::ZERO, 1.0),
             visible: true,
             style: InstanceStyle::NEUTRAL,
+            shadow: engine_render_data::ShadowCasting::CASTS_AND_RECEIVES,
         }
     }
 

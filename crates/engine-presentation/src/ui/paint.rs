@@ -10,10 +10,12 @@
 //! exists — it creates no texture, no buffer and no pipeline, and opening it allocates
 //! nothing after the first time.
 
-use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiRect};
+use engine_render_data::ui::{TextAlign, UiColor, UiDrawList, UiIcon, UiRect, UiScale};
+use engine_settings::{FrameRateLimit, ShadowQuality, WindowMode};
 
-use super::menu::{MenuScreen, MenuSystem, PauseItem, SettingsItem};
-use super::widget::{Slider, Widget, WidgetState};
+use super::graphics_menu::{GraphicsItem, GraphicsMenu, shadow_label};
+use super::menu::{HeroItem, MapItem, MenuScreen, MenuSystem, PauseItem};
+use super::widget::{Dropdown, Slider, Widget, WidgetState};
 
 /// How the menus are coloured and sized.
 ///
@@ -147,17 +149,405 @@ pub fn push_menu(
     scratch: &mut MenuScratch,
     viewport: (u32, u32),
 ) {
+    // The menu lays itself out at the player's scale, so everything drawn over that
+    // layout has to use the same one. Taken from the menu rather than passed in, so the
+    // two cannot be given different answers.
+    let scale = menu.scale();
     match menu.screen() {
         MenuScreen::None => {}
-        MenuScreen::Pause => push_pause(list, menu, theme, viewport),
-        MenuScreen::Settings => push_settings(list, menu, theme, scratch, viewport),
+        MenuScreen::Pause => push_pause(list, menu, theme, viewport, scale),
+        MenuScreen::Settings => push_settings(list, menu, theme, scratch, viewport, scale),
+        MenuScreen::Heroes => push_heroes(list, menu, theme, viewport, scale),
+        MenuScreen::Nameplates => push_nameplates(list, menu, theme, scratch, viewport, scale),
+        MenuScreen::Graphics => push_graphics(list, menu, theme, scratch, viewport, scale),
+        MenuScreen::Map => push_map_settings(list, menu, theme, scratch, viewport, scale),
+    }
+}
+
+/// The graphics section: two labelled display dropdowns, a line saying what the chosen mode
+/// does, a line saying what is in force, the shadow dropdown with a line saying what the
+/// chosen level buys, the frame-rate dropdown and the background box, and APPLY and BACK side
+/// by side — and, after APPLY changed the display, the dialog over all of it.
+///
+/// An open list is drawn last, so it covers the rows under it the way it also takes their
+/// clicks.
+fn push_graphics(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let display = menu.graphics_menu();
+    let panel = menu.graphics_panel();
+    push_backdrop(list, theme, viewport, panel, "GRAPHICS", scale);
+    let small = scale.text(theme.label_scale * 0.8);
+    let pending = display.pending();
+
+    let mut open: Option<(GraphicsItem, Dropdown)> = None;
+    let mut mode_bottom = panel.y;
+    let mut shadows_bottom = panel.y;
+    for (item, widget) in display.screen().widgets() {
+        match widget {
+            Widget::Dropdown(dropdown) => {
+                // The label above the box.
+                list.text_at(
+                    (
+                        dropdown.rect.x,
+                        dropdown.rect.y - scale.px(8.0) - 7.0 * small,
+                    ),
+                    dropdown.label,
+                    if dropdown.state.enabled {
+                        theme.title
+                    } else {
+                        theme.text_disabled
+                    },
+                    small,
+                );
+                let text = dropdown_text(display, item, dropdown.selected, scratch);
+                push_dropdown_box(list, dropdown, text, theme, scale);
+                if dropdown.is_open() {
+                    open = Some((item, *dropdown));
+                }
+                match item {
+                    GraphicsItem::WindowMode => mode_bottom = dropdown.rect.bottom(),
+                    GraphicsItem::Shadows => shadows_bottom = dropdown.rect.bottom(),
+                    _ => {}
+                }
+            }
+            _ => push_widget(list, widget, theme, scale),
+        }
+    }
+
+    // What the chosen mode does, then what the screen is doing now.
+    let x = panel.x + scale.px(28.0);
+    list.text_at(
+        (x, mode_bottom + scale.px(8.0)),
+        pending.window_mode.description(),
+        theme.text_disabled,
+        scale.text(0.8),
+    );
+    scratch.value.clear();
+    let current = display.current();
+    if pending.window_mode == WindowMode::BorderlessFullscreen {
+        scratch.value.push_str("USES THE DESKTOP RESOLUTION: ");
+        scratch.value.push_str(&display.desktop().label());
+    } else {
+        scratch.value.push_str("NOW: ");
+        let in_force = if current.window_mode == WindowMode::BorderlessFullscreen {
+            display.desktop()
+        } else {
+            current.resolution()
+        };
+        scratch.value.push_str(&in_force.label());
+        scratch.value.push_str(", ");
+        scratch.value.push_str(current.window_mode.label());
+    }
+    list.text_at(
+        (x, mode_bottom + scale.px(8.0) + scale.px(18.0)),
+        &scratch.value,
+        theme.text,
+        scale.text(0.8),
+    );
+    // What the chosen shadow level buys.
+    list.text_at(
+        (x, shadows_bottom + scale.px(8.0)),
+        display.pending_shadows().description(),
+        theme.text_disabled,
+        scale.text(0.8),
+    );
+
+    if let Some((item, dropdown)) = open {
+        push_dropdown_list(list, display, item, &dropdown, theme, scratch, scale);
+    }
+
+    if let Some(seconds) = display.confirming() {
+        push_display_dialog(list, display, seconds, theme, scratch, viewport, scale);
+    }
+}
+
+/// What a dropdown row says: a resolution from the monitor's list, a window mode, a shadow
+/// level, or a frame-rate limit.
+fn dropdown_text<'a>(
+    display: &'a GraphicsMenu,
+    item: GraphicsItem,
+    index: usize,
+    scratch: &'a mut MenuScratch,
+) -> &'a str {
+    match item {
+        GraphicsItem::Resolution => {
+            if display.pending().window_mode == WindowMode::BorderlessFullscreen {
+                // Borderless uses the desktop's; the box says so rather than a size that
+                // will not be used.
+                scratch.minimum.clear();
+                scratch.minimum.push_str(&display.desktop().label());
+                scratch.minimum.push_str("  (DESKTOP)");
+                &scratch.minimum
+            } else {
+                display
+                    .resolution_labels()
+                    .get(index)
+                    .map_or("", String::as_str)
+            }
+        }
+        GraphicsItem::WindowMode => WindowMode::ALL.get(index).map_or("", |mode| mode.label()),
+        GraphicsItem::Shadows => ShadowQuality::ALL
+            .get(index)
+            .map_or("", |quality| shadow_label(*quality)),
+        GraphicsItem::MaxFps => FrameRateLimit::ALL
+            .get(index)
+            .map_or("", |limit| limit.label()),
+        GraphicsItem::PreserveEnergy | GraphicsItem::Apply | GraphicsItem::Back => "",
+    }
+}
+
+/// A closed dropdown: the box, its chosen option, and a chevron pointing where it opens.
+fn push_dropdown_box(
+    list: &mut UiDrawList,
+    dropdown: &Dropdown,
+    text: &str,
+    theme: &MenuTheme,
+    scale: UiScale,
+) {
+    let rect = dropdown.rect;
+    let state = WidgetState {
+        pressed: dropdown.state.pressed || dropdown.open,
+        ..dropdown.state
+    };
+    list.rect(rect, theme.fill(&state));
+    list.outline(
+        rect,
+        scale.px(1.0),
+        if dropdown.open {
+            theme.track_fill
+        } else {
+            theme.separator
+        },
+    );
+    let label_scale = scale.text(theme.label_scale);
+    list.text_at(
+        (rect.x + scale.px(16.0), text_baseline(rect, label_scale)),
+        text,
+        theme.label_color(&dropdown.state),
+        label_scale,
+    );
+    let chevron = scale.px(16.0);
+    let down = std::f32::consts::FRAC_PI_2;
+    list.icon_rotated(
+        (rect.right() - scale.px(22.0), rect.y + rect.height * 0.5),
+        chevron,
+        UiIcon::ControlChevron,
+        if dropdown.open == dropdown.upward {
+            down
+        } else {
+            -down
+        },
+        theme.label_color(&dropdown.state),
+    );
+}
+
+/// An open dropdown's list: every option, the chosen one marked, the hovered one lit.
+fn push_dropdown_list(
+    list: &mut UiDrawList,
+    display: &GraphicsMenu,
+    item: GraphicsItem,
+    dropdown: &Dropdown,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    scale: UiScale,
+) {
+    let whole = dropdown.list_rect();
+    list.rect(whole.inset(-scale.px(2.0)), theme.panel_border);
+    list.rect(whole, theme.panel);
+    let label_scale = scale.text(theme.label_scale);
+    for index in 0..dropdown.len {
+        let row = dropdown.option_rect(index);
+        let hovered = dropdown.hovered_option == Some(index);
+        if hovered {
+            list.rect(row, theme.button_hovered);
+        }
+        if index == dropdown.selected {
+            list.rect(
+                UiRect::new(row.x, row.y, scale.px(4.0), row.height),
+                theme.track_fill,
+            );
+        }
+        let text = dropdown_text(display, item, index, scratch);
+        list.text_at(
+            (row.x + scale.px(16.0), text_baseline(row, label_scale)),
+            text,
+            if index == dropdown.selected || hovered {
+                theme.text
+            } else {
+                theme.text_disabled
+            },
+            label_scale,
+        );
+    }
+}
+
+/// "Keep these display settings?" with its countdown and its two buttons, over everything.
+fn push_display_dialog(
+    list: &mut UiDrawList,
+    display: &GraphicsMenu,
+    seconds: u32,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let dialog = display.dialog();
+    list.rect(
+        UiRect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32),
+        theme.scrim,
+    );
+    list.rect(dialog, theme.panel);
+    list.outline(dialog, scale.px(theme.border_pixels), theme.title);
+    let (origin, align) = centre_text(dialog.x + dialog.width * 0.5, dialog.y + scale.px(26.0));
+    list.text_aligned(
+        origin,
+        "KEEP THESE DISPLAY SETTINGS?",
+        theme.title,
+        scale.text(theme.title_scale * 0.6),
+        align,
+    );
+    // Written by hand rather than with `write_decimals`, which replaces what is in the buffer.
+    scratch.value.clear();
+    let _ = core::fmt::Write::write_fmt(&mut scratch.value, format_args!("REVERTING IN {seconds}"));
+    scratch.value.push_str(if seconds == 1 {
+        " SECOND..."
+    } else {
+        " SECONDS..."
+    });
+    let (origin, align) = centre_text(dialog.x + dialog.width * 0.5, dialog.y + scale.px(70.0));
+    list.text_aligned(
+        origin,
+        &scratch.value,
+        if seconds <= 5 {
+            theme.title
+        } else {
+            theme.text
+        },
+        scale.text(theme.label_scale),
+        align,
+    );
+    for (_, widget) in display.confirm_screen().widgets() {
+        push_widget(list, widget, theme, scale);
+    }
+}
+
+/// The map section: a tick per minimap mode with a line saying what it does, and the key
+/// that opens the map.
+fn push_map_settings(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let panel = menu.map_panel();
+    push_backdrop(list, theme, viewport, panel, "MAP", scale);
+    let mut last_bottom = panel.y;
+    for (item, widget) in menu.map_screen().widgets() {
+        push_widget(list, widget, theme, scale);
+        let rect = widget.rect();
+        match item {
+            MapItem::Orientation(mode) => {
+                list.text_at(
+                    (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
+                    mode.description(),
+                    theme.text_disabled,
+                    scale.text(0.8),
+                );
+                last_bottom = rect.bottom() + scale.px(26.0);
+            }
+            MapItem::ReducedMotion => last_bottom = rect.bottom() + scale.px(4.0),
+            MapItem::Back => {}
+        }
+    }
+    let _ = scratch;
+    let key_line = format!("TOGGLE MAP: {}", menu.map_key());
+    list.text_at(
+        (panel.x + scale.px(28.0), last_bottom + scale.px(10.0)),
+        &key_line,
+        theme.text,
+        scale.text(1.0),
+    );
+    list.text_at(
+        (panel.x + scale.px(28.0), last_bottom + scale.px(26.0)),
+        "SET IN SETTINGS.CFG: MAP.TOGGLE_KEY",
+        theme.text_disabled,
+        scale.text(0.8),
+    );
+}
+
+/// The hero roster: one ticked row per playable character, a line saying what it is, and a
+/// way back.
+///
+/// The tick is the checkbox's own, so "which hero am I" is drawn by the same widget that
+/// draws every other yes-or-no in the menu. The description is the only thing this screen
+/// adds, and it is read straight off the hero rather than written down here.
+fn push_heroes(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let panel = menu.hero_panel();
+    push_backdrop(list, theme, viewport, panel, "SWAP HERO", scale);
+    for (item, widget) in menu.hero_screen().widgets() {
+        push_widget(list, widget, theme, scale);
+        let HeroItem::Hero(hero) = item else {
+            continue;
+        };
+        // In the gap the layout reserved under the row, indented to line up with the label
+        // beside the tick.
+        let rect = widget.rect();
+        list.text_at(
+            (rect.x + scale.px(48.0), rect.bottom() + scale.px(6.0)),
+            hero.description(),
+            theme.text_disabled,
+            scale.text(0.8),
+        );
+    }
+}
+
+/// The nameplate section: six sliders and a way back, in the same form as the settings.
+///
+/// A separate function only because the panel and the title differ; every widget on it is
+/// drawn by exactly the code that draws the settings screen's, so the two cannot drift apart
+/// visually.
+fn push_nameplates(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    scratch: &mut MenuScratch,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
+    let panel = menu.nameplate_panel();
+    push_backdrop(list, theme, viewport, panel, "NAMEPLATES", scale);
+    for (_, widget) in menu.nameplate_screen().widgets() {
+        match widget {
+            Widget::Slider(slider) => push_slider(list, slider, theme, scratch, scale),
+            _ => push_widget(list, widget, theme, scale),
+        }
     }
 }
 
 /// The main menu: a scrim, a panel, the build's version, and three buttons in two groups.
-fn push_pause(list: &mut UiDrawList, menu: &MenuSystem, theme: &MenuTheme, viewport: (u32, u32)) {
+fn push_pause(
+    list: &mut UiDrawList,
+    menu: &MenuSystem,
+    theme: &MenuTheme,
+    viewport: (u32, u32),
+    scale: UiScale,
+) {
     let panel = menu.pause_panel();
-    push_backdrop(list, theme, viewport, panel, menu.title());
+    push_backdrop(list, theme, viewport, panel, menu.title(), scale);
 
     let mut previous_bottom = None;
     for (item, widget) in menu.pause_screen().widgets() {
@@ -168,11 +558,16 @@ fn push_pause(list: &mut UiDrawList, menu: &MenuSystem, theme: &MenuTheme, viewp
             let gap: f32 = rect.y - previous;
             let midpoint = previous + gap * 0.5;
             list.rect(
-                UiRect::new(panel.x + 40.0, midpoint - 1.0, panel.width - 80.0, 1.0),
+                UiRect::new(
+                    panel.x + scale.px(40.0),
+                    midpoint - scale.px(1.0),
+                    panel.width - scale.px(80.0),
+                    scale.px(1.0),
+                ),
                 theme.separator,
             );
         }
-        push_widget(list, widget, theme);
+        push_widget(list, widget, theme, scale);
         previous_bottom = Some(rect.bottom());
     }
 }
@@ -184,16 +579,17 @@ fn push_settings(
     theme: &MenuTheme,
     scratch: &mut MenuScratch,
     viewport: (u32, u32),
+    scale: UiScale,
 ) {
     let panel = menu.settings_panel();
-    push_backdrop(list, theme, viewport, panel, "SETTINGS");
+    push_backdrop(list, theme, viewport, panel, "SETTINGS", scale);
 
-    for (item, widget) in menu.settings_screen().widgets() {
-        match (item, widget) {
-            (SettingsItem::CameraSensitivity, Widget::Slider(slider)) => {
-                push_slider(list, slider, theme, scratch);
-            }
-            _ => push_widget(list, widget, theme),
+    // Every slider is drawn in full, with its name and bounds. Matching on the widget
+    // rather than on which setting it is means adding a setting needs no change here.
+    for (_, widget) in menu.settings_screen().widgets() {
+        match widget {
+            Widget::Slider(slider) => push_slider(list, slider, theme, scratch, scale),
+            _ => push_widget(list, widget, theme, scale),
         }
     }
 }
@@ -205,24 +601,40 @@ fn push_backdrop(
     viewport: (u32, u32),
     panel: UiRect,
     title: &str,
+    scale: UiScale,
 ) {
     list.rect(
         UiRect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32),
         theme.scrim,
     );
     list.rect(panel, theme.panel);
-    list.outline(panel, theme.border_pixels, theme.panel_border);
+    list.outline(panel, scale.px(theme.border_pixels), theme.panel_border);
 
-    let (origin, align) = centre_text(panel.x + panel.width * 0.5, panel.y + 22.0);
-    list.text_aligned(origin, title, theme.title, theme.title_scale, align);
+    let (origin, align) = centre_text(panel.x + panel.width * 0.5, panel.y + scale.px(22.0));
+    list.text_aligned(
+        origin,
+        title,
+        theme.title,
+        scale.text(theme.title_scale),
+        align,
+    );
 }
 
 /// One widget in whatever state it is in.
-fn push_widget(list: &mut UiDrawList, widget: &Widget, theme: &MenuTheme) {
+///
+/// `pub` so the screens that are not the pause menu — the slot menu, the HUD editor — draw
+/// their buttons with exactly the same rules rather than with a second copy of them.
+pub fn push_widget(list: &mut UiDrawList, widget: &Widget, theme: &MenuTheme, scale: UiScale) {
     match widget {
-        Widget::Button(button) => {
-            push_labelled_box(list, theme, button.rect, button.label, &button.state, None)
-        }
+        Widget::Button(button) => push_labelled_box(
+            list,
+            theme,
+            button.rect,
+            button.label,
+            &button.state,
+            None,
+            scale,
+        ),
         Widget::Checkbox(checkbox) => push_labelled_box(
             list,
             theme,
@@ -230,12 +642,16 @@ fn push_widget(list: &mut UiDrawList, widget: &Widget, theme: &MenuTheme) {
             checkbox.label,
             &checkbox.state,
             Some(checkbox.checked),
+            scale,
         ),
         Widget::Slider(slider) => {
             // A slider drawn without its numbers: the settings screen draws the full form,
             // this is the fallback for a screen that only wants the track.
-            push_track(list, slider, theme);
+            push_track(list, slider, theme, scale);
         }
+        // A dropdown drawn without its options' words: the screen that owns it knows them
+        // and draws the full form; this is the fallback.
+        Widget::Dropdown(dropdown) => push_dropdown_box(list, dropdown, "", theme, scale),
     }
 }
 
@@ -247,43 +663,44 @@ fn push_labelled_box(
     label: &str,
     state: &WidgetState,
     checked: Option<bool>,
+    scale: UiScale,
 ) {
     list.rect(rect, theme.fill(state));
 
     match checked {
         Some(checked) => {
             // Box on the left, label beside it: the shape every options screen uses.
-            let size = (rect.height - 16.0).max(8.0);
+            let size = (rect.height - scale.px(16.0)).max(scale.px(8.0));
             let box_rect = UiRect::new(
-                rect.x + 12.0,
+                rect.x + scale.px(12.0),
                 rect.y + (rect.height - size) * 0.5,
                 size,
                 size,
             );
-            list.outline(box_rect, theme.border_pixels, theme.panel_border);
+            list.outline(box_rect, scale.px(theme.border_pixels), theme.panel_border);
             if checked {
-                list.rect(box_rect.inset(5.0), theme.track_fill);
+                list.rect(box_rect.inset(scale.px(5.0)), theme.track_fill);
             }
             list.text_at(
                 (
-                    box_rect.right() + 14.0,
-                    text_baseline(rect, theme.label_scale),
+                    box_rect.right() + scale.px(14.0),
+                    text_baseline(rect, scale.text(theme.label_scale)),
                 ),
                 label,
                 theme.label_color(state),
-                theme.label_scale,
+                scale.text(theme.label_scale),
             );
         }
         None => {
             let (origin, align) = centre_text(
                 rect.x + rect.width * 0.5,
-                text_baseline(rect, theme.label_scale),
+                text_baseline(rect, scale.text(theme.label_scale)),
             );
             list.text_aligned(
                 origin,
                 label,
                 theme.label_color(state),
-                theme.label_scale,
+                scale.text(theme.label_scale),
                 align,
             );
         }
@@ -291,12 +708,12 @@ fn push_labelled_box(
 }
 
 /// A slider's track, fill and handle.
-fn push_track(list: &mut UiDrawList, slider: &Slider, theme: &MenuTheme) {
+fn push_track(list: &mut UiDrawList, slider: &Slider, theme: &MenuTheme, scale: UiScale) {
     let track = slider.rect;
     list.rect(track, theme.track);
     list.rect(track.fraction_of_width(slider.fraction()), theme.track_fill);
 
-    let handle = handle_rect(slider, theme);
+    let handle = handle_rect(slider, theme, scale);
     list.rect(handle, theme.handle);
 }
 
@@ -312,58 +729,63 @@ fn push_slider(
     slider: &Slider,
     theme: &MenuTheme,
     scratch: &mut MenuScratch,
+    scale: UiScale,
 ) {
     let track = slider.rect;
 
     list.text_at(
-        (track.x - 62.0, track.y - 26.0),
+        (track.x - scale.px(62.0), track.y - scale.px(26.0)),
         slider.label,
         theme.label_color(&slider.state),
-        theme.label_scale,
+        scale.text(theme.label_scale),
     );
 
-    push_track(list, slider, theme);
+    push_track(list, slider, theme, scale);
 
-    // The bounds, printed at the ends of the thing they bound.
-    write_hundredths(&mut scratch.minimum, slider.minimum());
-    write_hundredths(&mut scratch.maximum, slider.maximum());
-    let baseline = track.y + (track.height - 7.0 * theme.value_scale) * 0.5;
+    // The bounds, printed at the ends of the thing they bound, to the same precision as the
+    // value between them: `0.10` beside `5.00` reads as a range, `0` beside `5.00` does not.
+    write_decimals(&mut scratch.minimum, slider.minimum(), slider.decimals());
+    write_decimals(&mut scratch.maximum, slider.maximum(), slider.decimals());
+    let baseline = track.y + (track.height - 7.0 * scale.text(theme.value_scale)) * 0.5;
     list.text_aligned(
-        (track.x - 10.0, baseline),
+        (track.x - scale.px(10.0), baseline),
         &scratch.minimum,
         theme.text,
-        theme.value_scale,
+        scale.text(theme.value_scale),
         TextAlign::Right,
     );
     list.text_at(
-        (track.right() + 10.0, baseline),
+        (track.right() + scale.px(10.0), baseline),
         &scratch.maximum,
         theme.text,
-        theme.value_scale,
+        scale.text(theme.value_scale),
     );
 
     // The current value, under the handle, so the number and the position agree.
-    write_hundredths(&mut scratch.value, slider.value());
-    let handle = handle_rect(slider, theme);
-    let (origin, align) = centre_text(handle.x + handle.width * 0.5, track.bottom() + 12.0);
+    write_decimals(&mut scratch.value, slider.value(), slider.decimals());
+    let handle = handle_rect(slider, theme, scale);
+    let (origin, align) = centre_text(
+        handle.x + handle.width * 0.5,
+        track.bottom() + scale.px(12.0),
+    );
     list.text_aligned(
         origin,
         &scratch.value,
         theme.title,
-        theme.value_scale,
+        scale.text(theme.value_scale),
         align,
     );
 }
 
 /// Where the handle sits, clamped so it never hangs off either end of its track.
-fn handle_rect(slider: &Slider, theme: &MenuTheme) -> UiRect {
-    let width = theme.handle_width.min(slider.rect.width.max(1.0));
+fn handle_rect(slider: &Slider, theme: &MenuTheme, scale: UiScale) -> UiRect {
+    let width = scale.px(theme.handle_width).min(slider.rect.width.max(1.0));
     let travel = (slider.rect.width - width).max(0.0);
     UiRect::new(
         slider.rect.x + travel * slider.fraction(),
-        slider.rect.y - 4.0,
+        slider.rect.y - scale.px(4.0),
         width,
-        slider.rect.height + 8.0,
+        slider.rect.height + scale.px(8.0),
     )
 }
 
@@ -383,9 +805,18 @@ fn centre_text(x: f32, y: f32) -> ((f32, f32), TextAlign) {
 /// `format!` would allocate a `String` per number, and the settings screen prints three of
 /// them every frame it is open.
 pub fn write_hundredths(out: &mut String, value: f32) {
+    write_decimals(out, value, 2);
+}
+
+/// Writes a value to `decimals` places into `out`, replacing what was there.
+///
+/// The precision is the slider's, not this function's: a size of eleven is `11`, and a margin
+/// of 0.93 is `0.93`. `format!` would allocate a `String` per number, and a settings screen
+/// prints three of them per slider every frame it is open.
+pub fn write_decimals(out: &mut String, value: f32, decimals: usize) {
     use std::fmt::Write as _;
     out.clear();
-    let _ = write!(out, "{value:.2}");
+    let _ = write!(out, "{value:.*}", decimals.min(4));
 }
 
 #[cfg(test)]
@@ -425,6 +856,79 @@ mod tests {
             pointer_released: true,
             ..UiInput::new()
         });
+    }
+
+    #[test]
+    fn the_graphics_screen_prints_its_choices_and_the_dialog_its_countdown() {
+        use engine_settings::{DisplaySettings, Resolution};
+        let mut menu = menu();
+        menu.open_pause();
+        open_settings(&mut menu);
+        let rect = menu
+            .settings_screen()
+            .widget(crate::ui::menu::SettingsItem::Graphics)
+            .expect("GRAPHICS exists")
+            .rect();
+        let (x, y) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        for (pressed, released) in [(true, false), (false, true)] {
+            menu.update(&UiInput {
+                pointer: (x, y),
+                pointer_down: pressed,
+                pointer_pressed: pressed,
+                pointer_released: released,
+                ..UiInput::new()
+            });
+        }
+        menu.set_display_options(
+            vec![Resolution::new(2560, 1440), Resolution::new(1920, 1080)],
+            Resolution::new(2560, 1440),
+            DisplaySettings::default(),
+        );
+        let text = render(&menu).text().to_owned();
+        for word in [
+            "GRAPHICS",
+            "RESOLUTION",
+            "WINDOW MODE",
+            "1920 x 1080",
+            "WINDOWED",
+            "APPLY",
+            "SHADOW QUALITY",
+            "HIGH",
+            ShadowQuality::High.description(),
+            "MAX FPS",
+            "UNLIMITED",
+            "PRESERVE ENERGY IN BACKGROUND",
+        ] {
+            assert!(text.contains(word), "{word} missing from {text}");
+        }
+        // The longest label on the screen, beside its box, inside the panel: 5x7 glyphs
+        // advance six cells at the label's scale.
+        let panel = menu.graphics_panel();
+        let row = menu
+            .graphics_menu()
+            .screen()
+            .widget(crate::ui::graphics_menu::GraphicsItem::PreserveEnergy)
+            .expect("the box exists")
+            .rect();
+        let scale = menu.scale();
+        let label = "PRESERVE ENERGY IN BACKGROUND";
+        let text_width =
+            (label.len() * 6 - 1) as f32 * scale.text(MenuTheme::default().label_scale);
+        let box_size = (row.height - scale.px(16.0)).max(scale.px(8.0));
+        let text_right = row.x + scale.px(12.0) + box_size + scale.px(14.0) + text_width;
+        assert!(
+            text_right <= panel.right(),
+            "{text_right} runs past the panel's edge at {}",
+            panel.right()
+        );
+        menu.graphics_menu_mut().begin_confirmation(15);
+        let text = render(&menu).text().to_owned();
+        assert!(text.contains("KEEP THESE DISPLAY SETTINGS?"), "{text}");
+        assert!(text.contains("REVERTING IN 15 SECONDS..."), "{text}");
+        assert!(
+            text.contains("KEEP CHANGES") && text.contains("REVERT"),
+            "{text}"
+        );
     }
 
     fn render(menu: &MenuSystem) -> UiDrawList {
@@ -493,6 +997,7 @@ mod tests {
         open_settings(&mut menu);
         menu.apply_settings(GameSettings {
             camera_sensitivity: 1.25,
+            ..GameSettings::default()
         });
 
         let drawn = texts(&render(&menu));
@@ -505,6 +1010,80 @@ mod tests {
         assert!(drawn.contains(&"5.00".to_owned()), "no maximum: {drawn:?}");
         assert!(drawn.contains(&"1.25".to_owned()), "no value: {drawn:?}");
         assert!(drawn.contains(&"BACK".to_owned()), "{drawn:?}");
+    }
+
+    #[test]
+    fn the_nameplate_screen_prints_its_settings_in_the_form_the_reference_uses() {
+        use crate::ui::menu::{NameplateItem, SettingsItem};
+        use engine_settings::NameplateSetting;
+
+        let mut menu = menu();
+        menu.open_pause();
+        open_settings(&mut menu);
+        // Into the nameplate section.
+        let rect = menu
+            .settings_screen()
+            .widget(SettingsItem::Nameplates)
+            .expect("the NAMEPLATES button exists")
+            .rect();
+        let (x, y) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        menu.update(&UiInput {
+            pointer: (x, y),
+            pointer_down: true,
+            pointer_pressed: true,
+            ..UiInput::new()
+        });
+        menu.update(&UiInput {
+            pointer: (x, y),
+            pointer_released: true,
+            ..UiInput::new()
+        });
+
+        let drawn = texts(&render(&menu));
+        assert!(drawn.contains(&"NAMEPLATES".to_owned()), "{drawn:?}");
+        for setting in NameplateSetting::ALL {
+            assert!(
+                drawn.contains(&setting.label().to_owned()),
+                "{setting:?} has no label: {drawn:?}"
+            );
+        }
+        // The defaults, printed exactly as the reference layout prints them: whole numbers
+        // for the three that step in whole numbers, hundredths for the three that do not.
+        for expected in ["11", "4", "65", "0.16", "0.08", "0.07"] {
+            assert!(
+                drawn.contains(&expected.to_owned()),
+                "no {expected} on the screen: {drawn:?}"
+            );
+        }
+        assert!(drawn.contains(&"BACK".to_owned()), "{drawn:?}");
+
+        // And every slider's handle is on its own track.
+        let theme = MenuTheme::default();
+        for setting in NameplateSetting::ALL {
+            let Some(Widget::Slider(slider)) = menu
+                .nameplate_screen()
+                .widget(NameplateItem::Setting(setting))
+            else {
+                panic!("{setting:?} is not a slider");
+            };
+            let handle = handle_rect(slider, &theme, menu.scale());
+            assert!(handle.x >= slider.rect.x - 0.01, "{setting:?}");
+            assert!(handle.right() <= slider.rect.right() + 0.01, "{setting:?}");
+        }
+    }
+
+    #[test]
+    fn a_value_is_printed_to_the_places_its_slider_asks_for() {
+        let mut out = String::new();
+        write_decimals(&mut out, 11.0, 0);
+        assert_eq!(out, "11");
+        write_decimals(&mut out, 0.93, 2);
+        assert_eq!(out, "0.93");
+        write_decimals(&mut out, 40.0, 0);
+        assert_eq!(out, "40");
+        // The old two-place helper is the same function with a fixed precision.
+        write_hundredths(&mut out, 1.5);
+        assert_eq!(out, "1.50");
     }
 
     #[test]
@@ -527,9 +1106,10 @@ mod tests {
         for value in [CAMERA_SENSITIVITY_MIN, 1.0, CAMERA_SENSITIVITY_MAX] {
             menu.apply_settings(GameSettings {
                 camera_sensitivity: value,
+                ..GameSettings::default()
             });
             let slider = menu.sensitivity_slider().expect("a slider");
-            let handle = handle_rect(slider, &theme);
+            let handle = handle_rect(slider, &theme, menu.scale());
             assert!(
                 handle.x >= slider.rect.x - 0.01,
                 "{value} hangs off the left"
@@ -661,11 +1241,21 @@ mod tests {
         let mut checkbox = Checkbox::new("VSYNC");
         checkbox.rect = UiRect::new(0.0, 0.0, 200.0, 40.0);
 
-        push_widget(&mut list, &Widget::from(checkbox), &theme);
+        push_widget(
+            &mut list,
+            &Widget::from(checkbox),
+            &theme,
+            UiScale::default(),
+        );
         let unchecked = list.len();
 
         list.clear();
-        push_widget(&mut list, &Widget::from(checkbox.checked(true)), &theme);
+        push_widget(
+            &mut list,
+            &Widget::from(checkbox.checked(true)),
+            &theme,
+            UiScale::default(),
+        );
         assert_eq!(list.len(), unchecked + 1, "the tick is one more rectangle");
         assert!(texts(&list).contains(&"VSYNC".to_owned()));
     }

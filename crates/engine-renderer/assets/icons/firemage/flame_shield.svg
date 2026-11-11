@@ -1,0 +1,66 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="flame_shield_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="flame_shield_forge" gradientUnits="userSpaceOnUse" cx="338" cy="580" r="330">
+		<stop offset="0" stop-opacity="0.55" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.55" stop-opacity="0.22" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<linearGradient id="flame_shield_plate" gradientUnits="userSpaceOnUse" x1="200" y1="330" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="0.55" stop-opacity="1" stop-color="rgb(83,12,13)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+	</linearGradient>
+	<linearGradient id="flame_shield_rim" gradientUnits="userSpaceOnUse" x1="150" y1="340" x2="520" y2="820">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(252,149,6)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(225,57,2)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(171,20,2)"></stop>
+	</linearGradient>
+	<linearGradient id="flame_shield_flame" gradientUnits="userSpaceOnUse" x1="338" y1="760" x2="338" y2="380">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+	</linearGradient>
+	<radialGradient id="flame_shield_glow" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="300">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="0.5" stop-opacity="0.18" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(94,13,6)"></stop>
+	</radialGradient>
+	<clipPath id="flame_shield_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#flame_shield_tile)">
+	<path fill="url(#flame_shield_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#flame_shield_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="url(#flame_shield_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Fire wrapping past the shield's edge: it is a skin of flame, not a slab of iron, so
+	     the flame reads outside the silhouette as well as on it. -->
+	<path fill="url(#flame_shield_flame)" fill-opacity="0.75" d="M 338 268 C 396 292 466 308 540 316 C 546 452 528 566 486 660 C 512 546 512 434 502 348 C 440 344 384 330 338 308 C 292 330 236 344 174 348 C 164 434 164 546 190 660 C 148 566 130 452 136 316 C 210 308 280 292 338 268 z"></path>
+	<path fill="rgb(252,149,6)" fill-opacity="0.7" d="M 130 388 C 110 434 100 480 104 528 C 88 480 90 430 112 380 z"></path>
+	<path fill="rgb(252,149,6)" fill-opacity="0.7" d="M 546 388 C 566 434 576 480 572 528 C 588 480 586 430 564 380 z"></path>
+
+	<!-- Rim and plate: the thing the fire is stretched over. -->
+	<path fill="url(#flame_shield_rim)" d="M 338 300 C 396 326 464 342 532 350 C 538 512 512 636 452 720 C 414 772 380 806 338 830 C 296 806 262 772 224 720 C 164 636 138 512 144 350 C 212 342 280 326 338 300 z"></path>
+	<path fill="url(#flame_shield_plate)" d="M 338 344 C 392 368 452 382 512 390 C 516 528 494 636 442 708 C 408 754 378 784 338 806 C 298 784 268 754 234 708 C 182 636 160 528 164 390 C 224 382 284 368 338 344 z"></path>
+
+	<!-- The flame the shield carries on its face: it burns outward, at whatever hits it. -->
+	<path fill="url(#flame_shield_flame)" d="M 338 396 C 362 462 394 496 418 536 C 438 568 442 600 432 632 C 418 678 382 704 338 704 C 294 704 258 678 244 632 C 234 600 238 568 258 536 C 282 496 314 462 338 396 z"></path>
+	<path fill="rgb(252,191,12)" d="M 338 486 C 354 530 376 554 388 580 C 398 600 396 620 386 636 C 374 656 358 666 338 666 C 318 666 302 656 290 636 C 280 620 278 600 288 580 C 300 554 322 530 338 486 z"></path>
+	<path fill="rgb(255,244,196)" fill-opacity="0.9" d="M 338 566 C 346 592 358 606 364 622 C 370 638 364 652 350 656 C 340 660 328 658 322 650 C 312 638 312 624 320 610 C 328 596 334 582 338 566 z"></path>
+
+	<!-- Rivets: the shield is a made thing, held together. -->
+	<path fill="rgb(241,87,3)" fill-opacity="0.8" d="M 196 404 C 206 404 214 412 214 422 C 214 432 206 440 196 440 C 186 440 178 432 178 422 C 178 412 186 404 196 404 z"></path>
+	<path fill="rgb(241,87,3)" fill-opacity="0.8" d="M 480 404 C 490 404 498 412 498 422 C 498 432 490 440 480 440 C 470 440 462 432 462 422 C 462 412 470 404 480 404 z"></path>
+	<path fill="rgb(241,87,3)" fill-opacity="0.8" d="M 338 742 C 348 742 356 750 356 760 C 356 770 348 778 338 778 C 328 778 320 770 320 760 C 320 750 328 742 338 742 z"></path>
+
+	<!-- Sparks struck off the rim. -->
+	<path fill="rgb(252,191,12)" d="M 566 316 C 574 322 578 330 576 340 C 566 334 560 326 560 316 z"></path>
+	<path fill="rgb(254,224,61)" d="M 110 320 C 118 324 122 332 120 342 C 110 336 104 328 104 320 z"></path>
+	<path fill="rgb(253,120,2)" d="M 500 752 C 508 756 512 764 510 772 C 502 768 496 760 496 752 z"></path>
+</g>
+</svg>

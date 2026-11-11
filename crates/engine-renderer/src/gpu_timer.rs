@@ -28,6 +28,7 @@
 //! execution span of the frame's own work. It excludes anything the GPU does for other
 //! processes, and it excludes time between frames when the queue is idle.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_READBACK, D3D12_QUERY_HEAP_DESC,
     D3D12_QUERY_HEAP_TYPE_TIMESTAMP, D3D12_QUERY_TYPE_TIMESTAMP, D3D12_RANGE, D3D12_RESOURCE_DESC,
@@ -35,16 +36,80 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandQueue, ID3D12Device, ID3D12GraphicsCommandList,
     ID3D12QueryHeap, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
+#[cfg(windows)]
 use crate::error::RendererError;
 
-/// Timestamps recorded per frame slot: one at the start of the list, one at the end.
-const QUERIES_PER_FRAME: usize = 2;
+/// Timestamps recorded per frame slot.
+///
+/// Two for the frame — one at the start of the list, one at the end — and two per *pass*
+/// that asks to be measured separately. §19 asks for the shadow pass's GPU time to come from
+/// the profiling that already exists rather than from a second timer beside it, and this is
+/// what that means concretely: the same query heap, the same readback buffer, the same
+/// resolve, four more bytes of it.
+const QUERIES_PER_FRAME: usize = 2 + 2 * MAX_TIMED_PASSES;
 
+/// How many passes inside a frame can be timed separately.
+///
+/// Seven: every stage the frame has — the shadow stage, the camera's mesh pass, the
+/// particles and the interface — plus the three parts of the shadow stage, timed inside its
+/// own pair. Raising it is a change to this constant and to nothing else — the heap, the
+/// readback buffer and the resolve are all sized from it.
+///
+/// It went from one to four because "the frame got 0.13 ms slower at 800x450 and no slower
+/// at 1080p" is not a question one number can answer. A per-pass split says which stage
+/// moved, and a stage that did not move rules itself out.
+pub const MAX_TIMED_PASSES: usize = 7;
+
+/// The pass index the shadow stage's timestamps use.
+///
+/// Everything the shadow stage records: the atlas draws, the depth prepass and the contact
+/// pass. It brackets `record_shadow_stage`, which is where all three live.
+pub const SHADOW_PASS: usize = 0;
+
+/// The camera's opaque mesh pass: every static, instanced and skinned draw.
+///
+/// This is the one the material work lands in — the four texture fetches, the BRDF and the
+/// shadow *sampling* (as opposed to the atlas fill, which is [`SHADOW_PASS`]).
+pub const SCENE_PASS: usize = 1;
+
+/// The particle pass, drawn after the scene and before the interface.
+pub const PARTICLE_PASS: usize = 2;
+
+/// The interface: the debug overlay's geometry and the game UI's single batched draw.
+pub const UI_PASS: usize = 3;
+
+/// The shadow atlas fill: cascades and local views. Nested inside [`SHADOW_PASS`].
+pub const SHADOW_ATLAS_PASS: usize = 4;
+
+/// The camera's depth prepass and the copy of its depth that contact shadows read. Nested
+/// inside [`SHADOW_PASS`]; zero-length when contact shadows are off.
+pub const DEPTH_PREPASS: usize = 5;
+
+/// The half-resolution contact-shadow march. Nested inside [`SHADOW_PASS`]; zero-length when
+/// contact shadows are off.
+pub const CONTACT_PASS: usize = 6;
+
+/// Every timed pass, in the order they are recorded, with a name for a report.
+///
+/// The last three are parts of the first: they do not add to the frame on top of it.
+pub const TIMED_PASSES: [(usize, &str); MAX_TIMED_PASSES] = [
+    (SHADOW_PASS, "shadow"),
+    (SCENE_PASS, "scene"),
+    (PARTICLE_PASS, "particles"),
+    (UI_PASS, "ui"),
+    (SHADOW_ATLAS_PASS, "atlas"),
+    (DEPTH_PREPASS, "prepass"),
+    (CONTACT_PASS, "contact"),
+];
+
+#[cfg(windows)]
 /// Bytes per timestamp, which `ResolveQueryData` writes as `u64` ticks.
 const BYTES_PER_QUERY: usize = size_of::<u64>();
 
+#[cfg(windows)]
 /// Timestamp query heap, its readback buffer and the queue's tick rate.
 pub struct GpuTimer {
     query_heap: ID3D12QueryHeap,
@@ -57,6 +122,7 @@ pub struct GpuTimer {
     frame_count: usize,
 }
 
+#[cfg(windows)]
 impl GpuTimer {
     /// Creates a timer with `frame_count` independent slots.
     ///
@@ -122,6 +188,55 @@ impl GpuTimer {
         }
     }
 
+    /// Records the opening timestamp for one pass inside `slot`.
+    ///
+    /// Nested inside the frame's own pair rather than replacing it: the frame time still
+    /// covers everything, and the pass time says how much of it one stage was.
+    pub fn begin_pass(&self, list: &ID3D12GraphicsCommandList, slot: usize, pass: usize) {
+        if pass >= MAX_TIMED_PASSES {
+            return;
+        }
+        // SAFETY: FFI call on an open list. The index is inside the heap because both `slot`
+        // and `pass` are bounded by the counts that sized it.
+        unsafe {
+            list.EndQuery(
+                &self.query_heap,
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                pass_query_index(slot, pass) as u32,
+            );
+        }
+    }
+
+    /// Records the closing timestamp for one pass inside `slot`.
+    pub fn end_pass(&self, list: &ID3D12GraphicsCommandList, slot: usize, pass: usize) {
+        if pass >= MAX_TIMED_PASSES {
+            return;
+        }
+        // SAFETY: FFI call on an open list, as above.
+        unsafe {
+            list.EndQuery(
+                &self.query_heap,
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                (pass_query_index(slot, pass) + 1) as u32,
+            );
+        }
+    }
+
+    /// Reads the GPU time one pass took inside `slot`, in milliseconds.
+    ///
+    /// The same rules as [`GpuTimer::read_frame_ms`]: the caller must have waited for that
+    /// slot's fence, and the answer describes the frame one lap ago.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if mapping the readback buffer fails.
+    pub fn read_pass_ms(&self, slot: usize, pass: usize) -> Result<Option<f64>, RendererError> {
+        if pass >= MAX_TIMED_PASSES || !self.resolved.get(slot).copied().unwrap_or(false) {
+            return Ok(None);
+        }
+        self.read_pair(pass_query_index(slot, pass))
+    }
+
     /// Records the closing timestamp for `slot` and resolves both into the readback
     /// buffer.
     ///
@@ -168,15 +283,23 @@ impl GpuTimer {
             return Ok(None);
         }
 
-        let offset = begin_query_index(slot) * BYTES_PER_QUERY;
+        self.read_pair(begin_query_index(slot))
+    }
+
+    /// Maps the readback buffer and reads the pair of timestamps starting at `query`.
+    ///
+    /// Shared by the frame read and the pass read, so the two cannot disagree about the
+    /// mapping range or about what an out-of-order pair means.
+    fn read_pair(&self, query: usize) -> Result<Option<f64>, RendererError> {
+        let offset = query * BYTES_PER_QUERY;
         let range = D3D12_RANGE {
             Begin: offset,
-            End: offset + QUERIES_PER_FRAME * BYTES_PER_QUERY,
+            End: offset + 2 * BYTES_PER_QUERY,
         };
 
         let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
         // SAFETY: FFI call mapping subresource 0 of a readback buffer, declaring exactly
-        // the range this slot owns.
+        // the range these two timestamps occupy.
         unsafe { self.readback.Map(0, Some(&range), Some(&mut mapped)) }
             .map_err(|error| RendererError::api("ID3D12Resource::Map", error))?;
 
@@ -210,6 +333,15 @@ impl GpuTimer {
     }
 }
 
+/// Index of the opening timestamp query for pass `pass` inside `slot`.
+///
+/// The pass pairs sit after the frame's own pair, inside the same slot's range, so the
+/// single `ResolveQueryData` in `end_frame` still covers all of them.
+#[must_use]
+pub fn pass_query_index(slot: usize, pass: usize) -> usize {
+    begin_query_index(slot) + 2 + pass * 2
+}
+
 /// Index of the opening timestamp query for `slot`.
 #[must_use]
 pub fn begin_query_index(slot: usize) -> usize {
@@ -236,8 +368,9 @@ pub fn ticks_to_ms(begin: u64, end: u64, frequency: u64) -> Option<f64> {
     Some(ticks as f64 * 1000.0 / frequency as f64)
 }
 
+#[cfg(windows)]
 /// Creates a readback buffer of `bytes` bytes for resolved query data.
-fn create_readback_buffer(
+pub(crate) fn create_readback_buffer(
     device: &ID3D12Device,
     bytes: usize,
 ) -> Result<ID3D12Resource, RendererError> {
@@ -290,16 +423,41 @@ mod tests {
 
     #[test]
     fn query_indices_do_not_overlap_between_slots() {
+        // Every query a slot owns — its frame pair and one pair per timed pass — must be
+        // distinct from every other slot's, or two frames in flight overwrite each other's
+        // timestamps and the overlay reports numbers from a frame that never happened.
         let mut seen = Vec::new();
         for slot in 0..4 {
             seen.push(begin_query_index(slot));
             seen.push(end_query_index(slot));
+            for pass in 0..MAX_TIMED_PASSES {
+                seen.push(pass_query_index(slot, pass));
+                seen.push(pass_query_index(slot, pass) + 1);
+            }
         }
         let mut sorted = seen.clone();
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), seen.len(), "each slot needs its own queries");
-        assert_eq!(seen, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(
+            sorted.last().copied(),
+            Some(4 * QUERIES_PER_FRAME - 1),
+            "the indices must fill the heap the timer sizes, with no gaps"
+        );
+    }
+
+    #[test]
+    fn a_passes_queries_sit_inside_its_own_slots_range() {
+        // The single `ResolveQueryData` in `end_frame` covers `QUERIES_PER_FRAME` queries
+        // starting at the slot's first. A pass whose pair fell outside that range would
+        // never be resolved and would read as zero for ever.
+        for slot in 0..4 {
+            let first = begin_query_index(slot);
+            for pass in 0..MAX_TIMED_PASSES {
+                let index = pass_query_index(slot, pass);
+                assert!(index >= first && index + 1 < first + QUERIES_PER_FRAME);
+            }
+        }
     }
 
     #[test]

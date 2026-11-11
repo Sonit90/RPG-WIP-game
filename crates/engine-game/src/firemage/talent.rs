@@ -1,112 +1,87 @@
-//! The talent grid: four tiers of individually purchasable talents.
+//! The FireMage's talent tree: twelve talents, bought individually against a point budget.
 //!
 //! ```text
-//! TalentDef (data)  ->  TalentGrid (what is bought)  ->  TalentEffects (what it means)
+//! table (talents.json)  ->  TalentGrid (what is bought)  ->  TalentEffects (what it means)
 //! ```
 //!
-//! Three layers on purpose. [`TALENTS`] is a table a designer edits. [`TalentGrid`] is the
-//! player's state: points, purchases, and the rules about spending. [`TalentEffects`] is the
+//! The three layers are the hero-generic ones in [`crate::talent`]: the table is data (the
+//! built-in [`DEFS`] here are the defaults the unit tests run on and the numbers the shipped
+//! JSON must equal), the grid is the player's purchases, and [`TalentEffects`] is the
 //! *derived* answer gameplay asks - "what is the Ignite maximum", "how much extra does a
-//! detonation do" - recomputed whenever a talent is bought and never scattered as `if
-//! has_talent(..)` checks through the combat code.
+//! detonation do" - recomputed whenever a talent is bought and never scattered as
+//! `if has_talent(..)` checks through the combat code.
 //!
 //! That third layer is what makes Infernal Capacity work everywhere at once: the Ignite
-//! maximum is a field on `TalentEffects`, and every ability, tooltip and bar reads it.
-//!
-//! There is no forced path. A talent in tier 4 is bought the same way as one in tier 1; the
-//! tiers are a way of grouping power, not a prerequisite chain.
+//! maximum is a field on [`TalentEffects`], and every ability, tooltip, bar and simulator
+//! run reads it.
 
-/// Every talent in the grid.
-///
-/// A dense enum rather than a string id: the compiler then checks that the effects table
-/// covers all of them, and a typo cannot invent a talent that silently does nothing.
+pub use crate::talent::{TALENT_TIERS, TalentError, TalentGrid};
+use crate::talent::{TalentDef, TalentKey, hero_talents};
+
+/// Every talent in the tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum TalentId {
-    // Tier 1
-    /// Firebolt is likelier to add a stack to an already-burning target.
-    HotHands,
-    /// Each Ignite stack makes a detonation hit harder.
+    /// Each Ignite stack consumed makes Detonate hit harder.
     BurningEmbers,
-    /// Firebolt casts faster.
-    QuickCasting,
-    /// Ignite lasts longer.
+    /// Ignite lasts ten seconds longer.
     ExtendedFlame,
-    /// Boiling over empowers the next spell.
-    VolatileHeat,
-    /// A critical Firebolt gives extra Ultimate Energy.
-    SparkOfPower,
-    // Tier 2
-    /// A detonation leaves one stack behind.
-    LingeringEmbers,
-    /// A detonation applies an extra stack to everything it splashes.
-    SpreadingFire,
-    /// Pyroblast hits harder into a full burn.
-    MoltenCore,
-    /// Inferno comes back sooner.
-    AcceleratedInferno,
-    /// Meteor gains a charge and a longer cooldown.
-    MeteorShower,
-    /// Meteor leaves fire behind.
-    BurningGround,
-    // Tier 3
-    /// Critical fire spells can add a stack.
-    CriticalIgnition,
-    /// A detonation at the cap hits harder.
-    PerfectCombustion,
-    /// Pyroblast guarantees the next spell's critical strike.
-    Pyroclasm,
-    /// Firestorm generates far more Heat.
-    EndlessFurnace,
-    /// Held Ultimate Energy is fire damage.
-    ArcanePressure,
-    /// A detonation kill brings Meteor back sooner.
-    RapidCombustion,
-    // Tier 4
-    /// Boiling over grants haste.
-    LivingInferno,
-    /// Meteor into a full burn brings Pyroblast back sooner.
-    MeteoricCollapse,
-    /// A lethal hit is survived, followed by two seconds of invulnerability.
-    PhoenixProtocol,
-    /// Critical strikes extend Inferno.
-    InfernoCascade,
-    /// High Heat is fire damage.
-    FurnaceOverdrive,
-    /// Detonations feed the Ultimate, and Cataclysm makes them splash harder.
-    CataclysmicIgnition,
     /// One more Ignite stack, everywhere.
     InfernalCapacity,
+    /// Detonate can hurry the area cooldowns along.
+    RapidCombustion,
+    /// Meteor trades its impact for burning ground.
+    MoltenMeteor,
+    /// The Inferno State lasts two seconds longer.
+    FurnaceMastery,
+    /// Meteor crits for triple, and a critical Meteor hurries Pyroblast.
+    MeteoricImpact,
+    /// The critical strike loop between Flame Lance and Pyroblast, at its cap.
+    SpellfireFeedback,
+    /// A critical Ignite tick can hurry Meteor along.
+    BurningPrecision,
+    /// Weaker Ignite, a second Pyroblast.
+    VolatileIgnition,
+    /// Pyroblast bounces.
+    ChainPyroblast,
+    /// Fire Mastery grants both stats instead of one.
+    DualFireMastery,
+    // Hidden book nodes (tier 0), one per enhancement-book option, in book order.
+    /// Pyroblast Book: a second Pyroblast charge.
+    TwinPyre,
+    /// Pyroblast Book: Pyroblast bounces a few times.
+    RicochetPyre,
+    /// Pyroblast Book: a critical Pyroblast cuts Flame Lance further.
+    SearingPyre,
+    /// Meteor Book: a critical Meteor hits harder and hurries Pyroblast.
+    ImpactCrater,
+    /// Meteor Book: Meteor leaves burning ground, hitting a little softer.
+    ScorchedEarth,
+    /// Meteor Book: critical Ignite ticks often hurry Meteor.
+    FallingStar,
+    /// Ignite Book: Ignite lasts longer and ticks a little softer.
+    SlowBurn,
+    /// Ignite Book: Detonate hits harder per Ignite stack.
+    HotCore,
+    /// Ignite Book: Detonate often hurries the area spells.
+    Flashpoint,
 }
 
 impl TalentId {
     /// Every talent, in table order.
     pub const ALL: [Self; TALENT_COUNT] = [
-        Self::HotHands,
         Self::BurningEmbers,
-        Self::QuickCasting,
         Self::ExtendedFlame,
-        Self::VolatileHeat,
-        Self::SparkOfPower,
-        Self::LingeringEmbers,
-        Self::SpreadingFire,
-        Self::MoltenCore,
-        Self::AcceleratedInferno,
-        Self::MeteorShower,
-        Self::BurningGround,
-        Self::CriticalIgnition,
-        Self::PerfectCombustion,
-        Self::Pyroclasm,
-        Self::EndlessFurnace,
-        Self::ArcanePressure,
-        Self::RapidCombustion,
-        Self::LivingInferno,
-        Self::MeteoricCollapse,
-        Self::PhoenixProtocol,
-        Self::InfernoCascade,
-        Self::FurnaceOverdrive,
-        Self::CataclysmicIgnition,
         Self::InfernalCapacity,
+        Self::RapidCombustion,
+        Self::MoltenMeteor,
+        Self::FurnaceMastery,
+        Self::MeteoricImpact,
+        Self::SpellfireFeedback,
+        Self::BurningPrecision,
+        Self::VolatileIgnition,
+        Self::ChainPyroblast,
+        Self::DualFireMastery,
     ];
 
     /// Dense index, for the purchased bitset.
@@ -114,446 +89,291 @@ impl TalentId {
     pub fn index(self) -> usize {
         self as usize
     }
+}
 
-    /// This talent's definition.
-    #[must_use]
-    pub fn definition(self) -> &'static TalentDef {
-        &TALENTS[self.index()]
+impl TalentId {
+    /// The hidden book nodes, in table order after the visible talents.
+    pub const NODES: [Self; 9] = [
+        Self::TwinPyre,
+        Self::RicochetPyre,
+        Self::SearingPyre,
+        Self::ImpactCrater,
+        Self::ScorchedEarth,
+        Self::FallingStar,
+        Self::SlowBurn,
+        Self::HotCore,
+        Self::Flashpoint,
+    ];
+}
+
+impl TalentKey for TalentId {
+    const HERO: crate::hero::Hero = crate::hero::Hero::FireMage;
+    const ALL: &'static [Self] = &Self::ALL;
+
+    fn index(self) -> usize {
+        self as usize
     }
 }
 
-/// How many talents exist. Grows with the table; nothing restates it.
-pub const TALENT_COUNT: usize = 25;
+/// How many talents the player can buy. Grows with the table; nothing restates it.
+pub const TALENT_COUNT: usize = 12;
 
-/// How many tiers the grid has.
-pub const TALENT_TIERS: u8 = 4;
+/// Talent points the simulator's combination search spends by default.
+///
+/// Enough for four or five talents out of twelve, which is what makes the tree a set of
+/// decisions rather than a checklist.
+pub const DEFAULT_TALENT_BUDGET: u32 = 20;
 
-/// One talent, entirely as data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TalentDef {
-    /// Which talent this describes.
-    pub id: TalentId,
-    /// Uppercase name; the UI font has no lowercase glyphs.
-    pub name: &'static str,
-    /// Which tier it sits in, 1 to [`TALENT_TIERS`].
-    pub tier: u8,
-    /// Talent points it costs.
-    pub cost: u32,
-    /// What it does, in words the tooltip prints.
-    pub description: &'static str,
-}
-
-/// The whole grid, in tier order.
-pub static TALENTS: [TalentDef; TALENT_COUNT] = [
+/// The built-in FireMage rows: the same numbers `assets/catalog/talents.json` ships.
+pub const DEFS: [TalentDef; TALENT_COUNT + 9] = [
     TalentDef {
-        id: TalentId::HotHands,
-        name: "HOT HANDS",
-        tier: 1,
-        cost: 1,
-        description: "FIREBOLT: +10% CHANCE TO APPLY IGNITE TO AN ALREADY BURNING TARGET",
-    },
-    TalentDef {
-        id: TalentId::BurningEmbers,
+        key: "burning_embers",
         name: "BURNING EMBERS",
         tier: 1,
-        cost: 1,
-        description: "EACH IGNITE STACK INCREASES FIRE DETONATION DAMAGE BY 3%",
+        cost: 3,
+        description: "EACH IGNITE STACK CONSUMED INCREASES DETONATE DAMAGE BY {per_stack%}%",
+        values: &[("per_stack", 0.03)],
     },
     TalentDef {
-        id: TalentId::QuickCasting,
-        name: "QUICK CASTING",
-        tier: 1,
-        cost: 2,
-        description: "FIREBOLT CAST TIME -20%",
-    },
-    TalentDef {
-        id: TalentId::ExtendedFlame,
+        key: "extended_flame",
         name: "EXTENDED FLAME",
         tier: 1,
         cost: 2,
-        description: "IGNITE DURATION +2 SECONDS",
+        description: "IGNITE LASTS {bonus_seconds} SECONDS LONGER",
+        values: &[("bonus_seconds", 10.0)],
     },
     TalentDef {
-        id: TalentId::VolatileHeat,
-        name: "VOLATILE HEAT",
-        tier: 1,
-        cost: 2,
-        description: "AFTER REACHING 100 HEAT THE NEXT FIRE SPELL DEALS +20% DAMAGE",
-    },
-    TalentDef {
-        id: TalentId::SparkOfPower,
-        name: "SPARK OF POWER",
-        tier: 1,
-        cost: 2,
-        description: "A CRITICAL FIREBOLT GENERATES +2 ULTIMATE ENERGY",
-    },
-    TalentDef {
-        id: TalentId::LingeringEmbers,
-        name: "LINGERING EMBERS",
-        tier: 2,
-        cost: 3,
-        description: "AFTER FIRE DETONATION THE PRIMARY TARGET KEEPS 1 IGNITE STACK",
-    },
-    TalentDef {
-        id: TalentId::SpreadingFire,
-        name: "SPREADING FIRE",
-        tier: 2,
-        cost: 3,
-        description: "FIRE DETONATION APPLIES +1 IGNITE STACK TO SECONDARY TARGETS",
-    },
-    TalentDef {
-        id: TalentId::MoltenCore,
-        name: "MOLTEN CORE",
-        tier: 2,
-        cost: 3,
-        description: "PYROBLAST DEALS +15% DAMAGE AT MAXIMUM IGNITE STACKS",
-    },
-    TalentDef {
-        id: TalentId::AcceleratedInferno,
-        name: "ACCELERATED INFERNO",
-        tier: 2,
-        cost: 3,
-        description: "INFERNO COOLDOWN -5 SECONDS",
-    },
-    TalentDef {
-        id: TalentId::MeteorShower,
-        name: "METEOR SHOWER",
-        tier: 2,
-        cost: 4,
-        description: "METEOR GAINS 2 CHARGES. COOLDOWN BECOMES 22 SECONDS",
-    },
-    TalentDef {
-        id: TalentId::BurningGround,
-        name: "BURNING GROUND",
-        tier: 2,
-        cost: 3,
-        description: "METEOR LEAVES A BURNING AREA FOR 4 SECONDS, RADIUS 5 M",
-    },
-    TalentDef {
-        id: TalentId::CriticalIgnition,
-        name: "CRITICAL IGNITION",
-        tier: 3,
-        cost: 4,
-        description: "CRITICAL FIRE SPELLS HAVE A 30% CHANCE TO APPLY +1 IGNITE STACK",
-    },
-    TalentDef {
-        id: TalentId::PerfectCombustion,
-        name: "PERFECT COMBUSTION",
-        tier: 3,
-        cost: 5,
-        description: "FIRE DETONATION AT MAXIMUM IGNITE STACKS DEALS +25% DAMAGE",
-    },
-    TalentDef {
-        id: TalentId::Pyroclasm,
-        name: "PYROCLASM",
-        tier: 3,
-        cost: 4,
-        description: "AFTER PYROBLAST THE NEXT FIRE SPELL ALWAYS CRITS. 10 S INTERNAL CD",
-    },
-    TalentDef {
-        id: TalentId::EndlessFurnace,
-        name: "ENDLESS FURNACE",
-        tier: 3,
-        cost: 5,
-        description: "FIRESTORM GENERATES +50% MORE HEAT",
-    },
-    TalentDef {
-        id: TalentId::ArcanePressure,
-        name: "ARCANE PRESSURE",
-        tier: 3,
-        cost: 4,
-        description: "EVERY 20 ULTIMATE ENERGY GRANTS +2% FIRE DAMAGE, UP TO +10%",
-    },
-    TalentDef {
-        id: TalentId::RapidCombustion,
-        name: "RAPID COMBUSTION",
-        tier: 3,
-        cost: 5,
-        description: "A FIRE DETONATION KILL REDUCES METEOR COOLDOWN BY 3 SECONDS",
-    },
-    TalentDef {
-        id: TalentId::LivingInferno,
-        name: "LIVING INFERNO",
-        tier: 4,
-        cost: 6,
-        description: "REACHING 100 HEAT GRANTS +15% HASTE FOR 5 SECONDS",
-    },
-    TalentDef {
-        id: TalentId::MeteoricCollapse,
-        name: "METEORIC COLLAPSE",
-        tier: 4,
-        cost: 6,
-        description: "METEOR HITTING A MAX STACK TARGET REDUCES PYROBLAST COOLDOWN BY 5 S",
-    },
-    TalentDef {
-        id: TalentId::PhoenixProtocol,
-        name: "PHOENIX PROTOCOL",
-        tier: 4,
-        cost: 7,
-        description: "SURVIVE LETHAL DAMAGE AT 1 HP AND BECOME INVULNERABLE 2 S. 180 S CD",
-    },
-    TalentDef {
-        id: TalentId::InfernoCascade,
-        name: "INFERNO CASCADE",
-        tier: 4,
-        cost: 6,
-        description: "CRITS DURING INFERNO EXTEND IT BY 0.5 S, UP TO 3 S",
-    },
-    TalentDef {
-        id: TalentId::FurnaceOverdrive,
-        name: "FURNACE OVERDRIVE",
-        tier: 4,
-        cost: 7,
-        description: "+10% FIRE DAMAGE AT 80 HEAT, +20% AT 100 HEAT",
-    },
-    TalentDef {
-        id: TalentId::CataclysmicIgnition,
-        name: "CATACLYSMIC IGNITION",
-        tier: 4,
-        cost: 8,
-        description: "DETONATIONS GIVE +2 ENERGY. DURING CATACLYSM THEY SPLASH +25%",
-    },
-    TalentDef {
-        id: TalentId::InfernalCapacity,
+        key: "infernal_capacity",
         name: "INFERNAL CAPACITY",
+        tier: 3,
+        cost: 5,
+        description: "MAXIMUM IGNITE +{extra_stacks}. DETONATE THEN REQUIRES THE FULL STACK",
+        values: &[("extra_stacks", 1.0)],
+    },
+    TalentDef {
+        key: "rapid_combustion",
+        name: "RAPID COMBUSTION",
+        tier: 2,
+        cost: 4,
+        description: "DETONATE: {chance%}% CHANCE TO CUT FLAME CONE, FIRESTORM AND METEOR BY {reduction} S",
+        values: &[("chance", 0.20), ("reduction", 2.0)],
+    },
+    TalentDef {
+        key: "molten_meteor",
+        name: "MOLTEN METEOR",
+        tier: 2,
+        cost: 4,
+        description: "METEOR IMPACT REDUCED TO {damage_scale%}% AND CANNOT CRIT. LEAVES BURNING GROUND FOR {ground_duration} S",
+        values: &[
+            ("damage_scale", 0.75),
+            ("ground_duration", 15.0),
+            ("ground_interval", 3.0),
+            ("ground_tick_coefficient", 0.55),
+            ("ground_vulnerability", 0.03),
+        ],
+    },
+    TalentDef {
+        key: "furnace_mastery",
+        name: "FURNACE MASTERY",
+        tier: 3,
+        cost: 5,
+        description: "THE INFERNO STATE LASTS {bonus_seconds} SECONDS LONGER",
+        values: &[("bonus_seconds", 2.0)],
+    },
+    TalentDef {
+        key: "meteoric_impact",
+        name: "METEORIC IMPACT",
+        tier: 2,
+        cost: 4,
+        description: "METEOR +{crit_damage_bonus%}% CRIT DAMAGE. A CRITICAL METEOR CUTS PYROBLAST BY {pyroblast_reduction} S",
+        values: &[("crit_damage_bonus", 1.0), ("pyroblast_reduction", 4.0)],
+    },
+    TalentDef {
+        key: "spellfire_feedback",
+        name: "SPELLFIRE FEEDBACK",
+        tier: 2,
+        cost: 4,
+        description: "CRIT FLAME LANCE AND CRIT PYROBLAST CUT EACH OTHER BY {reduction} S INSTEAD OF {base_reduction}",
+        values: &[("reduction", 1.5), ("base_reduction", 1.0)],
+    },
+    TalentDef {
+        key: "burning_precision",
+        name: "BURNING PRECISION",
+        tier: 1,
+        cost: 3,
+        description: "A CRITICAL IGNITE TICK HAS A {chance%}% CHANCE TO CUT METEOR BY {reduction} S",
+        values: &[("chance", 0.10), ("reduction", 1.0)],
+    },
+    TalentDef {
+        key: "volatile_ignition",
+        name: "VOLATILE IGNITION",
+        tier: 3,
+        cost: 5,
+        description: "IGNITE DAMAGE REDUCED TO {ignite_scale%}%. PYROBLAST GAINS {extra_charges} CHARGE",
+        values: &[("ignite_scale", 0.80), ("extra_charges", 1.0)],
+    },
+    TalentDef {
+        key: "chain_pyroblast",
+        name: "CHAIN PYROBLAST",
+        tier: 3,
+        cost: 5,
+        description: "PYROBLAST BOUNCES AT YOUR CRIT CHANCE. -{falloff%}% A BOUNCE, {max_bounces} MAXIMUM",
+        values: &[("falloff", 0.20), ("max_bounces", 10.0)],
+    },
+    TalentDef {
+        key: "dual_fire_mastery",
+        name: "DUAL FIRE MASTERY",
         tier: 4,
-        cost: 6,
-        description: "MAXIMUM IGNITE STACKS +1. EVERY ABILITY AND TOOLTIP FOLLOWS",
+        cost: 7,
+        description: "FIRE MASTERY GRANTS +{dual_bonus%}% HASTE AND +{dual_bonus%}% CRIT INSTEAD OF ONE STAT",
+        values: &[("dual_bonus", 0.10), ("single_bonus", 0.15)],
+    },
+    TalentDef {
+        key: "bk_twin_pyre",
+        name: "TWIN PYRE",
+        tier: 0,
+        cost: 0,
+        description: "PYROBLAST GAINS {extra_charges} CHARGE",
+        values: &[("extra_charges", 1.0)],
+    },
+    TalentDef {
+        key: "bk_ricochet_pyre",
+        name: "RICOCHET PYRE",
+        tier: 0,
+        cost: 0,
+        description: "PYROBLAST BOUNCES AT YOUR CRIT CHANCE. -{falloff%}% A BOUNCE, {max_bounces} MAXIMUM",
+        values: &[("falloff", 0.3), ("max_bounces", 3.0)],
+    },
+    TalentDef {
+        key: "bk_searing_pyre",
+        name: "SEARING PYRE",
+        tier: 0,
+        cost: 0,
+        description: "A CRITICAL PYROBLAST CUTS FLAME LANCE BY A FURTHER {reduction} S",
+        values: &[("reduction", 0.5)],
+    },
+    TalentDef {
+        key: "bk_impact_crater",
+        name: "IMPACT CRATER",
+        tier: 0,
+        cost: 0,
+        description: "METEOR +{crit_damage_bonus%}% CRIT DAMAGE. A CRITICAL METEOR CUTS PYROBLAST BY {pyroblast_reduction} S",
+        values: &[("crit_damage_bonus", 0.5), ("pyroblast_reduction", 2.0)],
+    },
+    TalentDef {
+        key: "bk_scorched_earth",
+        name: "SCORCHED EARTH",
+        tier: 0,
+        cost: 0,
+        description: "METEOR IMPACT REDUCED TO {damage_scale%}%. LEAVES BURNING GROUND FOR {ground_duration} S",
+        values: &[("damage_scale", 0.85), ("ground_duration", 10.0), ("ground_interval", 3.0), ("ground_tick_coefficient", 0.4), ("ground_vulnerability", 0.02)],
+    },
+    TalentDef {
+        key: "bk_falling_star",
+        name: "FALLING STAR",
+        tier: 0,
+        cost: 0,
+        description: "A CRITICAL IGNITE TICK HAS A {chance%}% CHANCE TO CUT METEOR BY {reduction} S",
+        values: &[("chance", 0.2), ("reduction", 1.5)],
+    },
+    TalentDef {
+        key: "bk_slow_burn",
+        name: "SLOW BURN",
+        tier: 0,
+        cost: 0,
+        description: "IGNITE LASTS {bonus_seconds} SECONDS LONGER. ITS DAMAGE REDUCED TO {ignite_scale%}%",
+        values: &[("bonus_seconds", 4.0), ("ignite_scale", 0.95)],
+    },
+    TalentDef {
+        key: "bk_hot_core",
+        name: "HOT CORE",
+        tier: 0,
+        cost: 0,
+        description: "EACH IGNITE STACK CONSUMED INCREASES DETONATE DAMAGE BY A FURTHER {per_stack%}%",
+        values: &[("per_stack", 0.02)],
+    },
+    TalentDef {
+        key: "bk_flashpoint",
+        name: "FLASHPOINT",
+        tier: 0,
+        cost: 0,
+        description: "DETONATE: {chance%}% CHANCE TO CUT FLAME CONE, FIRESTORM AND METEOR BY {reduction} S",
+        values: &[("chance", 0.15), ("reduction", 1.5)],
     },
 ];
 
-/// Whether the build hands out enough points to buy everything.
+/// Points needed to own every FireMage talent.
 ///
-/// A testing convenience, not a progression change: with it off the class starts at zero
-/// points and earns them. It is a `const` rather than a build feature so a test can assert
-/// both paths without a second compilation.
-pub const TESTING_MODE: bool = true;
-
-/// Points needed to own every talent in the table.
-///
-/// Computed from the table, never written down: adding a talent raises it automatically,
-/// which is the whole point of testing mode being derived rather than a magic number.
+/// Computed from the table, never written down: adding a talent raises it automatically.
 #[must_use]
 pub fn total_talent_cost() -> u32 {
-    TALENTS.iter().map(|talent| talent.cost).sum()
+    hero_talents(crate::hero::Hero::FireMage).total_cost()
 }
 
-/// How many points a new FireMage starts with.
-#[must_use]
-pub fn starting_talent_points() -> u32 {
-    if TESTING_MODE { total_talent_cost() } else { 0 }
-}
-
-/// Why a talent could not be bought.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TalentError {
-    /// It is already owned.
-    AlreadyOwned,
-    /// There are not enough points.
-    NotEnoughPoints,
-}
-
-impl TalentError {
-    /// Short uppercase description, for the UI font.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::AlreadyOwned => "ALREADY LEARNED",
-            Self::NotEnoughPoints => "NOT ENOUGH POINTS",
-        }
-    }
-}
-
-/// What the player has bought, and what they have left to spend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TalentGrid {
-    /// One bit per talent. 25 talents fit in a `u32` with room to grow to 32.
-    purchased: u32,
-    available: u32,
-    spent: u32,
-}
-
-impl Default for TalentGrid {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TalentGrid {
-    /// A grid with the starting points and nothing bought.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            purchased: 0,
-            available: starting_talent_points(),
-            spent: 0,
-        }
-    }
-
-    /// A grid with an explicit number of points, for tests and for progression.
-    #[must_use]
-    pub fn with_points(points: u32) -> Self {
-        Self {
-            purchased: 0,
-            available: points,
-            spent: 0,
-        }
-    }
-
-    /// Points left to spend.
-    #[must_use]
-    pub fn available_points(&self) -> u32 {
-        self.available
-    }
-
-    /// Points already spent.
-    #[must_use]
-    pub fn spent_points(&self) -> u32 {
-        self.spent
-    }
-
-    /// Grants points, as progression would.
-    pub fn grant_points(&mut self, points: u32) {
-        self.available = self.available.saturating_add(points);
-    }
-
-    /// Whether `talent` is owned.
-    #[must_use]
-    pub fn has(&self, talent: TalentId) -> bool {
-        self.purchased & (1 << talent.index()) != 0
-    }
-
-    /// Whether `talent` could be bought right now.
-    #[must_use]
-    pub fn can_purchase(&self, talent: TalentId) -> bool {
-        self.purchase_error(talent).is_none()
-    }
-
-    /// Why `talent` cannot be bought, or `None` if it can.
-    #[must_use]
-    pub fn purchase_error(&self, talent: TalentId) -> Option<TalentError> {
-        if self.has(talent) {
-            return Some(TalentError::AlreadyOwned);
-        }
-        if self.available < talent.definition().cost {
-            return Some(TalentError::NotEnoughPoints);
-        }
-        None
-    }
-
-    /// Buys `talent`, spending its cost.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TalentError`] if it is owned already or cannot be afforded.
-    pub fn purchase(&mut self, talent: TalentId) -> Result<(), TalentError> {
-        if let Some(error) = self.purchase_error(talent) {
-            return Err(error);
-        }
-        let cost = talent.definition().cost;
-        self.available -= cost;
-        self.spent += cost;
-        self.purchased |= 1 << talent.index();
-        Ok(())
-    }
-
-    /// How many talents are owned.
-    #[must_use]
-    pub fn purchased_count(&self) -> u32 {
-        self.purchased.count_ones()
-    }
-
-    /// Every owned talent.
-    pub fn purchased(&self) -> impl Iterator<Item = TalentId> + '_ {
-        TalentId::ALL.into_iter().filter(|id| self.has(*id))
-    }
-
-    /// Refunds everything, returning the grid to a fresh build.
-    pub fn reset(&mut self) {
-        self.available += self.spent;
-        self.spent = 0;
-        self.purchased = 0;
-    }
-
-    /// What the owned talents mean for gameplay.
-    #[must_use]
-    pub fn effects(&self) -> TalentEffects {
-        TalentEffects::from_grid(self)
-    }
-}
+/// The most a critical Flame Lance or Pyroblast may ever cut the other by.
+///
+/// A hard ceiling, not a talent value. Nothing in the class is allowed to exceed it, which
+/// is asserted by a test rather than trusted.
+pub const CRIT_FEEDBACK_CAP: f32 = 1.5;
 
 /// Every talent's effect, resolved into the numbers gameplay actually uses.
-///
-/// Derived state, rebuilt whenever the grid changes. Combat code reads a field here rather
-/// than asking "do I have talent X" - so a new talent that changes an existing number is a
-/// line in [`TalentEffects::from_grid`] and no change at all where the number is used.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TalentEffects {
     /// Maximum Ignite stacks. The number the whole game asks for.
     pub ignite_max_stacks: u8,
     /// Seconds added to Ignite's duration.
     pub ignite_duration_bonus: f32,
-    /// Extra chance for Firebolt to stack Ignite on a burning target.
-    pub firebolt_extra_ignite_chance: f32,
-    /// Multiplier on Firebolt's cast time.
-    pub firebolt_cast_scale: f32,
-    /// Extra detonation damage per Ignite stack consumed.
-    pub detonation_damage_per_stack: f32,
-    /// Extra detonation damage when it was cast at the maximum.
-    pub detonation_max_stack_bonus: f32,
-    /// Extra Ignite stacks a detonation applies to secondary targets.
-    pub detonation_extra_secondary_stacks: u8,
-    /// Ignite stacks the primary target keeps after a detonation.
-    pub detonation_retained_stacks: u8,
-    /// Extra Ultimate Energy per detonation.
-    pub detonation_bonus_energy: f32,
-    /// Extra splash damage a detonation deals while Cataclysm is running.
-    pub detonation_cataclysm_splash: f32,
-    /// Seconds Meteor's cooldown drops by when a detonation kills.
-    pub detonation_kill_meteor_refund: f32,
-    /// Extra Pyroblast damage against a target at the maximum.
-    pub pyroblast_max_stack_bonus: f32,
-    /// Whether Pyroblast guarantees the next spell's critical strike.
-    pub pyroclasm: bool,
-    /// Seconds off Inferno's cooldown.
-    pub inferno_cooldown_reduction: f32,
-    /// Seconds a critical strike adds to Inferno, and the most it can add.
-    pub inferno_crit_extension: f32,
-    /// The most Inferno's duration can be extended in one cast.
-    pub inferno_max_extension: f32,
-    /// Extra Meteor charges.
-    pub meteor_extra_charges: u8,
-    /// Meteor's cooldown when it has the extra charge, or zero for the default.
-    pub meteor_cooldown_override: f32,
+    /// Multiplier on Ignite's damage. Below one for Volatile Ignition.
+    pub ignite_damage_scale: f32,
+    /// Extra Detonate damage per Ignite stack consumed.
+    pub detonate_damage_per_stack: f32,
+    /// Chance a Detonate cuts each area cooldown, and by how much.
+    pub detonate_cooldown_chance: f32,
+    /// Seconds a Detonate cuts an area cooldown by when the chance lands.
+    pub detonate_cooldown_reduction: f32,
+    /// Seconds added to the Inferno State.
+    pub inferno_duration_bonus: f32,
+    /// Extra critical strike damage on Meteor. `1.0` turns x2 into x3.
+    pub meteor_crit_damage_bonus: f32,
+    /// Seconds a critical Meteor cuts Pyroblast by.
+    pub meteor_crit_pyroblast_reduction: f32,
+    /// Multiplier on Meteor's impact damage.
+    pub meteor_damage_scale: f32,
+    /// Whether Meteor is forbidden from critically striking.
+    pub meteor_cannot_crit: bool,
     /// Seconds of burning ground Meteor leaves, or zero for none.
     pub meteor_ground_duration: f32,
-    /// Seconds off Pyroblast when Meteor hits a target at the maximum.
-    pub meteor_max_stack_pyroblast_refund: f32,
-    /// Multiplier on Firestorm's Heat generation.
-    pub firestorm_heat_scale: f32,
-    /// Chance a critical fire spell applies an extra Ignite stack.
-    pub critical_ignition_chance: f32,
-    /// Extra Ultimate Energy from a critical Firebolt.
-    pub crit_firebolt_bonus_energy: f32,
-    /// Damage bonus the next spell gets after boiling over.
-    pub volatile_heat_bonus: f32,
-    /// Haste granted for five seconds on boiling over.
-    pub living_inferno_haste: f32,
-    /// Fire damage per 20 Ultimate Energy held, and its cap.
-    pub arcane_pressure_per_20: f32,
-    /// The most Arcane Pressure can grant.
-    pub arcane_pressure_cap: f32,
-    /// Fire damage bonus at high Heat, and at the cap.
-    pub furnace_overdrive_high: f32,
-    /// Fire damage bonus at maximum Heat.
-    pub furnace_overdrive_max: f32,
-    /// Whether a lethal hit is survived.
-    pub phoenix_protocol: bool,
+    /// Seconds between burning ground ticks.
+    pub meteor_ground_interval: f32,
+    /// Damage a burning ground tick deals, as a fraction of spell power.
+    pub meteor_ground_coefficient: f32,
+    /// Extra fire damage taken by whatever stands in the burning ground.
+    pub meteor_ground_vulnerability: f32,
+    /// Seconds a critical Flame Lance cuts Pyroblast by.
+    pub flame_lance_crit_reduction: f32,
+    /// Seconds a critical Pyroblast cuts Flame Lance by.
+    pub pyroblast_crit_reduction: f32,
+    /// Chance a critical Ignite tick cuts Meteor's cooldown.
+    pub ignite_crit_meteor_chance: f32,
+    /// Seconds it cuts Meteor by when it does.
+    pub ignite_crit_meteor_reduction: f32,
+    /// Extra Pyroblast charges.
+    pub pyroblast_extra_charges: u8,
+    /// Whether Pyroblast bounces.
+    pub pyroblast_bounces: bool,
+    /// Damage lost per bounce.
+    pub pyroblast_bounce_falloff: f32,
+    /// The most times one Pyroblast may bounce.
+    pub pyroblast_max_bounces: u8,
+    /// Whether Fire Mastery grants both stats.
+    pub dual_mastery: bool,
+    /// What Fire Mastery's active grants, per stat.
+    pub mastery_active_bonus: f32,
 }
 
 impl Default for TalentEffects {
     fn default() -> Self {
-        Self::from_grid(&TalentGrid::with_points(0))
+        Self::from_grid(&TalentGrid::with_points(crate::hero::Hero::FireMage, 0))
     }
 }
 
@@ -561,128 +381,117 @@ impl TalentEffects {
     /// Resolves a grid into the numbers gameplay uses.
     #[must_use]
     pub fn from_grid(grid: &TalentGrid) -> Self {
-        let has = |talent| grid.has(talent);
-        Self {
-            ignite_max_stacks: super::ignite::IGNITE_BASE_MAX_STACKS
-                + u8::from(has(TalentId::InfernalCapacity)),
-            ignite_duration_bonus: if has(TalentId::ExtendedFlame) {
-                2.0
-            } else {
-                0.0
-            },
-            firebolt_extra_ignite_chance: if has(TalentId::HotHands) { 0.10 } else { 0.0 },
-            firebolt_cast_scale: if has(TalentId::QuickCasting) {
-                0.8
-            } else {
-                1.0
-            },
-            detonation_damage_per_stack: if has(TalentId::BurningEmbers) {
-                0.03
-            } else {
-                0.0
-            },
-            detonation_max_stack_bonus: if has(TalentId::PerfectCombustion) {
-                0.25
-            } else {
-                0.0
-            },
-            detonation_extra_secondary_stacks: u8::from(has(TalentId::SpreadingFire)),
-            detonation_retained_stacks: u8::from(has(TalentId::LingeringEmbers)),
-            detonation_bonus_energy: if has(TalentId::CataclysmicIgnition) {
-                2.0
-            } else {
-                0.0
-            },
-            detonation_cataclysm_splash: if has(TalentId::CataclysmicIgnition) {
-                0.25
-            } else {
-                0.0
-            },
-            detonation_kill_meteor_refund: if has(TalentId::RapidCombustion) {
-                3.0
-            } else {
-                0.0
-            },
-            pyroblast_max_stack_bonus: if has(TalentId::MoltenCore) { 0.15 } else { 0.0 },
-            pyroclasm: has(TalentId::Pyroclasm),
-            inferno_cooldown_reduction: if has(TalentId::AcceleratedInferno) {
-                5.0
-            } else {
-                0.0
-            },
-            inferno_crit_extension: if has(TalentId::InfernoCascade) {
-                0.5
-            } else {
-                0.0
-            },
-            inferno_max_extension: if has(TalentId::InfernoCascade) {
-                3.0
-            } else {
-                0.0
-            },
-            meteor_extra_charges: u8::from(has(TalentId::MeteorShower)),
-            meteor_cooldown_override: if has(TalentId::MeteorShower) {
-                22.0
-            } else {
-                0.0
-            },
-            meteor_ground_duration: if has(TalentId::BurningGround) {
-                4.0
-            } else {
-                0.0
-            },
-            meteor_max_stack_pyroblast_refund: if has(TalentId::MeteoricCollapse) {
-                5.0
-            } else {
-                0.0
-            },
-            firestorm_heat_scale: if has(TalentId::EndlessFurnace) {
-                1.5
-            } else {
-                1.0
-            },
-            critical_ignition_chance: if has(TalentId::CriticalIgnition) {
-                0.30
-            } else {
-                0.0
-            },
-            crit_firebolt_bonus_energy: if has(TalentId::SparkOfPower) {
-                2.0
-            } else {
-                0.0
-            },
-            volatile_heat_bonus: if has(TalentId::VolatileHeat) {
-                0.20
-            } else {
-                0.0
-            },
-            living_inferno_haste: if has(TalentId::LivingInferno) {
-                0.15
-            } else {
-                0.0
-            },
-            arcane_pressure_per_20: if has(TalentId::ArcanePressure) {
-                0.02
-            } else {
-                0.0
-            },
-            arcane_pressure_cap: if has(TalentId::ArcanePressure) {
-                0.10
-            } else {
-                0.0
-            },
-            furnace_overdrive_high: if has(TalentId::FurnaceOverdrive) {
-                0.10
-            } else {
-                0.0
-            },
-            furnace_overdrive_max: if has(TalentId::FurnaceOverdrive) {
-                0.20
-            } else {
-                0.0
-            },
-            phoenix_protocol: has(TalentId::PhoenixProtocol),
+        let table = hero_talents(crate::hero::Hero::FireMage);
+        let has = |talent: TalentId| grid.has(talent);
+        let v = |talent: TalentId, name: &str| table.talents[talent.index()].values.value(name);
+        let if_has = |talent: TalentId, name: &str| {
+            if has(talent) { v(talent, name) } else { 0.0 }
+        };
+        let feedback = if has(TalentId::SpellfireFeedback) {
+            v(TalentId::SpellfireFeedback, "reduction")
+        } else {
+            v(TalentId::SpellfireFeedback, "base_reduction")
         }
+        .min(CRIT_FEEDBACK_CAP);
+
+        let mut fx = Self {
+            ignite_max_stacks: super::ignite::IGNITE_BASE_MAX_STACKS
+                + if_has(TalentId::InfernalCapacity, "extra_stacks") as u8,
+            ignite_duration_bonus: if_has(TalentId::ExtendedFlame, "bonus_seconds"),
+            ignite_damage_scale: if has(TalentId::VolatileIgnition) {
+                v(TalentId::VolatileIgnition, "ignite_scale")
+            } else {
+                1.0
+            },
+            detonate_damage_per_stack: if_has(TalentId::BurningEmbers, "per_stack"),
+            detonate_cooldown_chance: if_has(TalentId::RapidCombustion, "chance"),
+            detonate_cooldown_reduction: if_has(TalentId::RapidCombustion, "reduction"),
+            inferno_duration_bonus: if_has(TalentId::FurnaceMastery, "bonus_seconds"),
+            meteor_crit_damage_bonus: if_has(TalentId::MeteoricImpact, "crit_damage_bonus"),
+            meteor_crit_pyroblast_reduction: if_has(
+                TalentId::MeteoricImpact,
+                "pyroblast_reduction",
+            ),
+            meteor_damage_scale: if has(TalentId::MoltenMeteor) {
+                v(TalentId::MoltenMeteor, "damage_scale")
+            } else {
+                1.0
+            },
+            meteor_cannot_crit: has(TalentId::MoltenMeteor),
+            meteor_ground_duration: if_has(TalentId::MoltenMeteor, "ground_duration"),
+            meteor_ground_interval: v(TalentId::MoltenMeteor, "ground_interval"),
+            meteor_ground_coefficient: v(TalentId::MoltenMeteor, "ground_tick_coefficient"),
+            meteor_ground_vulnerability: v(TalentId::MoltenMeteor, "ground_vulnerability"),
+            flame_lance_crit_reduction: feedback,
+            pyroblast_crit_reduction: feedback,
+            ignite_crit_meteor_chance: if_has(TalentId::BurningPrecision, "chance"),
+            ignite_crit_meteor_reduction: if_has(TalentId::BurningPrecision, "reduction"),
+            pyroblast_extra_charges: if_has(TalentId::VolatileIgnition, "extra_charges") as u8,
+            pyroblast_bounces: has(TalentId::ChainPyroblast),
+            pyroblast_bounce_falloff: if_has(TalentId::ChainPyroblast, "falloff"),
+            pyroblast_max_bounces: if_has(TalentId::ChainPyroblast, "max_bounces") as u8,
+            dual_mastery: has(TalentId::DualFireMastery),
+            mastery_active_bonus: if has(TalentId::DualFireMastery) {
+                v(TalentId::DualFireMastery, "dual_bonus")
+            } else {
+                v(TalentId::DualFireMastery, "single_bonus")
+            },
+        };
+        // Book options come last and compose with the talents above.
+        use TalentId::{
+            Flashpoint, HotCore, ImpactCrater, FallingStar, RicochetPyre, ScorchedEarth,
+            SearingPyre, SlowBurn, TwinPyre,
+        };
+        if has(TwinPyre) {
+            fx.pyroblast_extra_charges += v(TwinPyre, "extra_charges") as u8;
+        }
+        if has(RicochetPyre) {
+            fx.pyroblast_bounce_falloff = if fx.pyroblast_bounces {
+                fx.pyroblast_bounce_falloff.min(v(RicochetPyre, "falloff"))
+            } else {
+                v(RicochetPyre, "falloff")
+            };
+            fx.pyroblast_max_bounces = fx
+                .pyroblast_max_bounces
+                .max(v(RicochetPyre, "max_bounces") as u8);
+            fx.pyroblast_bounces = true;
+        }
+        if has(SearingPyre) {
+            fx.pyroblast_crit_reduction =
+                (fx.pyroblast_crit_reduction + v(SearingPyre, "reduction")).min(CRIT_FEEDBACK_CAP);
+        }
+        if has(ImpactCrater) {
+            fx.meteor_crit_damage_bonus += v(ImpactCrater, "crit_damage_bonus");
+            fx.meteor_crit_pyroblast_reduction += v(ImpactCrater, "pyroblast_reduction");
+        }
+        if has(ScorchedEarth) {
+            fx.meteor_damage_scale *= v(ScorchedEarth, "damage_scale");
+            if fx.meteor_ground_duration <= 0.0 {
+                fx.meteor_ground_duration = v(ScorchedEarth, "ground_duration");
+                fx.meteor_ground_interval = v(ScorchedEarth, "ground_interval");
+                fx.meteor_ground_coefficient = v(ScorchedEarth, "ground_tick_coefficient");
+                fx.meteor_ground_vulnerability = v(ScorchedEarth, "ground_vulnerability");
+            }
+        }
+        if has(FallingStar) {
+            fx.ignite_crit_meteor_chance =
+                fx.ignite_crit_meteor_chance.max(v(FallingStar, "chance"));
+            fx.ignite_crit_meteor_reduction =
+                fx.ignite_crit_meteor_reduction.max(v(FallingStar, "reduction"));
+        }
+        if has(SlowBurn) {
+            fx.ignite_duration_bonus += v(SlowBurn, "bonus_seconds");
+            fx.ignite_damage_scale *= v(SlowBurn, "ignite_scale");
+        }
+        if has(HotCore) {
+            fx.detonate_damage_per_stack += v(HotCore, "per_stack");
+        }
+        if has(Flashpoint) {
+            fx.detonate_cooldown_chance = fx.detonate_cooldown_chance.max(v(Flashpoint, "chance"));
+            fx.detonate_cooldown_reduction =
+                fx.detonate_cooldown_reduction.max(v(Flashpoint, "reduction"));
+        }
+        fx
     }
 
     /// Ignite's duration with talents applied.
@@ -691,29 +500,19 @@ impl TalentEffects {
         super::ignite::IGNITE_BASE_DURATION + self.ignite_duration_bonus
     }
 
-    /// The fire damage bonus Arcane Pressure grants at `energy` Ultimate Energy.
+    /// The Inferno State's duration with talents applied.
     #[must_use]
-    pub fn arcane_pressure_bonus(&self, energy: f32) -> f32 {
-        if self.arcane_pressure_per_20 <= 0.0 {
-            return 0.0;
-        }
-        let steps = (energy / 20.0).floor();
-        (steps * self.arcane_pressure_per_20).min(self.arcane_pressure_cap)
+    pub fn inferno_duration(&self) -> f32 {
+        super::resource::INFERNO_DURATION + self.inferno_duration_bonus
     }
 
-    /// The fire damage bonus Furnace Overdrive grants at `heat` Heat.
+    /// How long the burning ground's fire vulnerability lasts once applied.
+    ///
+    /// Twice the ground's tick interval, so standing in it keeps the debuff up and stepping out
+    /// of it lets the debuff lapse rather than ending it on the frame the foot leaves.
     #[must_use]
-    pub fn furnace_overdrive_bonus(&self, heat: f32) -> f32 {
-        if self.furnace_overdrive_high <= 0.0 {
-            return 0.0;
-        }
-        if heat >= super::resource::HEAT_OVERHEAT_THRESHOLD {
-            self.furnace_overdrive_max
-        } else if heat >= super::resource::HEAT_HIGH_THRESHOLD {
-            self.furnace_overdrive_high
-        } else {
-            0.0
-        }
+    pub fn vulnerability_duration(&self) -> f32 {
+        self.meteor_ground_interval * 2.0
     }
 }
 
@@ -724,205 +523,164 @@ impl TalentEffects {
 )]
 mod tests {
     use super::*;
+    use crate::hero::Hero;
 
     #[test]
-    fn every_talent_has_a_definition_in_its_own_slot() {
-        // The table is indexed by the enum; a reordering that broke that would silently
-        // give every talent its neighbour's cost.
+    fn the_tree_is_the_twelve_talents_the_design_names() {
+        assert_eq!(hero_talents(Hero::FireMage).visible().len(), TALENT_COUNT);
+        assert_eq!(TALENT_COUNT, 12);
         for (index, talent) in TalentId::ALL.into_iter().enumerate() {
             assert_eq!(talent.index(), index, "{talent:?} is out of order");
-            assert_eq!(
-                talent.definition().id,
-                talent,
-                "{talent:?} has the wrong def"
-            );
-        }
-        assert_eq!(TALENTS.len(), TALENT_COUNT);
-    }
-
-    #[test]
-    fn every_talent_is_described_and_priced() {
-        for talent in &TALENTS {
-            assert!(!talent.name.is_empty(), "{:?} has no name", talent.id);
-            assert!(
-                !talent.description.is_empty(),
-                "{:?} has no description",
-                talent.id
-            );
-            assert!(talent.cost > 0, "{:?} is free", talent.id);
-            assert!(
-                (1..=TALENT_TIERS).contains(&talent.tier),
-                "{:?} is in tier {}",
-                talent.id,
-                talent.tier
-            );
+            assert_eq!(TalentKey::spec(talent).key, DEFS[index].key);
         }
     }
 
     #[test]
-    fn the_grid_covers_all_four_tiers() {
-        for tier in 1..=TALENT_TIERS {
-            assert!(
-                TALENTS.iter().any(|talent| talent.tier == tier),
-                "tier {tier} is empty"
-            );
+    fn every_talent_is_described_and_priced_as_designed() {
+        let costs: Vec<u32> = TalentId::ALL
+            .into_iter()
+            .map(|talent| TalentKey::spec(talent).cost)
+            .collect();
+        assert_eq!(costs, vec![3, 2, 5, 4, 4, 5, 4, 4, 3, 5, 5, 7]);
+        assert_eq!(total_talent_cost(), 51);
+
+        for talent in hero_talents(Hero::FireMage).visible() {
+            assert!(!talent.name.is_empty());
+            assert!(!talent.description.is_empty());
+            assert!(!talent.description.contains('{'), "{}", talent.description);
+            assert!((1..=TALENT_TIERS).contains(&talent.tier));
         }
     }
 
     #[test]
-    fn testing_mode_grants_exactly_what_every_talent_costs() {
-        // Derived, never written down: a new talent raises this automatically.
-        let expected: u32 = TALENTS.iter().map(|talent| talent.cost).sum();
-        assert_eq!(total_talent_cost(), expected);
-
-        if TESTING_MODE {
-            assert_eq!(starting_talent_points(), expected);
-        } else {
-            assert_eq!(starting_talent_points(), 0);
-        }
-    }
-
-    #[test]
-    fn a_testing_grid_can_buy_the_entire_tree_and_ends_at_zero() {
-        let mut grid = TalentGrid::with_points(total_talent_cost());
-        for talent in TalentId::ALL {
-            grid.purchase(talent)
-                .unwrap_or_else(|error| panic!("{talent:?}: {error:?}"));
-        }
-        assert_eq!(grid.purchased_count(), TALENT_COUNT as u32);
-        assert_eq!(grid.available_points(), 0, "the budget was wrong");
-        assert_eq!(grid.spent_points(), total_talent_cost());
-    }
-
-    #[test]
-    fn a_fresh_progression_grid_can_buy_nothing() {
-        let grid = TalentGrid::with_points(0);
-        for talent in TalentId::ALL {
-            assert!(!grid.can_purchase(talent), "{talent:?} was free");
-            assert_eq!(
-                grid.purchase_error(talent),
-                Some(TalentError::NotEnoughPoints)
-            );
-        }
-    }
-
-    #[test]
-    fn talents_can_be_bought_in_any_order_rather_than_along_a_path() {
-        // No prerequisites: a tier 4 talent is reachable first if it is paid for.
-        let mut grid = TalentGrid::with_points(20);
-        assert!(grid.purchase(TalentId::PhoenixProtocol).is_ok());
-        assert!(grid.has(TalentId::PhoenixProtocol));
-        assert!(grid.purchase(TalentId::HotHands).is_ok());
-        assert_eq!(grid.purchased_count(), 2);
-    }
-
-    #[test]
-    fn a_talent_cannot_be_bought_twice_or_without_the_points() {
-        let mut grid = TalentGrid::with_points(1);
-        assert!(grid.purchase(TalentId::HotHands).is_ok());
+    fn a_budget_is_what_makes_the_tree_a_decision() {
+        let mut grid = TalentGrid::with_points(Hero::FireMage, DEFAULT_TALENT_BUDGET);
+        assert!(grid.purchase(TalentId::DualFireMastery).is_ok());
+        assert!(grid.purchase(TalentId::InfernalCapacity).is_ok());
+        assert!(grid.purchase(TalentId::VolatileIgnition).is_ok());
+        assert_eq!(grid.available_points(), 3);
         assert_eq!(
-            grid.purchase(TalentId::HotHands),
-            Err(TalentError::AlreadyOwned)
-        );
-        assert_eq!(
-            grid.purchase(TalentId::QuickCasting),
+            grid.purchase(TalentId::ChainPyroblast),
             Err(TalentError::NotEnoughPoints)
         );
-        assert_eq!(grid.available_points(), 0);
+        assert_eq!(
+            grid.purchase(TalentId::InfernalCapacity),
+            Err(TalentError::AlreadyOwned)
+        );
     }
 
     #[test]
-    fn resetting_gives_every_point_back() {
-        let mut grid = TalentGrid::with_points(total_talent_cost());
+    fn every_talent_can_be_enabled_and_disabled_cleanly() {
+        let none = TalentEffects::default();
         for talent in TalentId::ALL {
-            let _ = grid.purchase(talent);
+            let grid = TalentGrid::from_talents(&[talent]);
+            let effects = TalentEffects::from_grid(&grid);
+            assert_ne!(effects, none, "{talent:?} changed nothing");
+
+            let mut refunded = grid;
+            refunded.reset();
+            assert_eq!(
+                TalentEffects::from_grid(&refunded),
+                none,
+                "{talent:?} did not come back off"
+            );
         }
-        grid.reset();
-        assert_eq!(grid.purchased_count(), 0);
-        assert_eq!(grid.available_points(), total_talent_cost());
     }
 
     #[test]
-    fn the_default_ignite_maximum_is_five_and_infernal_capacity_makes_it_six() {
-        // The property section 18 of the brief is about, at the source.
-        let plain = TalentGrid::with_points(0).effects();
-        assert_eq!(plain.ignite_max_stacks, 5);
-
-        let mut grid = TalentGrid::with_points(100);
-        grid.purchase(TalentId::InfernalCapacity)
-            .expect("the points are there");
-        assert_eq!(grid.effects().ignite_max_stacks, 6);
+    fn every_book_node_changes_its_ability_through_the_talent_path() {
+        let none = TalentEffects::default();
+        let fx = |node: TalentId| TalentEffects::from_grid(&TalentGrid::from_nodes(&[node]));
+        for node in TalentId::NODES {
+            assert!(TalentKey::spec(node).is_hidden(), "{node:?}");
+            assert_ne!(fx(node), none, "{node:?} changed nothing");
+        }
+        assert_eq!(fx(TalentId::TwinPyre).pyroblast_extra_charges, 1);
+        let ricochet = fx(TalentId::RicochetPyre);
+        assert!(ricochet.pyroblast_bounces && ricochet.pyroblast_max_bounces == 3);
+        assert!(fx(TalentId::SearingPyre).pyroblast_crit_reduction > 1.0);
+        assert!(fx(TalentId::ImpactCrater).meteor_crit_damage_bonus > 0.0);
+        let earth = fx(TalentId::ScorchedEarth);
+        assert!(earth.meteor_ground_duration > 0.0 && !earth.meteor_cannot_crit);
+        assert!(fx(TalentId::FallingStar).ignite_crit_meteor_chance > 0.1);
+        assert!(fx(TalentId::SlowBurn).ignite_duration() > 30.0);
+        assert!(fx(TalentId::HotCore).detonate_damage_per_stack > 0.0);
+        assert!(fx(TalentId::Flashpoint).detonate_cooldown_chance > 0.0);
     }
 
     #[test]
-    fn effects_are_derived_from_what_is_owned() {
-        let mut grid = TalentGrid::with_points(100);
-        let before = grid.effects();
-        assert_eq!(before.firebolt_cast_scale, 1.0);
-        assert_eq!(before.firebolt_extra_ignite_chance, 0.0);
-
-        grid.purchase(TalentId::QuickCasting).expect("affordable");
-        grid.purchase(TalentId::HotHands).expect("affordable");
-        let after = grid.effects();
-        assert!((after.firebolt_cast_scale - 0.8).abs() < 1e-6);
-        assert!((after.firebolt_extra_ignite_chance - 0.10).abs() < 1e-6);
-        assert_eq!(after.ignite_max_stacks, 5, "an unrelated talent changed it");
+    fn infernal_capacity_moves_the_maximum_and_nothing_else_does() {
+        assert_eq!(TalentEffects::default().ignite_max_stacks, 5);
+        let effects =
+            TalentEffects::from_grid(&TalentGrid::from_talents(&[TalentId::InfernalCapacity]));
+        assert_eq!(effects.ignite_max_stacks, 6);
     }
 
     #[test]
-    fn extended_flame_lengthens_the_burn() {
-        let mut grid = TalentGrid::with_points(100);
+    fn the_critical_strike_feedback_never_exceeds_its_cap() {
+        let base = TalentEffects::default();
+        assert!((base.flame_lance_crit_reduction - 1.0).abs() < 1e-6);
+
+        let talented =
+            TalentEffects::from_grid(&TalentGrid::from_talents(&[TalentId::SpellfireFeedback]));
+        assert!((talented.flame_lance_crit_reduction - 1.5).abs() < 1e-6);
+        assert!((talented.pyroblast_crit_reduction - 1.5).abs() < 1e-6);
+
+        for effects in [base, talented] {
+            assert!(effects.flame_lance_crit_reduction <= CRIT_FEEDBACK_CAP);
+            assert!(effects.pyroblast_crit_reduction <= CRIT_FEEDBACK_CAP);
+        }
+    }
+
+    #[test]
+    fn molten_meteor_and_meteoric_impact_pull_in_opposite_directions() {
+        let molten = TalentEffects::from_grid(&TalentGrid::from_talents(&[TalentId::MoltenMeteor]));
+        assert!(molten.meteor_cannot_crit);
+        assert!((molten.meteor_damage_scale - 0.75).abs() < 1e-6);
+        assert!(molten.meteor_ground_duration > 0.0);
+
+        let impact =
+            TalentEffects::from_grid(&TalentGrid::from_talents(&[TalentId::MeteoricImpact]));
+        assert!(!impact.meteor_cannot_crit);
+        assert!((impact.meteor_crit_damage_bonus - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn extended_flame_and_furnace_mastery_read_through_their_derived_values() {
+        assert!((TalentEffects::default().ignite_duration() - 30.0).abs() < 1e-6);
+        let extended =
+            TalentEffects::from_grid(&TalentGrid::from_talents(&[TalentId::ExtendedFlame]));
+        assert!((extended.ignite_duration() - 40.0).abs() < 1e-6);
+
+        assert!((TalentEffects::default().inferno_duration() - 10.0).abs() < 1e-6);
+        let furnace =
+            TalentEffects::from_grid(&TalentGrid::from_talents(&[TalentId::FurnaceMastery]));
+        assert!((furnace.inferno_duration() - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_keys_are_the_ones_characters_already_store() {
+        let keys: Vec<&str> = hero_talents(Hero::FireMage)
+            .visible()
+            .iter()
+            .map(|talent| talent.key.as_str())
+            .collect();
         assert_eq!(
-            grid.effects().ignite_duration(),
-            super::super::ignite::IGNITE_BASE_DURATION
+            keys,
+            [
+                "burning_embers",
+                "extended_flame",
+                "infernal_capacity",
+                "rapid_combustion",
+                "molten_meteor",
+                "furnace_mastery",
+                "meteoric_impact",
+                "spellfire_feedback",
+                "burning_precision",
+                "volatile_ignition",
+                "chain_pyroblast",
+                "dual_fire_mastery",
+            ]
         );
-        grid.purchase(TalentId::ExtendedFlame).expect("affordable");
-        assert_eq!(
-            grid.effects().ignite_duration(),
-            super::super::ignite::IGNITE_BASE_DURATION + 2.0
-        );
-    }
-
-    #[test]
-    fn arcane_pressure_steps_every_twenty_energy_and_caps() {
-        let mut grid = TalentGrid::with_points(100);
-        grid.purchase(TalentId::ArcanePressure).expect("affordable");
-        let effects = grid.effects();
-
-        assert_eq!(effects.arcane_pressure_bonus(0.0), 0.0);
-        assert_eq!(effects.arcane_pressure_bonus(19.0), 0.0);
-        assert!((effects.arcane_pressure_bonus(20.0) - 0.02).abs() < 1e-6);
-        assert!((effects.arcane_pressure_bonus(80.0) - 0.08).abs() < 1e-6);
-        assert!((effects.arcane_pressure_bonus(100.0) - 0.10).abs() < 1e-6);
-        assert!(
-            (effects.arcane_pressure_bonus(1_000.0) - 0.10).abs() < 1e-6,
-            "the cap leaked"
-        );
-
-        // Without the talent it is worth nothing at any amount.
-        let none = TalentGrid::with_points(0).effects();
-        assert_eq!(none.arcane_pressure_bonus(100.0), 0.0);
-    }
-
-    #[test]
-    fn furnace_overdrive_has_two_steps() {
-        let mut grid = TalentGrid::with_points(100);
-        grid.purchase(TalentId::FurnaceOverdrive)
-            .expect("affordable");
-        let effects = grid.effects();
-
-        assert_eq!(effects.furnace_overdrive_bonus(50.0), 0.0);
-        assert!((effects.furnace_overdrive_bonus(80.0) - 0.10).abs() < 1e-6);
-        assert!((effects.furnace_overdrive_bonus(99.0) - 0.10).abs() < 1e-6);
-        assert!((effects.furnace_overdrive_bonus(100.0) - 0.20).abs() < 1e-6);
-    }
-
-    #[test]
-    fn meteor_shower_replaces_the_cooldown_as_well_as_adding_a_charge() {
-        let mut grid = TalentGrid::with_points(100);
-        grid.purchase(TalentId::MeteorShower).expect("affordable");
-        let effects = grid.effects();
-        assert_eq!(effects.meteor_extra_charges, 1);
-        assert!((effects.meteor_cooldown_override - 22.0).abs() < 1e-6);
     }
 }

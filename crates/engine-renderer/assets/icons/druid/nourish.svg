@@ -1,0 +1,72 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="nourish_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="nourish_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(130,200,160)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="nourish_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="nourish_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="nourish_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="nourish_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="nourish_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="nourish_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="nourish_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="nourish_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#nourish_tile)">
+	<path fill="url(#nourish_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#nourish_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The cup: a leaf held open, filling from above. -->
+	<path fill="url(#nourish_leaf)" fill-opacity="0.25" d="M 148 528 C 148 668 234 774 338 774 C 442 774 528 668 528 528 z"></path>
+	<path fill="url(#nourish_leaf)" d="M 176 552 C 176 674 250 762 338 762 C 426 762 500 674 500 552 z"></path>
+	<path fill="url(#nourish_deep)" d="M 208 574 C 214 672 268 736 338 736 C 408 736 462 672 468 574 z"></path>
+
+	<!-- What is already in it: the more that is there, the more this heals. -->
+	<path fill="url(#nourish_moon)" fill-opacity="0.8" d="M 216 614 C 226 690 274 736 338 736 C 402 736 450 690 460 614 z"></path>
+	<path fill="rgb(226,234,255)" fill-opacity="0.45" d="M 224 638 C 258 626 300 626 336 638 C 296 644 260 644 224 638 z"></path>
+
+	<!-- The stem it is growing on. -->
+	<path fill="url(#nourish_bark)" d="M 324 862 L 354 862 L 354 758 L 324 758 z"></path>
+	<path fill="url(#nourish_leaf)" d="M 322 810 C 274 810 246 838 244 876 C 292 878 320 850 322 810 z"></path>
+
+	<!-- The pour: three drops, each larger than the one before it. -->
+	<path fill="rgb(226,234,255)" fill-opacity="0.6" d="M 338 250 C 348 268 356 282 356 294 C 356 306 348 314 338 314 C 328 314 320 306 320 294 C 320 282 328 268 338 250 z"></path>
+	<path fill="rgb(226,234,255)" fill-opacity="0.8" d="M 338 330 C 352 356 364 376 364 392 C 364 408 352 420 338 420 C 324 420 312 408 312 392 C 312 376 324 356 338 330 z"></path>
+	<path fill="rgb(255,255,255)" d="M 338 436 C 356 470 372 496 372 516 C 372 538 356 552 338 552 C 320 552 304 538 304 516 C 304 496 320 470 338 436 z"></path>
+	<path fill="rgb(146,164,232)" fill-opacity="0.7" d="M 348 480 C 358 500 362 512 358 524 C 350 528 342 522 340 512 C 338 500 344 490 348 480 z"></path>
+</g>
+</svg>

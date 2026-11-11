@@ -44,15 +44,26 @@
 
 pub mod camera;
 pub mod error;
+pub mod font;
 pub mod lighting;
+pub mod particles;
+pub mod skinning;
 pub mod ui;
 pub mod world;
 
 pub use camera::{Camera, DEFAULT_FAR, DEFAULT_FOV_Y, DEFAULT_NEAR, Projection};
 pub use error::RenderDataError;
-pub use lighting::Lighting;
-pub use ui::{TextAlign, TextRange, UiColor, UiCommand, UiDrawList, UiRect};
+pub use font::UiFont;
+pub use lighting::{Lighting, LocalLight, LocalLightKind};
+pub use particles::{DEFAULT_PARTICLE_CAPACITY, ParticleBlend, ParticleDrawList, ParticleInstance};
+pub use skinning::{
+    MAX_PALETTE_BONES, ModelBinding, ModelLodBinding, ModelPart, PartGeometry, SkinnedDrawList,
+    SkinnedInstance, SkinnedMeshHandle,
+};
+pub use ui::{
+    MAX_ICON_PIXELS, TextAlign, TextRange, UiColor, UiCommand, UiDrawList, UiIcon, UiRect, UiScale,
+};
 pub use world::{
-    Handle, InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc, RenderWorld,
-    world_bounds,
+    CameraFade, Handle, InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc,
+    RenderWorld, SHADOW_LOD_MESHES, ShadowCasting, world_bounds,
 };

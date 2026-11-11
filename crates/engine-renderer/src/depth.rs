@@ -5,15 +5,23 @@
 //! order and whatever was recorded last wins — which happens to look correct for a single
 //! triangle and stops looking correct the moment there are two objects.
 
+#[cfg(windows)]
 use crate::descriptor::{CpuDescriptorHeap, DescriptorHandle};
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::resource::{GpuTexture, TrackedResource};
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT;
 
+#[cfg(windows)]
 /// The depth format.
 ///
 /// `D32_FLOAT` rather than `D24_UNORM_S8_UINT`: there is no stencil work in Phase 2, and a
@@ -30,6 +38,7 @@ pub const DEPTH_FORMAT: DXGI_FORMAT = DXGI_FORMAT_D32_FLOAT;
 /// a cheap later change.
 pub const DEPTH_CLEAR: f32 = 1.0;
 
+#[cfg(windows)]
 /// A depth-stencil target and its view.
 pub struct DepthBuffer {
     texture: GpuTexture,
@@ -40,6 +49,7 @@ pub struct DepthBuffer {
     height: u32,
 }
 
+#[cfg(windows)]
 impl DepthBuffer {
     /// Creates a depth buffer of the given size.
     ///
@@ -51,9 +61,9 @@ impl DepthBuffer {
         // One descriptor: there is one depth buffer. A heap sized for a hypothetical future
         // would be capacity nothing allocates from.
         let mut heap = CpuDescriptorHeap::new(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1)?;
-        let texture = GpuTexture::depth_buffer(device, width, height, DEPTH_FORMAT, DEPTH_CLEAR)?;
+        let texture = GpuTexture::sampleable_depth(device, width, height, DEPTH_CLEAR)?;
         let view = heap.allocate()?;
-        device.create_depth_stencil_view(texture.resource(), view.cpu);
+        create_typed_depth_view(device, &texture, view);
 
         Ok(Self {
             texture,
@@ -85,8 +95,8 @@ impl DepthBuffer {
 
         // The descriptor is reused rather than freed and reallocated: it is one slot in a
         // heap of one, and writing a new view over it is exactly what the API is for.
-        self.texture = GpuTexture::depth_buffer(device, width, height, DEPTH_FORMAT, DEPTH_CLEAR)?;
-        device.create_depth_stencil_view(self.texture.resource(), self.view.cpu);
+        self.texture = GpuTexture::sampleable_depth(device, width, height, DEPTH_CLEAR)?;
+        create_typed_depth_view(device, &self.texture, self.view);
         self.width = width;
         self.height = height;
         Ok(())
@@ -116,5 +126,33 @@ impl DepthBuffer {
     #[must_use]
     pub fn heap(&self) -> &CpuDescriptorHeap {
         &self.heap
+    }
+}
+
+#[cfg(windows)]
+/// Creates the depth-stencil view for the typeless depth buffer.
+///
+/// The buffer is `R32_TYPELESS` so the contact-shadow march can sample it in place rather
+/// than through a full-screen copy ([`GpuTexture::sampleable_depth`]); a typeless resource
+/// has no format for the view to inherit, so the view names [`DEPTH_FORMAT`].
+fn create_typed_depth_view(device: &RenderDevice, texture: &GpuTexture, handle: DescriptorHandle) {
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_DEPTH_STENCIL_VIEW_DESC, D3D12_DEPTH_STENCIL_VIEW_DESC_0,
+        D3D12_DSV_DIMENSION_TEXTURE2D, D3D12_DSV_FLAG_NONE, D3D12_TEX2D_DSV,
+    };
+    let desc = D3D12_DEPTH_STENCIL_VIEW_DESC {
+        Format: DEPTH_FORMAT,
+        ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+        Flags: D3D12_DSV_FLAG_NONE,
+        Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+            Texture2D: D3D12_TEX2D_DSV { MipSlice: 0 },
+        },
+    };
+    // SAFETY: FFI call. The texture outlives the view, and the handle addresses a slot in a
+    // heap the caller owns.
+    unsafe {
+        device
+            .device()
+            .CreateDepthStencilView(texture.resource(), Some(&desc), handle.cpu);
     }
 }

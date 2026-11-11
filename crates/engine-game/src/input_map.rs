@@ -11,10 +11,11 @@
 //!
 //! Nothing here mutates gameplay state. It reads input and appends commands.
 
-use engine_core::input::{InputState, KeyCode};
+use engine_core::input::{InputState, KeyCode, MouseButton};
 
 use crate::command::PlayerCommand;
-use crate::firemage::{ABILITY_SLOTS, FireAbility};
+use crate::firemage::ABILITY_SLOTS;
+use crate::hero::Hero;
 
 /// Which key does what.
 ///
@@ -34,6 +35,8 @@ pub struct Bindings {
     pub jump: KeyCode,
     /// Select the next hostile target.
     pub cycle_target: KeyCode,
+    /// Select the player's own character.
+    pub select_self: KeyCode,
     /// Aim the Ultimate. It is not on the bar, so it has a key of its own.
     ///
     /// Kept here beside the rest even though the application is what acts on it: a key that
@@ -41,8 +44,54 @@ pub struct Bindings {
     /// how it ended up sharing `R` with the developer reset and silently wiping the energy
     /// bar every time the Ultimate was pressed.
     pub ultimate: KeyCode,
+    /// Open and close the character sheet.
+    ///
+    /// Here rather than in the application for the reason [`Bindings::ultimate`] gives: a key
+    /// that lives somewhere else is a key nothing can check for a collision, and an action
+    /// bar slot bound to it would silently open the character panel mid-fight.
+    pub character_sheet: KeyCode,
+    /// Open and close the mailbox.
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key that lives somewhere else
+    /// is a key nothing can check for a collision.
+    pub mailbox: KeyCode,
+    /// The first button beside the bar. A hero with more abilities than digits uses it.
+    ///
+    /// Here beside the Ultimate's key and for the same reason: a key that lives somewhere
+    /// else is a key nothing can check for a collision.
+    pub extra_one: KeyCode,
+    /// The second button beside the bar.
+    pub extra_two: KeyCode,
+    /// Interact with what is in reach: open the boss's chest and take your share.
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key that lives somewhere else
+    /// is a key nothing can check for a collision, and an action bar slot bound to it would
+    /// silently open a chest mid-fight.
+    pub interact: KeyCode,
+    /// Open and close the full-screen dungeon map.
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key nothing can check for a
+    /// collision is a key an action bar slot will one day share. The application reads the
+    /// player's choice of it from `settings.cfg` and keeps this default if that collides.
+    pub toggle_map: KeyCode,
+    /// Open and close the Recount window (combat statistics).
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key nothing can check for a
+    /// collision is a key an action bar slot will one day share.
+    pub recount: KeyCode,
+    /// Open and close the Modifier panel (the dungeon key's modifiers and the reroll).
+    ///
+    /// Here for the reason [`Bindings::character_sheet`] is: a key nothing can check for a
+    /// collision is a key an action bar slot will one day share.
+    pub modifiers: KeyCode,
+    /// Use the first trinket's active. Here for the reason [`Bindings::character_sheet`] is.
+    pub trinket_one: KeyCode,
+    /// Use the second trinket's active.
+    pub trinket_two: KeyCode,
     /// Restore the dummies and clear the combat session. A developer control.
     pub reset_dummies: KeyCode,
+    /// The mouse button held to turn the camera, which also turns the character.
+    pub look: MouseButton,
 }
 
 impl Default for Bindings {
@@ -54,10 +103,33 @@ impl Default for Bindings {
             right: KeyCode::D,
             jump: KeyCode::Space,
             cycle_target: KeyCode::Tab,
+            // F1, which is where the genre has put "target yourself" for twenty years.
+            select_self: KeyCode::F1,
+            // C, which is where the genre has put the character sheet for as long as there
+            // have been character sheets.
+            character_sheet: KeyCode::C,
+            // J: free of the genre's fixed keys and of the developer's, and under the right
+            // hand next to the sheet's neighbours.
+            mailbox: KeyCode::J,
+            // M, where the genre has always put the map.
+            toggle_map: KeyCode::M,
+            // E, where the genre has always put "use".
+            interact: KeyCode::E,
             ultimate: KeyCode::R,
+            // F and G: the two keys next to the digits that nothing else in the game wants.
+            extra_one: KeyCode::F,
+            extra_two: KeyCode::G,
+            // O: free of the genre's fixed keys, the class's and the developer's.
+            recount: KeyCode::O,
+            // K, for the key: free of the genre's fixed keys, the class's and the developer's.
+            modifiers: KeyCode::K,
+            // T and V: free of the genre's fixed keys, the class's and the developer's.
+            trinket_one: KeyCode::T,
+            trinket_two: KeyCode::V,
             // Not `R`: that is the Ultimate. A developer control has no business taking a
             // key the class needs.
             reset_dummies: KeyCode::Backspace,
+            look: MouseButton::Right,
         }
     }
 }
@@ -69,17 +141,80 @@ impl Bindings {
     /// ones. A test walks the whole list, which is what stops two actions from quietly
     /// sharing a key again.
     #[must_use]
-    pub fn named_keys(&self) -> [KeyCode; 8] {
+    pub fn named_keys(&self) -> [KeyCode; 19] {
         [
+            self.toggle_map,
+            self.interact,
+            self.extra_one,
+            self.extra_two,
             self.forward,
             self.back,
             self.left,
             self.right,
             self.jump,
             self.cycle_target,
+            self.select_self,
             self.ultimate,
+            self.character_sheet,
+            self.mailbox,
+            self.recount,
+            self.modifiers,
+            self.trinket_one,
+            self.trinket_two,
             self.reset_dummies,
         ]
+    }
+
+    /// What `key` already does, if this binding set claims it.
+    ///
+    /// The one question a rebinding interface has to be able to ask before it writes a
+    /// binding down. It lives here because this module is the only place that knows which
+    /// key does what, and an interface that kept its own list of "keys you may not take"
+    /// would be a second list to forget to update.
+    ///
+    /// Escape is included even though it is not a field: it is what closes a menu, and a
+    /// player who bound it to an action bar slot would have bound their way out of the
+    /// interface that could unbind it.
+    #[must_use]
+    pub fn reserved(&self, key: KeyCode) -> Option<&'static str> {
+        if key == KeyCode::Escape {
+            return Some("THE MENU");
+        }
+        let named = [
+            (self.forward, "MOVE FORWARD"),
+            (self.back, "MOVE BACK"),
+            (self.left, "STRAFE LEFT"),
+            (self.right, "STRAFE RIGHT"),
+            (self.jump, "JUMP"),
+            (self.cycle_target, "CYCLE TARGET"),
+            (self.select_self, "TARGET YOURSELF"),
+            (self.ultimate, "THE ULTIMATE"),
+            (self.extra_one, "THE FIRST EXTRA ABILITY"),
+            (self.extra_two, "THE SECOND EXTRA ABILITY"),
+            (self.character_sheet, "THE CHARACTER SHEET"),
+            (self.mailbox, "THE MAILBOX"),
+            (self.recount, "RECOUNT"),
+            (self.modifiers, "THE KEY MODIFIERS"),
+            (self.trinket_one, "THE FIRST TRINKET"),
+            (self.trinket_two, "THE SECOND TRINKET"),
+            (self.toggle_map, "THE DUNGEON MAP"),
+            (self.interact, "INTERACT"),
+            (self.reset_dummies, "RESET DUMMIES"),
+        ];
+        named
+            .into_iter()
+            .find(|(bound, _)| *bound == key)
+            .map(|(_, what)| what)
+    }
+
+    /// The key that presses the hero's `index`th button beside the bar.
+    #[must_use]
+    pub fn extra_key(&self, index: usize) -> Option<KeyCode> {
+        match index {
+            0 => Some(self.extra_one),
+            1 => Some(self.extra_two),
+            _ => None,
+        }
     }
 
     /// The key that triggers ability `slot`.
@@ -106,6 +241,25 @@ impl Bindings {
     /// [`InputState::was_key_pressed`], so holding `1` casts once.
     pub fn write_commands(
         &self,
+        hero: Hero,
+        input: &InputState,
+        camera_yaw: f32,
+        out: &mut Vec<PlayerCommand>,
+    ) {
+        self.write_world_commands(input, camera_yaw, out);
+        self.write_bar_commands(hero, input, out);
+    }
+
+    /// Appends everything except the ability bar: movement, jump, targeting, developer keys.
+    ///
+    /// What the game itself uses. The bar is left out because its keys are the player's to
+    /// arrange — eight bars of ten slots, each with a key of its own, saved in `hud.cfg` —
+    /// and a fixed digit row issuing commands beside them would cast twice on `1` and not at
+    /// all on a slot the player rebound. The arranged bar lives in `engine-presentation`;
+    /// what a slot does when it is pressed is still a `PlayerCommand`, built here in
+    /// [`Bindings::write_bar_commands`]'s shape.
+    pub fn write_world_commands(
+        &self,
         input: &InputState,
         camera_yaw: f32,
         out: &mut Vec<PlayerCommand>,
@@ -115,21 +269,45 @@ impl Bindings {
         if input.was_key_pressed(self.cycle_target) {
             out.push(PlayerCommand::CycleTarget);
         }
+        if input.was_key_pressed(self.select_self) {
+            out.push(PlayerCommand::SelectSelf);
+        }
+        if input.was_key_pressed(self.trinket_one) {
+            out.push(PlayerCommand::UseTrinket(0));
+        }
+        if input.was_key_pressed(self.trinket_two) {
+            out.push(PlayerCommand::UseTrinket(1));
+        }
         if input.was_key_pressed(self.reset_dummies) {
             out.push(PlayerCommand::ResetDummies);
         }
+    }
 
-        // The bar. An *aimed* ability - one placed on the ground, or a cone pointed with the
-        // mouse - is deliberately not cast from here: its key shows the preview, and the
-        // application sends the command when the player clicks.
+    /// Appends `hero`'s digit-row bar: slot 1 on `1`, through slot 10 on `0`.
+    ///
+    /// The layout every action bar in the genre starts with, and the one a headless test or
+    /// a replay drives the class with when there is no interface to arrange one.
+    pub fn write_bar_commands(&self, hero: Hero, input: &InputState, out: &mut Vec<PlayerCommand>) {
+        // An *aimed* ability - one placed on the ground, or a cone pointed with the mouse -
+        // is deliberately not cast from here: its key shows the preview, and the application
+        // sends the command when the player clicks.
         for slot in 0..ABILITY_SLOTS {
-            let (Some(key), Some(ability)) =
-                (Self::ability_key(slot), FireAbility::from_slot(slot))
+            let (Some(key), Some(ability)) = (Self::ability_key(slot), hero.ability_at(slot))
             else {
                 continue;
             };
             if input.was_key_pressed(key) && !ability.definition().target.is_aimed() {
                 out.push(PlayerCommand::UseAbility(slot));
+            }
+        }
+        // And the buttons beside it, on the same terms: an aimed ability is not cast from a
+        // key press, and a hero with no extras issues nothing at all.
+        for (index, ability) in hero.extras().enumerate() {
+            let Some(key) = self.extra_key(index) else {
+                continue;
+            };
+            if input.was_key_pressed(key) && !ability.definition().target.is_aimed() {
+                out.push(PlayerCommand::UseExtra(index));
             }
         }
     }
@@ -155,6 +333,10 @@ impl Bindings {
             forward: axis(self.forward, self.back),
             right: axis(self.right, self.left),
             yaw: camera_yaw,
+            // Held right button: the camera is steering, so the character faces the camera
+            // rather than its own feet. Read here rather than passed in, because which
+            // button steers is a binding and bindings live in this module.
+            face_camera: input.is_mouse_button_down(self.look),
         });
 
         if input.was_key_pressed(self.jump) {
@@ -188,7 +370,7 @@ mod tests {
 
     fn commands(input: &InputState, yaw: f32) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
-        Bindings::default().write_commands(input, yaw, &mut out);
+        Bindings::default().write_commands(Hero::default(), input, yaw, &mut out);
         out
     }
 
@@ -216,6 +398,7 @@ mod tests {
                 forward: 1.0,
                 right: 1.0,
                 yaw: 0.0,
+                face_camera: false
             })
         );
     }
@@ -246,6 +429,7 @@ mod tests {
                 forward: 0.0,
                 right: 0.0,
                 yaw: 1.0,
+                face_camera: false
             })
         );
     }
@@ -321,7 +505,9 @@ mod tests {
     #[test]
     fn every_ability_key_produces_its_own_slot() {
         for slot in 0..ABILITY_SLOTS {
-            let ability = FireAbility::from_slot(slot).expect("every slot has an ability");
+            let ability = Hero::default()
+                .ability_at(slot)
+                .expect("every slot of the mage's bar has an ability");
             // An aimed ability shows its preview instead of casting from the key; the
             // application sends the command when the player clicks.
             if ability.definition().target.is_aimed() {
@@ -376,6 +562,7 @@ mod tests {
                 forward: 1.0,
                 right: 0.0,
                 yaw: 0.0,
+                face_camera: false
             })
         );
         assert_eq!(
@@ -391,5 +578,59 @@ mod tests {
         // commands nobody acts on.
         let input = InputState::new();
         assert_eq!(commands(&input, 0.0).len(), 1);
+    }
+
+    #[test]
+    fn every_key_the_game_claims_reports_what_it_is_for() {
+        let bindings = Bindings::default();
+        for key in bindings.named_keys() {
+            assert!(
+                bindings.reserved(key).is_some(),
+                "{key:?} is bound but reports nothing"
+            );
+        }
+        // Escape is not a field, and is reserved anyway: it is the way out of every menu.
+        assert!(bindings.reserved(KeyCode::Escape).is_some());
+        // The digit row is not reserved. It is the default action bar, and the player is
+        // allowed to take it apart.
+        for slot in 0..ABILITY_SLOTS {
+            let key = Bindings::ability_key(slot).expect("every slot has a default key");
+            assert_eq!(bindings.reserved(key), None, "{key:?} cannot be rebound");
+        }
+        // F1 is claimed now: it is the self-target key, and a slot that took it would take
+        // the one selection a player can always make.
+        assert_eq!(bindings.reserved(KeyCode::F1), Some("TARGET YOURSELF"));
+        assert_eq!(bindings.reserved(KeyCode::F2), None);
+    }
+
+    #[test]
+    fn the_world_commands_are_everything_but_the_bar() {
+        let mut state = InputState::new();
+        frame(
+            &mut state,
+            &[KeyCode::W, KeyCode::Space, KeyCode::Tab, KeyCode::Digit1],
+            &[],
+        );
+
+        let mut world = Vec::new();
+        Bindings::default().write_world_commands(&state, 0.0, &mut world);
+        assert!(
+            !world
+                .iter()
+                .any(|command| matches!(command, PlayerCommand::UseAbility(_))),
+            "the bar reached the world commands: {world:?}"
+        );
+        assert!(world.contains(&PlayerCommand::Jump));
+        assert!(world.contains(&PlayerCommand::CycleTarget));
+
+        let mut bar = Vec::new();
+        Bindings::default().write_bar_commands(Hero::default(), &state, &mut bar);
+        assert_eq!(bar, vec![PlayerCommand::UseAbility(0)]);
+
+        // Together they are exactly what the whole translation produces.
+        let mut both = Vec::new();
+        Bindings::default().write_commands(Hero::default(), &state, 0.0, &mut both);
+        world.extend(bar);
+        assert_eq!(both, world);
     }
 }

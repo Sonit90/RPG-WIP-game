@@ -1,0 +1,25 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="boots_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(28,22,18)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(62,46,32)"></stop>
+	</linearGradient>
+	<radialGradient id="boots_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(214,146,72)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(214,146,72)"></stop>
+	</radialGradient>
+	<clipPath id="boots_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#boots_tile)">
+	<path fill="url(#boots_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#boots_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(104,74,54)" d="M 128 128 L 226 128 L 226 288 L 250 288 C 250 320 236 344 200 356 L 128 372 Z"></path>
+	<path fill="rgb(150,110,82)" d="M 128 128 L 226 128 L 226 176 L 128 176 Z"></path>
+	<path fill="rgb(60,42,32)" d="M 128 356 L 250 320 L 252 368 C 252 382 242 392 226 392 L 128 392 Z"></path>
+	<path fill="rgb(104,74,54)" d="M 286 128 L 384 128 L 384 288 L 408 288 C 408 320 394 344 358 356 L 286 372 Z"></path>
+	<path fill="rgb(150,110,82)" d="M 286 128 L 384 128 L 384 176 L 286 176 Z"></path>
+	<path fill="rgb(60,42,32)" d="M 286 356 L 408 320 L 410 368 C 410 382 400 392 384 392 L 286 392 Z"></path>
+</g>
+</svg>

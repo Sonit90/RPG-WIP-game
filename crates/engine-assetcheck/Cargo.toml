@@ -1,0 +1,28 @@
+[package]
+name = "engine-assetcheck"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The asset validator's command line. A crate of its own, and not a second `[[bin]]` on
+# engine-assets, so that nothing a content tool needs — a directory walker, an argument
+# parser, a report formatter — can end up linked into the game. `cargo build --bin mygame`
+# does not build this at all.
+[dependencies]
+# The validator itself, and the importer it reads assets with. Every rule lives there; this
+# crate chooses which assets to run them over and prints what came back.
+engine-assets = { workspace = true }
+# The environment library's asset names and their collision descriptions, so `--library` can
+# check the assets the game actually ships against the same limits an imported one meets.
+engine-environment = { workspace = true }
+# The engine's logger, so a run's log lines look like every other log line in the project.
+engine-core = { workspace = true }
+log = { workspace = true }
+
+[[bin]]
+name = "asset_check"
+path = "src/main.rs"
+
+[lints]
+workspace = true

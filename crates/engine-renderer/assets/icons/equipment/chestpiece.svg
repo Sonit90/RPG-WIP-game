@@ -1,0 +1,25 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 0 512 512" width="512" height="512" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="chestpiece_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(26,22,20)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(58,48,40)"></stop>
+	</linearGradient>
+	<radialGradient id="chestpiece_glow" gradientUnits="userSpaceOnUse" cx="256" cy="272" r="230">
+		<stop offset="0" stop-opacity="0.40" stop-color="rgb(196,150,96)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(196,150,96)"></stop>
+	</radialGradient>
+	<clipPath id="chestpiece_tile">
+		<path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#chestpiece_tile)">
+	<path fill="url(#chestpiece_panel)" d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path>
+	<path fill="url(#chestpiece_glow)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+	<path fill="rgb(126,102,76)" d="M 190 116 L 322 116 L 384 156 L 396 396 C 340 420 172 420 116 396 L 128 156 Z"></path>
+	<path fill="rgb(174,146,112)" d="M 190 116 L 256 168 L 322 116 L 384 156 L 372 196 L 256 210 L 140 196 L 128 156 Z"></path>
+	<path fill="rgb(78,62,46)" d="M 246 210 L 266 210 L 274 396 L 238 396 Z"></path>
+	<path fill="rgb(174,146,112)" d="M 140 240 L 226 240 L 226 268 L 142 268 Z"></path>
+	<path fill="rgb(174,146,112)" d="M 286 240 L 372 240 L 370 268 L 286 268 Z"></path>
+	<path fill="rgb(78,62,46)" d="M 116 396 C 172 420 340 420 396 396 L 398 424 C 342 448 170 448 114 424 Z"></path>
+</g>
+</svg>

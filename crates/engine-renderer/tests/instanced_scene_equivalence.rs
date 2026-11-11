@@ -14,6 +14,8 @@
 //!
 //! Renders offscreen: no window, no swap chain, no compositor, deterministic.
 
+#![cfg(windows)]
+
 use engine_core::math::{Quat, Vec3};
 use engine_core::transform::Transform;
 use engine_render_data::{Camera, Lighting, Projection};

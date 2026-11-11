@@ -4,21 +4,56 @@ members = [
     "crates/engine-core",
     "crates/engine-platform",
     "crates/engine-render-data",
+    # Character and prop assets: the runtime model representation, the procedural authors,
+    # and the glTF importer. No device, no `windows` — a model is built and validated in a
+    # unit test with no adapter present.
+    "crates/engine-assets",
     "crates/engine-renderer",
     # Collision and character movement. Simulation-side geometry: depends on engine-core
     # alone, so a headless test can resolve a character move with no device.
     "crates/engine-collision",
+    # The level: what an arena is made of and where each piece stands. Data only — it
+    # depends on engine-core alone, so gameplay, assets and presentation can each read the
+    # same scene without depending on one another.
+    "crates/engine-environment",
     # Gameplay. Depends on engine-core alone; see its lib docs for why that is the point.
     "crates/engine-game",
+    # The realm's rules: catalogs, matchmaking, party and instance state machines, movement
+    # validation. Shared by the SpacetimeDB module, the client and the persistence API, so it
+    # does no I/O at all and compiles to wasm32.
+    "crates/engine-realm",
+    # The client's network layer: realm API + SpacetimeDB on a background thread, surfaced as
+    # plain events. No `windows`, no renderer, no UI.
+    "crates/engine-net",
+    # Headless realm bots for local multiplayer and end-to-end tests. Development only.
+    "crates/engine-realm-testclient",
+    # Effects as data and the runtime that plays them. engine-core and engine-render-data
+    # only: no gameplay, no device, so the whole VFX runtime is tested without either.
+    "crates/engine-vfx",
+    # Sound as data and the runtime that mixes it. engine-core only: no gameplay, no device,
+    # so the catalogue, the voices, the mixer and the mix itself are tested without either.
+    "crates/engine-audio",
     # Player-facing settings and their file. Depends on no engine crate at all.
     "crates/engine-settings",
     # Gameplay to rendering: extraction, the third-person camera, the developer overlay.
     "crates/engine-presentation",
+    # The level editor. Development only: engine-app names it behind its `editor` feature,
+    # so a player's binary contains none of it.
+    "crates/engine-editor",
     "crates/engine-app",
     "crates/engine-bench",
+    # The FireMage combat simulator. Headless: it drives engine-game's own simulation, so
+    # the numbers it balances are the numbers the game uses.
+    "crates/engine-sim",
     # Development-only: a visual test bed for the renderer. Nothing depends on it, and the
     # shipped game never links it.
     "crates/engine-showcase",
+    # The asset validator's command line. Development only: it reads content off disk and
+    # reports what breaks docs/style/ASSET_LIMITATIONS.md. The game never links it.
+    "crates/engine-assetcheck",
+    # The procedural starter-content generator's command line. Development only: it writes
+    # assets/generated/** and the game never links it.
+    "crates/engine-assetgen",
 ]
 
 [workspace.package]
@@ -29,22 +64,60 @@ publish = false
 
 [workspace.dependencies]
 engine-core = { path = "crates/engine-core" }
+engine-assetgen = { path = "crates/engine-assetgen" }
 engine-platform = { path = "crates/engine-platform" }
 # Pure rendering data: what the game hands the renderer. No `windows`, no D3D12 — that
 # absence is the point, and it is what lets a future gameplay crate produce a RenderWorld.
 engine-render-data = { path = "crates/engine-render-data" }
 # default-features is off here so each consumer opts in; engine-app re-exports the
 # `debug-overlay` feature so a shipping build can drop it with --no-default-features.
+# Models, skeletons, animation clips and their two producers. Between render-data and the
+# renderer in the graph: it describes what to draw without knowing how anything is drawn.
+engine-assets = { path = "crates/engine-assets" }
 engine-renderer = { path = "crates/engine-renderer", default-features = false }
 # Collision and character movement. Same rule as engine-game: engine-core and nothing else.
 engine-collision = { path = "crates/engine-collision" }
+# The level as data: placements, collision descriptions, lighting. engine-core and nothing
+# else, which is what lets gameplay, assets and presentation all read it.
+engine-environment = { path = "crates/engine-environment" }
 # The gameplay simulation. Must never gain a `windows`, renderer or render-data dependency.
 engine-game = { path = "crates/engine-game" }
+# The realm's shared rules. Must never gain `windows`, a renderer, a network or a database.
+engine-realm = { path = "crates/engine-realm" }
+# The client's network layer. Must never gain `windows`, a renderer or presentation.
+engine-net = { path = "crates/engine-net" }
 engine-presentation = { path = "crates/engine-presentation" }
+engine-editor = { path = "crates/engine-editor" }
+# Effects as data and their runtime. Must never gain `windows`, `engine-renderer`,
+# `engine-game` or `engine-assets` — see its lib docs for why each absence is load-bearing.
+engine-vfx = { path = "crates/engine-vfx" }
+# Sound as data and its runtime. Must never gain `windows`, `cpal`, `engine-game` or
+# `engine-renderer` — see its lib docs for why each absence is load-bearing.
+engine-audio = { path = "crates/engine-audio" }
 # Settings the player changes and the game reloads next launch. No engine dependency.
 engine-settings = { path = "crates/engine-settings" }
+# The asset validator's command line. Nothing in the workspace depends on it.
+engine-assetcheck = { path = "crates/engine-assetcheck" }
 log = "0.4"
 windows = "0.62"
+# macOS only. The window and its event loop on macOS: winit is the platform layer there,
+# where Win32 is the platform layer on Windows. Nothing outside engine-platform names it.
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+# macOS only. Objective-C bindings for the Metal backend (engine-renderer/src/metal) and the
+# macOS platform layer. The same objc2 generation cpal's CoreAudio backend already uses.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-metal = "0.3"
+objc2-quartz-core = "0.3"
+objc2-app-kit = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-foundation = "0.3"
+# macOS only: the Metal library data (`newLibraryWithData:`) is a dispatch_data_t.
+dispatch2 = "0.3"
+# macOS only: the Keychain, for the remembered online session.
+security-framework = "2"
+libc = "0.2"
 # The settings file is JSON. A hand-written parser is exactly the sort of thing that turns a
 # malformed config into a crash, so the format is left to the ecosystem's standard pair.
 serde = { version = "1", default-features = false, features = ["std"] }

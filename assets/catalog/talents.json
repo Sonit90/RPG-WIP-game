@@ -1,0 +1,927 @@
+{
+  "version": 1,
+  "progression": {
+    "starting_points": 5,
+    "points_per_completion": 1,
+    "bonus_points_min_key_level": 3,
+    "bonus_points": 1
+  },
+  "heroes": {
+    "firemage": {
+      "talents": [
+        {
+          "key": "burning_embers",
+          "name": "BURNING EMBERS",
+          "tier": 1,
+          "cost": 3,
+          "description": "EACH IGNITE STACK CONSUMED INCREASES DETONATE DAMAGE BY {per_stack%}%",
+          "values": {
+            "per_stack": 0.03
+          }
+        },
+        {
+          "key": "extended_flame",
+          "name": "EXTENDED FLAME",
+          "tier": 1,
+          "cost": 2,
+          "description": "IGNITE LASTS {bonus_seconds} SECONDS LONGER",
+          "values": {
+            "bonus_seconds": 10.0
+          }
+        },
+        {
+          "key": "infernal_capacity",
+          "name": "INFERNAL CAPACITY",
+          "tier": 3,
+          "cost": 5,
+          "description": "MAXIMUM IGNITE +{extra_stacks}. DETONATE THEN REQUIRES THE FULL STACK",
+          "values": {
+            "extra_stacks": 1.0
+          }
+        },
+        {
+          "key": "rapid_combustion",
+          "name": "RAPID COMBUSTION",
+          "tier": 2,
+          "cost": 4,
+          "description": "DETONATE: {chance%}% CHANCE TO CUT FLAME CONE, FIRESTORM AND METEOR BY {reduction} S",
+          "values": {
+            "chance": 0.2,
+            "reduction": 2.0
+          }
+        },
+        {
+          "key": "molten_meteor",
+          "name": "MOLTEN METEOR",
+          "tier": 2,
+          "cost": 4,
+          "description": "METEOR IMPACT REDUCED TO {damage_scale%}% AND CANNOT CRIT. LEAVES BURNING GROUND FOR {ground_duration} S",
+          "values": {
+            "damage_scale": 0.75,
+            "ground_duration": 15.0,
+            "ground_interval": 3.0,
+            "ground_tick_coefficient": 0.55,
+            "ground_vulnerability": 0.03
+          }
+        },
+        {
+          "key": "furnace_mastery",
+          "name": "FURNACE MASTERY",
+          "tier": 3,
+          "cost": 5,
+          "description": "THE INFERNO STATE LASTS {bonus_seconds} SECONDS LONGER",
+          "values": {
+            "bonus_seconds": 2.0
+          }
+        },
+        {
+          "key": "meteoric_impact",
+          "name": "METEORIC IMPACT",
+          "tier": 2,
+          "cost": 4,
+          "description": "METEOR +{crit_damage_bonus%}% CRIT DAMAGE. A CRITICAL METEOR CUTS PYROBLAST BY {pyroblast_reduction} S",
+          "values": {
+            "crit_damage_bonus": 1.0,
+            "pyroblast_reduction": 4.0
+          }
+        },
+        {
+          "key": "spellfire_feedback",
+          "name": "SPELLFIRE FEEDBACK",
+          "tier": 2,
+          "cost": 4,
+          "description": "CRIT FLAME LANCE AND CRIT PYROBLAST CUT EACH OTHER BY {reduction} S INSTEAD OF {base_reduction}",
+          "values": {
+            "reduction": 1.5,
+            "base_reduction": 1.0
+          }
+        },
+        {
+          "key": "burning_precision",
+          "name": "BURNING PRECISION",
+          "tier": 1,
+          "cost": 3,
+          "description": "A CRITICAL IGNITE TICK HAS A {chance%}% CHANCE TO CUT METEOR BY {reduction} S",
+          "values": {
+            "chance": 0.1,
+            "reduction": 1.0
+          }
+        },
+        {
+          "key": "volatile_ignition",
+          "name": "VOLATILE IGNITION",
+          "tier": 3,
+          "cost": 5,
+          "description": "IGNITE DAMAGE REDUCED TO {ignite_scale%}%. PYROBLAST GAINS {extra_charges} CHARGE",
+          "values": {
+            "ignite_scale": 0.8,
+            "extra_charges": 1.0
+          }
+        },
+        {
+          "key": "chain_pyroblast",
+          "name": "CHAIN PYROBLAST",
+          "tier": 3,
+          "cost": 5,
+          "description": "PYROBLAST BOUNCES AT YOUR CRIT CHANCE. -{falloff%}% A BOUNCE, {max_bounces} MAXIMUM",
+          "values": {
+            "falloff": 0.2,
+            "max_bounces": 10.0
+          }
+        },
+        {
+          "key": "dual_fire_mastery",
+          "name": "DUAL FIRE MASTERY",
+          "tier": 4,
+          "cost": 7,
+          "description": "FIRE MASTERY GRANTS +{dual_bonus%}% HASTE AND +{dual_bonus%}% CRIT INSTEAD OF ONE STAT",
+          "values": {
+            "dual_bonus": 0.1,
+            "single_bonus": 0.15
+          }
+        },
+        {
+          "key": "bk_twin_pyre",
+          "name": "TWIN PYRE",
+          "tier": 0,
+          "cost": 0,
+          "description": "PYROBLAST GAINS {extra_charges} CHARGE",
+          "values": {
+            "extra_charges": 1.0
+          }
+        },
+        {
+          "key": "bk_ricochet_pyre",
+          "name": "RICOCHET PYRE",
+          "tier": 0,
+          "cost": 0,
+          "description": "PYROBLAST BOUNCES AT YOUR CRIT CHANCE. -{falloff%}% A BOUNCE, {max_bounces} MAXIMUM",
+          "values": {
+            "falloff": 0.3,
+            "max_bounces": 3.0
+          }
+        },
+        {
+          "key": "bk_searing_pyre",
+          "name": "SEARING PYRE",
+          "tier": 0,
+          "cost": 0,
+          "description": "A CRITICAL PYROBLAST CUTS FLAME LANCE BY A FURTHER {reduction} S",
+          "values": {
+            "reduction": 0.5
+          }
+        },
+        {
+          "key": "bk_impact_crater",
+          "name": "IMPACT CRATER",
+          "tier": 0,
+          "cost": 0,
+          "description": "METEOR +{crit_damage_bonus%}% CRIT DAMAGE. A CRITICAL METEOR CUTS PYROBLAST BY {pyroblast_reduction} S",
+          "values": {
+            "crit_damage_bonus": 0.5,
+            "pyroblast_reduction": 2.0
+          }
+        },
+        {
+          "key": "bk_scorched_earth",
+          "name": "SCORCHED EARTH",
+          "tier": 0,
+          "cost": 0,
+          "description": "METEOR IMPACT REDUCED TO {damage_scale%}%. LEAVES BURNING GROUND FOR {ground_duration} S",
+          "values": {
+            "damage_scale": 0.85,
+            "ground_duration": 10.0,
+            "ground_interval": 3.0,
+            "ground_tick_coefficient": 0.4,
+            "ground_vulnerability": 0.02
+          }
+        },
+        {
+          "key": "bk_falling_star",
+          "name": "FALLING STAR",
+          "tier": 0,
+          "cost": 0,
+          "description": "A CRITICAL IGNITE TICK HAS A {chance%}% CHANCE TO CUT METEOR BY {reduction} S",
+          "values": {
+            "chance": 0.2,
+            "reduction": 1.5
+          }
+        },
+        {
+          "key": "bk_slow_burn",
+          "name": "SLOW BURN",
+          "tier": 0,
+          "cost": 0,
+          "description": "IGNITE LASTS {bonus_seconds} SECONDS LONGER. ITS DAMAGE REDUCED TO {ignite_scale%}%",
+          "values": {
+            "bonus_seconds": 4.0,
+            "ignite_scale": 0.95
+          }
+        },
+        {
+          "key": "bk_hot_core",
+          "name": "HOT CORE",
+          "tier": 0,
+          "cost": 0,
+          "description": "EACH IGNITE STACK CONSUMED INCREASES DETONATE DAMAGE BY A FURTHER {per_stack%}%",
+          "values": {
+            "per_stack": 0.02
+          }
+        },
+        {
+          "key": "bk_flashpoint",
+          "name": "FLASHPOINT",
+          "tier": 0,
+          "cost": 0,
+          "description": "DETONATE: {chance%}% CHANCE TO CUT FLAME CONE, FIRESTORM AND METEOR BY {reduction} S",
+          "values": {
+            "chance": 0.15,
+            "reduction": 1.5
+          }
+        }
+      ],
+      "books": [
+        {
+          "id": "tome_of_cinders",
+          "name": "Tome of Cinders",
+          "min_key_level": 8
+        },
+        {
+          "id": "tome_of_the_ember_court",
+          "name": "Tome of the Ember Court",
+          "min_key_level": 8
+        },
+        {
+          "id": "tome_of_the_pale_flame",
+          "name": "Tome of the Pale Flame",
+          "min_key_level": 8
+        }
+      ],
+      "enhancement_books": [
+        {
+          "id": "grimoire_of_the_pyre",
+          "name": "Grimoire of the Pyre",
+          "ability": "pyroblast",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "twin_pyre",
+              "name": "TWIN PYRE",
+              "description": "PYROBLAST GAINS {extra_charges} CHARGE",
+              "node": "bk_twin_pyre"
+            },
+            {
+              "id": "ricochet_pyre",
+              "name": "RICOCHET PYRE",
+              "description": "PYROBLAST BOUNCES AT YOUR CRIT CHANCE. -{falloff%}% A BOUNCE, {max_bounces} MAXIMUM",
+              "node": "bk_ricochet_pyre"
+            },
+            {
+              "id": "searing_pyre",
+              "name": "SEARING PYRE",
+              "description": "A CRITICAL PYROBLAST CUTS FLAME LANCE BY A FURTHER {reduction} S",
+              "node": "bk_searing_pyre"
+            }
+          ]
+        },
+        {
+          "id": "grimoire_of_falling_stars",
+          "name": "Grimoire of Falling Stars",
+          "ability": "meteor",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "impact_crater",
+              "name": "IMPACT CRATER",
+              "description": "METEOR +{crit_damage_bonus%}% CRIT DAMAGE. A CRITICAL METEOR CUTS PYROBLAST BY {pyroblast_reduction} S",
+              "node": "bk_impact_crater"
+            },
+            {
+              "id": "scorched_earth",
+              "name": "SCORCHED EARTH",
+              "description": "METEOR IMPACT REDUCED TO {damage_scale%}%. LEAVES BURNING GROUND FOR {ground_duration} S",
+              "node": "bk_scorched_earth"
+            },
+            {
+              "id": "falling_star",
+              "name": "FALLING STAR",
+              "description": "A CRITICAL IGNITE TICK HAS A {chance%}% CHANCE TO CUT METEOR BY {reduction} S",
+              "node": "bk_falling_star"
+            }
+          ]
+        },
+        {
+          "id": "grimoire_of_slow_embers",
+          "name": "Grimoire of Slow Embers",
+          "ability": "ignite",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "slow_burn",
+              "name": "SLOW BURN",
+              "description": "IGNITE LASTS {bonus_seconds} SECONDS LONGER. ITS DAMAGE REDUCED TO {ignite_scale%}%",
+              "node": "bk_slow_burn"
+            },
+            {
+              "id": "hot_core",
+              "name": "HOT CORE",
+              "description": "EACH IGNITE STACK CONSUMED INCREASES DETONATE DAMAGE BY A FURTHER {per_stack%}%",
+              "node": "bk_hot_core"
+            },
+            {
+              "id": "flashpoint",
+              "name": "FLASHPOINT",
+              "description": "DETONATE: {chance%}% CHANCE TO CUT FLAME CONE, FIRESTORM AND METEOR BY {reduction} S",
+              "node": "bk_flashpoint"
+            }
+          ]
+        }
+      ]
+    },
+    "warrior": {
+      "talents": [
+        {
+          "key": "unbroken_momentum",
+          "name": "UNBROKEN MOMENTUM",
+          "tier": 1,
+          "cost": 3,
+          "description": "BATTLE FERVOR NEEDS {valor_needed} VALOR INSTEAD OF 5",
+          "values": {
+            "valor_needed": 4.0
+          }
+        },
+        {
+          "key": "shockwave",
+          "name": "SHOCKWAVE",
+          "tier": 1,
+          "cost": 3,
+          "description": "WAR STOMP RADIUS +{radius_bonus%}%, DAMAGE +{damage_bonus%}% AND +{extra_stacks} SUNDERED STACK",
+          "values": {
+            "radius_bonus": 0.4,
+            "damage_bonus": 0.4,
+            "extra_stacks": 1.0,
+            "cooldown_penalty": 0.0
+          }
+        },
+        {
+          "key": "executioner",
+          "name": "EXECUTIONER",
+          "tier": 2,
+          "cost": 4,
+          "description": "COLOSSUS STRIKE DEALS +{bonus%}% TO TARGETS BELOW {threshold%}% HEALTH. ITS COOLDOWN +{cooldown_penalty} S",
+          "values": {
+            "bonus": 0.5,
+            "threshold": 0.35,
+            "cooldown_penalty": 1.0
+          }
+        },
+        {
+          "key": "bloodied_valor",
+          "name": "BLOODIED VALOR",
+          "tier": 2,
+          "cost": 4,
+          "description": "THE FINAL TICK OF THE COLOSSUS STRIKE BLEED GRANTS +{valor} VALOR",
+          "values": {
+            "valor": 1.0
+          }
+        },
+        {
+          "key": "fervent_guard",
+          "name": "FERVENT GUARD",
+          "tier": 3,
+          "cost": 4,
+          "description": "BATTLE FERVOR PER STACK BECOMES +{damage%}% DAMAGE DEALT AND -{taken%}% DAMAGE TAKEN",
+          "values": {
+            "damage": 0.06,
+            "taken": 0.06
+          }
+        },
+        {
+          "key": "relentless_charge",
+          "name": "RELENTLESS CHARGE",
+          "tier": 3,
+          "cost": 4,
+          "description": "SHIELD CHARGE HAS {charges} CHARGES. ITS IMPACT DAMAGE -{impact_penalty%}%",
+          "values": {
+            "charges": 2.0,
+            "impact_penalty": 0.1
+          }
+        },
+        {
+          "key": "bulwark_rhythm",
+          "name": "BULWARK RHYTHM",
+          "tier": 4,
+          "cost": 5,
+          "description": "EACH BATTLE FERVOR STACK GAINED CUTS SHIELD BLOCK REMAINING COOLDOWN BY {cooldown_cut} S",
+          "values": {
+            "cooldown_cut": 5.0
+          }
+        },
+        {
+          "key": "unyielding",
+          "name": "UNYIELDING",
+          "tier": 4,
+          "cost": 5,
+          "description": "LAST STAND GRANTS {fervor_stacks} BATTLE FERVOR STACKS AT ONCE. ITS COOLDOWN +{cooldown_penalty} S",
+          "values": {
+            "fervor_stacks": 2.0,
+            "cooldown_penalty": 30.0
+          }
+        },
+        {
+          "key": "bk_wide_quake",
+          "name": "WIDE QUAKE",
+          "tier": 0,
+          "cost": 0,
+          "description": "WAR STOMP RADIUS +{range_bonus%}%, DAMAGE -{damage_penalty%}%",
+          "values": {
+            "range_bonus": 0.5,
+            "damage_penalty": 0.1
+          }
+        },
+        {
+          "key": "bk_crushing_quake",
+          "name": "CRUSHING QUAKE",
+          "tier": 0,
+          "cost": 0,
+          "description": "WAR STOMP DAMAGE +{damage_bonus%}%. ITS COOLDOWN +{cooldown_penalty} S",
+          "values": {
+            "damage_bonus": 0.4,
+            "cooldown_penalty": 3.0
+          }
+        },
+        {
+          "key": "bk_rending_quake",
+          "name": "RENDING QUAKE",
+          "tier": 0,
+          "cost": 0,
+          "description": "WAR STOMP APPLIES +{extra_stacks} SUNDERED STACKS. ITS DAMAGE -{damage_penalty%}%",
+          "values": {
+            "extra_stacks": 2.0,
+            "damage_penalty": 0.15
+          }
+        },
+        {
+          "key": "bk_twin_charge",
+          "name": "TWIN CHARGE",
+          "tier": 0,
+          "cost": 0,
+          "description": "SHIELD CHARGE HAS {charges} CHARGES. ITS IMPACT DAMAGE -{impact_penalty%}%",
+          "values": {
+            "charges": 2.0,
+            "impact_penalty": 0.15
+          }
+        },
+        {
+          "key": "bk_triple_charge",
+          "name": "TRIPLE CHARGE",
+          "tier": 0,
+          "cost": 0,
+          "description": "SHIELD CHARGE HAS {charges} CHARGES. ITS IMPACT DAMAGE -{impact_penalty%}%",
+          "values": {
+            "charges": 3.0,
+            "impact_penalty": 0.3
+          }
+        },
+        {
+          "key": "bk_battering_charge",
+          "name": "BATTERING CHARGE",
+          "tier": 0,
+          "cost": 0,
+          "description": "SHIELD CHARGE IMPACT DAMAGE +{impact_bonus%}%",
+          "values": {
+            "impact_bonus": 0.3
+          }
+        },
+        {
+          "key": "bk_headsmans_mark",
+          "name": "HEADSMANS MARK",
+          "tier": 0,
+          "cost": 0,
+          "description": "COLOSSUS STRIKE DEALS +{bonus%}% TO TARGETS BELOW {threshold%}% HEALTH",
+          "values": {
+            "bonus": 0.6,
+            "threshold": 0.25
+          }
+        },
+        {
+          "key": "bk_reapers_reach",
+          "name": "REAPERS REACH",
+          "tier": 0,
+          "cost": 0,
+          "description": "COLOSSUS STRIKE DEALS +{bonus%}% TO TARGETS BELOW {threshold%}% HEALTH",
+          "values": {
+            "bonus": 0.2,
+            "threshold": 0.6
+          }
+        },
+        {
+          "key": "bk_blood_tithe",
+          "name": "BLOOD TITHE",
+          "tier": 0,
+          "cost": 0,
+          "description": "THE COLOSSUS STRIKE BLEED PAYS +{valor} VALOR ON ITS FINAL TICK",
+          "values": {
+            "valor": 2.0
+          }
+        }
+      ],
+      "books": [
+        {
+          "id": "codex_of_iron_will",
+          "name": "Codex of Iron Will",
+          "min_key_level": 8
+        },
+        {
+          "id": "codex_of_the_shield_wall",
+          "name": "Codex of the Shield Wall",
+          "min_key_level": 8
+        },
+        {
+          "id": "codex_of_the_long_war",
+          "name": "Codex of the Long War",
+          "min_key_level": 8
+        }
+      ],
+      "enhancement_books": [
+        {
+          "id": "manual_of_tremors",
+          "name": "Manual of Tremors",
+          "ability": "war_stomp",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "wide_quake",
+              "name": "WIDE QUAKE",
+              "description": "WAR STOMP RADIUS +{range_bonus%}%, DAMAGE -{damage_penalty%}%",
+              "node": "bk_wide_quake"
+            },
+            {
+              "id": "crushing_quake",
+              "name": "CRUSHING QUAKE",
+              "description": "WAR STOMP DAMAGE +{damage_bonus%}%. ITS COOLDOWN +{cooldown_penalty} S",
+              "node": "bk_crushing_quake"
+            },
+            {
+              "id": "rending_quake",
+              "name": "RENDING QUAKE",
+              "description": "WAR STOMP APPLIES +{extra_stacks} SUNDERED STACKS. ITS DAMAGE -{damage_penalty%}%",
+              "node": "bk_rending_quake"
+            }
+          ]
+        },
+        {
+          "id": "manual_of_the_charge",
+          "name": "Manual of the Charge",
+          "ability": "shield_charge",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "twin_charge",
+              "name": "TWIN CHARGE",
+              "description": "SHIELD CHARGE HAS {charges} CHARGES. ITS IMPACT DAMAGE -{impact_penalty%}%",
+              "node": "bk_twin_charge"
+            },
+            {
+              "id": "triple_charge",
+              "name": "TRIPLE CHARGE",
+              "description": "SHIELD CHARGE HAS {charges} CHARGES. ITS IMPACT DAMAGE -{impact_penalty%}%",
+              "node": "bk_triple_charge"
+            },
+            {
+              "id": "battering_charge",
+              "name": "BATTERING CHARGE",
+              "description": "SHIELD CHARGE IMPACT DAMAGE +{impact_bonus%}%",
+              "node": "bk_battering_charge"
+            }
+          ]
+        },
+        {
+          "id": "manual_of_the_headsman",
+          "name": "Manual of the Headsman",
+          "ability": "colossus_strike",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "headsmans_mark",
+              "name": "HEADSMANS MARK",
+              "description": "COLOSSUS STRIKE DEALS +{bonus%}% TO TARGETS BELOW {threshold%}% HEALTH",
+              "node": "bk_headsmans_mark"
+            },
+            {
+              "id": "reapers_reach",
+              "name": "REAPERS REACH",
+              "description": "COLOSSUS STRIKE DEALS +{bonus%}% TO TARGETS BELOW {threshold%}% HEALTH",
+              "node": "bk_reapers_reach"
+            },
+            {
+              "id": "blood_tithe",
+              "name": "BLOOD TITHE",
+              "description": "THE COLOSSUS STRIKE BLEED PAYS +{valor} VALOR ON ITS FINAL TICK",
+              "node": "bk_blood_tithe"
+            }
+          ]
+        }
+      ]
+    },
+    "druid": {
+      "talents": [
+        {
+          "key": "swift_wrath",
+          "name": "SWIFT WRATH",
+          "tier": 1,
+          "cost": 3,
+          "description": "EVERY {every}TH CONSECUTIVE WRATH IS INSTANT AND GENERATES {astral_multiplier}X ASTRAL POWER",
+          "values": {
+            "every": 4.0,
+            "astral_multiplier": 2.0
+          }
+        },
+        {
+          "key": "verdant_sunfire",
+          "name": "VERDANT SUNFIRE",
+          "tier": 1,
+          "cost": 3,
+          "description": "SUNFIRE RADIUS +{radius_bonus%}%. SUNFIRE TICK DAMAGE -{tick_penalty%}%",
+          "values": {
+            "radius_bonus": 0.5,
+            "tick_penalty": 0.2
+          }
+        },
+        {
+          "key": "deep_exposure",
+          "name": "DEEP EXPOSURE",
+          "tier": 2,
+          "cost": 4,
+          "description": "NATURES EXPOSURE MAXIMUM STACKS +{extra_stacks}. ITS DURATION -{duration_penalty%}%",
+          "values": {
+            "extra_stacks": 4.0,
+            "duration_penalty": 0.3
+          }
+        },
+        {
+          "key": "living_seed",
+          "name": "LIVING SEED",
+          "tier": 2,
+          "cost": 4,
+          "description": "REGROWTH AND SWIFTMEND LEAVE A SEED. {fraction%}% OF THE HEAL IS PAID WHEN THE TARGET NEXT TAKES DAMAGE WITHIN {window} S",
+          "values": {
+            "fraction": 0.3,
+            "window": 10.0
+          }
+        },
+        {
+          "key": "overgrowth",
+          "name": "OVERGROWTH",
+          "tier": 3,
+          "cost": 4,
+          "description": "SWIFTMEND COOLDOWN -{cooldown_cut} S. EACH SWIFTMEND REFUNDS {astral_refund} ASTRAL POWER",
+          "values": {
+            "cooldown_cut": 3.0,
+            "astral_refund": 10.0
+          }
+        },
+        {
+          "key": "astral_attunement",
+          "name": "ASTRAL ATTUNEMENT",
+          "tier": 3,
+          "cost": 4,
+          "description": "EMPOWERMENT COSTS {spend} ASTRAL POWER INSTEAD OF 100. EMPOWERED BONUSES -{bonus_penalty%}%",
+          "values": {
+            "spend": 75.0,
+            "bonus_penalty": 0.15
+          }
+        },
+        {
+          "key": "barkskin_instinct",
+          "name": "BARKSKIN INSTINCT",
+          "tier": 4,
+          "cost": 5,
+          "description": "WILD RUSH ALSO GIVES ALLIES WITHIN {radius} M {reduction%}% DAMAGE REDUCTION FOR {duration} S",
+          "values": {
+            "radius": 8.0,
+            "reduction": 0.25,
+            "duration": 4.0
+          }
+        },
+        {
+          "key": "tranquil_mind",
+          "name": "TRANQUIL MIND",
+          "tier": 4,
+          "cost": 5,
+          "description": "TRANQUILITY COOLDOWN -{cooldown_cut} S AND MANA COST -{mana_cut%}%. ITS HEALING -{heal_penalty%}%",
+          "values": {
+            "cooldown_cut": 40.0,
+            "mana_cut": 0.5,
+            "heal_penalty": 0.15
+          }
+        },
+        {
+          "key": "bk_wide_bloom",
+          "name": "WIDE BLOOM",
+          "tier": 0,
+          "cost": 0,
+          "description": "SUNFIRE RADIUS +{radius_bonus%}%. SUNFIRE TICK DAMAGE -{tick_penalty%}%",
+          "values": {
+            "radius_bonus": 0.6,
+            "tick_penalty": 0.15
+          }
+        },
+        {
+          "key": "bk_searing_bloom",
+          "name": "SEARING BLOOM",
+          "tier": 0,
+          "cost": 0,
+          "description": "SUNFIRE TICK DAMAGE +{tick_bonus%}%. SUNFIRE RADIUS -{radius_penalty%}%",
+          "values": {
+            "tick_bonus": 0.5,
+            "radius_penalty": 0.3
+          }
+        },
+        {
+          "key": "bk_balanced_bloom",
+          "name": "BALANCED BLOOM",
+          "tier": 0,
+          "cost": 0,
+          "description": "SUNFIRE RADIUS +{radius_bonus%}% AND TICK DAMAGE +{tick_bonus%}%",
+          "values": {
+            "radius_bonus": 0.25,
+            "tick_bonus": 0.1
+          }
+        },
+        {
+          "key": "bk_quick_mend",
+          "name": "QUICK MEND",
+          "tier": 0,
+          "cost": 0,
+          "description": "SWIFTMEND COOLDOWN -{cooldown_cut} S",
+          "values": {
+            "cooldown_cut": 4.0,
+            "astral_refund": 0.0
+          }
+        },
+        {
+          "key": "bk_astral_mend",
+          "name": "ASTRAL MEND",
+          "tier": 0,
+          "cost": 0,
+          "description": "EACH SWIFTMEND REFUNDS {astral_refund} ASTRAL POWER",
+          "values": {
+            "cooldown_cut": 0.0,
+            "astral_refund": 20.0
+          }
+        },
+        {
+          "key": "bk_measured_mend",
+          "name": "MEASURED MEND",
+          "tier": 0,
+          "cost": 0,
+          "description": "SWIFTMEND COOLDOWN -{cooldown_cut} S AND REFUNDS {astral_refund} ASTRAL POWER",
+          "values": {
+            "cooldown_cut": 2.0,
+            "astral_refund": 10.0
+          }
+        },
+        {
+          "key": "bk_gentle_peace",
+          "name": "GENTLE PEACE",
+          "tier": 0,
+          "cost": 0,
+          "description": "TRANQUILITY MANA COST -{mana_cut%}%. ITS HEALING -{heal_penalty%}%",
+          "values": {
+            "mana_cut": 0.4,
+            "heal_penalty": 0.1,
+            "cooldown_cut": 0.0,
+            "heal_bonus": 0.0,
+            "mana_penalty": 0.0
+          }
+        },
+        {
+          "key": "bk_swift_peace",
+          "name": "SWIFT PEACE",
+          "tier": 0,
+          "cost": 0,
+          "description": "TRANQUILITY COOLDOWN -{cooldown_cut} S. ITS HEALING -{heal_penalty%}%",
+          "values": {
+            "mana_cut": 0.0,
+            "heal_penalty": 0.15,
+            "cooldown_cut": 30.0,
+            "heal_bonus": 0.0,
+            "mana_penalty": 0.0
+          }
+        },
+        {
+          "key": "bk_deep_peace",
+          "name": "DEEP PEACE",
+          "tier": 0,
+          "cost": 0,
+          "description": "TRANQUILITY HEALING +{heal_bonus%}%. ITS MANA COST +{mana_penalty%}%",
+          "values": {
+            "mana_cut": 0.0,
+            "heal_penalty": 0.0,
+            "cooldown_cut": 0.0,
+            "heal_bonus": 0.25,
+            "mana_penalty": 0.3
+          }
+        }
+      ],
+      "books": [
+        {
+          "id": "lore_of_the_grove",
+          "name": "Lore of the Grove",
+          "min_key_level": 8
+        },
+        {
+          "id": "lore_of_the_deep_roots",
+          "name": "Lore of the Deep Roots",
+          "min_key_level": 8
+        },
+        {
+          "id": "lore_of_the_waking_dream",
+          "name": "Lore of the Waking Dream",
+          "min_key_level": 8
+        }
+      ],
+      "enhancement_books": [
+        {
+          "id": "verses_of_sunfire",
+          "name": "Verses of Sunfire",
+          "ability": "sunfire",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "wide_bloom",
+              "name": "WIDE BLOOM",
+              "description": "SUNFIRE RADIUS +{radius_bonus%}%. SUNFIRE TICK DAMAGE -{tick_penalty%}%",
+              "node": "bk_wide_bloom"
+            },
+            {
+              "id": "searing_bloom",
+              "name": "SEARING BLOOM",
+              "description": "SUNFIRE TICK DAMAGE +{tick_bonus%}%. SUNFIRE RADIUS -{radius_penalty%}%",
+              "node": "bk_searing_bloom"
+            },
+            {
+              "id": "balanced_bloom",
+              "name": "BALANCED BLOOM",
+              "description": "SUNFIRE RADIUS +{radius_bonus%}% AND TICK DAMAGE +{tick_bonus%}%",
+              "node": "bk_balanced_bloom"
+            }
+          ]
+        },
+        {
+          "id": "verses_of_mending",
+          "name": "Verses of Mending",
+          "ability": "swiftmend",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "quick_mend",
+              "name": "QUICK MEND",
+              "description": "SWIFTMEND COOLDOWN -{cooldown_cut} S",
+              "node": "bk_quick_mend"
+            },
+            {
+              "id": "astral_mend",
+              "name": "ASTRAL MEND",
+              "description": "EACH SWIFTMEND REFUNDS {astral_refund} ASTRAL POWER",
+              "node": "bk_astral_mend"
+            },
+            {
+              "id": "measured_mend",
+              "name": "MEASURED MEND",
+              "description": "SWIFTMEND COOLDOWN -{cooldown_cut} S AND REFUNDS {astral_refund} ASTRAL POWER",
+              "node": "bk_measured_mend"
+            }
+          ]
+        },
+        {
+          "id": "verses_of_stillness",
+          "name": "Verses of Stillness",
+          "ability": "tranquility",
+          "min_key_level": 6,
+          "options": [
+            {
+              "id": "gentle_peace",
+              "name": "GENTLE PEACE",
+              "description": "TRANQUILITY MANA COST -{mana_cut%}%. ITS HEALING -{heal_penalty%}%",
+              "node": "bk_gentle_peace"
+            },
+            {
+              "id": "swift_peace",
+              "name": "SWIFT PEACE",
+              "description": "TRANQUILITY COOLDOWN -{cooldown_cut} S. ITS HEALING -{heal_penalty%}%",
+              "node": "bk_swift_peace"
+            },
+            {
+              "id": "deep_peace",
+              "name": "DEEP PEACE",
+              "description": "TRANQUILITY HEALING +{heal_bonus%}%. ITS MANA COST +{mana_penalty%}%",
+              "node": "bk_deep_peace"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

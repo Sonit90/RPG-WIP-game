@@ -1,0 +1,64 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="fire_mastery_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="fire_mastery_forge" gradientUnits="userSpaceOnUse" cx="338" cy="600" r="330">
+		<stop offset="0" stop-opacity="0.55" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.55" stop-opacity="0.22" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<linearGradient id="fire_mastery_sigil" gradientUnits="userSpaceOnUse" x1="338" y1="300" x2="338" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(252,149,6)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(133,15,4)"></stop>
+	</linearGradient>
+	<linearGradient id="fire_mastery_flame" gradientUnits="userSpaceOnUse" x1="338" y1="800" x2="338" y2="360">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(133,15,4)"></stop>
+		<stop offset="0.3" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="0.7" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+	</linearGradient>
+	<linearGradient id="fire_mastery_core" gradientUnits="userSpaceOnUse" x1="338" y1="790" x2="338" y2="470">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="0.55" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(255,244,196)"></stop>
+	</linearGradient>
+	<radialGradient id="fire_mastery_glow" gradientUnits="userSpaceOnUse" cx="338" cy="620" r="290">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="0.5" stop-opacity="0.18" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(94,13,6)"></stop>
+	</radialGradient>
+	<clipPath id="fire_mastery_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#fire_mastery_tile)">
+	<path fill="url(#fire_mastery_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#fire_mastery_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="url(#fire_mastery_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Mastery is a cooldown the mage turns on, not a thing thrown at anyone, so it is a
+	     sigil: symmetric, held, and standing still. -->
+	<path fill="none" stroke="url(#fire_mastery_sigil)" stroke-width="20" d="M 338 292 L 566 570 L 338 848 L 110 570 z"></path>
+	<path fill="rgb(90,9,4)" fill-opacity="0.55" d="M 338 330 L 534 570 L 338 810 L 142 570 z"></path>
+	<path fill="none" stroke="rgb(217,47,1)" stroke-opacity="0.7" stroke-width="8" d="M 338 356 L 508 570 L 338 784 L 168 570 z"></path>
+
+	<!-- The flame the sigil holds. Symmetric, because this one is a state, not a strike. -->
+	<path fill="url(#fire_mastery_flame)" d="M 338 396 C 366 470 402 508 430 552 C 452 586 458 620 448 656 C 434 706 392 736 338 736 C 284 736 242 706 228 656 C 218 620 224 586 246 552 C 274 508 310 470 338 396 z"></path>
+	<path fill="url(#fire_mastery_core)" d="M 338 492 C 356 540 380 566 394 596 C 404 618 404 640 394 658 C 382 682 362 694 338 694 C 314 694 294 682 282 658 C 272 640 272 618 282 596 C 296 566 320 540 338 492 z"></path>
+	<path fill="rgb(255,244,196)" fill-opacity="0.9" d="M 338 578 C 348 606 362 622 368 640 C 374 656 370 670 358 678 C 346 686 330 686 318 678 C 306 670 302 656 308 640 C 314 622 328 606 338 578 z"></path>
+
+	<!-- Two marks, because the cooldown grants one of two things: speed, or a harder hit. -->
+	<path fill="rgb(252,191,12)" fill-opacity="0.95" d="M 338 254 L 358 300 L 338 288 L 318 300 z"></path>
+	<path fill="rgb(249,134,8)" fill-opacity="0.9" d="M 96 570 L 74 548 L 82 570 L 74 592 z"></path>
+	<path fill="rgb(249,134,8)" fill-opacity="0.9" d="M 580 570 L 602 548 L 594 570 L 602 592 z"></path>
+	<path fill="rgb(252,191,12)" fill-opacity="0.95" d="M 338 886 L 318 840 L 338 852 L 358 840 z"></path>
+
+	<!-- Sparks the sigil sheds while it is up. -->
+	<path fill="rgb(254,224,61)" d="M 470 400 C 478 406 482 414 480 424 C 470 418 464 410 464 400 z"></path>
+	<path fill="rgb(252,191,12)" d="M 206 420 C 214 424 218 432 216 442 C 206 436 200 428 200 420 z"></path>
+	<path fill="rgb(253,120,2)" d="M 500 762 C 508 766 512 774 510 782 C 502 778 496 770 496 762 z"></path>
+	<path fill="rgb(252,191,12)" d="M 176 748 C 184 752 188 760 186 768 C 178 764 172 756 172 748 z"></path>
+</g>
+</svg>

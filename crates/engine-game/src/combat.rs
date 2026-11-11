@@ -48,6 +48,12 @@ pub enum DamageType {
     Fire,
     /// Everything magical that is not fire.
     Arcane,
+    /// Life, moonlight and the things that grow. The Druid's school.
+    ///
+    /// Its own school rather than a second name for Arcane, because Nature's Exposure
+    /// amplifies both and a debuff that amplified one school twice would be a debuff that
+    /// could not be written down.
+    Nature,
 }
 
 impl DamageType {
@@ -58,6 +64,7 @@ impl DamageType {
             Self::Physical => "PHYSICAL",
             Self::Fire => "FIRE",
             Self::Arcane => "ARCANE",
+            Self::Nature => "NATURE",
         }
     }
 }
@@ -176,6 +183,39 @@ impl Health {
         self.current = self.max;
     }
 
+    /// Changes the maximum, keeping the same fraction of it.
+    ///
+    /// What a change of Stamina does. The *fraction* is preserved rather than the absolute
+    /// current health, so putting a Stamina trinket on is not a free heal and taking one off
+    /// is not a way to die: a character at half health is at half health either side of the
+    /// change. A non-positive or non-finite maximum is refused outright, for the reason
+    /// [`Health::new`] clamps one.
+    pub fn set_max(&mut self, max: f32) {
+        if !max.is_finite() || max <= 0.0 {
+            return;
+        }
+        let fraction = self.fraction();
+        self.max = max;
+        self.current = (max * fraction).clamp(0.0, max);
+    }
+
+    /// Changes the maximum, keeping the **absolute** current health.
+    ///
+    /// What a temporary buff does, and the opposite of [`Health::set_max`], which is what a
+    /// change of *gear* does. The distinction is load-bearing for the Warrior: Last Stand and
+    /// Battle Fervor move the maximum while a fight is running, and a
+    /// fraction-preserving change would turn that into free healing on the way
+    /// down and free damage on the way up. A buff that grants maximum health does not heal;
+    /// one that expires does not kill, because the current value is clamped rather than
+    /// scaled.
+    pub fn set_max_keeping_current(&mut self, max: f32) {
+        if !max.is_finite() || max <= 0.0 {
+            return;
+        }
+        self.max = max;
+        self.current = self.current.clamp(0.0, max);
+    }
+
     /// Sets the current health directly, clamped into range.
     ///
     /// For arena setup and tests. Gameplay goes through [`Health::damage`] and
@@ -234,6 +274,15 @@ impl Resource {
         self.current / self.max
     }
 
+    /// Sets the current amount (clamped to [0, max]): an authoritative correction.
+    pub fn set_current(&mut self, value: f32) {
+        self.current = if value.is_finite() {
+            value.clamp(0.0, self.max)
+        } else {
+            0.0
+        };
+    }
+
     /// Whether `cost` can be paid right now.
     #[must_use]
     pub fn can_pay(&self, cost: f32) -> bool {
@@ -247,6 +296,20 @@ impl Resource {
         }
         self.current = (self.current - cost.max(0.0)).max(0.0);
         true
+    }
+
+    /// Puts `amount` back, and reports how much actually went in.
+    ///
+    /// What a restoration *event* uses — Wrath's one per cent of maximum Mana — as opposed
+    /// to the clock [`Resource::regenerate`] runs. What is over the pool is lost rather than
+    /// banked, exactly as an overheal is.
+    pub fn gain(&mut self, amount: f32) -> f32 {
+        if !amount.is_finite() || amount <= 0.0 {
+            return 0.0;
+        }
+        let before = self.current;
+        self.current = (self.current + amount).min(self.max);
+        self.current - before
     }
 
     /// Regenerates for one simulation step.

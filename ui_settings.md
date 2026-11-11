@@ -518,3 +518,46 @@ screen showed 3.80.
 ### Milestones 24-27 - tests, manual verification, performance, regression - DONE
 
 Recorded in sections 10, 11 and 12 above.
+
+## Graphics section
+
+`ESC -> SETTINGS -> GRAPHICS`: the display settings (resolution, window mode — see
+`docs/display.md`), a SHADOW QUALITY dropdown with a line saying what the chosen level buys,
+and APPLY and BACK side by side at the bottom.
+
+```text
++-------------------------------------+
+|              GRAPHICS               |
+|  RESOLUTION                         |
+|  [ 1920 x 1080                  v ] |
+|  WINDOW MODE                        |
+|  [ WINDOWED                     v ] |
+|  A FRAMED WINDOW ...                |
+|  NOW: 1920 x 1080, WINDOWED         |
+|  SHADOW QUALITY                     |
+|  [ HIGH                         v ] |
+|  SHARPER SHADOWS ...                |
+|  [ APPLY        ]  [ BACK         ] |
++-------------------------------------+
+```
+
+Decisions worth stating, all of which follow rules this document already set:
+
+- **A dropdown, beside the display settings.** One screen for everything about how the game
+  is drawn; the levels are listed from `ShadowQuality::ALL`, so a sixth level is an entry in
+  that array and nothing else.
+- **One APPLY for everything.** Choosing changes nothing; APPLY emits
+  `ShadowQualityCommitted` when the level changed and `DisplayApplyRequested` when the display
+  did. Only the display is confirmed afterwards: a shadow level cannot leave the player looking
+  at nothing.
+- **The menu does not decide what is running.** The application applies the level, and
+  *then* calls `set_shadow_quality`, which also clears the pending choice. Applying a level recreates the shadow atlas behind a
+  `wait_for_idle` and can fail, and a screen that showed the level it was given would be
+  showing a level that is not running.
+- **APPLY does not close the menu**, unlike choosing a hero. The player is looking at the
+  result and deciding whether to try the next level down.
+- **F6 goes through the same function**, so the developer key and the settings screen cannot
+  end up disagreeing about which level is running.
+
+The level itself, the file it lives in, and the words it is written as were all already there
+— `GraphicsSettings::shadows` in `engine-settings`. This section is the UI that was missing.

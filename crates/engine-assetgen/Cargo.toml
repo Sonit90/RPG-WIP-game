@@ -1,0 +1,33 @@
+[package]
+name = "engine-assetgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The procedural starter-content generator's command line. A crate of its own, for the reason
+# `engine-assetcheck` is one: nothing a content tool needs — a directory writer, an argument
+# parser, a summary formatter — can end up linked into the game. `cargo build --bin mygame`
+# does not build this at all.
+[dependencies]
+# The starter library, the glTF writer and the material file. Every asset this produces is
+# built by that crate; this one chooses where the files go and reports what it wrote.
+engine-assets = { workspace = true }
+# The engine's logger, so a run's log lines look like every other log line in the project.
+engine-core = { workspace = true }
+# The level format, for the showcase level `level_gen` writes. A scene is data with no device
+# behind it, which is exactly what this crate is allowed to depend on.
+engine-environment = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "asset_gen"
+path = "src/main.rs"
+
+[[bin]]
+name = "level_gen"
+path = "src/level_gen.rs"
+
+[lints]
+workspace = true

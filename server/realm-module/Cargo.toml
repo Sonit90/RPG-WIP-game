@@ -1,0 +1,32 @@
+[package]
+name = "realm-module"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "The realm's SpacetimeDB module: queue, parties, dungeon instances and authoritative movement."
+
+# Its own workspace: a SpacetimeDB module builds for wasm32-unknown-unknown with the
+# `spacetimedb` crate, neither of which the game's Windows workspace should ever link.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 2.10.2 needs rustc 1.96; 2.10.1 is wire-compatible with a 2.10.2 server.
+spacetimedb = "=2.10.1"
+engine-realm = { path = "../../crates/engine-realm", features = ["embedded-scenes"] }
+engine-core = { path = "../../crates/engine-core" }
+engine-collision = { path = "../../crates/engine-collision" }
+engine-environment = { path = "../../crates/engine-environment" }
+engine-game = { path = "../../crates/engine-game" }
+log = "0.4"
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

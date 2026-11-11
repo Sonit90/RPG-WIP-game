@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="sundered_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(16,18,24)"></stop>
+<stop offset="1" stop-color="rgb(52,58,70)"></stop>
+</linearGradient>
+<radialGradient id="sundered_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(150,160,180)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(150,160,180)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(150,160,180)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="sundered_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#sundered_tile)">
+<path fill="url(#sundered_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#sundered_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(150,160,178)" d="M 136 120 L 376 120 L 408 200 L 380 380 L 256 440 L 132 380 L 104 200 Z"></path>
+<path fill="rgb(96,106,124)" d="M 256 120 L 376 120 L 408 200 L 380 380 L 256 440 Z"></path>
+<path fill="rgb(20,22,28)" d="M 262 110 L 236 196 L 280 250 L 232 320 L 266 450 L 290 450 L 262 322 L 310 250 L 266 196 L 288 110 Z"></path>
+<path fill="rgb(240,190,90)" d="M 150 150 L 200 150 L 196 172 L 146 172 Z"></path>
+<path fill="rgb(240,190,90)" d="M 318 150 L 368 150 L 372 172 L 322 172 Z"></path>
+</g>
+</svg>

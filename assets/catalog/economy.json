@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "id": "crypt_dust",
+      "name": "Crypt Dust",
+      "description": "Grey dust swept from the floors of the crypt. The common currency of the dungeon."
+    },
+    {
+      "id": "bone_shard",
+      "name": "Bone Shard",
+      "description": "A splinter of old bone, left when gear is broken down."
+    },
+    {
+      "id": "steward_ember",
+      "name": "Steward's Ember",
+      "description": "A coal that still glows from the Hollow Steward's lantern. Rare."
+    },
+    {
+      "id": "aether_shard",
+      "name": "Aether Shard",
+      "description": "A sliver of crystallised aether that monsters carry. Spent to reroll a dungeon key's modifiers."
+    },
+    {
+      "id": "gold",
+      "name": "Gold",
+      "description": "Coin of the realm. Dropped by every monster."
+    }
+  ],
+  "salvage": { "resource": "bone_shard", "base": 1, "per_item_level": 1, "slots": 16 },
+  "sharpening": {
+    "max_level": 10,
+    "step_pct": 1,
+    "costs": [
+      { "level": 1, "resource": "crypt_dust", "amount": 10 },
+      { "level": 2, "resource": "crypt_dust", "amount": 20 },
+      { "level": 3, "resource": "crypt_dust", "amount": 35 },
+      { "level": 4, "resource": "crypt_dust", "amount": 50 },
+      { "level": 5, "resource": "crypt_dust", "amount": 75 },
+      { "level": 5, "resource": "steward_ember", "amount": 1 },
+      { "level": 6, "resource": "crypt_dust", "amount": 100 },
+      { "level": 6, "resource": "steward_ember", "amount": 1 },
+      { "level": 7, "resource": "crypt_dust", "amount": 150 },
+      { "level": 7, "resource": "steward_ember", "amount": 2 },
+      { "level": 8, "resource": "crypt_dust", "amount": 200 },
+      { "level": 8, "resource": "steward_ember", "amount": 2 },
+      { "level": 9, "resource": "crypt_dust", "amount": 300 },
+      { "level": 9, "resource": "steward_ember", "amount": 3 },
+      { "level": 10, "resource": "crypt_dust", "amount": 400 },
+      { "level": 10, "resource": "steward_ember", "amount": 4 }
+    ],
+    "break_chance_by_level": [0, 0, 0, 0, 0.95, 0.96, 0.97, 0.98, 0.99, 0.995]
+  },
+  "reforge": {
+    "_comment": "Hub gamble: pay gold to re-roll an owned item's base quality (50-110) from this published table. The new roll REPLACES the old one - there is no keep-best - and sharpening is never touched. A drop rolls 72.8 on average at key 1 (loot.json quality buckets); this table's mean is 71.5, deliberately a little lower, so reforging an average item is a slightly losing bet and only pays off for a low roll (below about 70) or as a lottery ticket: 5.0% to land 100-110, 0.1% for the 110 jackpot, 50% to land below 70. Chances sum to 1; bands lie inside 50..=110 and do not overlap. Cost is a gold sink that scales with the item: gold + per_item_level x item level + per_sharpening_level x the item's sharpening level (a loot item, level 5, unsharpened: 150 gold, a little over one dungeon run's gold income; a +4 epic of level 12: 210 gold; a +10 one: 490). Priced so that gold keeps a use all the way to best-in-slot: see docs/balance/economy.md. eligible.allow_broken: a broken item keeps its penalty whatever it rolls, so it is refused.",
+    "cost": { "gold": 50, "per_item_level": 20, "per_sharpening_level": 20 },
+    "eligible": { "allow_broken": false },
+    "bands": [
+      { "min": 50, "max": 59, "chance": 0.25 },
+      { "min": 60, "max": 69, "chance": 0.25 },
+      { "min": 70, "max": 79, "chance": 0.22 },
+      { "min": 80, "max": 89, "chance": 0.15 },
+      { "min": 90, "max": 99, "chance": 0.08 },
+      { "min": 100, "max": 104, "chance": 0.04 },
+      { "min": 105, "max": 109, "chance": 0.009 },
+      { "min": 110, "max": 110, "chance": 0.001 }
+    ]
+  },
+  "exchanges": [
+    {
+      "id": "dust_to_ember",
+      "from": "crypt_dust",
+      "from_amount": 20,
+      "to": "steward_ember",
+      "to_amount": 1
+    },
+    {
+      "id": "shards_to_dust",
+      "from": "bone_shard",
+      "from_amount": 10,
+      "to": "crypt_dust",
+      "to_amount": 3
+    }
+  ]
+}

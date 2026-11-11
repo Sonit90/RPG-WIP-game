@@ -1,0 +1,94 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="flame_lance_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="flame_lance_forge" gradientUnits="userSpaceOnUse" cx="380" cy="545" r="330">
+		<stop offset="0" stop-opacity="0.55" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.55" stop-opacity="0.22" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<linearGradient id="flame_lance_shaft" gradientUnits="userSpaceOnUse" x1="150" y1="830" x2="470" y2="415">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(94,13,6)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(241,87,3)"></stop>
+	</linearGradient>
+	<linearGradient id="flame_lance_shaft_core" gradientUnits="userSpaceOnUse" x1="180" y1="795" x2="470" y2="420">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(204,88,10)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+	</linearGradient>
+	<linearGradient id="flame_lance_blade" gradientUnits="userSpaceOnUse" x1="438" y1="440" x2="600" y2="255">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(252,149,6)"></stop>
+	</linearGradient>
+	<linearGradient id="flame_lance_blade_core" gradientUnits="userSpaceOnUse" x1="470" y1="415" x2="588" y2="280">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(253,120,2)"></stop>
+		<stop offset="0.6" stop-opacity="1" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+	</linearGradient>
+	<linearGradient id="flame_lance_trail" gradientUnits="userSpaceOnUse" x1="470" y1="400" x2="140" y2="850">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(251,133,3)"></stop>
+		<stop offset="0.55" stop-opacity="1" stop-color="rgb(225,57,2)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(118,14,4)"></stop>
+	</linearGradient>
+	<radialGradient id="flame_lance_glow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(322,-416,133,103,340,570)">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="0.5" stop-opacity="0.2" stop-color="rgb(217,47,1)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(94,13,6)"></stop>
+	</radialGradient>
+	<radialGradient id="flame_lance_tip_glow" gradientUnits="userSpaceOnUse" cx="560" cy="305" r="150">
+		<stop offset="0" stop-opacity="0.45" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="0.45" stop-opacity="0.18" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(171,20,2)"></stop>
+	</radialGradient>
+	<clipPath id="flame_lance_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#flame_lance_tile)">
+	<path fill="url(#flame_lance_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#flame_lance_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Heat wake: the air the lance was driven through, trailing back down the shaft. -->
+	<path fill="rgb(90,9,4)" fill-opacity="0.85" d="M 512 372 C 447 452 356 549 288 641 C 236 711 190 785 150 862 C 205 802 268 742 331 675 C 402 599 465 517 519 437 C 531 420 528 396 512 372 z"></path>
+	<path fill="rgb(132,15,6)" fill-opacity="0.7" d="M 470 328 C 400 404 313 501 246 592 C 194 663 152 736 118 811 C 173 748 236 683 300 615 C 372 538 434 461 486 385 C 495 371 489 350 470 328 z"></path>
+
+	<!-- The lance lights the tile it lies on, so the shaft is not a decal on a flat panel. -->
+	<path fill="url(#flame_lance_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- Outer body of fire the shaft rides inside, ragged on both flanks. -->
+	<path fill="rgb(171,20,2)" fill-opacity="0.35" d="M 108 856 C 141 812 175 769 209 726 C 196 760 187 787 183 813 C 205 771 234 731 264 692 C 254 722 248 745 246 763 C 274 719 305 675 339 631 C 328 662 322 685 320 700 C 351 654 385 608 421 562 C 411 590 406 610 405 623 C 439 574 476 524 514 476 C 494 526 470 573 442 619 C 452 610 461 599 470 587 C 439 645 402 700 361 752 C 372 746 382 738 392 728 C 359 776 322 820 281 861 C 293 858 305 853 316 847 C 279 883 236 913 189 936 C 168 913 138 887 108 856 z"></path>
+	<path fill="rgb(225,57,2)" fill-opacity="0.3" d="M 158 843 C 194 795 231 747 268 700 C 259 726 254 745 252 758 C 285 712 320 665 356 618 C 348 644 344 662 343 674 C 379 626 417 577 456 528 C 442 570 424 610 403 649 C 413 641 421 632 430 621 C 402 674 370 724 334 771 C 344 767 353 761 362 754 C 331 795 296 832 258 866 C 224 861 191 853 158 843 z"></path>
+
+	<!-- Shaft: a straight bar of fire, hottest where it meets the head. -->
+	<path fill="url(#flame_lance_shaft)" d="M 129.4 814.1 L 170.6 845.9 L 482.7 424.8 L 457.3 405.2 z"></path>
+	<path fill="url(#flame_lance_shaft_core)" d="M 258 665 L 274 677 L 474 419 L 462 410 z"></path>
+
+	<!-- Flames peeling off the shaft, all licking back toward the caster. -->
+	<path fill="url(#flame_lance_trail)" d="M 268 676 C 240 700 214 723 199 757 C 191 776 191 797 199 816 C 203 795 213 777 227 761 C 218 787 219 812 234 834 C 231 806 241 780 259 758 C 275 738 292 719 299 694 z"></path>
+	<path fill="url(#flame_lance_trail)" d="M 371 552 C 349 573 328 593 317 621 C 309 640 308 661 315 681 C 319 660 328 642 342 627 C 335 651 337 674 351 694 C 347 668 356 645 372 626 C 386 609 400 592 405 570 z"></path>
+	<path fill="url(#flame_lance_trail)" d="M 470 430 C 452 449 435 467 427 490 C 421 507 421 525 428 542 C 431 524 439 508 451 495 C 445 516 447 536 459 553 C 456 531 463 511 477 494 C 489 480 500 465 504 447 z"></path>
+	<path fill="rgb(249,124,3)" fill-opacity="0.9" d="M 331 600 C 315 617 302 635 297 656 C 306 641 317 629 331 620 C 325 636 324 651 329 666 C 331 647 340 631 354 618 C 364 608 371 596 372 583 z"></path>
+	<path fill="rgb(249,124,3)" fill-opacity="0.9" d="M 226 731 C 210 749 198 767 193 788 C 202 773 213 761 227 752 C 221 768 220 783 225 798 C 227 779 236 763 250 750 C 260 740 266 728 268 715 z"></path>
+
+	<!-- Butt of the shaft: the fire has not run out, it is still being fed. -->
+	<path fill="rgb(241,87,3)" d="M 150 830 C 128 843 110 857 99 876 C 92 888 90 902 93 915 C 100 899 112 887 128 878 C 118 893 114 908 117 923 C 124 906 137 892 155 881 C 168 873 176 862 177 849 z"></path>
+
+	<!-- Head: one blade of flame, drawn to a point. -->
+	<path fill="url(#flame_lance_tip_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="url(#flame_lance_blade)" d="M 438.4 390.5 C 470 350 540 320 600 255 C 585 340 540 400 501.6 439.5 C 486 425 460 405 438.4 390.5 z"></path>
+	<path fill="url(#flame_lance_blade_core)" d="M 461 396 C 489 363 540 337 583 288 C 571 349 536 393 500 425 C 489 415 473 404 461 396 z"></path>
+	<path fill="rgb(254,224,61)" fill-opacity="0.95" d="M 481 400 C 505 373 542 351 573 314 C 562 359 536 391 507 416 C 499 410 489 404 481 400 z"></path>
+
+	<!-- Collar where the head is welded onto the shaft. -->
+	<path fill="rgb(217,47,1)" d="M 449 398 C 462 388 478 386 492 392 C 505 398 513 411 512 425 C 500 415 486 407 471 403 C 464 401 456 399 449 398 z"></path>
+
+	<!-- Sparks thrown off the point. -->
+	<path fill="rgb(252,191,12)" d="M 616 238 C 622 246 626 255 628 265 C 620 258 613 250 608 240 C 610 239 613 238 616 238 z"></path>
+	<path fill="rgb(254,224,61)" d="M 626 300 C 632 303 636 309 636 316 C 630 313 625 308 623 302 z"></path>
+	<path fill="rgb(252,191,12)" d="M 556 236 C 561 240 563 246 562 252 C 557 249 554 244 553 238 z"></path>
+	<path fill="rgb(253,120,2)" d="M 213 869 C 218 873 221 879 220 885 C 215 882 211 877 210 871 z"></path>
+</g>
+</svg>

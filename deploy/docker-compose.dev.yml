@@ -1,0 +1,26 @@
+# Local development: only the database. The realm API and SpacetimeDB run natively
+# (tools/realm-dev.ps1 starts them) so they rebuild in seconds.
+#
+#   docker compose -f deploy/docker-compose.dev.yml up -d
+name: mygame-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: realm
+      POSTGRES_PASSWORD: realm-dev-password
+      POSTGRES_DB: realm
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - realm-pg-dev:/var/lib/postgresql/data
+      - ../backend/docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realm -d realm"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  realm-pg-dev:

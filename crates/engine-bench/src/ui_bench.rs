@@ -52,6 +52,9 @@ const DEFAULT_ITERATIONS: usize = 5_000;
 const WARMUP_ITERATIONS: usize = 500;
 
 /// Frames rendered per scenario in the GPU phase.
+/// One frame of real time, for the nameplate layout's smoothing.
+const FRAME: f32 = 1.0 / 60.0;
+
 const GPU_FRAMES: usize = 600;
 
 /// Frames rendered before measurement starts.
@@ -249,14 +252,21 @@ fn measure_combat(dummies: usize, iterations: usize) {
             Vec3::new((index % 8) as f32, 1.0, -((index / 8) as f32)),
             (index * 7 % 400) as f32 + 1.0,
             index % 20 == 0,
+            index % 3 == 0,
             now,
         );
     }
 
     let mut batcher = UiBatcher::new(1 << 20);
     for _ in 0..WARMUP_ITERATIONS {
-        plates.build(&simulation, &view_projection, (WIDTH, HEIGHT), &config);
-        snapshot.refresh(&simulation);
+        plates.build(
+            &simulation,
+            &view_projection,
+            (WIDTH, HEIGHT),
+            &config,
+            FRAME,
+        );
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, (WIDTH, HEIGHT));
         ui.push_damage_numbers(&numbers, &view_projection, (WIDTH, HEIGHT), now);
         batcher.build(ui.list());
@@ -266,8 +276,14 @@ fn measure_combat(dummies: usize, iterations: usize) {
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     for _ in 0..iterations {
         let started = Instant::now();
-        plates.build(&simulation, &view_projection, (WIDTH, HEIGHT), &config);
-        snapshot.refresh(&simulation);
+        plates.build(
+            &simulation,
+            &view_projection,
+            (WIDTH, HEIGHT),
+            &config,
+            FRAME,
+        );
+        snapshot.refresh(&simulation, None);
         ui.build(&snapshot, plates.plates(), &config, (WIDTH, HEIGHT));
         ui.push_damage_numbers(&numbers, &view_projection, (WIDTH, HEIGHT), now);
         batcher.build(ui.list());

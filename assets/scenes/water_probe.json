@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "water_probe",
+  "half_extent": 40.0,
+  "ground_height": 0.0,
+  "objects": [
+    { "asset": "rock_medium", "position": [8.0, 0.0, -6.0] },
+    { "asset": "rock_small", "position": [-9.0, 0.0, 4.0] },
+    { "asset": "pillar", "position": [0.0, 0.0, -18.0] }
+  ],
+  "water": [
+    { "center": [0.0, 0.4, 0.0], "half_extents": [10.0, 7.0], "yaw": 0.0, "depth": 2.5 },
+    { "center": [22.0, 1.2, 14.0], "half_extents": [5.0, 3.0], "yaw": 0.6, "depth": 1.5 }
+  ]
+}

@@ -8,6 +8,7 @@
 //! Like every GPU test in this crate they take the process-wide [`gpu_lock`] and skip
 //! rather than fail on a machine with no D3D12 adapter. See `docs/testing.md`.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -209,7 +210,8 @@ fn one_slot_stalls_on_every_frame_under_real_gpu_load() {
 
     let load = GpuLoad::new(&device);
     let mut ring = FrameRing::new(&device, 1).expect("a 1-slot ring must be creatable");
-    run_frames(&device, &mut ring, 6, Some(&load), 4);
+    // Heavy enough to outlast a loop iteration on a fast GPU; see the three-slot test.
+    run_frames(&device, &mut ring, 6, Some(&load), 32);
 
     // One slot means one allocator: frame N+1 cannot be recorded until frame N has
     // finished on the GPU. With work that takes longer than a CPU loop iteration, that is
@@ -239,7 +241,13 @@ fn three_slots_absorb_the_first_frames_without_waiting() {
     // Exactly one lap: every slot is used for the first time, so none of them can have
     // outstanding work to wait for, however slow the GPU is. This is precisely what the
     // extra slots buy — the CPU runs ahead by the slot count before the fence matters.
-    run_frames(&device, &mut ring, 3, Some(&load), 4);
+    //
+    // The lap is loaded heavily (2 GiB of copies a frame) so that frame 0 is still on the
+    // GPU when the second lap comes back round to its slot. With the light load the other
+    // tests use, a fast GPU drained frame 0 while the CPU was still recording frames 1 and
+    // 2, and the second lap had nothing to wait for - the pacing was right, the test just
+    // could not see it.
+    run_frames(&device, &mut ring, 3, Some(&load), 32);
     assert_eq!(
         ring.stats().stalled_frames,
         0,

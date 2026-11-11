@@ -10,12 +10,110 @@
 
 use engine_core::math::{Vec3, Vec4};
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
 use crate::error::RendererError;
-use crate::resource::GpuBuffer;
+#[cfg(windows)]
+use crate::resource::{BufferSlice, BufferSource, GpuBuffer};
+use crate::texture::TextureHandle;
+#[cfg(windows)]
 use crate::upload::{CONSTANT_BUFFER_ALIGNMENT, StagingUploader};
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+
+/// What a surface does to the pixels already in the render target.
+///
+/// The renderer's three surface classes, and the whole of its transparency vocabulary. It is
+/// an explicit field on the material rather than something inferred from an alpha value,
+/// because "this colour happens to have `a = 0.9`" and "this material is drawn in the blended
+/// phase" are different statements and only the second one can be answered by looking at the
+/// number. A stylized fantasy world has plenty of opaque surfaces whose base colour was
+/// authored with a stray alpha.
+///
+/// The class decides three things and nothing else: which phase the object is drawn in,
+/// whether the pipeline blends, and whether the pipeline writes depth. It selects no shader
+/// permutation — see [`crate::transparency`] for the contract in full.
+///
+/// ```text
+/// class        phase        depth test  depth write  blend
+/// Opaque       opaque       LESS_EQUAL  yes          none
+/// AlphaTest    opaque       LESS_EQUAL  yes          none  (fragments below the cutoff discard)
+/// Transparent  transparent  LESS_EQUAL  no           src.a / (1 - src.a)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum SurfaceClass {
+    /// Every fragment replaces what is behind it. Nearly every surface in a scene.
+    #[default]
+    Opaque,
+    /// Every surviving fragment replaces what is behind it; fragments below
+    /// [`MaterialDesc::alpha_cutoff`] are discarded outright.
+    ///
+    /// Foliage, fences, grates. A hard edge, not a fade — which is why it can still be drawn
+    /// in the opaque phase, in any order, writing depth like everything else there.
+    AlphaTest,
+    /// The fragment is blended with what is behind it, and does not occlude what comes after.
+    ///
+    /// Particles' larger cousins: spell effects, ghosts, glass, water, force fields. Drawn in
+    /// its own phase after the opaque one, back to front, testing depth but not writing it.
+    Transparent,
+}
+
+impl SurfaceClass {
+    /// Every class, for tests and for iterating the pipeline permutations.
+    pub const ALL: [Self; 3] = [Self::Opaque, Self::AlphaTest, Self::Transparent];
+
+    /// Whether the pipeline blends this surface with the target.
+    ///
+    /// Only [`Self::Transparent`] does. An alpha-tested fragment either survives whole or
+    /// does not exist, which is the property that keeps it out of the sorted phase.
+    #[must_use]
+    pub fn is_blended(self) -> bool {
+        matches!(self, Self::Transparent)
+    }
+
+    /// Whether the pipeline writes depth for this surface.
+    ///
+    /// Opaque and alpha-tested surfaces do, and must: the depth buffer they leave behind is
+    /// what the transparent phase tests against. A transparent surface does not, because a
+    /// blended fragment is not an occluder — writing depth would make the nearest quad of an
+    /// effect hide every quad behind it and the effect would read as one flat card.
+    #[must_use]
+    pub fn writes_depth(self) -> bool {
+        !matches!(self, Self::Transparent)
+    }
+
+    /// Whether this surface is drawn in the sorted, blended phase rather than the opaque one.
+    #[must_use]
+    pub fn is_transparent(self) -> bool {
+        matches!(self, Self::Transparent)
+    }
+
+    /// The class's name, for diagnostics and test failure messages.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Opaque => "opaque",
+            Self::AlphaTest => "alpha_test",
+            Self::Transparent => "transparent",
+        }
+    }
+}
+
+impl From<engine_assets::SurfaceClass> for SurfaceClass {
+    /// The asset-side class, as the renderer's.
+    ///
+    /// Written out variant by variant rather than transmuted from the discriminant: the two
+    /// enums agreeing is a fact about today's declarations, and a `match` that stops compiling
+    /// when one of them gains a variant is the point.
+    fn from(surface: engine_assets::SurfaceClass) -> Self {
+        match surface {
+            engine_assets::SurfaceClass::Opaque => Self::Opaque,
+            engine_assets::SurfaceClass::AlphaTest => Self::AlphaTest,
+            engine_assets::SurfaceClass::Transparent => Self::Transparent,
+        }
+    }
+}
 
 /// How a surface should look.
 ///
@@ -33,6 +131,50 @@ pub struct MaterialDesc {
     pub metallic: f32,
     /// Colour emitted regardless of lighting.
     pub emissive: Vec3,
+    /// How strongly the normal map perturbs the surface. glTF's `normalTexture.scale`.
+    ///
+    /// The sampled normal's X and Y are multiplied by it before the vector is renormalized:
+    /// 1 is the map as authored, 0 is the geometric normal, above 1 exaggerates. A material
+    /// with no normal map is unaffected by it, because the flat fallback's X and Y are zero
+    /// and scaling zero changes nothing.
+    pub normal_scale: f32,
+    /// How much of the ORM map's occlusion channel is applied. glTF's
+    /// `occlusionTexture.strength`.
+    ///
+    /// Blended towards "not occluded" by glTF's own formula, `1 + strength * (sampled - 1)`,
+    /// so 1 applies the map and 0 ignores it.
+    pub occlusion_strength: f32,
+    /// Below this alpha a fragment is discarded, in both the camera pass and the shadow pass.
+    ///
+    /// Zero is an opaque material and performs no test, which is what nearly every surface
+    /// in a scene is. A positive value is a *cutout* material — foliage, a fence, a grate —
+    /// and it is the whole of the transparency the renderer supports: there is no sorted
+    /// blended geometry pass, so a value between 0 and 1 is a hard edge and not a fade.
+    ///
+    /// It is on the material rather than on the entity because it is a property of the
+    /// surface: two instances of the same leaf card cut out at the same threshold, and the
+    /// shadow pass needs the same number the camera pass uses or a leaf's shadow is a
+    /// rectangle.
+    pub alpha_cutoff: f32,
+    /// Whether this surface is shaded with the metallic-roughness BRDF.
+    ///
+    /// Off by default, and off is Lambert: one diffuse lobe, no specular, `roughness` and
+    /// `metallic` carried but unread. The BRDF is 0.150 ms of a 0.351 ms frame at 1440p
+    /// (`docs/performance/shadows-off-permutation.md`) and nothing in the game is authored
+    /// for it yet, so a material pays for it only by asking.
+    ///
+    /// It selects a *shader permutation*, not a branch: a material without it is drawn with
+    /// a pixel shader that does not contain GGX, Smith or Fresnel at all.
+    pub pbr: bool,
+    /// Which phase this material is drawn in, and with what blend and depth state.
+    ///
+    /// The one field the renderer reads to decide *when* a surface is drawn rather than what
+    /// it looks like. It is set explicitly — [`MaterialDesc::with_alpha_cutoff`] moves a
+    /// material to [`SurfaceClass::AlphaTest`], [`MaterialDesc::with_opacity`] and
+    /// [`MaterialDesc::with_surface`] to [`SurfaceClass::Transparent`] — and validated
+    /// against [`Self::alpha_cutoff`], because a material that claims to be opaque and also
+    /// carries a cutoff is two statements about one surface and one of them is a mistake.
+    pub surface: SurfaceClass,
 }
 
 impl Default for MaterialDesc {
@@ -42,6 +184,17 @@ impl Default for MaterialDesc {
             roughness: 0.8,
             metallic: 0.0,
             emissive: Vec3::ZERO,
+            // Both are glTF's defaults, and both mean "apply the map as authored". A
+            // material that carried zero here would silently disable a map it does have.
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
+            alpha_cutoff: 0.0,
+            // Lambert until a material asks otherwise. See the field.
+            pbr: false,
+            // Opaque until a material asks otherwise: the default has to be the class that
+            // needs no sorting and no blending, or a material built by `..Default::default()`
+            // would quietly join the transparent phase.
+            surface: SurfaceClass::Opaque,
         }
     }
 }
@@ -77,14 +230,131 @@ impl MaterialDesc {
         self
     }
 
+    /// Returns the description shaded with the metallic-roughness BRDF.
+    ///
+    /// The one way to opt a material into PBR. Everything else about it is unchanged: the
+    /// same constants, the same maps, the same descriptor table - only the pixel shader
+    /// permutation the renderer binds for it differs.
+    #[must_use]
+    pub fn with_pbr(mut self, pbr: bool) -> Self {
+        self.pbr = pbr;
+        self
+    }
+
+    /// Returns the description with its normal-map scale replaced, clamped to non-negative.
+    #[must_use]
+    pub fn with_normal_scale(mut self, scale: f32) -> Self {
+        self.normal_scale = if scale.is_finite() {
+            scale.max(0.0)
+        } else {
+            1.0
+        };
+        self
+    }
+
+    /// Returns the description with its occlusion strength replaced, clamped to [0, 1].
+    #[must_use]
+    pub fn with_occlusion_strength(mut self, strength: f32) -> Self {
+        self.occlusion_strength = if strength.is_finite() {
+            strength.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self
+    }
+
+    /// Returns the description as a cutout material with the given alpha threshold.
+    ///
+    /// Clamped into (0, 1]: zero would mean "opaque" and is not a cutout at all, and a
+    /// threshold above one discards every fragment, which renders as an object that has
+    /// vanished with no error anywhere.
+    #[must_use]
+    pub fn with_alpha_cutoff(mut self, cutoff: f32) -> Self {
+        self.alpha_cutoff = if cutoff.is_finite() {
+            cutoff.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // The class follows the cutoff rather than being a second thing to remember. Every
+        // call site that predates [`SurfaceClass`] said "this is a cutout" by setting a
+        // threshold, and it still does.
+        self.surface = if self.alpha_cutoff > 0.0 {
+            SurfaceClass::AlphaTest
+        } else {
+            SurfaceClass::Opaque
+        };
+        self
+    }
+
+    /// Returns the description in `surface`'s class.
+    ///
+    /// Moving *to* [`SurfaceClass::AlphaTest`] needs a threshold to test against, so one is
+    /// supplied — the glTF default, 0.5 — if the material carries none. Moving *away* from it
+    /// clears the cutoff, because a threshold on a surface that performs no test is a number
+    /// the shader reads and ignores, and the validator rejects it rather than let the two
+    /// disagree.
+    #[must_use]
+    pub fn with_surface(mut self, surface: SurfaceClass) -> Self {
+        self.surface = surface;
+        match surface {
+            SurfaceClass::AlphaTest if self.alpha_cutoff <= 0.0 => self.alpha_cutoff = 0.5,
+            SurfaceClass::Opaque | SurfaceClass::Transparent => self.alpha_cutoff = 0.0,
+            SurfaceClass::AlphaTest => {}
+        }
+        self
+    }
+
+    /// Returns the description as a transparent surface of the given opacity.
+    ///
+    /// The one call that makes a blended material: it sets the base colour's alpha and moves
+    /// the material into [`SurfaceClass::Transparent`], which is what puts it in the sorted
+    /// phase. `alpha` is clamped into [0, 1]; 1 is a fully covering surface that is still
+    /// drawn in the transparent phase, which is a legitimate thing to author — a ghost fading
+    /// in starts there.
+    ///
+    /// Alpha is *not* premultiplied. The mesh shader returns straight RGBA and the blend is
+    /// `src.a` over `1 - src.a`; premultiplying the colour here would darken the surface by
+    /// its own opacity twice.
+    #[must_use]
+    pub fn with_opacity(mut self, alpha: f32) -> Self {
+        self.base_color.w = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.with_surface(SurfaceClass::Transparent)
+    }
+
+    /// Whether this material needs the alpha test in the depth passes.
+    ///
+    /// What selects the shadow pass's cutout pipeline over its opaque one — and an opaque
+    /// material must answer `false`, because the opaque pipeline binds no pixel shader at
+    /// all and is markedly faster for it.
+    #[must_use]
+    pub fn is_alpha_tested(&self) -> bool {
+        self.surface == SurfaceClass::AlphaTest
+    }
+
+    /// Whether this material is drawn in the sorted, blended phase.
+    ///
+    /// What splits the render list in two. Everything else — opaque and alpha-tested alike —
+    /// stays in the opaque phase and keeps the depth behaviour it has always had.
+    #[must_use]
+    pub fn is_transparent(&self) -> bool {
+        self.surface == SurfaceClass::Transparent
+    }
+
     /// Rejects values a shader cannot use.
     ///
     /// `NaN` is the one that matters: it propagates through the whole lighting expression
     /// and produces a black or white pixel with no indication of where it came from.
-    fn validate(&self) -> Result<(), RendererError> {
+    pub(crate) fn validate(&self) -> Result<(), RendererError> {
         let finite = self.base_color.dot(self.base_color).is_finite()
             && self.roughness.is_finite()
             && self.metallic.is_finite()
+            && self.alpha_cutoff.is_finite()
+            && self.normal_scale.is_finite()
+            && self.occlusion_strength.is_finite()
             && self.emissive.length_squared().is_finite();
         if !finite {
             return Err(RendererError::InvalidConfig {
@@ -99,7 +369,266 @@ impl MaterialDesc {
                 ),
             });
         }
+        // glTF states no upper bound on the normal scale and an exact [0, 1] for the
+        // occlusion strength, and this follows it: a scale of 2 is an artist exaggerating a
+        // map, an occlusion strength of 2 is a number with no meaning.
+        // The class and the cutoff are two statements about one surface and they have to
+        // agree. A "transparent" material carrying a cutoff would discard fragments it was
+        // meant to blend, and an "opaque" one carrying a cutoff would be drawn in the opaque
+        // phase and still punch holes in itself — both are the kind of mistake that looks
+        // like a shader bug rather than like a material one.
+        match self.surface {
+            SurfaceClass::AlphaTest if !(0.0..=1.0).contains(&self.alpha_cutoff) => {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "an alpha-tested material needs a cutoff in (0, 1], got {}",
+                        self.alpha_cutoff
+                    ),
+                });
+            }
+            SurfaceClass::AlphaTest if self.alpha_cutoff <= 0.0 => {
+                return Err(RendererError::InvalidConfig {
+                    reason: "an alpha-tested material needs a cutoff above zero; a cutoff of                              zero discards nothing and is an opaque material"
+                        .to_owned(),
+                });
+            }
+            SurfaceClass::Opaque | SurfaceClass::Transparent if self.alpha_cutoff != 0.0 => {
+                return Err(RendererError::InvalidConfig {
+                    reason: format!(
+                        "a {} material must carry no alpha cutoff, got {}",
+                        self.surface.name(),
+                        self.alpha_cutoff
+                    ),
+                });
+            }
+            _ => {}
+        }
+        if self.normal_scale < 0.0 || !(0.0..=1.0).contains(&self.occlusion_strength) {
+            return Err(RendererError::InvalidConfig {
+                reason: format!(
+                    "the normal scale must be non-negative and the occlusion strength in \
+                     [0, 1], got {} and {}",
+                    self.normal_scale, self.occlusion_strength
+                ),
+            });
+        }
         Ok(())
+    }
+}
+
+/// How many textures one material binds, and therefore how many descriptors its table holds.
+///
+/// Four, permanently: base colour, normal, ORM, emissive. It is a constant rather than a
+/// literal because the root signature's range, the descriptor allocation and the fallback
+/// set all have to be the same number, and three places agreeing by coincidence is how a
+/// table ends up one descriptor short of what the shader reads.
+pub const MATERIAL_TEXTURE_COUNT: u32 = 4;
+
+/// The material texture ABI: which shader register each map is bound to.
+///
+/// **This order is frozen.** The root signature declares one contiguous four-SRV range at
+/// `t0`, and the descriptors are written into it in exactly this order. Changing it means
+/// changing `shaders/material.hlsli` in the same edit, and `tests/root_signature_mapping.rs`
+/// asserts the two agree.
+///
+/// ```text
+/// t0  base colour   sRGB, multiplied with `base_color`
+/// t1  normal        tangent-space, linear
+/// t2  ORM           R occlusion, G roughness, B metallic — the glTF packing
+/// t3  emissive      sRGB
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum MaterialTextureSlot {
+    /// `t0`. Multiplied with [`MaterialDesc::base_color`].
+    BaseColor = 0,
+    /// `t1`. Tangent-space normals, applied through the vertex tangent frame.
+    Normal = 1,
+    /// `t2`. Occlusion in R, roughness in G, metallic in B. Each channel scales the matching
+    /// [`MaterialDesc`] field.
+    Orm = 2,
+    /// `t3`. Multiplied with [`MaterialDesc::emissive`].
+    Emissive = 3,
+}
+
+impl MaterialTextureSlot {
+    /// Every slot, in descriptor order. Iterating this **is** the ABI.
+    pub const ALL: [Self; MATERIAL_TEXTURE_COUNT as usize] =
+        [Self::BaseColor, Self::Normal, Self::Orm, Self::Emissive];
+
+    /// The shader register — and the offset into the material's descriptor range.
+    #[must_use]
+    pub fn register(self) -> u32 {
+        self as u32
+    }
+
+    /// The texel the slot's shared fallback texture holds, as straight RGBA8.
+    ///
+    /// The **identity** for the slot, so a material with no such map and a material sampling
+    /// the fallback are the same picture:
+    ///
+    /// * base colour `(255, 255, 255, 255)` — the map multiplies `base_color`.
+    /// * normal `(128, 128, 255, 255)` — the flat tangent-space normal. `0.5` unpacks to
+    ///   zero through `2x - 1`, giving `+Z`: the interpolated vertex normal, unchanged.
+    /// * ORM `(255, 255, 255, 255)` — glTF's convention is that this map *scales* the
+    ///   roughness and metallic factors, so white passes [`MaterialDesc::roughness`] and
+    ///   [`MaterialDesc::metallic`] through untouched and an occlusion of 1 is "not
+    ///   occluded". Baking a default roughness into the texel instead would apply that
+    ///   default a second time for every material that overrides it.
+    /// * emissive `(255, 255, 255, 255)` — glTF's convention again: the map *scales*
+    ///   [`MaterialDesc::emissive`], so white passes the factor through and a material that
+    ///   emits nothing does so because its factor is zero, which is the glTF default. A black
+    ///   fallback would look equally correct until the first material that sets an emissive
+    ///   colour and has no map, which would then emit nothing at all.
+    ///
+    /// Here rather than in the renderer so the window path and the offscreen path cannot
+    /// disagree about what a missing map looks like, which is exactly the sort of difference
+    /// a pixel test is supposed to be evidence against.
+    #[must_use]
+    pub fn fallback_texel(self) -> [u8; 4] {
+        match self {
+            Self::BaseColor | Self::Orm | Self::Emissive => [255, 255, 255, 255],
+            Self::Normal => [128, 128, 255, 255],
+        }
+    }
+
+    /// What a texture in this slot means, which decides its colour space and its mip filter.
+    ///
+    /// The one place the mapping lives. A normal map is not merely "not colour": its mips
+    /// have to be filtered as directions and renormalized, which is a third case that
+    /// `is_srgb` alone cannot express — see [`crate::mipmap::TextureKind`].
+    #[must_use]
+    pub fn texture_kind(self) -> crate::mipmap::TextureKind {
+        match self {
+            Self::BaseColor | Self::Emissive => crate::mipmap::TextureKind::Color,
+            Self::Normal => crate::mipmap::TextureKind::Normal,
+            Self::Orm => crate::mipmap::TextureKind::Data,
+        }
+    }
+
+    /// Whether the slot's textures are read through an sRGB view.
+    ///
+    /// Colour is sRGB and data is not. Getting it backwards is the classic washed-out or
+    /// muddy import, and it has no other symptom.
+    #[must_use]
+    pub fn is_srgb(self) -> bool {
+        self.texture_kind().is_srgb()
+    }
+
+    /// The slot's name, for diagnostics and test failure messages.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BaseColor => "base_color",
+            Self::Normal => "normal",
+            Self::Orm => "orm",
+            Self::Emissive => "emissive",
+        }
+    }
+}
+
+/// One material's four maps, resolved: every slot names a real texture.
+///
+/// A named field per map rather than an array, because a renderer that has to know what
+/// `texture[2]` means is one silent reordering away from shading roughness with an emissive
+/// map. The array form exists only where the ABI genuinely needs it —
+/// [`Self::in_descriptor_order`] — and it is built from the names rather than the names
+/// being read out of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialTextures {
+    /// `t0`. sRGB.
+    pub base_color: TextureHandle,
+    /// `t1`. Linear tangent-space normals.
+    pub normal: TextureHandle,
+    /// `t2`. Occlusion, roughness, metallic. Linear.
+    pub orm: TextureHandle,
+    /// `t3`. sRGB.
+    pub emissive: TextureHandle,
+}
+
+impl MaterialTextures {
+    /// The four handles in descriptor order, for writing the table.
+    ///
+    /// The one place the semantic set becomes positional, so the ABI has exactly one
+    /// definition instead of one per call site.
+    #[must_use]
+    pub fn in_descriptor_order(&self) -> [TextureHandle; MATERIAL_TEXTURE_COUNT as usize] {
+        [self.base_color, self.normal, self.orm, self.emissive]
+    }
+
+    /// The handle bound to `slot`.
+    #[must_use]
+    pub fn slot(&self, slot: MaterialTextureSlot) -> TextureHandle {
+        match slot {
+            MaterialTextureSlot::BaseColor => self.base_color,
+            MaterialTextureSlot::Normal => self.normal,
+            MaterialTextureSlot::Orm => self.orm,
+            MaterialTextureSlot::Emissive => self.emissive,
+        }
+    }
+
+    /// A set where every slot is the same texture. What the shared fallback set is built
+    /// from before each slot is replaced by its own neutral texture.
+    #[must_use]
+    pub fn uniform(texture: TextureHandle) -> Self {
+        Self {
+            base_color: texture,
+            normal: texture,
+            orm: texture,
+            emissive: texture,
+        }
+    }
+}
+
+/// What a caller asks for: any subset of the four maps.
+///
+/// `None` is "this material has no such map", not an error, and resolves to the shared
+/// fallback for that slot. Every descriptor in a material's range is always valid — an
+/// unbound one is undefined behaviour on read, and the alternative to a fallback would be
+/// a shader permutation per absent map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MaterialTextureSet {
+    /// sRGB base colour, multiplied with [`MaterialDesc::base_color`].
+    pub base_color: Option<TextureHandle>,
+    /// Tangent-space normals.
+    pub normal: Option<TextureHandle>,
+    /// Occlusion (R), roughness (G), metallic (B).
+    pub orm: Option<TextureHandle>,
+    /// Emissive colour.
+    pub emissive: Option<TextureHandle>,
+}
+
+impl MaterialTextureSet {
+    /// A set with only a base colour map.
+    #[must_use]
+    pub fn base_color(texture: TextureHandle) -> Self {
+        Self {
+            base_color: Some(texture),
+            ..Self::default()
+        }
+    }
+
+    /// Fills every empty slot from `fallbacks`.
+    #[must_use]
+    pub fn resolve(self, fallbacks: &MaterialTextures) -> MaterialTextures {
+        MaterialTextures {
+            base_color: self.base_color.unwrap_or(fallbacks.base_color),
+            normal: self.normal.unwrap_or(fallbacks.normal),
+            orm: self.orm.unwrap_or(fallbacks.orm),
+            emissive: self.emissive.unwrap_or(fallbacks.emissive),
+        }
+    }
+
+    /// Every handle the caller actually named, with its slot, for range checking.
+    pub fn named(&self) -> impl Iterator<Item = (MaterialTextureSlot, TextureHandle)> + '_ {
+        [
+            (MaterialTextureSlot::BaseColor, self.base_color),
+            (MaterialTextureSlot::Normal, self.normal),
+            (MaterialTextureSlot::Orm, self.orm),
+            (MaterialTextureSlot::Emissive, self.emissive),
+        ]
+        .into_iter()
+        .filter_map(|(slot, handle)| handle.map(|handle| (slot, handle)))
     }
 }
 
@@ -120,8 +649,15 @@ pub struct MaterialConstants {
     pub roughness: f32,
     /// Metalness.
     pub metallic: f32,
-    /// Padding to a whole 16-byte register.
-    pub padding: [f32; 3],
+    /// Below this alpha a fragment is discarded. Zero is opaque.
+    pub alpha_cutoff: f32,
+    /// glTF's `normalTexture.scale`.
+    ///
+    /// In what used to be the first padding float, so the buffer's layout and its size are
+    /// exactly what they were — the shader's `cbuffer` changed two names, not one offset.
+    pub normal_scale: f32,
+    /// glTF's `occlusionTexture.strength`, in what used to be the second padding float.
+    pub occlusion_strength: f32,
 }
 
 impl From<MaterialDesc> for MaterialConstants {
@@ -136,17 +672,21 @@ impl From<MaterialDesc> for MaterialConstants {
             emissive: [desc.emissive.x, desc.emissive.y, desc.emissive.z],
             roughness: desc.roughness,
             metallic: desc.metallic,
-            padding: [0.0; 3],
+            alpha_cutoff: desc.alpha_cutoff,
+            normal_scale: desc.normal_scale,
+            occlusion_strength: desc.occlusion_strength,
         }
     }
 }
 
+#[cfg(windows)]
 /// A material with its constants resident on the GPU.
 pub struct Material {
     desc: MaterialDesc,
-    constants: GpuBuffer,
+    constants: BufferSlice,
 }
 
+#[cfg(windows)]
 impl Material {
     /// Uploads a material's constants and waits for the copy.
     ///
@@ -156,7 +696,7 @@ impl Material {
     /// or [`RendererError::Api`] if a D3D12 call fails.
     pub fn new(device: &RenderDevice, desc: MaterialDesc) -> Result<Self, RendererError> {
         let mut uploader = StagingUploader::new(device)?;
-        let material = Self::queue(device, &mut uploader, desc)?;
+        let material = Self::queue(device, &mut uploader, &mut BufferSource::Dedicated, desc)?;
         uploader.flush(device)?;
         Ok(material)
     }
@@ -174,23 +714,50 @@ impl Material {
         let mut uploader = StagingUploader::new(device)?;
         let mut materials = Vec::with_capacity(descriptions.len());
         for desc in descriptions {
-            materials.push(Self::queue(device, &mut uploader, *desc)?);
+            materials.push(Self::queue(
+                device,
+                &mut uploader,
+                &mut BufferSource::Dedicated,
+                *desc,
+            )?);
         }
         uploader.flush(device)?;
         Ok(materials)
+    }
+
+    /// Creates the buffer and queues its copy into a caller's uploader.
+    ///
+    /// No flush and therefore no wait; see [`GpuMesh::queue_into`](crate::GpuMesh::queue_into).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] for out-of-range or non-finite parameters,
+    /// or [`RendererError::Api`] if a D3D12 call fails.
+    pub fn queue_into(
+        device: &RenderDevice,
+        uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
+        desc: MaterialDesc,
+    ) -> Result<Self, RendererError> {
+        Self::queue(device, uploader, buffers, desc)
     }
 
     /// Creates the buffer and queues its copy, without flushing.
     fn queue(
         device: &RenderDevice,
         uploader: &mut StagingUploader,
+        buffers: &mut BufferSource<'_>,
         desc: MaterialDesc,
     ) -> Result<Self, RendererError> {
         desc.validate()?;
 
         // A constant buffer's *size* must be a 256-byte multiple, not just its address.
         // The struct is 48 bytes; the buffer is 256, and the slack is never read.
-        let constants = GpuBuffer::new_default(device, CONSTANT_BUFFER_ALIGNMENT)?;
+        // Aligned to 256 as well as sized to it: a constant-buffer view's *address* has to
+        // be a multiple of that, which matters now that constants share a chunk with
+        // geometry rather than starting a resource of their own.
+        let constants =
+            buffers.allocate(device, CONSTANT_BUFFER_ALIGNMENT, CONSTANT_BUFFER_ALIGNMENT)?;
         let mut padded = [0_u8; CONSTANT_BUFFER_ALIGNMENT];
         let value = MaterialConstants::from(desc);
         // SAFETY: `MaterialConstants` is `repr(C)` plain data with no padding bytes that
@@ -204,7 +771,7 @@ impl Material {
         };
         padded[..bytes.len()].copy_from_slice(bytes);
 
-        uploader.queue_buffer(
+        uploader.queue_slice(
             device,
             &constants,
             &padded,
@@ -232,9 +799,19 @@ impl Material {
         self.constants.gpu_address()
     }
 
-    /// The constant buffer, for diagnostics and for tests that read it back.
+    /// The resource the constants live in, for diagnostics and for tests that read it back.
+    ///
+    /// The whole resource, which is this material's own only when it was uploaded on its
+    /// own: a material out of the renderer's arena shares its chunk, and
+    /// [`Material::slice`] is the range that belongs to this material.
     #[must_use]
     pub fn buffer(&self) -> &GpuBuffer {
+        self.constants.buffer()
+    }
+
+    /// The range of [`Material::buffer`] this material's constants occupy.
+    #[must_use]
+    pub fn slice(&self) -> &BufferSlice {
         &self.constants
     }
 }
@@ -287,6 +864,7 @@ mod tests {
         assert!(infinite_emissive.validate().is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_constant_layout_matches_the_shader_registers() {
         // HLSL packs constants into 16-byte registers and never straddles one, so these

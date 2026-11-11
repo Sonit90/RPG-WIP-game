@@ -1,0 +1,24 @@
+[package]
+name = "generic-auth-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "generic_auth_db"
+path = "src/lib.rs"
+
+[dependencies]
+generic-auth-core = { path = "../core" }
+
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

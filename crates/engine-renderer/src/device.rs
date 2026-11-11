@@ -9,10 +9,12 @@
 //! Nothing above `engine-renderer` sees a D3D12 interface. `engine-core` has no graphics
 //! dependency at all; the application holds a [`crate::Renderer`], not a device.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
     D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_2,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_VALUE, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
     D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
@@ -26,23 +28,37 @@ use windows::Win32::Graphics::Direct3D12::{
     ID3D12Debug, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList,
     ID3D12InfoQueue, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
-    DXGI_FEATURE_PRESENT_ALLOW_TEARING, IDXGIFactory6,
+    DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+    DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3,
+    IDXGIFactory6,
 };
 
+#[cfg(windows)]
 use windows::core::Interface;
 
+#[cfg(windows)]
 use crate::adapter::{AdapterInfo, enumerate_adapters, select_adapter};
+#[cfg(windows)]
 use crate::error::RendererError;
 
 /// Backend name reported at startup.
+#[cfg(windows)]
 pub const BACKEND: &str = "Direct3D 12";
 
+/// Name of the graphics API in use, for logs and the window title.
+#[cfg(not(windows))]
+pub const BACKEND: &str = "Metal";
+
+#[cfg(windows)]
 /// Lowest feature level the engine will run on.
 const MINIMUM_FEATURE_LEVEL: D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
 
+#[cfg(windows)]
 /// Feature levels probed at startup, highest first.
 const PROBED_FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 5] = [
     D3D_FEATURE_LEVEL_12_2,
@@ -52,16 +68,32 @@ const PROBED_FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 5] = [
     D3D_FEATURE_LEVEL_11_0,
 ];
 
+#[cfg(windows)]
 /// Device, queue and the DXGI objects they came from.
 pub struct RenderDevice {
     factory: IDXGIFactory6,
     device: ID3D12Device,
     queue: ID3D12CommandQueue,
     adapter_info: AdapterInfo,
+    /// The adapter, for asking what video memory the process is using. `None` on a system
+    /// whose DXGI predates `IDXGIAdapter3`, where the question simply has no answer.
+    adapter: Option<IDXGIAdapter3>,
     feature_level: D3D_FEATURE_LEVEL,
     allow_tearing: bool,
 }
 
+/// Video memory this process is using, as the OS's memory manager reports it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoMemory {
+    /// Bytes resident in the adapter's own memory.
+    pub local_usage: u64,
+    /// How much of the adapter's memory the OS will currently let this process use.
+    pub local_budget: u64,
+    /// Bytes of system memory the adapter is using on this process's behalf.
+    pub non_local_usage: u64,
+}
+
+#[cfg(windows)]
 impl RenderDevice {
     /// Creates the factory, selects an adapter, and creates the device and queue.
     ///
@@ -79,12 +111,18 @@ impl RenderDevice {
             factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
         }
 
+        #[cfg(feature = "startup-timing")]
+        let started = std::time::Instant::now();
         // SAFETY: FFI call. The flags are valid and the returned interface is refcounted
         // by the `windows` crate.
         let factory: IDXGIFactory6 = unsafe { CreateDXGIFactory2(factory_flags) }
             .map_err(|error| RendererError::api("CreateDXGIFactory2", error))?;
+        #[cfg(feature = "startup-timing")]
+        let after_factory = std::time::Instant::now();
 
         let adapters = enumerate_adapters(&factory)?;
+        #[cfg(feature = "startup-timing")]
+        let after_adapters = std::time::Instant::now();
         let examined = adapters.len();
         let Some(index) = select_adapter(
             &adapters
@@ -124,6 +162,8 @@ impl RenderDevice {
             configure_info_queue(&device);
         }
 
+        #[cfg(feature = "startup-timing")]
+        let after_device = std::time::Instant::now();
         let feature_level = highest_feature_level(&device);
 
         let queue_desc = D3D12_COMMAND_QUEUE_DESC {
@@ -136,14 +176,50 @@ impl RenderDevice {
             .map_err(|error| RendererError::api("ID3D12Device::CreateCommandQueue", error))?;
 
         let allow_tearing = query_tearing_support(&factory);
+        #[cfg(feature = "startup-timing")]
+        log::info!(
+            "[startup] D3D12: factory {:.1} ms, {} adapter(s) enumerated {:.1} ms, \
+             D3D12CreateDevice {:.1} ms, queue and caps {:.1} ms",
+            (after_factory - started).as_secs_f64() * 1e3,
+            adapters.len(),
+            (after_adapters - after_factory).as_secs_f64() * 1e3,
+            (after_device - after_adapters).as_secs_f64() * 1e3,
+            after_device.elapsed().as_secs_f64() * 1e3,
+        );
 
         Ok(Self {
             factory,
             device,
             queue,
             adapter_info: adapter_info.clone(),
+            adapter: adapter.cast().ok(),
             feature_level,
             allow_tearing,
+        })
+    }
+
+    /// Video memory in use, or `None` if the adapter cannot say.
+    ///
+    /// A kernel call: cheap, but meant for a report interval, not for every frame.
+    #[must_use]
+    pub fn video_memory(&self) -> Option<VideoMemory> {
+        let adapter = self.adapter.as_ref()?;
+        let mut local = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        let mut non_local = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        // SAFETY: FFI calls on a live adapter, each with a valid out-parameter that outlives
+        // the call. Node 0 is the only node of a single-GPU adapter.
+        unsafe {
+            adapter
+                .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut local)
+                .ok()?;
+            adapter
+                .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &mut non_local)
+                .ok()?;
+        }
+        Some(VideoMemory {
+            local_usage: local.CurrentUsage,
+            local_budget: local.Budget,
+            non_local_usage: non_local.CurrentUsage,
         })
     }
 
@@ -337,10 +413,19 @@ impl RenderDevice {
     ///
     /// Returns [`RendererError::Api`] if the device rejects the request, or
     /// [`RendererError::InvalidConfig`] if it succeeds without producing a resource.
+    // A thin wrapper over `CreateCommittedResource`, so its parameters are D3D12's: size,
+    // mip count, format, flags, state and an optional clear value. Grouping them into a
+    // struct would be a second description of `D3D12_RESOURCE_DESC` to keep in step with the
+    // first.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "these are D3D12's own parameters"
+    )]
     pub fn create_texture_2d(
         &self,
         width: u32,
         height: u32,
+        mip_levels: u32,
         format: DXGI_FORMAT,
         flags: D3D12_RESOURCE_FLAGS,
         initial_state: D3D12_RESOURCE_STATES,
@@ -362,7 +447,11 @@ impl RenderDevice {
             Width: u64::from(width),
             Height: height,
             DepthOrArraySize: 1,
-            MipLevels: 1,
+            // The count the caller asked for. Zero would mean "as many as fit", which is
+            // D3D12's own shorthand and deliberately not used: the uploader has to know how
+            // many subresources it is filling, and a resource that decided that for itself
+            // would be one the CPU side could only ask about after the fact.
+            MipLevels: mip_levels.max(1) as u16,
             Format: format,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
@@ -429,6 +518,7 @@ impl RenderDevice {
     }
 }
 
+#[cfg(windows)]
 /// Formats a feature level constant as the name used in D3D documentation.
 #[must_use]
 pub fn feature_level_name(level: D3D_FEATURE_LEVEL) -> &'static str {
@@ -442,6 +532,7 @@ pub fn feature_level_name(level: D3D_FEATURE_LEVEL) -> &'static str {
     }
 }
 
+#[cfg(windows)]
 /// Turns on the D3D12 validation layer. Returns whether it was enabled.
 fn enable_d3d12_debug_layer() -> bool {
     let mut debug: Option<ID3D12Debug> = None;
@@ -460,6 +551,7 @@ fn enable_d3d12_debug_layer() -> bool {
     true
 }
 
+#[cfg(windows)]
 /// Makes the debug layer break the process on validation errors.
 ///
 /// Best-effort: the info queue only exists when the debug layer is active.
@@ -475,6 +567,7 @@ fn configure_info_queue(device: &ID3D12Device) {
     }
 }
 
+#[cfg(windows)]
 /// Asks the device which of [`PROBED_FEATURE_LEVELS`] it actually supports.
 fn highest_feature_level(device: &ID3D12Device) -> D3D_FEATURE_LEVEL {
     let mut data = D3D12_FEATURE_DATA_FEATURE_LEVELS {
@@ -500,6 +593,7 @@ fn highest_feature_level(device: &ID3D12Device) -> D3D_FEATURE_LEVEL {
     }
 }
 
+#[cfg(windows)]
 /// Reports whether `DXGI_PRESENT_ALLOW_TEARING` may be used on this system.
 ///
 /// Tearing support is what makes uncapped presentation possible in a window; without it
@@ -525,6 +619,7 @@ fn query_tearing_support(factory: &IDXGIFactory6) -> bool {
     }
 }
 
+#[cfg(windows)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,5 +642,20 @@ mod tests {
             PROBED_FEATURE_LEVELS[PROBED_FEATURE_LEVELS.len() - 1],
             MINIMUM_FEATURE_LEVEL
         );
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod thread_safety_probe {
+    /// Whether a D3D12 device handle can be moved between threads at all.
+    ///
+    /// Asked as a compile check rather than assumed: whether the startup path may create the
+    /// device on a worker thread while the main thread loads content depends on it.
+    #[test]
+    fn a_device_handle_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<windows::Win32::Graphics::Direct3D12::ID3D12Device>();
+        assert_send_sync::<windows::Win32::Graphics::Dxgi::IDXGIFactory6>();
     }
 }

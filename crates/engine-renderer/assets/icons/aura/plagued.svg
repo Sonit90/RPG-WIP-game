@@ -1,0 +1,26 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="plagued_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(16,26,10)"></stop>
+<stop offset="1" stop-color="rgb(70,92,26)"></stop>
+</linearGradient>
+<radialGradient id="plagued_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(170,220,70)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(170,220,70)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(170,220,70)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="plagued_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#plagued_tile)">
+<path fill="url(#plagued_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#plagued_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<circle cx="188" cy="296" r="84" fill="rgb(128,170,48)"></circle>
+<circle cx="264" cy="236" r="100" fill="rgb(128,170,48)"></circle>
+<circle cx="342" cy="298" r="78" fill="rgb(128,170,48)"></circle>
+<path fill="rgb(128,170,48)" d="M 188 380 L 342 376 L 342 298 L 188 296 Z"></path>
+<path fill="rgb(20,34,10)" d="M 236 178 L 292 178 L 292 232 L 346 232 L 346 288 L 292 288 L 292 342 L 236 342 L 236 288 L 182 288 L 182 232 L 236 232 Z"></path>
+<path fill="rgb(214,236,140)" d="M 122 400 L 150 372 L 398 148 L 424 176 L 176 428 Z"></path>
+<circle cx="408" cy="396" r="14" fill="rgb(190,230,100)"></circle>
+<circle cx="112" cy="132" r="22" fill="none" stroke="rgb(190,230,100)" stroke-width="10"></circle>
+</g>
+</svg>

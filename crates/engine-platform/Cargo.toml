@@ -9,19 +9,49 @@ publish.workspace = true
 engine-core = { workspace = true }
 log = { workspace = true }
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    # The frame pacer's high-resolution waitable timer takes security attributes.
+    "Win32_Security",
+    # DPAPI, for the remembered online session (secure_store).
+    "Win32_Security_Cryptography",
+    # The clipboard, for pasting into text fields.
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_System_LibraryLoader",
+    # Process memory counters, for the developer report: working set and private bytes.
+    "Win32_System_ProcessStatus",
+    # The current process (memory), and the frame pacer's waitable timer.
+    "Win32_System_Threading",
+    # Raw mouse input: relative motion that no cursor warp can disturb.
     "Win32_UI_HiDpi",
+    "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ]
 
-[dev-dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 windows = { workspace = true }
+
+# macOS: winit is the window and event loop (pumped by the engine, never `run_app`), AppKit
+# for the clipboard and process activation, CoreGraphics for the monitor list that must
+# exist before any window, the Keychain for the remembered session.
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { workspace = true, features = ["rwh_06"] }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSString"] }
+objc2-app-kit = { workspace = true, features = [
+    "NSPasteboard",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
+objc2-core-graphics = { workspace = true, features = ["CGDirectDisplay", "CGDisplayConfiguration"] }
+security-framework = { workspace = true }
+libc = { workspace = true }
 
 [lints]
 workspace = true

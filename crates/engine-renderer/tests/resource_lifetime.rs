@@ -5,6 +5,7 @@
 //! the GPU may still be reading it survives. The second is the one that matters — getting
 //! it wrong is a use-after-free whose symptom is a driver crash somewhere else entirely.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

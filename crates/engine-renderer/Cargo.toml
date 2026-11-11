@@ -11,13 +11,38 @@ default = ["debug-overlay"]
 # made with --no-default-features, which removes the font, the overlay geometry and the
 # per-frame upload buffers from the binary entirely.
 debug-overlay = []
+# Startup timing. Off by default, and off in a shipping build: with the feature absent the
+# two `Instant`s in `Renderer::new` and the numbers they produce are not compiled at all.
+startup-timing = []
 
 [dependencies]
 engine-core = { workspace = true }
 engine-render-data = { workspace = true }
+# Models, skeletons and clips. The renderer's job includes turning an asset into GPU
+# resources, and `Renderer::create_model` is where that happens — so the dependency points
+# this way and never back: engine-assets has no idea a renderer exists.
+engine-assets = { workspace = true }
+# Test-only in practice: the environment render tests place a real scene. Kept a plain
+# dependency because a dev-dependency on a workspace member the lib never names would still
+# be built for every , and this way the direction of the arrow is documented.
+engine-environment = { workspace = true }
 log = { workspace = true }
 
-[dependencies.windows]
+# Build-time only: the icons under assets/icons are SVG, and the atlas they go into holds
+# texels. Rasterizing at build time keeps the SVG as the source of truth — editing an icon
+# and rebuilding is the whole workflow — while the binary still contains nothing but the
+# finished texels and does no decoding at startup. Same rule as the shaders: the asset is a
+# build input, and a broken one is a build error.
+#
+# default-features is off deliberately. resvg's default features pull fontdb, rustybuzz and
+# a system font enumerator to shape <text> elements; none of the icons contain any, and the
+# check in build.rs fails the build if one ever does.
+[build-dependencies]
+resvg = { version = "0.48", default-features = false }
+# The interface fonts' distance-field atlas: outlines and coverage, at build time only.
+ab_glyph = "0.2"
+
+[target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",
@@ -29,11 +54,27 @@ features = [
     "Win32_System_Threading",
 ]
 
+# The Metal backend (src/metal): Objective-C bindings for Metal, the CAMetalLayer that backs the
+# window's NSView, and the libdispatch data a precompiled shader library is loaded from.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+block2 = { workspace = true }
+dispatch2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-metal = { workspace = true, features = ["block2", "dispatch2"] }
+objc2-quartz-core = { workspace = true }
+objc2-app-kit = { workspace = true }
+
 # engine-platform is a *test-only* dependency: GPU integration tests need a real HWND to
 # create a swap chain against. The library itself never depends on it — the renderer
 # takes an opaque `isize` handle so the layering stays one-directional.
-[dev-dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 engine-platform = { workspace = true }
+
+[dev-dependencies]
+# The icon contact sheets (an ignored dev test) rasterize the SVGs the way build.rs does.
+resvg = { version = "0.48", default-features = false }
 
 [lints]
 workspace = true

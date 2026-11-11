@@ -1,0 +1,33 @@
+[package]
+name = "engine-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The client's network layer: the realm API over HTTPS and the SpacetimeDB realm over a
+# websocket, both on a background thread, surfaced to the game thread as plain events and
+# plain data. Must never gain `windows`, a renderer, presentation or UI: the game reads what
+# this crate publishes the way it reads a `UiSnapshot`, and never learns what SpacetimeDB is.
+[dependencies]
+engine-core = { workspace = true }
+engine-collision = { workspace = true }
+engine-game = { workspace = true }
+engine-realm = { workspace = true }
+engine-settings = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# 2.10.2 requires rustc 1.96; 2.10.1 speaks the same protocol to a 2.10.2 server.
+spacetimedb-sdk = "=2.10.1"
+# One id per hub action, so a retried request is recognised by the server.
+uuid = { version = "1", default-features = false, features = ["v4"] }
+# Blocking HTTP for the realm API. It runs on the network thread, never on the game thread,
+# so an async client would buy nothing but a runtime.
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+engine-environment = { workspace = true }

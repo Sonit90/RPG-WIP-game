@@ -70,6 +70,9 @@ impl MovementState {
 pub struct MovementConfig {
     /// Top horizontal speed, metres per second.
     pub max_speed: f32,
+    /// Fraction of [`MovementConfig::max_speed`] kept moving straight backwards while the
+    /// facing is pinned. 1 is no penalty; see [`backpedal_scale`].
+    pub backpedal_speed: f32,
     /// How fast the body reaches its intended velocity on the ground, m/s².
     pub acceleration: f32,
     /// How fast it stops when there is no intent, m/s².
@@ -94,19 +97,20 @@ pub struct MovementConfig {
 }
 
 impl Default for MovementConfig {
+    /// Every number from [`engine_core::tuning::movement`], which is where they are edited.
     fn default() -> Self {
+        use engine_core::tuning::movement as tuning;
         Self {
-            max_speed: 7.0,
-            acceleration: 60.0,
-            deceleration: 50.0,
-            air_control: 0.35,
-            gravity: 25.0,
-            // 8 m/s against 25 m/s² gravity is a 1.28 m jump lasting 0.64 s: high enough to
-            // read as a jump, short enough that it does not interrupt combat.
-            jump_speed: 8.0,
-            ground_height: 0.0,
-            arena_half_extent: 40.0,
-            terminal_velocity: 60.0,
+            max_speed: tuning::MAX_SPEED,
+            backpedal_speed: tuning::BACKPEDAL_SPEED,
+            acceleration: tuning::ACCELERATION,
+            deceleration: tuning::DECELERATION,
+            air_control: tuning::AIR_CONTROL,
+            gravity: tuning::GRAVITY,
+            jump_speed: tuning::JUMP_SPEED,
+            ground_height: tuning::GROUND_HEIGHT,
+            arena_half_extent: tuning::ARENA_HALF_EXTENT,
+            terminal_velocity: tuning::TERMINAL_VELOCITY,
         }
     }
 }
@@ -136,6 +140,11 @@ pub struct MoveIntent {
     pub direction: Vec3,
     /// Whether a jump was requested this step.
     pub jump: bool,
+    /// Yaw to face regardless of where the body is going, if the camera is steering.
+    ///
+    /// `None` is the ordinary case: the character turns to face its own velocity. `Some`
+    /// pins it, so walking backwards walks backwards instead of turning round.
+    pub facing: Option<f32>,
 }
 
 impl MoveIntent {
@@ -143,6 +152,7 @@ impl MoveIntent {
     pub const NONE: Self = Self {
         direction: Vec3::ZERO,
         jump: false,
+        facing: None,
     };
 
     /// An intent to move in `direction`.
@@ -151,6 +161,17 @@ impl MoveIntent {
         Self {
             direction,
             jump: false,
+            facing: None,
+        }
+    }
+
+    /// An intent to move in `direction` while facing `yaw`, whatever the direction is.
+    #[must_use]
+    pub fn steered(direction: Vec3, yaw: f32) -> Self {
+        Self {
+            direction,
+            jump: false,
+            facing: Some(yaw),
         }
     }
 }
@@ -176,6 +197,17 @@ pub struct Body {
     pub facing_yaw: f32,
     /// What the body is doing, derived every step.
     pub state: MovementState,
+    /// The y this body's feet rest on, for a body that is not moved against geometry.
+    ///
+    /// [`step`] has no collision world: its whole idea of a floor is one number, and that
+    /// number is the arena's. A training dummy standing on top of something — the domes of
+    /// the line-of-sight course — is the one case where the floor under a body is not the
+    /// floor under the arena, and this is that case written down rather than a dummy that
+    /// sinks to y = 0 the first time it is integrated.
+    ///
+    /// Zero for everything else, which is what the arena's floor already is. Bodies that go
+    /// through [`step_collided`] ignore it: they have real geometry to stand on.
+    pub support_height: f32,
 }
 
 impl Default for Body {
@@ -195,7 +227,18 @@ impl Body {
             ground_normal: Vec3::Y,
             facing_yaw: 0.0,
             state: MovementState::Idle,
+            support_height: 0.0,
         }
+    }
+
+    /// The same body, resting on a floor of its own at `y`.
+    ///
+    /// For a body [`step`] moves that does not stand on the arena's floor. See
+    /// [`Body::support_height`].
+    #[must_use]
+    pub fn supported_at(mut self, y: f32) -> Self {
+        self.support_height = y;
+        self
     }
 
     /// Horizontal speed, ignoring any rise or fall.
@@ -249,7 +292,7 @@ pub fn step(body: &mut Body, intent: MoveIntent, config: &MovementConfig, second
 
     resolve_ground(body, config);
     confine_to_arena(body, config);
-    face_movement(body);
+    face_movement(body, intent);
     body.state = classify(body);
 }
 
@@ -312,7 +355,7 @@ pub fn step_collided(
     body.ground_normal = state.ground_normal;
 
     confine_to_arena(body, config);
-    face_movement(body);
+    face_movement(body, intent);
     body.state = classify(body);
     result
 }
@@ -327,7 +370,8 @@ fn accelerate_horizontally(
     let flat = Vec3::new(intent.direction.x, 0.0, intent.direction.z);
     let has_intent = flat.length_squared() > f32::EPSILON;
     let desired = if has_intent {
-        flat.normalize() * config.max_speed
+        let direction = flat.normalize();
+        direction * config.max_speed * backpedal_scale(direction, intent.facing, config)
     } else {
         Vec3::ZERO
     };
@@ -357,10 +401,29 @@ fn accelerate_horizontally(
     body.velocity.z += applied.z;
 }
 
+/// How much of top speed a body keeps moving along `direction` while facing `facing`.
+///
+/// Only a pinned facing backpedals: a body free to turn faces where it goes. The penalty
+/// grows with how directly backwards the direction points — full straight back, none for a
+/// sidestep — so sweeping the movement keys round never snaps the speed.
+fn backpedal_scale(direction: Vec3, facing: Option<f32>, config: &MovementConfig) -> f32 {
+    let Some(yaw) = facing else {
+        return 1.0;
+    };
+    // Yaw zero faces -Z.
+    let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    let backwards = (-direction.dot(forward)).max(0.0);
+    1.0 - (1.0 - config.backpedal_speed.clamp(0.0, 1.0)) * backwards
+}
+
 /// Puts the body back on the floor if it went through it.
+///
+/// The floor is the arena's, or whatever the body is standing on top of if that is higher —
+/// see [`Body::support_height`].
 fn resolve_ground(body: &mut Body, config: &MovementConfig) {
-    if body.position.y <= config.ground_height + GROUND_EPSILON {
-        body.position.y = config.ground_height;
+    let floor = config.ground_height.max(body.support_height);
+    if body.position.y <= floor + GROUND_EPSILON {
+        body.position.y = floor;
         if body.velocity.y < 0.0 {
             body.velocity.y = 0.0;
         }
@@ -390,8 +453,22 @@ fn confine_to_arena(body: &mut Body, config: &MovementConfig) {
     }
 }
 
-/// Turns the body to face the way it is moving.
-fn face_movement(body: &mut Body) {
+/// Turns the body to face the way it is moving, unless the intent pins the facing.
+///
+/// A pinned facing is the camera steering: the character keeps looking where the player is
+/// looking, so strafing strafes and backpedalling walks backwards rather than turning
+/// round to run away.
+fn face_movement(body: &mut Body, intent: MoveIntent) {
+    if let Some(yaw) = intent.facing {
+        body.facing_yaw = yaw;
+        return;
+    }
+    // With no movement asked for, the body keeps the facing it had: what is left of its
+    // velocity is it slowing down, and a backpedal that is released must not turn round to
+    // face the way it was sliding.
+    if intent.direction.x.hypot(intent.direction.z) <= f32::EPSILON {
+        return;
+    }
     // Below walking pace the direction is numerical noise, and turning to face it makes a
     // standing character spin.
     if body.horizontal_speed() > 0.1 {
@@ -652,5 +729,83 @@ mod tests {
         let before = body;
         step(&mut body, MoveIntent::moving(Vec3::X), &config, 0.0);
         assert_eq!(body, before, "the first frame has a zero delta");
+    }
+    #[test]
+    fn backpedalling_is_slower_and_a_sidestep_or_a_free_turn_is_not() {
+        let config = MovementConfig::default();
+        let settle = |intent: MoveIntent| {
+            let mut body = Body::at(Vec3::ZERO);
+            for _ in 0..120 {
+                step(&mut body, intent, &config, 1.0 / 60.0);
+            }
+            body.horizontal_speed()
+        };
+        let top = config.max_speed;
+        // Facing -Z throughout.
+        let back = settle(MoveIntent::steered(Vec3::Z, 0.0));
+        assert!((back - top * config.backpedal_speed).abs() < 1e-3, "{back}");
+        let side = settle(MoveIntent::steered(Vec3::X, 0.0));
+        assert!(
+            (side - top).abs() < 1e-3,
+            "a sidestep is not a backpedal: {side}"
+        );
+        let diagonal = settle(MoveIntent::steered(Vec3::new(1.0, 0.0, 1.0), 0.0));
+        assert!(
+            diagonal > back && diagonal < top,
+            "a diagonal backwards pays part of it: {diagonal}"
+        );
+        // Not steered: the body turns round and runs away at full speed.
+        let free = settle(MoveIntent::moving(Vec3::Z));
+        assert!((free - top).abs() < 1e-3, "{free}");
+    }
+
+    #[test]
+    fn a_steered_body_faces_the_camera_while_it_walks_backwards() {
+        // Holding the look button: retreating from something keeps it in front, which is
+        // what makes backing away different from turning your back.
+        let config = MovementConfig::default();
+        let mut body = Body::at(Vec3::ZERO);
+        // Facing -Z, walking +Z: away from whatever is in front.
+        let intent = MoveIntent::steered(Vec3::Z, 0.0);
+        for _ in 0..30 {
+            step(&mut body, intent, &config, 1.0 / 60.0);
+        }
+
+        assert!(body.position.z > 0.5, "the body did not back away");
+        assert!(
+            body.facing_yaw.abs() < 1e-4,
+            "the body turned round: {}",
+            body.facing_yaw
+        );
+
+        // Without the lock the same movement turns it about, which is the old behaviour and
+        // still the right one when the camera is not steering.
+        let mut free = Body::at(Vec3::ZERO);
+        let intent = MoveIntent::moving(Vec3::Z);
+        for _ in 0..30 {
+            step(&mut free, intent, &config, 1.0 / 60.0);
+        }
+        assert!(
+            (free.facing_yaw.abs() - std::f32::consts::PI).abs() < 1e-2,
+            "{}",
+            free.facing_yaw
+        );
+    }
+
+    #[test]
+    fn releasing_a_backpedal_does_not_turn_the_body_round() {
+        // Backpedal, then let go: the body slides to a stop still facing ahead, rather than
+        // turning to face the way its leftover velocity points.
+        let config = MovementConfig::default();
+        let mut body = Body::at(Vec3::ZERO);
+        run(&mut body, MoveIntent::steered(Vec3::Z, 0.0), &config, 30);
+        assert!(body.horizontal_speed() > 0.1);
+
+        run(&mut body, MoveIntent::NONE, &config, 30);
+        assert!(
+            body.facing_yaw.abs() < 1e-4,
+            "the body turned round on release: {}",
+            body.facing_yaw
+        );
     }
 }

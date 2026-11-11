@@ -13,21 +13,138 @@
 //! cleared and refilled, so a snapshot is a copy of a few hundred bytes rather than a fresh
 //! object graph.
 
+use engine_core::input::Modifiers;
 use engine_game::EntityId;
 use engine_game::ability::AbilityId;
+use engine_game::character::equipment::INVENTORY_SLOTS;
+use engine_game::character::{EquipSlot, ItemSlot, ItemStack, Stat, StatBlock};
+use engine_game::druid::tuning::{ASTRAL_MAXIMUM, ASTRAL_SPEND};
+use engine_game::enemy::EnemyAbility;
+use engine_game::enemy::brain::AiState;
 use engine_game::firemage::{
-    ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, HEAT_HIGH_THRESHOLD, HEAT_MAXIMUM,
-    TALENTS, TalentId,
+    ABILITY_SLOTS, AbilityError, ENERGY_MAXIMUM, FireAbility, FireMastery, HEAT_HOT_THRESHOLD,
+    HEAT_MAXIMUM, HEAT_WARM_THRESHOLD, HeatTier, ULTIMATE_ENABLED,
 };
+use engine_game::hero::Hero;
 use engine_game::sim::Simulation;
 use engine_game::status::StatusKind;
+use engine_game::warrior::tuning::VALOR_MAX;
 use engine_game::world::EntityKind;
+
+/// Reads everything the Warrior's readouts show.
+///
+/// A free function beside [`character_view`], for the same reason: building one is a
+/// question for the simulation, and the view is the answer. Every hero but the Warrior gets
+/// the inert default, so a frame drawing it asks one question rather than branching on who
+/// the player is in five places.
+fn warrior_view(simulation: &Simulation) -> WarriorView {
+    if simulation.hero() != Hero::Warrior {
+        return WarriorView::default();
+    }
+    let warrior = simulation.warrior();
+    let profile = simulation.defense_profile();
+    let statuses = simulation.world().statuses(simulation.player().entity);
+    let fervor_stacks = statuses.map_or(0, |set| set.stacks(StatusKind::BattleFervor));
+    let fervor_remaining = statuses.map_or(0.0, |set| set.remaining(StatusKind::BattleFervor));
+    WarriorView {
+        active: true,
+        valor: warrior.valor.stacks(),
+        valor_max: warrior.valor.capacity(),
+        fervor_stacks,
+        fervor_remaining,
+        shield_block: warrior.shield_block.remaining(),
+        battle_trance: warrior.battle_trance.remaining(),
+        last_stand: warrior.last_stand.remaining(),
+        spell_reflect: warrior.spell_reflect.remaining(),
+        adrenaline: warrior.adrenaline.remaining(),
+        recovery_pool: warrior.recovery_pool,
+        absorb: warrior.absorb.remaining(),
+        absorb_seconds: warrior.absorb.seconds_left(),
+        charging: warrior.charge.is_some(),
+        war_stomp_armor: warrior.war_stomp_armor,
+        defensive_chance: profile.defensive_chance(),
+        armor: profile.armor,
+    }
+}
+
+/// A training arena whose heroes wear four white pieces and carry five more, as new heroes
+/// once started. New heroes now have nothing; the character-sheet tests need something to
+/// move around.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "test helper over known-good table rows")]
+pub(crate) fn dressed_training_arena() -> Simulation {
+    use engine_game::character::{ItemFamily, starting_item};
+    let mut simulation =
+        engine_game::arena::training_arena(&engine_game::arena::ArenaConfig::default());
+    for hero in Hero::ALL {
+        let sheet = simulation.roster_mut().sheet_mut(hero);
+        for slot in [
+            EquipSlot::Chest,
+            EquipSlot::Legs,
+            EquipSlot::Wrist,
+            EquipSlot::Feet,
+        ] {
+            let def = starting_item(slot.family()).expect("a white piece");
+            sheet
+                .equipment_mut()
+                .equip(slot, ItemStack::one(def.id))
+                .expect("fits");
+        }
+        for family in [
+            ItemFamily::Head,
+            ItemFamily::Shoulder,
+            ItemFamily::Back,
+            ItemFamily::Ring,
+            ItemFamily::Trinket,
+        ] {
+            let def = starting_item(family).expect("a white piece");
+            sheet.inventory_mut().add(ItemStack::one(def.id));
+        }
+    }
+    simulation.refresh_character();
+    simulation
+}
+
+/// Reads the current character sheet.
+///
+/// A free function rather than a method on the view, because building one is a question for
+/// the simulation and the view is the answer.
+fn character_view(simulation: &Simulation) -> CharacterView {
+    let sheet = simulation.sheet();
+    let mut equipment = [None; EquipSlot::COUNT];
+    for slot in EquipSlot::ALL {
+        equipment[slot.index()] = sheet.equipment().get(slot);
+    }
+    let mut inventory = [None; INVENTORY_SLOTS];
+    for (index, cell) in sheet.inventory().cells().iter().enumerate() {
+        inventory[index] = *cell;
+    }
+    let total = simulation.character_stats();
+    CharacterView {
+        hero: sheet.hero(),
+        main_stat: sheet.main_stat(),
+        base: sheet.base_stats(),
+        gear: sheet.gear_stats(),
+        total,
+        max_health: engine_game::character::stat::health_from_stamina(total.get(Stat::Stamina)),
+        equipment,
+        inventory,
+        spirit_stacks: simulation.spirit().stacks(),
+        books_learned: 0,
+    }
+}
 
 /// One status on an entity, as the UI sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StatusView {
     /// Which status.
     pub kind: StatusKind,
+    /// How many stacks are on the bearer. One for a status that does not stack.
+    ///
+    /// Carried so a plate can print "SUNDERED 8" rather than "SUNDERED": War Stomp's eighth
+    /// stack is a condition the Warrior is watching for, and a plate that cannot count is a
+    /// plate that cannot tell them they have reached it.
+    pub stacks: u8,
     /// Seconds left.
     pub remaining: f32,
     /// How much of its duration is left, in `0.0..=1.0`.
@@ -69,6 +186,167 @@ impl StatusList {
     }
 }
 
+/// **The Warrior's own readouts.**
+///
+/// Everything the interface needs to say how much Valor is banked, how much Battle Fervor
+/// the Warrior has, and what the class currently has running. Every field is read from the simulation rather than derived
+/// here, which is the rule the rest of this module already follows: a bar that works out its
+/// own bonus is a bar that can disagree with the damage pipeline.
+///
+/// `active` is false for every other hero, and the frame draws its own resources instead.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct WarriorView {
+    /// Whether the player is the Warrior at all.
+    pub active: bool,
+    /// Valor banked, in `0..valor_max`.
+    pub valor: u8,
+    /// Valor that fills the bar: [`VALOR_MAX`] unless Unbroken Momentum shortens it. Zero (the
+    /// inert default) reads as [`VALOR_MAX`].
+    pub valor_max: u8,
+    /// Stacks of Battle Fervor on the Warrior.
+    pub fervor_stacks: u8,
+    /// Seconds of Battle Fervor left.
+    pub fervor_remaining: f32,
+    /// Seconds of Shield Block left.
+    pub shield_block: f32,
+    /// Seconds of Battle Trance left.
+    pub battle_trance: f32,
+    /// Seconds of Last Stand left.
+    pub last_stand: f32,
+    /// Seconds of Spell Reflect left.
+    pub spell_reflect: f32,
+    /// Seconds of Adrenaline left.
+    pub adrenaline: f32,
+    /// What Adrenaline has banked so far, in points of health.
+    pub recovery_pool: f32,
+    /// Puncture Blood's remaining absorb, in points of damage.
+    pub absorb: f32,
+    /// Seconds the absorb has left.
+    pub absorb_seconds: f32,
+    /// Whether a Shield Charge is running.
+    pub charging: bool,
+    /// Whether something in the world carries a full stack of War Stomp.
+    pub war_stomp_armor: bool,
+    /// The chance an attack is answered by a Block, Parry or Dodge, as a fraction.
+    pub defensive_chance: f32,
+    /// Armour, after every multiplier.
+    pub armor: f32,
+}
+
+impl WarriorView {
+    /// Valor as a fraction, for a bar.
+    #[must_use]
+    pub fn valor_fraction(&self) -> f32 {
+        (f32::from(self.valor) / f32::from(self.valor_capacity())).clamp(0.0, 1.0)
+    }
+
+    /// The stacks that fill the bar.
+    #[must_use]
+    pub fn valor_capacity(&self) -> u8 {
+        if self.valor_max == 0 {
+            VALOR_MAX
+        } else {
+            self.valor_max
+        }
+    }
+}
+
+/// **The Druid's own readouts.**
+///
+/// Everything the interface needs to draw two resources and say what the next cast will do.
+/// Every field is read from the simulation rather than derived here, which is the rule the
+/// rest of this module follows: a bar that works out its own state is a bar that can
+/// disagree with the executor.
+///
+/// `active` is false for every other hero, and the frame draws its own resources instead.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct DruidView {
+    /// Whether the player is the Druid at all.
+    pub active: bool,
+    /// Mana available.
+    pub mana: f32,
+    /// The size of the Mana pool.
+    pub max_mana: f32,
+    /// Astral Power banked, in `0..=100`.
+    pub astral: f32,
+    /// **Whether the next compatible spell will be empowered.**
+    ///
+    /// The one fact the whole resource is about, carried as a fact rather than as something
+    /// the bar works out from the value: a full bar is not armed, and an armed bar that has
+    /// just spent itself is not full.
+    pub armed: bool,
+    /// Whether the button can be pressed right now.
+    pub can_arm: bool,
+    /// What an empowerment costs: 100, or less with Astral Attunement. Zero before the first
+    /// frame the Druid is played.
+    pub astral_spend: f32,
+    /// Seconds of Astral Wrath left. Zero when it is not running.
+    pub astral_wrath: f32,
+    /// Seconds of Wild Rush left. Zero when it is not running.
+    pub wild_rush: f32,
+    /// Whether Tranquility is channelling.
+    pub channelling: bool,
+    /// Whether the running channel was empowered.
+    pub channel_empowered: bool,
+}
+
+impl DruidView {
+    /// Mana as a fraction, for a bar.
+    #[must_use]
+    pub fn mana_fraction(&self) -> f32 {
+        if self.max_mana <= 0.0 {
+            return 0.0;
+        }
+        (self.mana / self.max_mana).clamp(0.0, 1.0)
+    }
+
+    /// Astral Power as a fraction, for a bar.
+    #[must_use]
+    pub fn astral_fraction(&self) -> f32 {
+        (self.astral / ASTRAL_MAXIMUM).clamp(0.0, 1.0)
+    }
+
+    /// What one press of the button costs the next compatible spell.
+    #[must_use]
+    pub fn astral_cost(&self) -> f32 {
+        if self.astral_spend > 0.0 {
+            self.astral_spend
+        } else {
+            ASTRAL_SPEND
+        }
+    }
+}
+
+/// Reads everything the Druid's readouts show.
+///
+/// A free function beside [`warrior_view`], and for the same reason.
+fn druid_view(simulation: &Simulation) -> DruidView {
+    if simulation.hero() != Hero::Druid {
+        return DruidView::default();
+    }
+    let druid = simulation.druid();
+    let player = simulation.player().entity;
+    let seconds = |kind: StatusKind| {
+        simulation
+            .world()
+            .statuses(player)
+            .map_or(0.0, |statuses| statuses.remaining(kind))
+    };
+    DruidView {
+        active: true,
+        mana: druid.mana.current(),
+        max_mana: druid.mana.max(),
+        astral: druid.astral.value(),
+        armed: druid.astral.is_armed(),
+        can_arm: druid.astral.can_arm(),
+        astral_spend: druid.astral.spend_cost(),
+        astral_wrath: seconds(StatusKind::AstralWrath),
+        wild_rush: seconds(StatusKind::WildRush),
+        channelling: druid.channel.active,
+        channel_empowered: druid.channel.empowered,
+    }
+}
+
 /// The player's own state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerView {
@@ -76,20 +354,44 @@ pub struct PlayerView {
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
+    /// Damage absorbed before health moves: every shield on them, from
+    /// [`Simulation::absorb_of`]. Drawn as a layer of its own on every health bar.
+    pub absorb: f32,
     /// Current Heat.
     pub heat: f32,
-    /// Whether Heat has boiled over.
-    pub overheated: bool,
+    /// Which band Heat is in, which is what the bar colours itself from.
+    pub heat_tier: HeatTier,
+    /// Seconds of Inferno State left. Zero when it is not running.
+    pub inferno_remaining: f32,
     /// Current Ultimate Energy.
     pub energy: f32,
     /// Whether the Ultimate can be cast.
     pub ultimate_ready: bool,
     /// Whether Flame Shield is up.
     pub shielded: bool,
-    /// Whether the class is hasted.
+    /// Whether the class is hasted above its base.
     pub hasted: bool,
+    /// Which stat Fire Mastery specialises into.
+    pub mastery: FireMastery,
+    /// Whether Fire Mastery's active is running.
+    pub mastery_active: bool,
     /// Statuses on the player.
     pub statuses: StatusList,
+    /// Every buff and debuff on the player, class effects included: what the buff bar and
+    /// the debuffs under the player frame draw.
+    pub auras: crate::aura::AuraList,
+    /// Whether the player is alive.
+    ///
+    /// Its own field rather than `health > 0`: what "dead" means is the simulation's to
+    /// decide, and a future downed-but-not-out state would be a change there and nowhere in
+    /// the interface.
+    pub alive: bool,
+    /// Damage taken this fight, which is a different number from the damage dealt.
+    pub damage_taken: f32,
+    /// The Warrior's readouts. Inert for every other hero.
+    pub warrior: WarriorView,
+    /// The Druid's readouts. Inert for every other hero.
+    pub druid: DruidView,
 }
 
 impl PlayerView {
@@ -108,10 +410,27 @@ impl PlayerView {
         (self.heat / HEAT_MAXIMUM).clamp(0.0, 1.0)
     }
 
-    /// Whether Heat is high enough for the bar to read as dangerous.
+    /// Whether Heat has reached the second band, where it hands over a stat.
     #[must_use]
     pub fn heat_is_high(&self) -> bool {
-        self.heat >= HEAT_HIGH_THRESHOLD
+        self.heat >= HEAT_HOT_THRESHOLD
+    }
+
+    /// Whether the Inferno State is running.
+    #[must_use]
+    pub fn in_inferno(&self) -> bool {
+        matches!(self.heat_tier, HeatTier::Inferno)
+    }
+
+    /// Where the two band markers sit on the bar, as fractions of its width.
+    ///
+    /// Computed here so the bar cannot draw a threshold the simulation does not have.
+    #[must_use]
+    pub fn heat_thresholds(&self) -> [f32; 2] {
+        [
+            HEAT_WARM_THRESHOLD / HEAT_MAXIMUM,
+            HEAT_HOT_THRESHOLD / HEAT_MAXIMUM,
+        ]
     }
 
     /// Ultimate Energy as a fraction, for a bar.
@@ -128,10 +447,16 @@ pub struct TargetView {
     pub entity: EntityId,
     /// What it is.
     pub kind: EntityKind,
+    /// What it is called, as its table spells it: a monster's own name, or the entity kind for
+    /// anything without one. Upper case; the frames print it in title case.
+    pub name: &'static str,
     /// Current health.
     pub health: f32,
     /// Maximum health.
     pub max_health: f32,
+    /// Damage absorbed before health moves: every shield on them, from
+    /// [`Simulation::absorb_of`]. Drawn as a layer of its own on every health bar.
+    pub absorb: f32,
     /// Metres away.
     pub distance: f32,
     /// Whether it is alive.
@@ -140,10 +465,63 @@ pub struct TargetView {
     pub ignite_stacks: u8,
     /// Seconds of Ignite left.
     pub ignite_remaining: f32,
-    /// Whether it is at the current maximum - the Fire Detonation requirement.
+    /// Whether it is at the current maximum - the Detonate requirement.
     pub ignite_at_maximum: bool,
     /// Statuses on it.
     pub statuses: StatusList,
+    /// What it is casting, if it is an enemy and it is casting.
+    ///
+    /// The player's cast bar and this one are the same shape, because they are the same
+    /// question asked about two actors.
+    pub casting: Option<EnemyCastView>,
+    /// What its AI is doing, for the developer readout. `None` if it has no brain.
+    pub ai_state: Option<AiState>,
+    /// Which phase it is in and what that phase is called, if it has more than one.
+    ///
+    /// `None` for everything that does not change while it is being fought, which is most of
+    /// the roster — so the frame draws a phase line for a boss and an elite and for nothing
+    /// else, without any widget knowing which monsters those are.
+    pub phase: Option<(usize, &'static str)>,
+    /// Whether it is a boss, so a frame can say so without knowing the roster.
+    pub boss: bool,
+    /// Whether it is held immune by its pylons (carries the Pylon Shield status): the frame
+    /// tints its bar and outlines it.
+    pub immune: bool,
+    /// Every buff and debuff on it, stacks and clocks included: what the target's buff and
+    /// debuff blocks draw, read the same way its nameplate reads them.
+    pub auras: crate::aura::AuraList,
+}
+
+/// An enemy's cast, for its cast bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnemyCastView {
+    /// Which attack.
+    pub ability: EnemyAbility,
+    /// Its name.
+    pub name: &'static str,
+    /// Seconds spent.
+    pub elapsed: f32,
+    /// Seconds it takes.
+    pub duration: f32,
+    /// Whether the player could interrupt it.
+    pub interruptible: bool,
+}
+
+impl EnemyCastView {
+    /// How far through it is, in `0.0..=1.0`.
+    #[must_use]
+    pub fn fraction(&self) -> f32 {
+        if self.duration <= 0.0 {
+            return 1.0;
+        }
+        (self.elapsed / self.duration).clamp(0.0, 1.0)
+    }
+
+    /// Seconds left.
+    #[must_use]
+    pub fn remaining(&self) -> f32 {
+        (self.duration - self.elapsed).max(0.0)
+    }
 }
 
 impl TargetView {
@@ -177,8 +555,10 @@ pub enum SlotAvailability {
     NoResource,
     /// The target cannot be hit, or is not there.
     InvalidTarget,
-    /// Ready *and* worth pressing right now: Fire Detonation on a full burn.
+    /// Ready *and* worth pressing right now: Detonate on a full burn.
     Empowered,
+    /// Switched off entirely: the Ultimate, behind `ULTIMATE_ENABLED`.
+    Disabled,
 }
 
 impl SlotAvailability {
@@ -200,6 +580,12 @@ pub struct AbilitySlotView {
     pub name: &'static str,
     /// The key that casts it.
     pub key: &'static str,
+    /// What has to be held with that key, when the slot is bound to a combination.
+    ///
+    /// Kept beside the key's name rather than folded into it because the name is `'static`
+    /// and a combination's is not: the two are joined where the slot is drawn, in a buffer
+    /// that is already there for the cooldown numbers.
+    pub key_modifiers: Modifiers,
     /// Why it looks the way it does.
     pub availability: SlotAvailability,
     /// Charges ready now.
@@ -210,8 +596,54 @@ pub struct AbilitySlotView {
     pub cooldown_remaining: f32,
     /// How far through the recharge it is, in `0.0..=1.0`. One is ready.
     pub cooldown_fraction: f32,
+    /// How far through the global cooldown we are, in `0.0..=1.0`. One means it is not
+    /// running.
+    ///
+    /// The same value on every slot, because the global cooldown *is* the same on every
+    /// slot: starting any ability locks the whole bar. It is carried per-slot rather than
+    /// once on the snapshot so that a button has everything it needs to draw itself, which
+    /// is the rule the rest of this view already follows.
+    pub global_cooldown_fraction: f32,
+    /// Whether this is the ability currently being cast.
+    pub casting: bool,
+    /// Whether this is the ability whose area the player is placing.
+    ///
+    /// Unlike everything else on this view, aiming is not a fact about the simulation — a
+    /// placement that has not been confirmed has changed nothing and costs nothing. It is
+    /// carried here anyway, because a button that has to be told separately what it is
+    /// showing is a button that can be told wrong.
+    pub aiming: bool,
     /// Whether the player has to place it with the mouse.
     pub ground_targeted: bool,
+    /// What the cast takes right now, haste included. Zero for an instant.
+    pub cast_time: f32,
+    /// What it hits for right now, before Heat, critical strikes and Ignite scaling.
+    ///
+    /// Computed from the ability's coefficient and the mage's current spell power, so a
+    /// tooltip prints a number the ability will actually deal rather than a percentage the
+    /// player has to do arithmetic on.
+    pub damage: f32,
+    /// Extra damage per Ignite stack on the target, as a fraction. Zero if it has none.
+    pub ignite_scaling: f32,
+    /// Ignite stacks it applies to everything it hits.
+    pub ignite_stacks: u8,
+    /// Chance those stacks land, for the abilities that roll for it.
+    pub ignite_chance: f32,
+    /// Valor one successful cast of this ability pays. Zero if it pays none.
+    pub valor_generation: f32,
+    /// Mana one cast costs. Zero for everything that costs none.
+    pub mana_cost: f32,
+    /// Astral Power one successful cast generates.
+    pub astral_generation: f32,
+    /// Whether Astral Power can empower it at all. What the tooltip's Astral line is for.
+    pub astral_empowerable: bool,
+    /// **Whether pressing it now will be empowered.**
+    ///
+    /// Armed, and compatible. It drives the empowered highlight on the bar.
+    pub spends_astral: bool,
+    /// What one healing event of this ability restores right now, at the current spell
+    /// power and *without* the empowerment. Zero for an ability that heals nothing.
+    pub healing: f32,
 }
 
 impl AbilitySlotView {
@@ -226,6 +658,33 @@ impl AbilitySlotView {
     pub fn is_cooling(&self) -> bool {
         self.cooldown_remaining > 0.0 && self.charges < self.max_charges
     }
+
+    /// Whether the global cooldown is running.
+    #[must_use]
+    pub fn is_on_global_cooldown(&self) -> bool {
+        self.global_cooldown_fraction < 1.0
+    }
+
+    /// Whether the button should be framed as the one the player is in the middle of.
+    ///
+    /// Casting it, or choosing where to put it. Both are "this is the ability happening
+    /// right now", and the player has no reason to tell the two states apart on the bar:
+    /// aiming a Meteor and casting a Pyroblast are the same answer to "what am I doing".
+    #[must_use]
+    pub fn shows_active_frame(&self) -> bool {
+        self.casting || self.aiming
+    }
+
+    /// Whether the button should draw the global cooldown's sweep.
+    ///
+    /// Only when its own cooldown is not already being drawn. Both are a translucent wash
+    /// over the same button, so drawing them together would darken the overlap twice and
+    /// make a slot that is merely waiting look different from its neighbours for no reason.
+    /// The longer sweep is the one that matters, and it is the one that survives.
+    #[must_use]
+    pub fn shows_global_cooldown(&self) -> bool {
+        self.is_on_global_cooldown() && !self.is_cooling()
+    }
 }
 
 /// The cast in progress.
@@ -239,6 +698,8 @@ pub struct CastView {
     pub elapsed: f32,
     /// Seconds it takes.
     pub duration: f32,
+    /// Whether this is a channel, whose bar drains as it runs instead of filling.
+    pub channelled: bool,
 }
 
 impl CastView {
@@ -248,7 +709,12 @@ impl CastView {
         if self.duration <= 0.0 {
             return 1.0;
         }
-        (self.elapsed / self.duration).clamp(0.0, 1.0)
+        let progress = (self.elapsed / self.duration).clamp(0.0, 1.0);
+        if self.channelled {
+            1.0 - progress
+        } else {
+            progress
+        }
     }
 
     /// Seconds left.
@@ -279,8 +745,8 @@ pub struct NotificationView {
 /// The talent grid, as the menu sees it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TalentView {
-    /// Which talent.
-    pub id: TalentId,
+    /// Which talent: its row in the hero's table.
+    pub index: usize,
     /// Its name.
     pub name: &'static str,
     /// Which tier it sits in.
@@ -293,6 +759,251 @@ pub struct TalentView {
     pub purchased: bool,
     /// Whether it could be bought right now.
     pub affordable: bool,
+    /// The icon of the ability family it belongs to.
+    pub icon: Option<engine_render_data::ui::UiIcon>,
+}
+
+/// One option of an enhancement book, as the talent screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookOptionView {
+    /// Its stable id (what the server is asked to put in force).
+    pub id: String,
+    /// Uppercase name.
+    pub name: String,
+    /// What it does.
+    pub description: String,
+    /// Whether it is the option in force.
+    pub active: bool,
+}
+
+/// An enhancement book: one signature ability, three ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnhancementBookView {
+    /// Its stable id.
+    pub id: String,
+    /// Uppercase name.
+    pub name: String,
+    /// The ability it changes, uppercase.
+    pub ability: String,
+    /// Whether the character has read it.
+    pub learned: bool,
+    /// The key level a boss must be run at for it to drop.
+    pub min_key_level: u32,
+    /// The options, in book order.
+    pub options: Vec<BookOptionView>,
+}
+
+/// A talent-point book.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TalentBookView {
+    /// Uppercase name.
+    pub name: String,
+    /// Whether the character has read it (its point is in the total).
+    pub learned: bool,
+    /// The key level a boss must be run at for it to drop.
+    pub min_key_level: u32,
+}
+
+/// The hero's books and what is learned, as the talent screen's Books page shows them. Filled by
+/// the application from the server's copy of the character; empty offline.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BooksView {
+    /// The talent-point books.
+    pub talent: Vec<TalentBookView>,
+    /// The enhancement books.
+    pub enhancement: Vec<EnhancementBookView>,
+}
+
+impl BooksView {
+    /// Whether there is nothing to show (offline, or a hero without books).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.talent.is_empty() && self.enhancement.is_empty()
+    }
+
+    /// How many talent books are learned: the points they add to the total.
+    #[must_use]
+    pub fn learned_points(&self) -> u32 {
+        u32::try_from(self.talent.iter().filter(|book| book.learned).count()).unwrap_or(0)
+    }
+}
+
+/// One party member, as their frame shows them.
+///
+/// Health and nothing invented. There are no character names in the world yet — an entity
+/// has a kind and a body — so a frame prints what the game actually knows rather than a name
+/// the gameplay systems could not supply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartyMemberView {
+    /// Which entity.
+    pub entity: EntityId,
+    /// What they are, which is the closest thing to a name the world has.
+    pub kind: EntityKind,
+    /// Their own name, when the world gave them one (another player).
+    pub label: Option<&'static str>,
+    /// Current health.
+    pub health: f32,
+    /// Maximum health.
+    pub max_health: f32,
+    /// Damage absorbed before health moves: every shield on them, from
+    /// [`Simulation::absorb_of`]. Drawn as a layer of its own on every health bar.
+    pub absorb: f32,
+    /// Whether they are alive.
+    pub alive: bool,
+    /// Whether this is the local player, who is always the first member.
+    pub is_player: bool,
+    /// What is on them.
+    pub statuses: StatusList,
+    /// Every buff and debuff on them: the party frame and the raid cells show the debuffs.
+    pub auras: crate::aura::AuraList,
+}
+
+impl PartyMemberView {
+    /// Health as a fraction of maximum, zero when there is no maximum to divide by.
+    #[must_use]
+    pub fn health_fraction(&self) -> f32 {
+        if self.max_health <= 0.0 {
+            0.0
+        } else {
+            (self.health / self.max_health).clamp(0.0, 1.0)
+        }
+    }
+
+    /// The name the frame prints.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        if self.is_player {
+            "YOU"
+        } else {
+            self.label.unwrap_or_else(|| self.kind.as_str())
+        }
+    }
+}
+
+/// The character sheet, as the interface sees it.
+///
+/// Every number here was computed by [`engine_game::character::CharacterSheet`]; nothing in
+/// the panel adds a stat up. That is the same rule the rest of this file follows, and it is
+/// what makes "the sheet and combat agree" structural rather than a thing to remember: there
+/// is one aggregation and the panel is downstream of it.
+///
+/// `Copy`, and the two item lists are fixed-width arrays, so refreshing this allocates
+/// nothing — a character sheet is a few hundred bytes memcopied once a frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterView {
+    /// Which hero this sheet is for.
+    pub hero: Hero,
+    /// Which stat is this hero's main stat.
+    pub main_stat: Stat,
+    /// The hero's own stats, before anything is worn.
+    pub base: StatBlock,
+    /// What the worn items add up to.
+    pub gear: StatBlock,
+    /// **The total**: base, plus gear, plus the Spirit buff. What the panel prints.
+    pub total: StatBlock,
+    /// Maximum health, derived from Stamina.
+    pub max_health: f32,
+    /// What is worn, indexed by [`EquipSlot::index`].
+    pub equipment: [Option<ItemStack>; EquipSlot::COUNT],
+    /// What is carried, in grid order.
+    pub inventory: [Option<ItemStack>; INVENTORY_SLOTS],
+    /// How many stacks of the Spirit buff are running. Zero on the current roster.
+    pub spirit_stacks: u8,
+    /// Which books the character has read, one bit per book
+    /// ([`engine_game::talent::books::book_bit`]). Set by the application online; zero otherwise.
+    pub books_learned: u32,
+}
+
+impl CharacterView {
+    /// Whether the character has read the book `id`.
+    #[must_use]
+    pub fn has_read(&self, id: &str) -> bool {
+        engine_game::talent::books::book_bit(id).is_some_and(|bit| self.books_learned & (1 << bit) != 0)
+    }
+
+    /// What is in `slot`.
+    #[must_use]
+    pub fn at(&self, slot: ItemSlot) -> Option<ItemStack> {
+        match slot {
+            ItemSlot::Equipment(worn) => self.equipment[worn.index()],
+            ItemSlot::Inventory(index) => self.inventory.get(index).copied().flatten(),
+        }
+    }
+
+    /// Whether `stack` may be dropped in `slot`.
+    ///
+    /// The same question [`engine_game::character::CharacterSheet::accepts`] answers, asked
+    /// against the same item data. The interface asks it to colour a drop target while the
+    /// item is still in the air; the simulation asks it again when the move arrives, and it
+    /// is the simulation's answer that decides anything.
+    #[must_use]
+    pub fn accepts(&self, slot: ItemSlot, stack: ItemStack) -> bool {
+        match slot {
+            ItemSlot::Equipment(worn) => stack.fits(worn),
+            ItemSlot::Inventory(index) => index < self.inventory.len(),
+        }
+    }
+
+    /// Whether moving what is in `from` to `to` would be allowed.
+    ///
+    /// Both ends, because a swap sends the displaced item the other way: a ring dropped on a
+    /// worn cloak would put the cloak on a finger, and the whole exchange is refused.
+    #[must_use]
+    pub fn can_move(&self, from: ItemSlot, to: ItemSlot) -> bool {
+        if from == to {
+            return false;
+        }
+        let Some(moving) = self.at(from) else {
+            return false;
+        };
+        if !self.accepts(to, moving) {
+            return false;
+        }
+        match self.at(to) {
+            Some(displaced) => self.accepts(from, displaced),
+            None => true,
+        }
+    }
+}
+
+/// One trinket button, as the HUD draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrinketView {
+    /// Which button: `0` is the first slot.
+    pub index: usize,
+    /// The item's name.
+    pub name: &'static str,
+    /// The picture it is drawn with.
+    pub icon: engine_game::character::ItemIcon,
+    /// What the button does, with its numbers.
+    pub active: engine_game::trinket::TrinketActive,
+    /// Seconds until it can be used again. Zero when ready.
+    pub cooldown_remaining: f32,
+    /// Seconds left on the effect it left on the player (the ward, the shield). Zero when none.
+    pub buff_remaining: f32,
+}
+
+impl TrinketView {
+    /// Whether it is cooling down.
+    #[must_use]
+    pub fn is_cooling(&self) -> bool {
+        self.cooldown_remaining > 0.0
+    }
+
+    /// How much of the cooldown is left, `0..=1`.
+    #[must_use]
+    pub fn cooldown_fraction(&self) -> f32 {
+        if self.active.cooldown <= 0.0 {
+            return 0.0;
+        }
+        (self.cooldown_remaining / self.active.cooldown).clamp(0.0, 1.0)
+    }
+
+    /// Whether the effect it left is up: the button glows while it is.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.buff_remaining > 0.0
+    }
 }
 
 /// Everything the interface may read, rebuilt every frame.
@@ -302,10 +1013,30 @@ pub struct UiSnapshot {
     pub player: PlayerView,
     /// The selected enemy, if any.
     pub target: Option<TargetView>,
-    /// The ability bar, in bar order.
-    pub abilities: [AbilitySlotView; ABILITY_SLOTS],
-    /// The Ultimate, which is not on the bar.
-    pub ultimate: AbilitySlotView,
+    /// What the selected enemy is fighting, if anything.
+    pub target_of_target: Option<TargetView>,
+    /// The party, local player first. Rebuilt in place; never reallocated after the first
+    /// frame that needed the capacity.
+    pub party: Vec<PartyMemberView>,
+    /// Which hero the player is. What the swap menu ticks, and what the bar is built from.
+    pub hero: Hero,
+    /// The character sheet: stats, what is worn and what is carried.
+    pub character: CharacterView,
+    /// The ability bar, in bar order. `None` in a slot the current hero does not fill.
+    ///
+    /// An option per slot rather than a shorter array: slot four is the `4` key whichever
+    /// hero is holding it, and a bar that renumbered itself per class would move a player's
+    /// muscle memory every time they swapped.
+    pub abilities: [Option<AbilitySlotView>; ABILITY_SLOTS],
+    /// The Ultimate, for a hero that has one.
+    pub ultimate: Option<AbilitySlotView>,
+    /// The buttons beside the bar, for a hero with more abilities than digits.
+    ///
+    /// Two at most, in the hero's own order, on `F` and `G` — see
+    /// [`engine_game::hero::Hero::extras`]. Empty for the FireMage and the Warrior.
+    pub extras: [Option<AbilitySlotView>; 2],
+    /// The two trinket buttons. `None` for a slot with nothing worn, or a trinket with no active.
+    pub trinkets: [Option<TrinketView>; 2],
     /// The cast in progress.
     pub cast: Option<CastView>,
     /// The fight so far.
@@ -314,44 +1045,138 @@ pub struct UiSnapshot {
     pub notification: NotificationView,
     /// Talent points left to spend.
     pub talent_points: u32,
+    /// Every talent point the active hero has, spent or not.
+    pub talent_points_total: u32,
+    /// Whose tree `talents` lists.
+    pub talent_hero: Hero,
+    /// The hero's books, for the talent screen's Books page. Set by the application (online
+    /// only); the simulation knows nothing of them.
+    pub books: BooksView,
+    /// Letters in the active character's mailbox that have not been read: the badge on the
+    /// mailbox button.
+    pub mail_unread: u32,
     /// The whole talent grid.
     pub talents: Vec<TalentView>,
+    /// The mage's current spell power, which every tooltip number is a percentage of.
+    pub spell_power: f32,
+    /// Current haste, as a fraction.
+    pub haste: f32,
+    /// Current critical strike chance, as a fraction.
+    pub crit_chance: f32,
     /// The current maximum Ignite stacks. Read by every tooltip that mentions it.
     pub ignite_max: u8,
+    /// The dungeon run, if the level is a dungeon: what the progress panel draws.
+    pub dungeon: Option<DungeonView>,
+}
+
+/// A dungeon run, as the progress panel reads it.
+///
+/// Read off [`engine_game::dungeon_run::DungeonRun`] every frame, never kept: the run is the
+/// one truth about how complete the dungeon is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DungeonView {
+    /// Its name. Rewritten in place every frame, so it allocates once.
+    pub name: String,
+    /// Completion as a fraction of the requirement, `[0, 1]`.
+    pub fraction: f32,
+    /// Completion as a whole percentage, rounded down.
+    pub percent: u32,
+    /// Whether the requirement is met and the boss's gate is open.
+    pub unlocked: bool,
+    /// Whether the boss fight is running.
+    pub boss_engaged: bool,
+    /// How many of the boss's adds are still standing.
+    pub adds_alive: usize,
+    /// Whether the boss and every add are dead.
+    pub completed: bool,
+    /// How long the run took, once it is over.
+    pub finished_after: Option<f32>,
 }
 
 impl UiSnapshot {
+    /// The button state of one ability, whichever slot it is in and whether it is the
+    /// Ultimate.
+    ///
+    /// The lookup an action bar does: a slot holds an *ability*, and the view for it is
+    /// whatever the snapshot has for that ability. `None` covers both "nothing there" and
+    /// "the current hero cannot cast that", which are the same thing to a button — an
+    /// assignment left behind by another hero draws as an empty slot rather than as
+    /// somebody else's spell.
+    #[must_use]
+    pub fn ability_view(&self, ability: FireAbility) -> Option<&AbilitySlotView> {
+        self.abilities
+            .iter()
+            .flatten()
+            .chain(self.extras.iter().flatten())
+            .chain(self.ultimate.iter())
+            .find(|view| view.ability == ability)
+    }
+
     /// Reads the simulation.
     #[must_use]
     pub fn build(simulation: &Simulation) -> Self {
+        Self::build_aiming(simulation, None)
+    }
+
+    /// Reads the simulation, with `aiming` naming the ability whose area is being placed.
+    #[must_use]
+    pub fn build_aiming(simulation: &Simulation, aiming: Option<FireAbility>) -> Self {
         let mut snapshot = Self {
             player: PlayerView {
                 health: 0.0,
                 max_health: 0.0,
+                absorb: 0.0,
+                warrior: WarriorView::default(),
                 heat: 0.0,
-                overheated: false,
+                heat_tier: HeatTier::Cold,
+                inferno_remaining: 0.0,
                 energy: 0.0,
                 ultimate_ready: false,
                 shielded: false,
                 hasted: false,
+                mastery: FireMastery::Haste,
+                mastery_active: false,
                 statuses: StatusList::default(),
+                auras: crate::aura::AuraList::default(),
+                alive: true,
+                damage_taken: 0.0,
+                druid: DruidView::default(),
             },
             target: None,
-            abilities: [ability_view(simulation, FireAbility::Firebolt); ABILITY_SLOTS],
-            ultimate: ability_view(simulation, FireAbility::Cataclysm),
+            target_of_target: None,
+            party: Vec::with_capacity(engine_game::party::MAX_PARTY),
+            hero: simulation.hero(),
+            character: character_view(simulation),
+            abilities: [None; ABILITY_SLOTS],
+            ultimate: None,
+            extras: [None; 2],
+            trinkets: [None; 2],
             cast: None,
             combat: CombatView::default(),
             notification: NotificationView::default(),
             talent_points: 0,
-            talents: Vec::with_capacity(TALENTS.len()),
+            talent_points_total: 0,
+            talent_hero: Hero::default(),
+            books: BooksView::default(),
+            mail_unread: 0,
+            talents: Vec::with_capacity(engine_game::talent::MAX_TALENTS),
+            spell_power: 0.0,
+            haste: 0.0,
+            crit_chance: 0.0,
             ignite_max: 5,
+            dungeon: None,
         };
-        snapshot.refresh(simulation);
+        snapshot.refresh(simulation, aiming);
         snapshot
     }
 
     /// Rebuilds in place, keeping every allocation.
-    pub fn refresh(&mut self, simulation: &Simulation) {
+    ///
+    /// `aiming` is the ability whose area the player is currently placing, which is the one
+    /// piece of this the simulation cannot answer: an unconfirmed placement has changed
+    /// nothing. It is a parameter rather than a field the caller sets afterwards, so it
+    /// cannot be left behind from the frame before.
+    pub fn refresh(&mut self, simulation: &Simulation, aiming: Option<FireAbility>) {
         let mage = simulation.mage();
         let player = simulation.player();
         let world = simulation.world();
@@ -360,47 +1185,111 @@ impl UiSnapshot {
         self.player = PlayerView {
             health: health.map_or(0.0, |health| health.current()),
             max_health: health.map_or(0.0, |health| health.max()),
+            absorb: simulation.absorb_of(player.entity),
             heat: mage.heat.value(),
-            overheated: mage.heat.is_overheated(),
+            heat_tier: mage.heat.tier(),
+            inferno_remaining: mage.heat.inferno_remaining(),
             energy: mage.energy.value(),
-            ultimate_ready: mage.energy.is_full(),
+            ultimate_ready: mage.energy.is_full() && ULTIMATE_ENABLED,
             shielded: mage.flame_shield.is_active(),
-            hasted: mage.haste() > 0.0,
+            hasted: mage.haste() > engine_game::firemage::BASE_HASTE,
+            mastery: mage.mastery,
+            mastery_active: mage.mastery_buff.is_active(),
             statuses: statuses_of(simulation, player.entity),
+            auras: crate::aura::auras_of(simulation, player.entity),
+            alive: simulation.player_alive(),
+            damage_taken: simulation.meter().total_damage_taken() as f32,
+            warrior: warrior_view(simulation),
+            druid: druid_view(simulation),
         };
 
-        self.target = player.target.and_then(|entity| {
-            let health = world.health(entity)?;
-            let burn = mage.ignite.get(entity);
-            Some(TargetView {
-                entity,
-                kind: world.kind(entity)?,
+        self.target = player
+            .target
+            .and_then(|entity| target_view(simulation, entity));
+        // The target's target, read from whatever the selected enemy has decided to attack.
+        // Nothing new in gameplay answers this: an enemy brain already knows who it is
+        // fighting, and a chain of two lookups is the whole feature.
+        self.target_of_target = player
+            .target
+            .and_then(|entity| simulation.brain(entity))
+            .and_then(engine_game::enemy::brain::EnemyBrain::target)
+            .and_then(|entity| target_view(simulation, entity));
+
+        match simulation.dungeon_run() {
+            Some(run) => {
+                let view = self.dungeon.get_or_insert_with(DungeonView::default);
+                view.name.clear();
+                view.name.push_str(run.name());
+                view.fraction = run.fraction();
+                view.percent = run.percent();
+                view.unlocked = run.is_unlocked();
+                view.boss_engaged = run.is_engaged();
+                view.adds_alive = run
+                    .adds()
+                    .iter()
+                    .filter(|add| world.is_alive(**add))
+                    .count();
+                view.completed = run.is_completed();
+                view.finished_after = run.finished_after();
+            }
+            None => self.dungeon = None,
+        }
+
+        self.party.clear();
+        for (index, member) in simulation.party().members().iter().enumerate() {
+            let Some(health) = world.health(*member) else {
+                continue;
+            };
+            self.party.push(PartyMemberView {
+                entity: *member,
+                kind: world.kind(*member).unwrap_or(EntityKind::Player),
+                label: world.label(*member),
                 health: health.current(),
                 max_health: health.max(),
-                // No distance means the target is gone; a large number reads as "out of
-                // range" everywhere it is used rather than as "right next to you".
-                distance: world
-                    .distance_between(player.entity, entity)
-                    .unwrap_or(f32::MAX),
-                alive: world.is_alive(entity),
-                ignite_stacks: burn.stacks,
-                ignite_remaining: burn.remaining,
-                ignite_at_maximum: burn.is_at_maximum(mage.ignite_max()),
-                statuses: statuses_of(simulation, entity),
-            })
-        });
-
-        for (slot, ability) in FireAbility::BAR.into_iter().enumerate() {
-            self.abilities[slot] = ability_view(simulation, ability);
+                absorb: simulation.absorb_of(*member),
+                alive: world.is_alive(*member),
+                is_player: index == 0,
+                statuses: statuses_of(simulation, *member),
+                auras: crate::aura::auras_of(simulation, *member),
+            });
         }
-        self.ultimate = ability_view(simulation, FireAbility::Cataclysm);
 
-        self.cast = simulation.casting().map(|cast| CastView {
-            ability: cast.ability,
-            name: cast.ability.definition().name,
-            elapsed: cast.elapsed,
-            duration: cast.duration,
-        });
+        self.hero = simulation.hero();
+        self.character = character_view(simulation);
+        for (slot, ability) in simulation.hero().bar().into_iter().enumerate() {
+            self.abilities[slot] = ability.map(|ability| ability_view(simulation, ability, aiming));
+        }
+        self.ultimate = simulation
+            .hero()
+            .ultimate()
+            .map(|ability| ability_view(simulation, ability, aiming));
+        self.extras = [None; 2];
+        for (index, ability) in simulation.hero().extras().enumerate().take(2) {
+            self.extras[index] = Some(ability_view(simulation, ability, aiming));
+        }
+
+        self.trinkets = trinket_views(simulation);
+
+        self.cast = simulation
+            .casting()
+            .map(|cast| CastView {
+                ability: cast.ability,
+                name: cast.ability.definition().name,
+                elapsed: cast.elapsed,
+                duration: cast.duration,
+                channelled: false,
+            })
+            .or_else(|| {
+                // Moving Fire Beam is a channel without a cast bar of its own: the same bar,
+                // draining, with the seconds left beside it.
+                simulation.is_channelling_beam().then(|| CastView {
+                    ability: FireAbility::FireBeam,
+                    name: FireAbility::FireBeam.definition().name,
+                    elapsed: simulation.beam().elapsed(),
+                    duration: engine_game::firemage::BEAM_DURATION,
+                    channelled: true,
+                })
+            });
 
         let meter = simulation.meter();
         self.combat = CombatView {
@@ -413,48 +1302,198 @@ impl UiSnapshot {
             error: simulation.recent_error(),
         };
 
-        self.talent_points = mage.talents.available_points();
+        let grid = simulation.talent_grid();
+        self.talent_hero = simulation.hero();
+        self.talent_points = grid.available_points();
+        self.talent_points_total = grid.total_points();
+        self.mail_unread = u32::try_from(simulation.mailbox().unread_count()).unwrap_or(u32::MAX);
         self.talents.clear();
-        for talent in &TALENTS {
+        for (index, talent) in engine_game::talent::hero_talents(simulation.hero())
+            .visible()
+            .iter()
+            .enumerate()
+        {
             self.talents.push(TalentView {
-                id: talent.id,
-                name: talent.name,
+                index,
+                name: talent.name.as_str(),
                 tier: talent.tier,
                 cost: talent.cost,
-                description: talent.description,
-                purchased: mage.talents.has(talent.id),
-                affordable: mage.talents.can_purchase(talent.id),
+                description: talent.description.as_str(),
+                purchased: grid.has_index(index),
+                affordable: grid.purchase_error_index(index).is_none(),
+                icon: crate::ui::talent_menu::talent_icon(talent.key.as_str()),
             });
         }
+        let stats = mage.stats();
+        self.spell_power = stats.spell_power;
+        self.haste = stats.haste;
+        self.crit_chance = stats.crit();
         self.ignite_max = mage.ignite_max();
     }
 }
 
+/// The two trinket buttons: what is worn, its cooldown, and whether its effect is up.
+fn trinket_views(simulation: &Simulation) -> [Option<TrinketView>; 2] {
+    let player = simulation.player().entity;
+    let statuses = simulation.world().statuses(player);
+    let mut views = [None; 2];
+    for (index, view) in views.iter_mut().enumerate() {
+        let Some(active) = simulation.trinket_active(index) else {
+            continue;
+        };
+        let Some(def) = engine_game::trinket::slot_of(index)
+            .and_then(|slot| simulation.sheet().equipment().get(slot))
+            .and_then(ItemStack::def)
+        else {
+            continue;
+        };
+        let buff = match active.effect {
+            engine_game::trinket::TrinketEffect::GroupDamageReduction => StatusKind::TrinketWard,
+            engine_game::trinket::TrinketEffect::GroupAbsorb => StatusKind::TrinketAbsorb,
+            _ => StatusKind::TrinketWard,
+        };
+        let buff_remaining = if active.effect.has_duration() {
+            statuses.map_or(0.0, |set| set.remaining(buff))
+        } else {
+            0.0
+        };
+        *view = Some(TrinketView {
+            index,
+            name: def.name,
+            icon: def.icon,
+            active,
+            cooldown_remaining: simulation.trinket_remaining(index),
+            buff_remaining,
+        });
+    }
+    views
+}
+
+/// One entity as a frame shows it: the target, and the target's target.
+///
+/// One function for both, because "the thing the frame is looking at" is the same question
+/// twice. A target that is the player — an enemy fighting back — reads out of the same world
+/// as any other entity, so nothing here needs a special case for it.
+fn target_view(simulation: &Simulation, entity: EntityId) -> Option<TargetView> {
+    let world = simulation.world();
+    let mage = simulation.mage();
+    let player = simulation.player();
+    let health = world.health(entity)?;
+    let burn = mage.ignite.get(entity);
+    let kind = world.kind(entity)?;
+    Some(TargetView {
+        entity,
+        kind,
+        name: simulation
+            .brain(entity)
+            .map(|brain| brain.kind().name())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                if entity == player.entity {
+                    "YOU"
+                } else {
+                    world.label(entity).unwrap_or_else(|| kind.as_str())
+                }
+            }),
+        health: health.current(),
+        max_health: health.max(),
+        absorb: simulation.absorb_of(entity),
+        // No distance means the target is gone; a large number reads as "out of range"
+        // everywhere it is used rather than as "right next to you".
+        distance: world
+            .distance_between(player.entity, entity)
+            .unwrap_or(f32::MAX),
+        alive: world.is_alive(entity),
+        ignite_stacks: burn.stacks,
+        ignite_remaining: burn.remaining,
+        ignite_at_maximum: burn.is_at_maximum(mage.ignite_max()),
+        statuses: statuses_of(simulation, entity),
+        casting: simulation.brain(entity).and_then(|brain| {
+            brain.cast().map(|cast| EnemyCastView {
+                ability: cast.ability,
+                name: cast.ability.name(),
+                elapsed: cast.elapsed,
+                duration: cast.duration,
+                interruptible: cast.interruptible,
+            })
+        }),
+        ai_state: simulation.brain(entity).map(|brain| brain.state()),
+        phase: simulation.brain(entity).and_then(|brain| {
+            (brain.archetype().phase_count() > 1).then(|| (brain.phase() + 1, brain.phase_name()))
+        }),
+        boss: simulation
+            .brain(entity)
+            .is_some_and(|brain| brain.kind().is_boss()),
+        immune: world
+            .statuses(entity)
+            .is_some_and(|statuses| statuses.has(engine_game::status::StatusKind::Shielded)),
+        auras: crate::aura::auras_of(simulation, entity),
+    })
+}
+
 /// One ability's button state, worked out once here rather than in the widget.
-fn ability_view(simulation: &Simulation, ability: FireAbility) -> AbilitySlotView {
+fn ability_view(
+    simulation: &Simulation,
+    ability: FireAbility,
+    aiming: Option<FireAbility>,
+) -> AbilitySlotView {
     let mage = simulation.mage();
     let definition = ability.definition();
     let effects = mage.effects();
+    let stats = mage.stats();
     let charges = mage.abilities.charges(ability);
-    let max_charges = definition.charges_with(effects);
+    let max_charges = mage.abilities.max_charges(ability, effects);
 
     let target = simulation.player().target;
     let target_alive = target.is_some_and(|id| simulation.world().is_alive(id));
+    // A friendly selection — an ally, or the player themselves — is a legal thing to have
+    // and an illegal thing to point a Firebolt at. The bar says so before the click rather
+    // than after it: a button that looks ready and answers "THAT IS NOT AN ENEMY" has taught
+    // the player nothing they could not have been told.
+    let target_friendly = target.is_some_and(|id| !simulation.is_attackable(id));
     let in_range = target.and_then(|id| {
         simulation
             .world()
             .distance_between(simulation.player().entity, id)
     });
 
-    let availability = if definition.energy_cost > 0.0 && !mage.energy.is_full() {
+    // Whether pressing this now spends a hundred Astral Power. Asked of the simulation's own
+    // resource, exactly as the Warrior's spend is.
+    let spends_astral = simulation.astral_armed() && definition.druid().astral_empowerable;
+    // Mana, asked of the pool rather than of the number on the row: a spell the player cannot
+    // afford is dimmed before it is pressed rather than after.
+    let short_of_mana = simulation.hero() == Hero::Druid
+        && definition.druid().mana_cost > 0.0
+        && !simulation
+            .druid()
+            .mana
+            .can_pay(definition.druid().mana_cost);
+    // The Astral Power button has a requirement of its own, and it is not a cooldown: a bar
+    // that is not full, or one that is already armed, cannot be pressed.
+    let cannot_arm = ability == FireAbility::AstralPower && !simulation.druid().astral.can_arm();
+
+    let availability = if ability.is_disabled() {
+        // Switched off ([`ULTIMATE_ENABLED`]): the button stays where it is and says so,
+        // rather than disappearing and taking its architecture with it.
+        SlotAvailability::Disabled
+    } else if (definition.fire().energy_cost > 0.0 && !mage.energy.is_full())
+        || short_of_mana
+        || cannot_arm
+    {
+        // Three ways to be short of a resource and one way to say so: the Ultimate's energy,
+        // the Druid's Mana, and an Astral Power button that has nothing to arm with.
         SlotAvailability::NoResource
     } else if charges == 0 {
         SlotAvailability::Cooling
-    } else if definition.target.needs_target()
-        && (!target_alive || in_range.is_some_and(|distance| distance > definition.range))
+    } else if (target_friendly && !ability.usable_on_friendly_target())
+        || (definition.target.needs_target()
+            && (!target_alive
+                || in_range.is_some_and(|distance| distance > simulation.ability_range(ability))))
     {
+        // Three ways to have the wrong target and one way to say so: it is friendly and this
+        // is not a spell that can ignore that, it is dead or gone, or it is out of reach.
         SlotAvailability::InvalidTarget
-    } else if ability == FireAbility::FireDetonation {
+    } else if ability == FireAbility::Detonate {
         // The one ability whose readiness is about the *target*: a full burn is what it is
         // for, and the bar says so rather than making the player count stacks.
         match target {
@@ -463,6 +1502,11 @@ fn ability_view(simulation: &Simulation, ability: FireAbility) -> AbilitySlotVie
             }
             _ => SlotAvailability::InvalidTarget,
         }
+    } else if spends_astral {
+        // **The empowered highlight.** The same state Detonate-on-a-full-burn already uses,
+        // reached by a second class for its own reason: it is ready, and pressing it right
+        // now buys something extra.
+        SlotAvailability::Empowered
     } else {
         SlotAvailability::Ready
     };
@@ -472,12 +1516,50 @@ fn ability_view(simulation: &Simulation, ability: FireAbility) -> AbilitySlotVie
         id: AbilityId::from_fire(ability),
         name: definition.name,
         key: ability.key_hint(),
+        key_modifiers: Modifiers::none(),
         availability,
         charges,
         max_charges,
         cooldown_remaining: mage.abilities.recharge_remaining(ability),
         cooldown_fraction: mage.abilities.recharge_fraction(ability, effects),
+        global_cooldown_fraction: mage.global_cooldown_fraction_for(ability),
+        // A channelled beam is "the ability in progress" for as long as it burns, so the
+        // Ultimate button wears the active frame while the bar drains.
+        casting: simulation
+            .casting()
+            .is_some_and(|cast| cast.ability == ability)
+            || (ability == FireAbility::FireBeam && simulation.is_channelling_beam()),
+        aiming: aiming == Some(ability),
         ground_targeted: definition.target.is_ground_targeted(),
+        cast_time: definition.cast_time_with(&stats),
+        damage: if definition.target.is_friendly() {
+            0.0
+        } else if definition.coefficient > 0.0 {
+            definition.base_damage(&stats)
+        } else {
+            definition.base_tick_damage(&stats)
+        },
+        ignite_scaling: definition.fire().ignite_bonus_per_stack,
+        ignite_stacks: definition.fire().ignite_stacks,
+        ignite_chance: definition.fire().ignite_chance,
+        valor_generation: definition.warrior().valor,
+        mana_cost: definition.druid().mana_cost,
+        astral_generation: definition.druid().astral_generation,
+        astral_empowerable: definition.druid().astral_empowerable,
+        spends_astral,
+        // Healing and damage are the same coefficient read against the same spell power;
+        // which of the two a row *is* is decided by who it is pointed at, so the interface
+        // never has to guess whether a number is a heal.
+        healing: if definition.target.is_friendly() {
+            let direct = definition.base_damage(&stats);
+            if direct > 0.0 {
+                direct
+            } else {
+                definition.base_tick_damage(&stats)
+            }
+        } else {
+            0.0
+        },
     }
 }
 
@@ -488,6 +1570,7 @@ fn statuses_of(simulation: &Simulation, entity: EntityId) -> StatusList {
         for status in statuses.iter() {
             list.push(StatusView {
                 kind: status.kind,
+                stacks: status.stacks,
                 remaining: status.remaining,
                 fraction: status.fraction(),
             });
@@ -512,28 +1595,208 @@ mod tests {
         simulation
     }
 
+    /// The view in bar slot `slot`, which the mage's bar fills all ten of.
+    fn filled(snapshot: &UiSnapshot, slot: usize) -> AbilitySlotView {
+        snapshot.abilities[slot].expect("the mage fills every slot of its bar")
+    }
+
+    #[test]
+    fn selecting_yourself_dims_exactly_the_spells_that_need_an_enemy() {
+        // The bar's answer to a friendly selection, checked ability by ability. What may
+        // still be pressed is what does not point at the selection: the aimed ones, the
+        // self-buffs and the movement.
+        let mut simulation = arena();
+        simulation.push_command(engine_game::command::PlayerCommand::SelectSelf);
+        simulation.step_once();
+        let snapshot = UiSnapshot::build(&simulation);
+
+        let availability = |ability: FireAbility| {
+            snapshot
+                .ability_view(ability)
+                .expect("a bar ability")
+                .availability
+        };
+        for ability in [
+            FireAbility::Firebolt,
+            FireAbility::FlameLance,
+            FireAbility::Pyroblast,
+            FireAbility::Detonate,
+        ] {
+            assert_eq!(
+                availability(ability),
+                SlotAvailability::InvalidTarget,
+                "{} points at the selection and should be dimmed",
+                ability.definition().name
+            );
+        }
+        for ability in [
+            FireAbility::Blink,
+            FireAbility::FlameShield,
+            FireAbility::FireMastery,
+            FireAbility::Meteor,
+            FireAbility::Firestorm,
+            FireAbility::FlameCone,
+        ] {
+            assert_ne!(
+                availability(ability),
+                SlotAvailability::InvalidTarget,
+                "{} does not point at the selection and should stay usable",
+                ability.definition().name
+            );
+        }
+    }
+
+    #[test]
+    fn an_enemy_selection_leaves_the_single_target_spells_alone() {
+        // The control for the test above: the same bar, with a dummy selected instead.
+        let snapshot = UiSnapshot::build(&arena());
+        assert_ne!(
+            snapshot
+                .ability_view(FireAbility::Firebolt)
+                .expect("a bar ability")
+                .availability,
+            SlotAvailability::InvalidTarget
+        );
+    }
+
+    #[test]
+    fn the_druids_bar_is_its_own_and_its_resources_reach_the_interface() {
+        let mut simulation = arena();
+        assert!(simulation.set_hero(Hero::Druid));
+        let snapshot = UiSnapshot::build(&simulation);
+
+        let names: Vec<&str> = snapshot
+            .abilities
+            .iter()
+            .flatten()
+            .map(|slot| slot.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "MOONFIRE",
+                "SUNFIRE",
+                "WRATH",
+                "REJUVENATION",
+                "REGROWTH",
+                "LIFEBLOOM",
+                "WILD GROWTH",
+                "SWIFTMEND",
+                "NOURISH",
+                "NATURES CLEANSE",
+            ]
+        );
+        let druid = snapshot.player.druid;
+        assert!(druid.active);
+        assert!((druid.mana_fraction() - 1.0).abs() < 1e-6);
+        assert_eq!(druid.astral, 0.0);
+        assert!(!druid.armed);
+        assert!(!druid.can_arm);
+        // And the Warrior's readouts are inert, which is what keeps one frame drawing both.
+        assert!(!snapshot.player.warrior.active);
+    }
+
+    #[test]
+    fn arming_astral_power_lights_up_exactly_the_compatible_abilities() {
+        let mut simulation = arena();
+        assert!(simulation.set_hero(Hero::Druid));
+        simulation
+            .druid_mut()
+            .astral
+            .gain(engine_game::druid::tuning::ASTRAL_MAXIMUM);
+        // Full, and not yet pressed: nothing is empowered.
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.player.druid.can_arm);
+        assert!(!snapshot.player.druid.armed);
+        assert!(
+            !snapshot
+                .ability_view(FireAbility::Moonfire)
+                .expect("a bar ability")
+                .spends_astral
+        );
+
+        simulation
+            .cast(FireAbility::AstralPower)
+            .expect("a full bar arms");
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.player.druid.armed);
+        for ability in [
+            FireAbility::Moonfire,
+            FireAbility::Sunfire,
+            FireAbility::Wrath,
+            FireAbility::Rejuvenation,
+            FireAbility::Tranquility,
+        ] {
+            let view = snapshot.ability_view(ability).expect("a druid ability");
+            assert!(view.spends_astral, "{ability:?} did not light up");
+            assert_eq!(
+                view.availability,
+                SlotAvailability::Empowered,
+                "{ability:?}"
+            );
+        }
+        for ability in [FireAbility::NaturesCleanse, FireAbility::WildRush] {
+            let view = snapshot.ability_view(ability).expect("a druid ability");
+            assert!(!view.spends_astral, "{ability:?} claimed an empowerment");
+        }
+    }
+
+    #[test]
+    fn a_druid_with_no_mana_sees_the_spells_it_cannot_afford() {
+        let mut simulation = arena();
+        assert!(simulation.set_hero(Hero::Druid));
+        simulation
+            .druid_mut()
+            .mana
+            .pay(engine_game::druid::tuning::MANA_MAXIMUM);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert_eq!(
+            snapshot
+                .ability_view(FireAbility::Rejuvenation)
+                .expect("a bar ability")
+                .availability,
+            SlotAvailability::NoResource
+        );
+        // Wrath costs nothing and is unaffected, which is the whole point of Wrath.
+        assert_ne!(
+            snapshot
+                .ability_view(FireAbility::Wrath)
+                .expect("a bar ability")
+                .availability,
+            SlotAvailability::NoResource
+        );
+    }
+
     #[test]
     fn the_bar_is_the_ten_designed_abilities_and_the_ultimate_is_separate() {
         let snapshot = UiSnapshot::build(&arena());
-        let names: Vec<&str> = snapshot.abilities.iter().map(|slot| slot.name).collect();
+        let names: Vec<&str> = snapshot
+            .abilities
+            .iter()
+            .flatten()
+            .map(|slot| slot.name)
+            .collect();
         assert_eq!(
             names,
             [
                 "FIREBOLT",
                 "FLAME LANCE",
-                "FLAME WAVE",
+                "FLAME CONE",
                 "METEOR",
-                "FIRESTORM",
                 "PYROBLAST",
-                "INFERNO",
-                "FIRE DETONATION",
+                "FIRESTORM",
+                "DETONATE",
+                "FIRE MASTERY",
                 "FLAME SHIELD",
                 "BLINK",
             ]
         );
-        assert_eq!(snapshot.ultimate.name, "CATACLYSM");
+        assert_eq!(
+            snapshot.ultimate.expect("the mage has an Ultimate").name,
+            "MOVING FIRE BEAM"
+        );
         assert!(
-            !names.contains(&"CATACLYSM"),
+            !names.contains(&"MOVING FIRE BEAM"),
             "the ultimate is on the regular bar"
         );
     }
@@ -541,11 +1804,11 @@ mod tests {
     #[test]
     fn charges_are_reported_only_where_there_are_several() {
         let snapshot = UiSnapshot::build(&arena());
-        let lance = snapshot.abilities[1];
+        let lance = filled(&snapshot, 1);
         assert_eq!((lance.charges, lance.max_charges), (2, 2));
         assert!(lance.shows_charges());
 
-        let firebolt = snapshot.abilities[0];
+        let firebolt = filled(&snapshot, 0);
         assert!(!firebolt.shows_charges(), "firebolt has one charge");
     }
 
@@ -558,7 +1821,7 @@ mod tests {
         simulation.step_many(60);
 
         let snapshot = UiSnapshot::build(&simulation);
-        let blink = snapshot.abilities[9];
+        let blink = filled(&snapshot, 9);
         assert_eq!(blink.charges, 0);
         assert!(blink.is_cooling());
         assert!(blink.cooldown_remaining > 0.0);
@@ -567,11 +1830,11 @@ mod tests {
     }
 
     #[test]
-    fn fire_detonation_lights_up_only_against_a_full_burn() {
+    fn detonate_lights_up_only_against_a_full_burn() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.abilities[7].availability,
+            filled(&snapshot, 6).availability,
             SlotAvailability::InvalidTarget,
             "it offered itself against a cold target"
         );
@@ -586,39 +1849,72 @@ mod tests {
 
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
-            snapshot.abilities[7].availability,
+            filled(&snapshot, 6).availability,
             SlotAvailability::Empowered
         );
-        assert!(snapshot.abilities[7].availability.is_ready());
+        assert!(filled(&snapshot, 6).availability.is_ready());
         assert!(snapshot.target.expect("a target").ignite_at_maximum);
     }
 
     #[test]
-    fn the_ultimate_is_locked_until_the_bar_is_full() {
+    fn the_ultimate_reports_its_energy_and_is_ready_only_with_a_full_bar() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.ultimate.availability, SlotAvailability::NoResource);
+        assert_eq!(
+            snapshot
+                .ultimate
+                .expect("the mage has an Ultimate")
+                .availability,
+            SlotAvailability::NoResource
+        );
         assert!(!snapshot.player.ultimate_ready);
 
         simulation.mage_mut().gain_energy(100.0);
         let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.player.ultimate_ready);
-        assert!(snapshot.ultimate.availability.is_ready());
         assert!((snapshot.player.energy_fraction() - 1.0).abs() < 1e-6);
+        assert!(snapshot.player.ultimate_ready);
+        let ultimate = snapshot.ultimate.expect("the mage has an Ultimate");
+        assert_eq!(ultimate.ability, FireAbility::FireBeam);
+        assert_eq!(ultimate.availability, SlotAvailability::Ready);
+        assert!(!ultimate.shows_active_frame());
     }
 
     #[test]
-    fn the_heat_bar_reports_its_range_and_its_overheat() {
+    fn a_channelled_beam_drains_the_cast_bar_and_frames_the_ultimate_button() {
         let mut simulation = arena();
-        simulation.mage_mut().gain_heat(80.0);
-        let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.player.heat_is_high());
-        assert!(!snapshot.player.overheated);
-        assert!((snapshot.player.heat_fraction() - 0.8).abs() < 1e-6);
+        simulation.mage_mut().gain_energy(100.0);
+        simulation
+            .cast_at(
+                FireAbility::FireBeam,
+                engine_core::math::Vec3::new(0.0, 0.0, -10.0),
+            )
+            .expect("a full bar casts it");
+        simulation.step_many(120);
 
-        simulation.mage_mut().gain_heat(20.0);
         let snapshot = UiSnapshot::build(&simulation);
-        assert!(snapshot.player.overheated);
+        let bar = snapshot.cast.expect("the channel is on the cast bar");
+        assert_eq!(bar.ability, FireAbility::FireBeam);
+        assert!(bar.channelled);
+        assert!(
+            (bar.remaining() - 4.0).abs() < 0.1,
+            "{} s left",
+            bar.remaining()
+        );
+        assert!(
+            (bar.fraction() - 4.0 / 6.0).abs() < 0.03,
+            "a channel drains: {}",
+            bar.fraction()
+        );
+        let ultimate = snapshot.ultimate.expect("the mage has an Ultimate");
+        assert!(ultimate.shows_active_frame());
+        assert!(
+            ultimate.cooldown_remaining > 80.0,
+            "cooling for ninety seconds"
+        );
+
+        simulation.step_many(300);
+        let snapshot = UiSnapshot::build(&simulation);
+        assert!(snapshot.cast.is_none(), "the bar goes with the channel");
     }
 
     #[test]
@@ -647,18 +1943,19 @@ mod tests {
     fn the_talent_grid_reports_what_is_owned_and_what_can_be_bought() {
         let mut simulation = arena();
         let snapshot = UiSnapshot::build(&simulation);
-        assert_eq!(snapshot.talents.len(), TALENTS.len());
+        assert_eq!(
+            snapshot.talents.len(),
+            engine_game::talent::hero_talents(Hero::FireMage).visible()
+                .len()
+        );
         assert!(snapshot.talents.iter().all(|talent| !talent.purchased));
         assert_eq!(
             snapshot.talent_points,
             simulation.mage().talents.available_points()
         );
 
-        let first = snapshot.talents[0].id;
-        simulation
-            .mage_mut()
-            .purchase_talent(first)
-            .expect("affordable");
+        let first = snapshot.talents[0].index;
+        simulation.purchase_talent_index(first).expect("affordable");
         let snapshot = UiSnapshot::build(&simulation);
         assert!(snapshot.talents[0].purchased);
     }
@@ -679,7 +1976,7 @@ mod tests {
     #[test]
     fn a_refusal_reaches_the_interface() {
         let mut simulation = arena();
-        let _ = simulation.cast(FireAbility::FireDetonation);
+        let _ = simulation.cast(FireAbility::Detonate);
         let snapshot = UiSnapshot::build(&simulation);
         assert_eq!(
             snapshot.notification.error,
@@ -693,9 +1990,13 @@ mod tests {
         let mut snapshot = UiSnapshot::build(&simulation);
         let capacity = snapshot.talents.capacity();
         for _ in 0..100 {
-            snapshot.refresh(&simulation);
+            snapshot.refresh(&simulation, None);
         }
         assert_eq!(snapshot.talents.capacity(), capacity, "the snapshot grew");
-        assert_eq!(snapshot.talents.len(), TALENTS.len());
+        assert_eq!(
+            snapshot.talents.len(),
+            engine_game::talent::hero_talents(Hero::FireMage).visible()
+                .len()
+        );
     }
 }

@@ -1,0 +1,22 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="astral_sunfire_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(40,16,48)"></stop>
+<stop offset="1" stop-color="rgb(96,48,110)"></stop>
+</linearGradient>
+<radialGradient id="astral_sunfire_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(255,210,110)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(255,210,110)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(255,210,110)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="astral_sunfire_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#astral_sunfire_tile)">
+<path fill="url(#astral_sunfire_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#astral_sunfire_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(250,196,80)"  d="M 256.0 56.0 L 287.1 140.1 L 356.0 82.8 L 340.9 171.1 L 429.2 156.0 L 371.9 224.9 L 456.0 256.0 L 371.9 287.1 L 429.2 356.0 L 340.9 340.9 L 356.0 429.2 L 287.1 371.9 L 256.0 456.0 L 224.9 371.9 L 156.0 429.2 L 171.1 340.9 L 82.8 356.0 L 140.1 287.1 L 56.0 256.0 L 140.1 224.9 L 82.8 156.0 L 171.1 171.1 L 156.0 82.8 L 224.9 140.1 Z"></path>
+<circle cx="256" cy="256" r="118" fill="none" stroke="rgb(190,140,255)" stroke-width="22"></circle>
+<circle cx="256" cy="256" r="84" fill="rgb(255,232,150)"></circle>
+<path fill="rgb(120,200,110)" d="M 256 214 L 276 214 L 276 246 L 308 246 L 308 266 L 276 266 L 276 298 L 256 298 L 236 298 L 236 266 L 204 266 L 204 246 L 236 246 L 236 214 Z"></path>
+</g>
+</svg>

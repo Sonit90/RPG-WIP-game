@@ -1,0 +1,91 @@
+# Production / staging: the whole realm on one VPS behind Caddy.
+#
+#   cp deploy/.env.production.example deploy/.env    # fill it in
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+#
+# See docs/networking/SPACETIMEDB_DEPLOYMENT.md for the full procedure, backups and rollback.
+name: mygame-realm
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../backend/docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # No published port: only the API reaches the database.
+
+  spacetimedb:
+    image: clockworklabs/spacetime:${SPACETIMEDB_VERSION:-v2.10.2}
+    restart: unless-stopped
+    command: ["start", "--listen-addr", "0.0.0.0:3000", "--data-dir", "/stdb", "--non-interactive"]
+    volumes:
+      - spacetimedb-data:/stdb
+    # Reached by players through Caddy (REALM_DOMAIN) and by the API on the internal network.
+
+  api:
+    image: ${API_IMAGE:-mygame-realm-api:latest}
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spacetimedb:
+        condition: service_started
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      APP__HTTP__BIND: 0.0.0.0:8080
+      APP__HTTP__PUBLIC_URL: https://${API_DOMAIN}
+      APP__AUTH__JWT_SECRET: ${EMAIL_CODE_SECRET}
+      APP__AUTH__JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_es256.pem
+      APP__AUTH__JWT_KEY_ID: ${JWT_KEY_ID:-realm-1}
+      APP__DB__RUN_MIGRATIONS_ON_START: "true"
+      APP__CORS__ALLOWED_ORIGINS: ""
+      SPACETIMEDB_URL: http://spacetimedb:3000
+      SPACETIMEDB_DATABASE: ${SPACETIMEDB_DATABASE:-realm}
+      APP__EMAIL__SMTP_HOST: ${SMTP_HOST:-}
+      APP__EMAIL__SMTP_USERNAME: ${SMTP_USERNAME:-}
+      APP__EMAIL__SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      APP__EMAIL__FROM_EMAIL: ${SMTP_FROM:-noreply@example.com}
+    secrets:
+      - jwt_es256.pem
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+      REALM_DOMAIN: ${REALM_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - spacetimedb
+
+secrets:
+  jwt_es256.pem:
+    file: ./secrets/jwt_es256.pem
+
+volumes:
+  postgres-data:
+  spacetimedb-data:
+  caddy-data:
+  caddy-config:

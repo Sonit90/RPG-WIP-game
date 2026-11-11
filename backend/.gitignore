@@ -1,0 +1,25 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Local secrets / env
+.env
+.env.*.local
+.env.production
+*.local.toml
+
+# Local data (when running outside Docker)
+/data
+/uploads
+/tmp
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+.claude

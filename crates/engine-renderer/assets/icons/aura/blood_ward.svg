@@ -1,0 +1,22 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="blood_ward_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(30,8,10)"></stop>
+<stop offset="1" stop-color="rgb(80,18,24)"></stop>
+</linearGradient>
+<radialGradient id="blood_ward_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(220,60,70)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(220,60,70)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(220,60,70)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="blood_ward_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#blood_ward_tile)">
+<path fill="url(#blood_ward_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#blood_ward_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(176,184,198)" d="M 256 70 L 410 120 C 410 290 350 390 256 446 C 162 390 102 290 102 120 Z"></path>
+<path fill="rgb(150,20,30)" d="M 256 104 L 378 142 C 376 284 326 364 256 410 C 186 364 136 284 134 142 Z"></path>
+<path fill="rgb(236,70,70)"  d="M 256 168.2 C 287.9 220.4 314 258.1 314 290 C 314 322.48 288.48 348 256 348 C 223.51999999999998 348 198 322.48 198 290 C 198 258.1 224.1 220.4 256 168.2 Z"></path>
+<path fill="rgb(255,190,180)" fill-opacity="0.6" d="M 240 238.2 C 249.9 254.4 258 266.1 258 276 C 258 286.08 250.08 294 240 294 C 229.92 294 222 286.08 222 276 C 222 266.1 230.1 254.4 240 238.2 Z"></path>
+</g>
+</svg>

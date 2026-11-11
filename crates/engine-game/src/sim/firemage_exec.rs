@@ -1,9 +1,9 @@
 //! Casting FireMage: validation, targeting, damage, Ignite, Heat and the fire on the ground.
 //!
 //! ```text
-//! command -> validate -> pay charge -> cast timer -> land -> hit list -> damage + Ignite
-//!                                                                    -> Heat + Energy
-//!                                                                    -> zones / impacts
+//! command -> validate -> cast timer -> land -> hit list -> damage + Ignite
+//!                                                       -> Heat
+//!                                                       -> zones / impacts
 //! ```
 //!
 //! A child module of [`super`] so it can reach the simulation's own state; everything it
@@ -12,21 +12,27 @@
 //!
 //! ## What the executor is allowed to decide
 //!
-//! Which entities are hit, how much damage they take, and what happens to the resources.
-//! It never decides that a burn explodes on its own: [`FireAbility::FireDetonation`] is the
-//! only thing in this file that consumes Ignite, and it refuses unless the target is at the
-//! current maximum.
+//! Which entities are hit, how much damage they take, and what happens to Heat. It never
+//! decides that a burn explodes on its own: [`FireAbility::Detonate`] is the only thing in
+//! this file that consumes Ignite, and it refuses unless the target is at the current
+//! maximum.
+//!
+//! ## Where the numbers come from
+//!
+//! [`crate::firemage::Stats`], read at the moment the damage is dealt. Nothing here caches a
+//! stat between the cast and the hit, and the burns and zones it creates carry coefficients
+//! rather than damage, so a change of Heat or haste is visible on the very next tick.
 
 use engine_core::math::Vec3;
 
 use crate::ability::AbilityId;
-use crate::combat::DamageType;
 use crate::entity::EntityId;
 use crate::event::CombatEvent;
 use crate::firemage::{
-    AbilityError, FireAbility, INFERNAL_GROUND_SLOW, INFERNO_CRIT_DURATION, IgniteTick,
-    PYROCLASM_INTERNAL_COOLDOWN, PendingImpact, TargetMode, Zone, ZoneKind, ZoneTick,
+    AbilityError, BeamEnd, CRIT_FEEDBACK_CAP, FireAbility, IgniteTick, PendingImpact, TargetMode,
+    Zone, ZoneKind, ZoneShape, ZoneTick,
 };
+use crate::hero::Hero;
 use crate::sim::CastEnd;
 
 use super::{ActiveCast, Simulation};
@@ -35,32 +41,16 @@ use super::{ActiveCast, Simulation};
 pub const CONE_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_6;
 
 /// How far off dead ahead a cast may be aimed, in radians.
-///
-/// A right angle either side: the frontal half-circle. Generous on purpose - the requirement
-/// is "face roughly that way", not "line the character up" - but a spell is thrown forwards,
-/// and casting into your own back is not something the class does.
 pub const CAST_FACING_HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_2;
 
-/// How much of a detonation's damage its splash deals to secondary targets.
-pub const DETONATION_SPLASH_FRACTION: f32 = 0.6;
-
-/// Extra damage a detonation deals per Ignite stack consumed.
-pub const DETONATION_DAMAGE_PER_STACK: f32 = 120.0;
-
-/// Extra damage Flame Lance deals against a burning target.
-pub const FLAME_LANCE_IGNITE_BONUS: f32 = 0.40;
-
-/// Extra damage Pyroblast deals per Ignite stack on the target.
-pub const PYROBLAST_BONUS_PER_STACK: f32 = 0.10;
-
-/// Extra damage a burning target takes from Firestorm.
-pub const FIRESTORM_IGNITE_BONUS: f32 = 0.15;
+/// How much of a burn's remaining damage a detonation converts.
+pub const DETONATE_FRACTION: f32 = 0.20;
 
 /// Chance Firebolt adds a stack to an already-burning target.
 pub const FIREBOLT_REPEAT_IGNITE_CHANCE: f32 = 0.50;
 
-/// Chance a Firestorm tick applies Ignite.
-pub const FIRESTORM_IGNITE_CHANCE: f32 = 0.20;
+/// How far a Chain Pyroblast will look for its next victim, in metres.
+pub const PYROBLAST_BOUNCE_RANGE: f32 = 15.0;
 
 /// What a cast needs to know about where it was aimed.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,7 +61,81 @@ pub enum CastAim {
     Ground(Vec3),
 }
 
+/// What the class did this fight, beyond what the damage meter records.
+///
+/// Everything here is a *count*, not a rule: nothing in gameplay reads these numbers. They
+/// exist because the combat simulator has to report cast completion, cooldown resets and
+/// Heat cycles, and deriving them from the event stream afterwards would mean a second
+/// implementation of the mechanics that produced them.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct FireCounters {
+    /// Casts begun, instants included.
+    pub casts_started: u32,
+    /// Casts that ran to the end.
+    pub casts_completed: u32,
+    /// Casts that completed against a target that had died in the meantime.
+    pub casts_wasted: u32,
+    /// Casts cut short by movement, a cancel or death.
+    pub casts_interrupted: u32,
+    /// Detonations that actually consumed a burn.
+    pub detonations: u32,
+    /// Ignite stacks applied.
+    pub ignite_applications: u32,
+    /// Critical strikes dealt, ticks included.
+    pub crits: u32,
+    /// Damage instances dealt.
+    pub hits: u32,
+    /// Seconds of cooldown handed back by every reset mechanic.
+    pub cooldown_reduction: f32,
+    /// Seconds of that reduction that fell on an ability which was not on cooldown.
+    pub wasted_cooldown_reduction: f32,
+    /// Times Heat reached the top of the bar.
+    pub heat_cycles: u32,
+    /// Times a Chain Pyroblast bounced.
+    pub pyroblast_bounces: u32,
+    /// Sum of Heat sampled once per tick, for an average.
+    pub heat_sum: f64,
+    /// How many samples that sum holds.
+    pub heat_samples: u64,
+    /// Seconds spent at 30 Heat or more.
+    pub seconds_warm: f64,
+    /// Seconds spent at 70 Heat or more, the Inferno State included.
+    pub seconds_hot: f64,
+    /// Seconds the Inferno State ran.
+    pub seconds_inferno: f64,
+    /// Sum of the Ignite stacks on every burning target, sampled once per tick.
+    pub ignite_stack_sum: f64,
+    /// How many burning targets those samples covered.
+    pub ignite_stack_samples: u64,
+}
+
+impl FireCounters {
+    /// Average Heat across the fight.
+    #[must_use]
+    pub fn average_heat(&self) -> f64 {
+        if self.heat_samples == 0 {
+            return 0.0;
+        }
+        self.heat_sum / self.heat_samples as f64
+    }
+
+    /// Average Ignite stacks on a burning target.
+    #[must_use]
+    pub fn average_ignite_stacks(&self) -> f64 {
+        if self.ignite_stack_samples == 0 {
+            return 0.0;
+        }
+        self.ignite_stack_sum / self.ignite_stack_samples as f64
+    }
+}
+
 impl Simulation {
+    /// What the class did this fight, for the simulator's report.
+    #[must_use]
+    pub fn fire_counters(&self) -> FireCounters {
+        self.fire
+    }
+
     /// Casts a FireMage ability at the current target.
     ///
     /// # Errors
@@ -106,17 +170,32 @@ impl Simulation {
         result
     }
 
-    /// The body of a cast: validate, pay, then either start a cast bar or land at once.
-    ///
-    /// A cast already in progress is *not* interrupted. The request is queued and started
-    /// the moment the running cast lands, because pressing a second ability means "then
-    /// this one" - the only things that cancel a cast are moving and backing out.
+    /// The body of a cast: validate, then either start a cast bar or land at once.
     fn try_cast(&mut self, ability: FireAbility, aim: CastAim) -> Result<u32, AbilityError> {
         let definition = *ability.definition();
         let caster = self.player.entity;
 
+        if ability.is_passive() {
+            return Err(AbilityError::OnCooldown);
+        }
+        // One ability in the game can be switched off, and it is Moving Fire Beam. The
+        // *slot* beside the bar is not: the Warrior's Last Stand lives there and is a real
+        // button.
+        if ability.is_disabled() {
+            return Err(AbilityError::UltimateDisabled);
+        }
         if !self.world.is_alive(caster) {
             return Err(AbilityError::CasterDead);
+        }
+        // The Ultimate pressed again while it is being channelled ends the channel early.
+        // Before the cooldown check, because the cooldown started with the cast.
+        if ability == FireAbility::FireBeam && self.mage.beam.is_active() {
+            self.end_beam(BeamEnd::Cancelled);
+            return Ok(0);
+        }
+        // The mage walks while channelling but does not blink out of the beam.
+        if ability == FireAbility::Blink && self.mage.beam.is_active() {
+            return Err(AbilityError::Channelling);
         }
         if self.player.cast.is_some() {
             self.player.queued = Some(super::QueuedCast {
@@ -131,32 +210,35 @@ impl Simulation {
         if !self.mage.abilities.is_ready(ability) {
             return Err(AbilityError::OnCooldown);
         }
-        // The global cooldown. Checked after the queue above, so pressing something during a
-        // cast still queues it - the queued cast starts when the cast lands, by which time a
-        // cast longer than half a second has already outlasted this.
-        if !self.mage.off_global_cooldown() {
+        if self.mage.global_cooldown_holds(ability) {
             return Err(AbilityError::GlobalCooldown);
         }
-        if definition.energy_cost > 0.0 && !self.mage.energy.is_full() {
+        if definition.fire().energy_cost > 0.0 && !self.mage.energy.is_full() {
             return Err(AbilityError::NotEnoughEnergy);
         }
+        // The Druid's own refusals — Mana, the Astral Power button, Swiftmend with nothing to
+        // eat — asked before anything is spent, so a refusal costs neither the charge nor the
+        // global cooldown. Inert for every other hero.
+        self.druid_can_cast(ability)?;
         self.validate_aim(ability, aim)?;
 
-        // An area ability turns the character to where it was aimed. Choosing a direction is
-        // how a player says which way they are pointing, so making them turn first as well
-        // would be asking the same question twice. A *targeted* ability does not do this:
-        // there the facing rule is the point, and snapping to the target would remove it.
+        // Casting anything else breaks the channel. After every refusal above, so a press
+        // that was never going to happen does not cost the mage their beam.
+        if self.mage.beam.is_active() {
+            self.end_beam(BeamEnd::Interrupted);
+        }
+
+        // An aimed ability turns the character to where it was aimed. Choosing a direction
+        // is how a player says which way they are pointing.
         if let CastAim::Ground(position) = aim {
             self.face_towards(position);
         }
 
-        // Requirements are checked *before* the cast starts - a cast that could not have
-        // been paid for is refused now, with the reason - but nothing is actually spent
-        // until it lands. A cast that never happened costs nothing but the time.
-        let effects = *self.mage.effects();
-        self.mage.start_global_cooldown();
+        self.mage.start_global_cooldown_for(ability);
+        self.fire.casts_started += 1;
 
-        let cast_time = definition.cast_time_with(&effects, self.mage.haste());
+        let stats = self.mage.stats();
+        let cast_time = self.druid_cast_time(ability, definition.cast_time_with(&stats));
         if cast_time > 0.0 {
             let ground = match aim {
                 CastAim::Ground(position) => Some(position),
@@ -176,16 +258,17 @@ impl Simulation {
                 duration: cast_time,
                 tick,
             });
+            // A channel pays out while it runs, so what it costs in Astral Power is settled
+            // here rather than when it ends. Inert for every other cast.
+            self.begin_druid_channel(ability);
             return Ok(0);
         }
 
+        self.fire.casts_completed += 1;
         Ok(self.land(ability, aim))
     }
 
     /// Starts whatever the player queued while the last cast was running.
-    ///
-    /// The queued request is validated afresh: two seconds passed, and the target it was
-    /// meant for may be dead. A refusal is reported the same way a fresh press would be.
     pub(super) fn start_queued_cast(&mut self) {
         let Some(queued) = self.player.queued.take() else {
             return;
@@ -198,9 +281,6 @@ impl Simulation {
     }
 
     /// Cancels the cast in progress, if there is one. What escape does.
-    ///
-    /// Returns whether anything was cancelled, so the caller can decide what escape means
-    /// when there was no cast to stop.
     pub fn cancel_cast(&mut self) -> bool {
         if self.player.cast.is_none() {
             self.player.queued = None;
@@ -210,11 +290,24 @@ impl Simulation {
         true
     }
 
-    /// Whether `point` lies in the caster's frontal half-circle.
+    /// Whether the player's spells may be pointed at `entity`.
     ///
-    /// Measured against the body's own facing rather than the camera's, so what the
-    /// character is pointing at is what decides - and a player who turns to face their
-    /// target has done everything the rule asks for.
+    /// Hostile to the caster, which the player themselves is not. Selecting yourself is a
+    /// legal thing to do — every game in the genre lets a player look at their own frame —
+    /// and it must not turn Firebolt into a way to die.
+    #[must_use]
+    pub fn is_attackable(&self, entity: EntityId) -> bool {
+        let caster = self.player.entity;
+        if entity == caster {
+            return false;
+        }
+        self.world
+            .faction(caster)
+            .zip(self.world.faction(entity))
+            .is_some_and(|(mine, theirs)| mine.is_hostile_to(theirs))
+    }
+
+    /// Whether `point` lies in the caster's frontal half-circle.
     #[must_use]
     pub fn is_facing(&self, point: Vec3) -> bool {
         let caster = self.player.entity;
@@ -224,12 +317,20 @@ impl Simulation {
         let offset = Vec3::new(point.x - body.position.x, 0.0, point.z - body.position.z);
         let distance = (offset.x * offset.x + offset.z * offset.z).sqrt();
         if distance <= 1e-3 {
-            // Standing on top of it: there is no direction to be wrong about.
             return true;
         }
         let forward = Vec3::new(-body.facing_yaw.sin(), 0.0, -body.facing_yaw.cos());
         let cosine = (offset.x * forward.x + offset.z * forward.z) / distance;
         cosine >= CAST_FACING_HALF_ANGLE.cos()
+    }
+
+    /// Turns the character to face `point`.
+    ///
+    /// Public because a headless driver - the combat simulator, a replay, a future scripted
+    /// encounter - has no mouse to turn with, and the facing rule is a real requirement a
+    /// targeted cast is refused for.
+    pub fn face(&mut self, point: Vec3) {
+        self.face_towards(point);
     }
 
     /// Turns the character to face `point`, if it is anywhere but underfoot.
@@ -242,37 +343,66 @@ impl Simulation {
         if dx.abs() < 1e-4 && dz.abs() < 1e-4 {
             return;
         }
-        // Zero yaw faces -Z, which is what the cone mesh and the executor agree on.
         body.facing_yaw = (-dx).atan2(-dz);
     }
 
     /// Checks that an ability has something to be cast at.
-    fn validate_aim(&self, ability: FireAbility, aim: CastAim) -> Result<(), AbilityError> {
+    ///
+    /// `&mut self` for one reason: a line-of-sight check records what it asked and what it
+    /// found, so the debug view can show the query that refused the cast rather than a
+    /// second one run later against a world that has moved on.
+    fn validate_aim(&mut self, ability: FireAbility, aim: CastAim) -> Result<(), AbilityError> {
         let definition = ability.definition();
         let caster = self.player.entity;
         match definition.target {
-            TargetMode::Single => {
+            TargetMode::Single | TargetMode::TargetCone => {
                 let target = self.player.target.ok_or(AbilityError::NoTarget)?;
                 if !self.world.is_alive(target) {
                     return Err(AbilityError::TargetInvalid);
+                }
+                // Selecting yourself is legal; burning yourself is not. Checked here rather
+                // than left to the selection rules, because what a target may be *used for*
+                // belongs to the ability and a future friendly spell would want the opposite
+                // answer from the same selection.
+                if !self.is_attackable(target) {
+                    return Err(AbilityError::TargetFriendly);
                 }
                 let distance = self
                     .world
                     .distance_between(caster, target)
                     .ok_or(AbilityError::TargetInvalid)?;
-                if distance > definition.range {
+                if distance > self.ability_range(ability) {
                     return Err(AbilityError::OutOfRange);
                 }
                 let position = self
                     .world
                     .position(target)
                     .ok_or(AbilityError::TargetInvalid)?;
-                if !self.is_facing(position) {
+                // A target-pointed cleave — and anything whose row says it turns, Taunt —
+                // *turns* the character towards the selection:
+                // choosing a target is how the player says which way the cleave points, and
+                // refusing it for facing would be refusing them for the camera.
+                if matches!(definition.target, TargetMode::TargetCone) || definition.turns_to_target
+                {
+                    self.face_towards(position);
+                } else if !self.is_facing(position) {
                     return Err(AbilityError::FacingWrongWay);
                 }
-                // The one requirement that is a *mechanic* rather than a check: Fire
-                // Detonation exists to be held until the burn is full.
-                if ability == FireAbility::FireDetonation
+                // After range, so a target on the far side of the level is still refused
+                // for the distance rather than for the wall that also happens to be there.
+                // Only an ability that asked for the check casts a ray at all.
+                if definition.checks_line_of_sight()
+                    && !self.check_line_of_sight(
+                        ability,
+                        target,
+                        crate::sim::LineOfSightPhase::Activation,
+                    )
+                {
+                    return Err(AbilityError::NoLineOfSight);
+                }
+                // The one requirement that is a *mechanic* rather than a check: Detonate
+                // exists to be held until the burn is full.
+                if ability == FireAbility::Detonate
                     && !self
                         .mage
                         .ignite
@@ -282,9 +412,28 @@ impl Simulation {
                 }
                 Ok(())
             }
+            // A friendly ability is never refused for the selection: it falls back to the
+            // caster, which is what `friendly_target` decides. What it *can* be refused for
+            // is an ally who has walked out of range.
+            TargetMode::Friendly => {
+                let target = self
+                    .friendly_target()
+                    .ok_or(AbilityError::NoFriendlyTarget)?;
+                if target == caster {
+                    return Ok(());
+                }
+                let distance = self
+                    .world
+                    .distance_between(caster, target)
+                    .ok_or(AbilityError::TargetInvalid)?;
+                if distance > definition.range {
+                    return Err(AbilityError::OutOfRange);
+                }
+                Ok(())
+            }
             // An aimed ability turns the character towards where it was aimed, so there is
-            // no wrong direction to be facing: choosing the direction *is* facing it.
-            TargetMode::Cone => Ok(()),
+            // no wrong direction to be facing.
+            TargetMode::Cone | TargetMode::Line => Ok(()),
             TargetMode::Ground => {
                 let CastAim::Ground(position) = aim else {
                     return Err(AbilityError::NeedsGroundTarget);
@@ -295,31 +444,36 @@ impl Simulation {
                 }
                 Ok(())
             }
-            TargetMode::PointBlank | TargetMode::SelfCast | TargetMode::Movement => Ok(()),
+            TargetMode::SelfCast | TargetMode::Movement => Ok(()),
         }
     }
 
-    /// Applies an ability whose cost has already been paid.
+    /// Applies an ability whose cast has finished.
     ///
-    /// Called immediately for an instant ability and by the cast bar for a slow one. A cast
-    /// that lands on a target that has died since it started simply hits nothing: the cost
-    /// is spent, which is what committing to a three-second Pyroblast means.
+    /// A cast that lands on a target that has died since it started simply hits nothing: the
+    /// charge is spent, which is what committing to a three-second Pyroblast means.
     pub(super) fn land(&mut self, ability: FireAbility, aim: CastAim) -> u32 {
         let definition = *ability.definition();
         let caster = self.player.entity;
-        // Paid here, not when the cast started: the charge and the energy buy what actually
-        // happened. A cast that was cancelled or interrupted spent neither.
         let effects = *self.mage.effects();
         self.mage.abilities.spend(ability, &effects);
-        if definition.energy_cost > 0.0 {
-            // Arcane Pressure is paid out of the same bar, so spending it resets the bonus.
+        if definition.fire().energy_cost > 0.0 {
             self.mage.energy.spend_all();
         }
         let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
+        // Read before anything else moves the character: what the cast was aimed at is
+        // decided here, and everything the cast produces is pointed the same way.
+        let facing = self.aim_yaw(aim, origin);
         let tick = self.tick;
 
-        // A ground ability with a delay schedules its impact and stops here; the rest of
-        // this function is what happens when something actually lands.
+        // Heat is paid once per cast, whatever it hit. Per-target Heat made area abilities
+        // reach the top of the bar for free, which is why the old cone needed a cap.
+        if definition.fire().heat > 0.0 {
+            self.gain_heat(definition.fire().heat);
+        }
+        self.mage.gain_energy(definition.fire().energy);
+
+        // A ground ability with a delay schedules its impact and stops here.
         if definition.impact_delay > 0.0
             && let CastAim::Ground(position) = aim
         {
@@ -329,150 +483,186 @@ impl Simulation {
                 remaining: definition.impact_delay,
                 total: definition.impact_delay,
             });
-            self.gain_cast_resources(ability, 1);
+            // Announced when the rock is committed to, not when it arrives: the anticipation
+            // an area indicator shows is exactly the delay gameplay is counting down.
+            self.events.push(CombatEvent::ImpactScheduled {
+                source: caster,
+                ability: AbilityId::from_fire(ability),
+                position,
+                radius: definition.radius,
+                delay: definition.impact_delay,
+                tick,
+            });
             self.events.push(CombatEvent::AbilityUsed {
                 source: caster,
                 ability: AbilityId::from_fire(ability),
                 targets: 0,
+                facing,
                 tick,
             });
             return 0;
         }
 
         let hits = self.collect_targets(ability, aim, origin);
+        if definition.target == TargetMode::Single && hits == 0 {
+            // The cast completed into a corpse. Counted, because a simulator that assumed
+            // every completed cast dealt damage would overstate every AoE fight.
+            self.fire.casts_wasted += 1;
+        }
         self.events.push(CombatEvent::AbilityUsed {
             source: caster,
             ability: AbilityId::from_fire(ability),
             targets: hits as u32,
+            facing,
             tick,
         });
 
-        let affected = match ability {
-            FireAbility::FireDetonation => self.detonate(),
+        if ability.hero() == Hero::Warrior {
+            return self.land_warrior(ability, hits);
+        }
+        if ability.hero() == Hero::Druid {
+            return self.land_druid(ability, hits);
+        }
+
+        match ability {
+            FireAbility::Detonate => self.detonate(),
+            FireAbility::FireMastery => {
+                self.mage.mastery_buff.start(definition.duration);
+                0
+            }
             FireAbility::FlameShield => {
                 self.mage.flame_shield.start(definition.duration);
                 0
             }
             FireAbility::Blink => {
-                self.blink();
+                self.dash(definition.range);
                 0
             }
-            FireAbility::Firestorm | FireAbility::Inferno => {
-                self.spawn_ability_zone(ability, aim, origin);
+            FireAbility::Firestorm => {
+                self.spawn_firestorm(aim, origin);
                 0
             }
-            _ => self.apply_direct(ability, aim),
-        };
-
-        self.gain_cast_resources(ability, affected.max(1));
-        affected
+            FireAbility::FireBeam => {
+                self.begin_beam(aim, origin);
+                0
+            }
+            _ => self.apply_direct(ability),
+        }
     }
 
-    /// Runs a landed impact: Meteor, Cataclysm, and the ground fire they leave.
+    /// Runs a landed impact: Meteor, and the ground a talent leaves behind.
     pub(super) fn resolve_impact(&mut self, impact: PendingImpact) {
         let definition = *impact.ability.definition();
         let effects = *self.mage.effects();
+        let stats = self.mage.stats();
         self.hits.clear();
-        self.collect_in_radius(impact.position, definition.radius);
+        self.collect_in_shape(
+            impact.position,
+            ZoneShape::Circle {
+                radius: definition.radius,
+            },
+        );
 
-        let ignite_max = self.mage.ignite_max();
-        let mut hit_full_burn = false;
+        // "Per Ignite stack on the primary target": the nearest living enemy to where the
+        // rock came down. With nothing under it there is no bonus and nothing to hit.
+        let primary_stacks = self
+            .nearest_hit_to(impact.position)
+            .map_or(0, |target| self.mage.ignite.stacks(target));
+        let scaling = 1.0 + f32::from(primary_stacks) * definition.fire().ignite_bonus_per_stack;
+        let base = definition.base_damage(&stats) * scaling * effects.meteor_damage_scale;
+
+        let hit_count = self.hits.len() as u32;
+        let tick = self.tick;
+        self.events.push(CombatEvent::ImpactLanded {
+            source: self.player.entity,
+            ability: AbilityId::from_fire(impact.ability),
+            position: impact.position,
+            radius: definition.radius,
+            targets: hit_count,
+            tick,
+        });
+
+        let mut critical = false;
         for index in 0..self.hits.len() {
             let target = self.hits[index];
-            if impact.ability == FireAbility::Meteor
-                && self.mage.ignite.is_at_maximum(target, ignite_max)
-            {
-                hit_full_burn = true;
+            let crit = self.strike(
+                target,
+                base,
+                impact.ability,
+                !effects.meteor_cannot_crit,
+                effects.meteor_crit_damage_bonus,
+            );
+            critical |= crit;
+            if definition.fire().ignite_stacks > 0 {
+                self.apply_ignite(target, definition.fire().ignite_stacks);
             }
-            let (amount, crit) = self.roll_fire_damage(definition.damage);
-            self.deal_fire_damage(target, amount, impact.ability, crit);
-            self.apply_ignite(target, definition.ignite_stacks);
         }
 
-        // Meteoric Collapse: a rock landing on a full burn hurries Pyroblast along.
-        if hit_full_burn && effects.meteor_max_stack_pyroblast_refund > 0.0 {
-            self.mage.abilities.reduce_cooldown(
+        // Meteoric Impact: a critical rock hurries Pyroblast along.
+        if critical && effects.meteor_crit_pyroblast_reduction > 0.0 {
+            self.reduce_cooldown(
                 FireAbility::Pyroblast,
-                effects.meteor_max_stack_pyroblast_refund,
-                &effects,
+                effects.meteor_crit_pyroblast_reduction,
+                f32::MAX,
             );
         }
 
-        match impact.ability {
-            FireAbility::Meteor if effects.meteor_ground_duration > 0.0 => {
-                self.spawn_zone(Zone {
-                    kind: ZoneKind::BurningGround,
-                    source: FireAbility::Meteor,
-                    position: impact.position,
-                    radius: definition.radius,
-                    remaining: effects.meteor_ground_duration,
-                    until_tick: 1.0,
-                    interval: 1.0,
-                    damage: definition.damage * 0.15,
-                    ignite_stacks: 0,
-                    ignite_chance: 0.0,
-                });
-            }
-            FireAbility::Cataclysm => {
-                // Phase two: the ground keeps burning whether or not anything stayed in it.
-                self.mage.cataclysm_active = true;
-                self.spawn_zone(Zone {
-                    kind: ZoneKind::InfernalGround,
-                    source: FireAbility::Cataclysm,
-                    position: impact.position,
-                    radius: definition.radius,
-                    remaining: definition.duration,
-                    until_tick: definition.tick_interval,
-                    interval: definition.tick_interval,
-                    damage: definition.tick_damage,
-                    ignite_stacks: 1,
-                    ignite_chance: 1.0,
-                });
-            }
-            _ => {}
+        // Molten Meteor: the ground keeps burning whether or not anything stayed in it.
+        if impact.ability == FireAbility::Meteor && effects.meteor_ground_duration > 0.0 {
+            let shape = ZoneShape::Circle {
+                radius: definition.radius,
+            };
+            let id = self.mage.zones.spawn(Zone {
+                kind: ZoneKind::BurningGround,
+                source: FireAbility::Meteor,
+                position: impact.position,
+                shape,
+                remaining: effects.meteor_ground_duration,
+                until_tick: effects.meteor_ground_interval,
+                interval: effects.meteor_ground_interval,
+                coefficient: effects.meteor_ground_coefficient,
+                ignite_stacks: 0,
+                ignite_chance: 0.0,
+            });
+            self.events.push(CombatEvent::AreaEffectStarted {
+                id,
+                source: self.player.entity,
+                ability: AbilityId::from_fire(FireAbility::Meteor),
+                position: impact.position,
+                shape,
+                duration: effects.meteor_ground_duration,
+                tick,
+            });
         }
     }
 
     /// Runs one tick of a burning zone.
     pub(super) fn resolve_zone_tick(&mut self, tick: ZoneTick) {
+        let stats = self.mage.stats();
+        let base = tick.coefficient * stats.spell_power;
         self.hits.clear();
-        self.collect_in_radius(tick.position, tick.radius);
-        let ignite_max = self.mage.ignite_max();
-        let mut touched_full_burn = false;
+        self.collect_in_shape(tick.position, tick.shape);
 
         for index in 0..self.hits.len() {
             let target = self.hits[index];
-            let burning = self.mage.ignite.is_ignited(target);
-            if self.mage.ignite.is_at_maximum(target, ignite_max) {
-                touched_full_burn = true;
+            // The debuff first: standing in the fire is what applies it, and it should
+            // apply to the tick that put it there.
+            if tick.kind.applies_vulnerability() {
+                self.mage
+                    .vulnerability
+                    .apply(target, self.mage.effects().vulnerability_duration());
             }
-            // Firestorm punishes what is already burning; the brief's +15%.
-            let scale = if tick.kind == ZoneKind::Firestorm && burning {
-                1.0 + FIRESTORM_IGNITE_BONUS
-            } else {
-                1.0
-            };
-            let (amount, crit) = self.roll_fire_damage(tick.damage * scale);
-            self.deal_fire_damage(target, amount, tick.source, crit);
-
+            self.strike(target, base, tick.source, true, 0.0);
             if tick.ignite_stacks > 0 && self.mage.rng.chance(tick.ignite_chance) {
                 self.apply_ignite(target, tick.ignite_stacks);
             }
-            if tick.kind.slows() {
-                self.apply_slow(target);
-            }
         }
-
-        // Inferno's critical strike bonus is checked every tick: it is about standing next
-        // to a full burn, not about the moment the ability was pressed.
-        if tick.kind == ZoneKind::Inferno && touched_full_burn {
-            self.mage.inferno_crit.start(INFERNO_CRIT_DURATION);
-        }
-
-        self.gain_zone_heat(tick.kind, tick.source);
     }
 
     /// Applies every burn that ticked this step.
+    ///
+    /// The damage is computed *here*, from the stats of this moment: the tracker reported
+    /// only that a burn with N stacks fired. That is the whole of the no-snapshot rule.
     pub(super) fn resolve_ignite_tick(&mut self, tick: IgniteTick) {
         let Some(target) = self.world.id_at(tick.slot) else {
             return;
@@ -481,205 +671,325 @@ impl Simulation {
             self.mage.ignite.clear(target);
             return;
         }
-        let amount = tick.damage * self.mage.fire_damage_multiplier();
-        self.deal_damage(
-            self.player.entity,
-            target,
-            amount,
-            AbilityId::from_fire(FireAbility::Firebolt),
-            DamageType::Fire,
-        );
+        let effects = *self.mage.effects();
+        let stats = self.mage.stats();
+        let base = f32::from(tick.stacks)
+            * crate::firemage::IGNITE_SPELL_POWER_PER_STACK
+            * effects.ignite_damage_scale
+            * stats.spell_power;
+
+        let crit = self.strike(target, base, FireAbility::Ignite, true, 0.0);
+
+        // Burning Precision: a critical burn can hurry Meteor along.
+        if crit
+            && effects.ignite_crit_meteor_chance > 0.0
+            && self.mage.rng.chance(effects.ignite_crit_meteor_chance)
+        {
+            self.reduce_cooldown(
+                FireAbility::Meteor,
+                effects.ignite_crit_meteor_reduction,
+                f32::MAX,
+            );
+        }
     }
 
     /// The abilities that simply damage what they hit.
-    fn apply_direct(&mut self, ability: FireAbility, _aim: CastAim) -> u32 {
+    fn apply_direct(&mut self, ability: FireAbility) -> u32 {
         let definition = *ability.definition();
         let effects = *self.mage.effects();
-        let ignite_max = self.mage.ignite_max();
+        let stats = self.mage.stats();
+        let caster = self.player.entity;
+        let origin = self.world.position(caster).unwrap_or(Vec3::ZERO);
         let mut affected = 0;
 
         for index in 0..self.hits.len() {
             let target = self.hits[index];
             let burning = self.mage.ignite.is_ignited(target);
             let stacks = self.mage.ignite.stacks(target);
-            let at_maximum = self.mage.ignite.is_at_maximum(target, ignite_max);
 
-            let mut base = definition.damage;
-            let mut force_crit = false;
-            match ability {
-                FireAbility::FlameLance if burning => base *= 1.0 + FLAME_LANCE_IGNITE_BONUS,
-                FireAbility::Pyroblast => {
-                    base *= 1.0 + f32::from(stacks) * PYROBLAST_BONUS_PER_STACK;
-                    if at_maximum {
-                        base *= 1.0 + effects.pyroblast_max_stack_bonus;
-                        force_crit = true;
-                    }
-                }
-                _ => {}
+            // The line the spell travelled, for whatever presentation wants to fly down it.
+            // Emitted before the damage, so an observer reading the batch in order sees the
+            // bolt leave before it sees the hit land — even though gameplay resolved both on
+            // this tick.
+            if definition.target == TargetMode::Single
+                && let Some(destination) = self.world.position(target)
+            {
+                let tick = self.tick;
+                self.events.push(CombatEvent::ProjectileLaunched {
+                    source: caster,
+                    target,
+                    from: origin,
+                    to: destination,
+                    ability: AbilityId::from_fire(ability),
+                    tick,
+                });
             }
 
-            if force_crit {
-                self.mage.guaranteed_crit = true;
-            }
-            let (amount, crit) = self.roll_fire_damage(base);
-            self.deal_fire_damage(target, amount, ability, crit);
+            let scaling = 1.0 + f32::from(stacks) * definition.fire().ignite_bonus_per_stack;
+            let base = definition.base_damage(&stats) * scaling;
+            let crit = self.strike(target, base, ability, true, 0.0);
 
-            // Firebolt's Ignite rule, exactly as designed: always on an unburnt target, a
-            // coin flip on a burning one, and never past the maximum.
             match ability {
+                // Firebolt's asymmetry: guaranteed on an unburnt target, a coin flip on a
+                // burning one, and never past the maximum.
                 FireAbility::Firebolt => {
                     let chance = if burning {
-                        FIREBOLT_REPEAT_IGNITE_CHANCE + effects.firebolt_extra_ignite_chance
+                        FIREBOLT_REPEAT_IGNITE_CHANCE
                     } else {
                         1.0
                     };
                     if self.mage.rng.chance(chance) {
-                        self.apply_ignite(target, 1);
-                    }
-                    if crit && effects.crit_firebolt_bonus_energy > 0.0 {
-                        self.mage.gain_energy(effects.crit_firebolt_bonus_energy);
+                        self.apply_ignite(target, definition.fire().ignite_stacks);
                     }
                 }
-                _ if definition.ignite_stacks > 0 => {
-                    self.apply_ignite(target, definition.ignite_stacks);
+                _ if definition.fire().ignite_stacks > 0 => {
+                    self.apply_ignite(target, definition.fire().ignite_stacks);
                 }
                 _ => {}
             }
 
-            // Critical Ignition: any critical fire spell can add a stack, cap respected.
-            if crit && self.mage.rng.chance(effects.critical_ignition_chance) {
-                self.apply_ignite(target, 1);
+            if crit {
+                match ability {
+                    FireAbility::FlameLance => self.reduce_cooldown(
+                        FireAbility::Pyroblast,
+                        effects.flame_lance_crit_reduction,
+                        CRIT_FEEDBACK_CAP,
+                    ),
+                    FireAbility::Pyroblast => self.reduce_cooldown(
+                        FireAbility::FlameLance,
+                        effects.pyroblast_crit_reduction,
+                        CRIT_FEEDBACK_CAP,
+                    ),
+                    _ => {}
+                }
+            }
+
+            if ability == FireAbility::Pyroblast && effects.pyroblast_bounces {
+                affected += self.bounce_pyroblast(target, base);
             }
             affected += 1;
-        }
-
-        // Pyroclasm arms the next spell, on its own internal cooldown.
-        if ability == FireAbility::Pyroblast
-            && effects.pyroclasm
-            && !self.mage.pyroclasm_cooldown.is_active()
-        {
-            self.mage.guaranteed_crit = true;
-            self.mage
-                .pyroclasm_cooldown
-                .start(PYROCLASM_INTERNAL_COOLDOWN);
         }
         affected
     }
 
-    /// Fire Detonation: consume a full burn, explode, splash, and never fire on its own.
-    fn detonate(&mut self) -> u32 {
-        let definition = *FireAbility::FireDetonation.definition();
+    /// Chain Pyroblast: keep jumping while the crit chance says so.
+    ///
+    /// The bounce chance is the *current* critical strike chance, read per bounce, so a
+    /// chain that starts during Fire Mastery keeps its odds for as long as the buff lasts.
+    fn bounce_pyroblast(&mut self, from: EntityId, base: f32) -> u32 {
         let effects = *self.mage.effects();
-        let Some(target) = self.player.target else {
+        let mut chained: Vec<EntityId> = vec![from];
+        let mut damage = base;
+        let mut previous = from;
+        let mut bounces = 0;
+
+        while bounces < effects.pyroblast_max_bounces {
+            let chance = self.mage.crit_chance();
+            if !self.mage.rng.chance(chance) {
+                break;
+            }
+            let Some(next) =
+                self.nearest_living_excluding(previous, PYROBLAST_BOUNCE_RANGE, &chained)
+            else {
+                break;
+            };
+            damage *= 1.0 - effects.pyroblast_bounce_falloff;
+            self.strike(next, damage, FireAbility::Pyroblast, true, 0.0);
+            chained.push(next);
+            previous = next;
+            bounces += 1;
+            self.fire.pyroblast_bounces += 1;
+        }
+        u32::from(bounces)
+    }
+
+    /// Detonate: convert what is left of a full burn into an explosion.
+    ///
+    /// Every enemy in the radius is treated on its own burn - its own remaining damage, its
+    /// own critical strike roll, its own consumption. Nothing is transferred, and an enemy
+    /// with no burn takes nothing: the explosion is the burn, not a splash of the primary's
+    /// hit.
+    fn detonate(&mut self) -> u32 {
+        let definition = *FireAbility::Detonate.definition();
+        let effects = *self.mage.effects();
+        let Some(primary) = self.player.target else {
             return 0;
         };
         let ignite_max = self.mage.ignite_max();
-        if !self.mage.ignite.is_at_maximum(target, ignite_max) {
+        if !self.mage.ignite.is_at_maximum(primary, ignite_max) {
             return 0;
         }
 
-        let consumed = self.mage.ignite.consume(
-            target,
-            effects.detonation_retained_stacks,
-            self.mage.ignite_duration(),
-        );
-
-        // The explosion scales with what it ate, and with the talents that reward eating a
-        // full burn.
-        let mut damage = definition.damage + f32::from(consumed) * DETONATION_DAMAGE_PER_STACK;
-        damage *= 1.0 + f32::from(consumed) * effects.detonation_damage_per_stack;
-        if consumed >= ignite_max {
-            damage *= 1.0 + effects.detonation_max_stack_bonus;
-        }
-
-        let (amount, crit) = self.roll_fire_damage(damage);
-        let killed_before = self.world.is_alive(target);
-        self.deal_fire_damage(target, amount, FireAbility::FireDetonation, crit);
-        let killed = killed_before && !self.world.is_alive(target);
-
-        // The splash: everything else within ten metres of the target.
-        let centre = self.world.position(target).unwrap_or(Vec3::ZERO);
+        let centre = self.world.position(primary).unwrap_or(Vec3::ZERO);
         self.hits.clear();
-        self.collect_in_radius(centre, definition.radius);
-        let mut splash_damage = damage * DETONATION_SPLASH_FRACTION;
-        if self.mage.cataclysm_active {
-            splash_damage *= 1.0 + effects.detonation_cataclysm_splash;
+        self.collect_in_shape(
+            centre,
+            ZoneShape::Circle {
+                radius: definition.radius,
+            },
+        );
+        if !self.hits.contains(&primary) {
+            self.hits.push(primary);
         }
-        let secondary_stacks = definition.ignite_stacks + effects.detonation_extra_secondary_stacks;
 
-        let mut affected = 1;
+        let mut affected = 0;
         for index in 0..self.hits.len() {
-            let other = self.hits[index];
-            if other == target {
+            let target = self.hits[index];
+            let remaining = self.mage.remaining_ignite_damage(target);
+            if remaining <= 0.0 {
                 continue;
             }
-            let (amount, crit) = self.roll_fire_damage(splash_damage);
-            self.deal_fire_damage(other, amount, FireAbility::FireDetonation, crit);
-            self.apply_ignite(other, secondary_stacks);
+            let consumed = self.mage.ignite.consume(target);
+            let mut damage = remaining * DETONATE_FRACTION;
+            damage *= 1.0 + f32::from(consumed) * effects.detonate_damage_per_stack;
+
+            // Already multiplied by Heat inside `remaining_ignite_damage`; strike must not
+            // apply it twice, so the explosion is dealt with the multiplier divided out.
+            let base = damage / self.mage.fire_damage_multiplier();
+            self.strike(target, base, FireAbility::Detonate, true, 0.0);
             affected += 1;
         }
 
-        if killed && effects.detonation_kill_meteor_refund > 0.0 {
-            self.mage.abilities.reduce_cooldown(
-                FireAbility::Meteor,
-                effects.detonation_kill_meteor_refund,
-                &effects,
-            );
+        if affected > 0 {
+            self.fire.detonations += 1;
         }
-        if effects.detonation_bonus_energy > 0.0 {
-            self.mage.gain_energy(effects.detonation_bonus_energy);
+
+        // Rapid Combustion: each area cooldown rolls on its own.
+        if effects.detonate_cooldown_chance > 0.0 {
+            for ability in [
+                FireAbility::FlameCone,
+                FireAbility::Firestorm,
+                FireAbility::Meteor,
+            ] {
+                if self.mage.rng.chance(effects.detonate_cooldown_chance) {
+                    self.reduce_cooldown(ability, effects.detonate_cooldown_reduction, f32::MAX);
+                }
+            }
         }
         affected
     }
 
-    /// Blink: as far forward as the geometry allows, and no further.
+    /// Moves the caster `distance` metres forward: as far as the geometry allows, and no
+    /// further.
     ///
-    /// The collided move is the same one walking uses, so a Blink can climb a stair and
-    /// cannot pass a wall - and a blocked Blink lands against the obstacle rather than
-    /// failing, which is what the brief asks for and what a player expects.
-    fn blink(&mut self) {
-        let distance = FireAbility::Blink.definition().range;
+    /// One movement for both of the abilities that are movements. A Blink and a Charge
+    /// differ in how far they go and in what the presentation layer makes of them; they do
+    /// not differ in what happens to the character, and two copies of "slide forward and
+    /// forget the interpolation history" is two chances to fix a teleport bug once.
+    fn dash(&mut self, distance: f32) {
         let entity = self.player.entity;
         let Some(body) = self.world.body(entity).copied() else {
             return;
         };
         let yaw = body.facing_yaw;
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+        let from = body.position;
         self.slide_player(forward * distance);
-    }
-
-    /// Places the zone an ability leaves behind.
-    fn spawn_ability_zone(&mut self, ability: FireAbility, aim: CastAim, origin: Vec3) {
-        let definition = *ability.definition();
-        let (kind, position, chance) = match ability {
-            FireAbility::Firestorm => {
-                let CastAim::Ground(position) = aim else {
-                    return;
-                };
-                (ZoneKind::Firestorm, position, FIRESTORM_IGNITE_CHANCE)
-            }
-            FireAbility::Inferno => (ZoneKind::Inferno, origin, 1.0),
-            _ => return,
+        let Some(to) = self.world.position(entity) else {
+            return;
         };
-        self.mage.firestorm_heat = 0.0;
-        self.mage.inferno_extension = 0.0;
-        self.spawn_zone(Zone {
-            kind,
-            source: ability,
-            position,
-            radius: definition.radius,
-            remaining: definition.duration,
-            until_tick: definition.tick_interval,
-            interval: definition.tick_interval,
-            damage: definition.tick_damage,
-            ignite_stacks: definition.ignite_stacks,
-            ignite_chance: chance,
+
+        // The mage arrives; it does not travel. Without forgetting last tick's position the
+        // presentation layer interpolates across the gap and the character slides the whole
+        // way over one frame, which is the one thing a teleport must not look like.
+        self.world.reset_history(entity);
+        let tick = self.tick;
+        self.events.push(CombatEvent::Teleported {
+            entity,
+            from,
+            to,
+            tick,
         });
     }
 
-    /// Adds a zone and announces it.
-    fn spawn_zone(&mut self, zone: Zone) {
-        self.mage.zones.spawn(zone);
+    /// Heals the caster and announces it. Returns how many entities were affected.
+    ///
+    /// The only heal a player can cast. It goes through [`GameWorld::heal`] and the
+    /// `Healing` event exactly as an enemy's does, so "every health change is observable"
+    /// holds for the player's own as well.
+    pub(super) fn heal_self(&mut self, amount: f32, ability: FireAbility) -> u32 {
+        let entity = self.player.entity;
+        if self.remote_authority || !self.world.is_alive(entity) {
+            return 0;
+        }
+        // Versatility: healing *done* by this player.
+        let amount = amount * (1.0 + self.versatility_of(entity));
+        let restored = self.world.heal(entity, amount).applied;
+        if restored <= 0.0 {
+            return 0;
+        }
+        let tick = self.tick;
+        self.events.push(CombatEvent::Healing {
+            source: entity,
+            target: entity,
+            amount: restored,
+            ability: AbilityId::from_fire(ability),
+            tick,
+        });
+        self.add_healing_threat(entity, entity, restored, AbilityId::from_fire(ability));
+        1
+    }
+
+    /// Places Firestorm's line of fire, anchored on the caster and aimed where it was cast.
+    fn spawn_firestorm(&mut self, aim: CastAim, origin: Vec3) {
+        let definition = *FireAbility::Firestorm.definition();
+        let yaw = self.aim_yaw(aim, origin);
+        let shape = ZoneShape::Line {
+            yaw,
+            length: definition.range,
+            width: definition.width,
+        };
+        let id = self.mage.zones.spawn(Zone {
+            kind: ZoneKind::Firestorm,
+            source: FireAbility::Firestorm,
+            position: origin,
+            shape,
+            remaining: definition.duration,
+            until_tick: definition.tick_interval,
+            interval: definition.tick_interval,
+            coefficient: definition.tick_coefficient,
+            ignite_stacks: definition.fire().ignite_stacks,
+            ignite_chance: definition.fire().ignite_chance,
+        });
+        // The shape carried is the shape the containment test uses, so a band of fire drawn
+        // from this cannot claim a different footprint from the one that burns.
+        let tick = self.tick;
+        self.events.push(CombatEvent::AreaEffectStarted {
+            id,
+            source: self.player.entity,
+            ability: AbilityId::from_fire(FireAbility::Firestorm),
+            position: origin,
+            shape,
+            duration: definition.duration,
+            tick,
+        });
+    }
+
+    /// Which way a cast was aimed: towards the point it was placed at, or dead ahead.
+    ///
+    /// The one answer every part of a cast uses - the hit list, the zone it leaves and the
+    /// effect drawn for it - so a cone cannot burn one wedge and be painted over another.
+    /// Read once, when the ability lands, because the character turns again the moment the
+    /// camera does.
+    fn aim_yaw(&self, aim: CastAim, origin: Vec3) -> f32 {
+        match aim {
+            CastAim::Ground(position) => {
+                let (dx, dz) = (position.x - origin.x, position.z - origin.z);
+                if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
+                    (-dx).atan2(-dz)
+                } else {
+                    self.facing_yaw()
+                }
+            }
+            CastAim::Target => self.facing_yaw(),
+        }
+    }
+
+    /// Which way the character is pointing.
+    pub(super) fn facing_yaw(&self) -> f32 {
+        self.world
+            .body(self.player.entity)
+            .map_or(0.0, |body| body.facing_yaw)
     }
 
     /// Fills the hit list with whatever an ability affects.
@@ -688,75 +998,102 @@ impl Simulation {
         self.hits.clear();
         match definition.target {
             TargetMode::Single => {
+                // Alive *and* an enemy: `try_cast` refused a friendly target already, and
+                // this is the second of the two places that must agree about who a
+                // single-target spell lands on.
                 if let Some(target) = self.player.target
                     && self.world.is_alive(target)
+                    && self.is_attackable(target)
                 {
                     self.hits.push(target);
                 }
             }
             TargetMode::Cone => {
-                // Aimed at where the player pointed, if they pointed: a cone is placed by
-                // direction rather than by position, and falls back to where the character
-                // faces when it is cast without one.
-                let yaw = match aim {
-                    CastAim::Ground(position) => {
-                        let (dx, dz) = (position.x - origin.x, position.z - origin.z);
-                        if dx.abs() > 1e-4 || dz.abs() > 1e-4 {
-                            (-dx).atan2(-dz)
-                        } else {
-                            self.world
-                                .body(self.player.entity)
-                                .map_or(0.0, |body| body.facing_yaw)
-                        }
-                    }
-                    CastAim::Target => self
-                        .world
-                        .body(self.player.entity)
-                        .map_or(0.0, |body| body.facing_yaw),
+                let yaw = self.aim_yaw(aim, origin);
+                self.collect_in_cone(origin, yaw, definition.range, CONE_HALF_ANGLE);
+            }
+            TargetMode::TargetCone => {
+                // Pointed by the selection rather than by the mouse, and wider: see
+                // `TARGET_CLEAVE_HALF_ANGLE`. Everything else is the same cone.
+                let yaw = match self
+                    .player
+                    .target
+                    .and_then(|target| self.world.position(target))
+                {
+                    Some(position) => crate::enemy::brain::yaw_towards(origin, position),
+                    None => self.facing_yaw(),
                 };
-                self.collect_in_cone(origin, yaw, definition.range);
+                self.face_towards(origin + Vec3::new(-yaw.sin(), 0.0, -yaw.cos()));
+                let reach = self.ability_range(ability);
+                self.collect_in_cone(
+                    origin,
+                    yaw,
+                    reach,
+                    crate::firemage::TARGET_CLEAVE_HALF_ANGLE,
+                );
             }
             TargetMode::Ground => {
                 if let CastAim::Ground(position) = aim {
-                    self.collect_in_radius(position, definition.radius);
+                    self.collect_in_shape(
+                        position,
+                        ZoneShape::Circle {
+                            radius: definition.radius,
+                        },
+                    );
                 }
             }
-            TargetMode::PointBlank => self.collect_in_radius(origin, definition.radius),
-            TargetMode::SelfCast | TargetMode::Movement => {}
+            // Whoever the heal resolved to, and the allies around them if it covers ground.
+            TargetMode::Friendly => {
+                self.collect_friendly_targets(ability);
+            }
+            // A self-cast with a radius is an area centred on the caster: Colossus Strike
+            // smashes the ground it is standing on. One without is a buff and hits nobody.
+            TargetMode::SelfCast if definition.radius > 0.0 => {
+                self.collect_in_shape(
+                    origin,
+                    ZoneShape::Circle {
+                        radius: definition.radius,
+                    },
+                );
+            }
+            // Firestorm is placed as a zone rather than hitting on the cast.
+            TargetMode::Line | TargetMode::SelfCast | TargetMode::Movement => {}
         }
         self.hits.len()
     }
 
-    /// Fills the hit list with every living hostile within `radius` of `centre`.
-    pub(super) fn collect_in_radius(&mut self, centre: Vec3, radius: f32) {
+    /// Fills the hit list with every living hostile inside `shape` anchored at `anchor`.
+    ///
+    /// **Hostile**, asked of the factions rather than assumed from "not the caster". Until
+    /// there was a friendly body standing in the arena the two were the same question; with
+    /// one, an area spell that skipped only the caster would set the healing dummy on fire.
+    pub(super) fn collect_in_shape(&mut self, anchor: Vec3, shape: ZoneShape) {
         let player = self.player.entity;
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            if id == player || !self.world.is_alive(id) {
+            if id == player || !self.world.is_alive(id) || !self.is_attackable(id) {
                 continue;
             }
             let Some(position) = self.world.position(id) else {
                 continue;
             };
-            // Plus the target's own radius: a dummy whose centre is just outside the circle
-            // but whose body is inside it should burn.
-            if horizontal_distance(centre, position) <= radius + self.world.radius(id) {
+            if shape.contains(anchor, position, self.world.radius(id)) {
                 self.hits.push(id);
             }
         }
     }
 
     /// Fills the hit list with every living hostile inside a cone.
-    fn collect_in_cone(&mut self, origin: Vec3, yaw: f32, range: f32) {
+    pub(super) fn collect_in_cone(&mut self, origin: Vec3, yaw: f32, range: f32, half_angle: f32) {
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
         let player = self.player.entity;
         for slot in 0..self.world.slot_count() {
             let Some(id) = self.world.id_at(slot) else {
                 continue;
             };
-            if id == player || !self.world.is_alive(id) {
+            if id == player || !self.world.is_alive(id) || !self.is_attackable(id) {
                 continue;
             }
             let Some(position) = self.world.position(id) else {
@@ -772,57 +1109,103 @@ impl Simulation {
                 continue;
             }
             let cosine = (offset.x * forward.x + offset.z * forward.z) / distance;
-            if cosine >= CONE_HALF_ANGLE.cos() {
+            if cosine >= half_angle.cos() {
                 self.hits.push(id);
             }
         }
     }
 
-    /// Rolls a critical strike and applies every damage multiplier.
-    fn roll_fire_damage(&mut self, base: f32) -> (f32, bool) {
-        let crit = self.mage.roll_crit();
-        let mut amount = base * self.mage.fire_damage_multiplier();
-        if crit {
-            amount *= crate::firemage::CRIT_MULTIPLIER;
+    /// The entity in the current hit list nearest to `point`.
+    fn nearest_hit_to(&self, point: Vec3) -> Option<EntityId> {
+        let mut best: Option<(f32, EntityId)> = None;
+        for id in &self.hits {
+            let Some(position) = self.world.position(*id) else {
+                continue;
+            };
+            let distance = horizontal_distance(point, position);
+            if best.is_none_or(|(current, _)| distance < current) {
+                best = Some((distance, *id));
+            }
         }
-        self.mage.consume_spell_buffs();
-        (amount, crit)
+        best.map(|(_, id)| id)
     }
 
-    /// Deals fire damage and applies what a critical strike sets off.
-    fn deal_fire_damage(
+    /// The nearest living hostile to `from` that is not already in `chained`.
+    fn nearest_living_excluding(
+        &self,
+        from: EntityId,
+        range: f32,
+        chained: &[EntityId],
+    ) -> Option<EntityId> {
+        let origin = self.world.position(from)?;
+        let player = self.player.entity;
+        let mut best: Option<(f32, EntityId)> = None;
+        for slot in 0..self.world.slot_count() {
+            let Some(id) = self.world.id_at(slot) else {
+                continue;
+            };
+            if id == player
+                || !self.world.is_alive(id)
+                || !self.is_attackable(id)
+                || chained.contains(&id)
+            {
+                continue;
+            }
+            let Some(position) = self.world.position(id) else {
+                continue;
+            };
+            let distance = horizontal_distance(origin, position);
+            if distance > range {
+                continue;
+            }
+            if best.is_none_or(|(current, _)| distance < current) {
+                best = Some((distance, id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    /// Deals one instance of fire damage, from `base` and the stats of this moment.
+    ///
+    /// The single place a FireMage number becomes damage: Heat's band, the target's fire
+    /// vulnerability and the critical strike all apply here, so a new source of damage
+    /// cannot forget one of them. Returns whether it critically struck.
+    pub(super) fn strike(
         &mut self,
         target: EntityId,
-        amount: f32,
+        base: f32,
         ability: FireAbility,
-        crit: bool,
-    ) {
+        allow_crit: bool,
+        crit_damage_bonus: f32,
+    ) -> bool {
+        let stats = self.mage.stats();
+        let mut amount = base
+            * self.mage.fire_damage_multiplier()
+            * self
+                .mage
+                .vulnerability
+                .multiplier(target, self.mage.effects().meteor_ground_vulnerability);
+
+        let crit = allow_crit && self.mage.roll_crit();
+        if crit {
+            amount *= stats.crit_damage + crit_damage_bonus;
+            self.fire.crits += 1;
+        }
+        self.fire.hits += 1;
+
         self.deal_damage(
             self.player.entity,
             target,
             amount,
             AbilityId::from_fire(ability),
-            DamageType::Fire,
+            ability.definition().damage_type,
+            crit,
         );
-
-        // Inferno Cascade: a critical strike while the ring is up buys more of it.
-        if crit {
-            let effects = *self.mage.effects();
-            if effects.inferno_crit_extension > 0.0
-                && self.mage.zones.has(ZoneKind::Inferno)
-                && self.mage.inferno_extension + effects.inferno_crit_extension
-                    <= effects.inferno_max_extension
-            {
-                self.mage.inferno_extension += effects.inferno_crit_extension;
-                self.mage
-                    .zones
-                    .extend(ZoneKind::Inferno, effects.inferno_crit_extension);
-            }
-        }
+        crit
     }
 
     /// Applies Ignite, respecting the current maximum.
-    fn apply_ignite(&mut self, target: EntityId, stacks: u8) {
+    pub(super) fn apply_ignite(&mut self, target: EntityId, stacks: u8) {
         if stacks == 0 || !self.world.is_alive(target) {
             return;
         }
@@ -830,6 +1213,7 @@ impl Simulation {
         let duration = self.mage.ignite_duration();
         let applied = self.mage.ignite.apply(target, stacks, maximum, duration);
         if applied > 0 {
+            self.fire.ignite_applications += u32::from(applied);
             let tick = self.tick;
             self.events.push(CombatEvent::StatusApplied {
                 source: self.player.entity,
@@ -841,1070 +1225,40 @@ impl Simulation {
         }
     }
 
-    /// Slows what stands in Cataclysm's fire.
-    fn apply_slow(&mut self, target: EntityId) {
-        if let Some(body) = self.world.body_mut(target) {
-            body.velocity.x *= 1.0 - INFERNAL_GROUND_SLOW;
-            body.velocity.z *= 1.0 - INFERNAL_GROUND_SLOW;
-        }
-    }
-
-    /// Adds the Heat and Energy a cast generates.
+    /// Hands `ability` some of its cooldown back, never more than `cap` at once.
     ///
-    /// The cone pays per target up to its cap, which is why the count is passed in.
-    fn gain_cast_resources(&mut self, ability: FireAbility, targets: u32) {
-        let definition = ability.definition();
-        let mut heat = definition.heat;
-        if matches!(ability, FireAbility::FlameWave) {
-            heat *= targets as f32;
-        }
-        if definition.heat_cap > 0.0 && !matches!(ability, FireAbility::Firestorm) {
-            heat = heat.min(definition.heat_cap);
-        }
-        if matches!(ability, FireAbility::Firestorm) {
-            // Firestorm's Heat arrives with its ticks, not with the cast.
-            heat = 0.0;
-        }
-        self.mage.gain_heat(heat);
-        self.mage.gain_energy(definition.energy);
-    }
-
-    /// Adds the Heat a zone tick generates, against that cast's cap.
-    fn gain_zone_heat(&mut self, kind: ZoneKind, source: FireAbility) {
-        let definition = source.definition();
-        if definition.heat <= 0.0 {
+    /// The cap is the design's hard ceiling on the critical strike feedback loop - 1.5 s and
+    /// not a millisecond more, whatever a talent claims. What the reduction could not use is
+    /// recorded rather than banked, because a reduction that fell on a ready ability is a
+    /// real loss the simulator has to be able to see.
+    pub(super) fn reduce_cooldown(&mut self, ability: FireAbility, seconds: f32, cap: f32) {
+        let seconds = seconds.min(cap);
+        if seconds <= 0.0 {
             return;
         }
         let effects = *self.mage.effects();
-        let scale = if kind == ZoneKind::Firestorm {
-            effects.firestorm_heat_scale
-        } else {
-            1.0
-        };
-        let cap = definition.heat_cap * scale;
-        let generated = definition.heat * scale;
-        let spent = if kind == ZoneKind::Firestorm {
-            &mut self.mage.firestorm_heat
-        } else {
-            &mut self.mage.zone_heat
-        };
-        let allowed = if cap > 0.0 {
-            (cap - *spent).max(0.0).min(generated)
-        } else {
-            generated
-        };
-        if allowed <= 0.0 {
-            return;
+        let wasted = self
+            .mage
+            .abilities
+            .reduce_cooldown(ability, seconds, &effects);
+        self.fire.cooldown_reduction += seconds - wasted;
+        self.fire.wasted_cooldown_reduction += wasted;
+    }
+
+    /// Adds Heat and counts the cycle if it reached the top of the bar.
+    pub(super) fn gain_heat(&mut self, amount: f32) {
+        // A set's resource generation scales what a cast pays into the bar.
+        let amount = amount * self.set_effects().resource_gen_scale();
+        if self.mage.gain_heat(amount) {
+            self.fire.heat_cycles += 1;
         }
-        *spent += allowed;
-        self.mage.gain_heat(allowed);
     }
 }
 
 /// Distance on the ground, ignoring height.
-///
-/// Every area in the class is a circle on the floor rather than a sphere: a dummy standing on
-/// a step is inside the Firestorm it is standing in.
 #[must_use]
 pub fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     let dx = a.x - b.x;
     let dz = a.z - b.z;
     (dx * dx + dz * dz).sqrt()
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "test code may assert on known-good values"
-)]
-mod tests {
-    use super::*;
-    use crate::arena::{self, ArenaConfig};
-    use crate::firemage::{TalentId, ZoneKind};
-
-    /// The training arena with the nearest dummy selected.
-    fn arena() -> Simulation {
-        let mut simulation = arena::training_arena(&ArenaConfig::default());
-        simulation.step_once();
-        simulation.select_nearest_target();
-        simulation
-    }
-
-    fn target(simulation: &Simulation) -> EntityId {
-        simulation.player().target.expect("a dummy is selected")
-    }
-
-    fn health(simulation: &Simulation, id: EntityId) -> f32 {
-        simulation
-            .world()
-            .health(id)
-            .map_or(0.0, |health| health.current())
-    }
-
-    /// Runs a cast to completion, however long it takes.
-    fn cast_through(simulation: &mut Simulation, ability: FireAbility) {
-        simulation.cast(ability).expect("the cast was refused");
-        for _ in 0..240 {
-            if simulation.casting().is_none() {
-                break;
-            }
-            simulation.step_once();
-        }
-    }
-
-    /// Puts `stacks` of Ignite on `id` without casting anything.
-    fn ignite(simulation: &mut Simulation, id: EntityId, stacks: u8) {
-        let maximum = simulation.mage().ignite_max();
-        let duration = simulation.mage().ignite_duration();
-        simulation
-            .mage_mut()
-            .ignite
-            .apply(id, stacks, maximum, duration);
-    }
-
-    /// Puts the target at exactly the current maximum.
-    fn ignite_to_maximum(simulation: &mut Simulation, id: EntityId) {
-        let maximum = simulation.mage().ignite_max();
-        ignite(simulation, id, maximum);
-    }
-
-    #[test]
-    fn firebolt_always_ignites_an_unburnt_target() {
-        // The designed asymmetry: guaranteed at zero stacks, a coin flip afterwards.
-        for seed in 0..12u64 {
-            let mut simulation = arena::training_arena(&ArenaConfig::default());
-            simulation.step_once();
-            simulation.select_nearest_target();
-            simulation.mage_mut().rng = crate::firemage::Rng::new(seed + 1);
-
-            let dummy = target(&simulation);
-            assert_eq!(simulation.mage().ignite.stacks(dummy), 0);
-            cast_through(&mut simulation, FireAbility::Firebolt);
-            assert!(
-                simulation.mage().ignite.stacks(dummy) >= 1,
-                "seed {seed}: firebolt did not ignite a cold target"
-            );
-        }
-    }
-
-    #[test]
-    fn firebolt_never_pushes_ignite_past_the_maximum() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let maximum = simulation.mage().ignite_max();
-        ignite(&mut simulation, dummy, maximum);
-
-        for _ in 0..8 {
-            cast_through(&mut simulation, FireAbility::Firebolt);
-            assert_eq!(
-                simulation.mage().ignite.stacks(dummy),
-                maximum,
-                "the cap leaked"
-            );
-        }
-    }
-
-    #[test]
-    fn reaching_the_maximum_never_detonates_by_itself() {
-        // The class's central rule. Stack to the cap, run for ten seconds, and the burn is
-        // still sitting there waiting for the player.
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let maximum = simulation.mage().ignite_max();
-        ignite(&mut simulation, dummy, maximum);
-
-        simulation.step_many(60);
-        assert_eq!(
-            simulation.mage().ignite.stacks(dummy),
-            maximum,
-            "something consumed the burn"
-        );
-    }
-
-    #[test]
-    fn fire_detonation_is_refused_below_the_maximum_and_allowed_at_it() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let maximum = simulation.mage().ignite_max();
-
-        assert_eq!(
-            simulation.cast(FireAbility::FireDetonation),
-            Err(AbilityError::NotEnoughIgnite),
-            "it fired on a cold target"
-        );
-        ignite(&mut simulation, dummy, maximum - 1);
-        assert_eq!(
-            simulation.cast(FireAbility::FireDetonation),
-            Err(AbilityError::NotEnoughIgnite),
-            "one stack short was enough"
-        );
-
-        ignite(&mut simulation, dummy, 1);
-        assert!(simulation.cast(FireAbility::FireDetonation).is_ok());
-        assert_eq!(
-            simulation.mage().ignite.stacks(dummy),
-            0,
-            "the burn survived"
-        );
-    }
-
-    #[test]
-    fn a_refused_detonation_spends_no_charge() {
-        let mut simulation = arena();
-        let _ = simulation.cast(FireAbility::FireDetonation);
-        assert!(
-            simulation
-                .mage()
-                .abilities
-                .is_ready(FireAbility::FireDetonation),
-            "a refusal cost a charge"
-        );
-    }
-
-    #[test]
-    fn detonation_scales_with_the_stacks_it_consumes() {
-        let mut small = arena();
-        let dummy = target(&small);
-        small.mage_mut().rng = crate::firemage::Rng::new(7);
-        ignite_to_maximum(&mut small, dummy);
-        let before = health(&small, dummy);
-        small
-            .cast(FireAbility::FireDetonation)
-            .expect("a full burn");
-        let full_burn = before - health(&small, dummy);
-
-        // The same explosion with a talent that pays per stack must hit harder.
-        let mut talented = arena();
-        let dummy = target(&talented);
-        talented.mage_mut().rng = crate::firemage::Rng::new(7);
-        talented
-            .mage_mut()
-            .purchase_talent(TalentId::BurningEmbers)
-            .expect("testing mode pays");
-        ignite_to_maximum(&mut talented, dummy);
-        let before = health(&talented, dummy);
-        talented
-            .cast(FireAbility::FireDetonation)
-            .expect("a full burn");
-        let with_talent = before - health(&talented, dummy);
-
-        assert!(
-            with_talent > full_burn,
-            "burning embers did nothing: {with_talent} vs {full_burn}"
-        );
-    }
-
-    #[test]
-    fn detonation_splashes_and_ignites_what_is_nearby() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        ignite_to_maximum(&mut simulation, dummy);
-
-        // Everything else in the arena that is within ten metres of the target.
-        let neighbours: Vec<EntityId> = (0..simulation.world().slot_count())
-            .filter_map(|slot| simulation.world().id_at(slot))
-            .filter(|id| *id != dummy && *id != simulation.player().entity)
-            .filter(|id| {
-                let centre = simulation.world().position(dummy).unwrap_or(Vec3::ZERO);
-                let other = simulation.world().position(*id).unwrap_or(Vec3::ZERO);
-                horizontal_distance(centre, other) <= 10.0
-            })
-            .collect();
-        let before: Vec<f32> = neighbours
-            .iter()
-            .map(|id| health(&simulation, *id))
-            .collect();
-
-        simulation
-            .cast(FireAbility::FireDetonation)
-            .expect("a full burn");
-
-        for (id, was) in neighbours.iter().zip(before) {
-            assert!(health(&simulation, *id) < was, "a neighbour took no splash");
-            assert!(
-                simulation.mage().ignite.stacks(*id) >= 1,
-                "a neighbour was not ignited"
-            );
-        }
-    }
-
-    #[test]
-    fn lingering_embers_leaves_a_stack_behind() {
-        let mut simulation = arena();
-        simulation
-            .mage_mut()
-            .purchase_talent(TalentId::LingeringEmbers)
-            .expect("testing mode pays");
-        let dummy = target(&simulation);
-        ignite_to_maximum(&mut simulation, dummy);
-
-        simulation
-            .cast(FireAbility::FireDetonation)
-            .expect("a full burn");
-        assert_eq!(simulation.mage().ignite.stacks(dummy), 1);
-    }
-
-    #[test]
-    fn infernal_capacity_moves_the_detonation_requirement_with_it() {
-        // Section 18 of the brief, end to end: five stacks stop being enough.
-        let mut simulation = arena();
-        simulation
-            .mage_mut()
-            .purchase_talent(TalentId::InfernalCapacity)
-            .expect("testing mode pays");
-        assert_eq!(simulation.mage().ignite_max(), 6);
-
-        let dummy = target(&simulation);
-        ignite(&mut simulation, dummy, 5);
-        assert_eq!(
-            simulation.cast(FireAbility::FireDetonation),
-            Err(AbilityError::NotEnoughIgnite),
-            "five stacks still detonated with a six-stack cap"
-        );
-
-        ignite(&mut simulation, dummy, 1);
-        assert_eq!(simulation.mage().ignite.stacks(dummy), 6);
-        assert!(simulation.cast(FireAbility::FireDetonation).is_ok());
-    }
-
-    #[test]
-    fn flame_lance_hits_harder_into_a_burn() {
-        let mut cold = arena();
-        cold.mage_mut().rng = crate::firemage::Rng::new(3);
-        let dummy = target(&cold);
-        let before = health(&cold, dummy);
-        cast_through(&mut cold, FireAbility::FlameLance);
-        let plain = before - health(&cold, dummy);
-
-        let mut burning = arena();
-        burning.mage_mut().rng = crate::firemage::Rng::new(3);
-        let dummy = target(&burning);
-        ignite(&mut burning, dummy, 1);
-        let before = health(&burning, dummy);
-        cast_through(&mut burning, FireAbility::FlameLance);
-        let bonus = before - health(&burning, dummy);
-
-        assert!(bonus > plain, "no ignite bonus: {bonus} vs {plain}");
-    }
-
-    #[test]
-    fn pyroblast_always_crits_into_a_full_burn() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        ignite_to_maximum(&mut simulation, dummy);
-        let before = health(&simulation, dummy);
-        cast_through(&mut simulation, FireAbility::Pyroblast);
-        let damage = before - health(&simulation, dummy);
-
-        // Base 800, +10% per stack, doubled by the guaranteed critical strike.
-        let base = FireAbility::Pyroblast.definition().damage;
-        assert!(damage > base * 1.5, "it did not crit: {damage}");
-        assert_eq!(
-            simulation.mage().ignite.stacks(dummy),
-            simulation.mage().ignite_max(),
-            "pyroblast detonated the burn"
-        );
-    }
-
-    #[test]
-    fn flame_wave_ignites_everything_in_the_cone_and_caps_its_heat() {
-        let mut simulation = arena();
-        // Face the dummy group so the cone covers it.
-        let target_id = target(&simulation);
-        let origin = simulation.player_position();
-        let towards = simulation.world().position(target_id).unwrap_or(Vec3::ZERO);
-        let yaw = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
-        let player = simulation.player().entity;
-        if let Some(body) = simulation.world_mut().body_mut(player) {
-            body.facing_yaw = yaw;
-        }
-
-        cast_through(&mut simulation, FireAbility::FlameWave);
-        assert!(
-            simulation.mage().ignite.stacks(target_id) >= 1,
-            "the cone did not ignite what it hit"
-        );
-        assert!(
-            simulation.mage().heat.value() <= FireAbility::FlameWave.definition().heat_cap + 0.01,
-            "the per-cast heat cap leaked: {}",
-            simulation.mage().heat.value()
-        );
-    }
-
-    #[test]
-    fn meteor_lands_after_its_delay_rather_than_at_once() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let position = simulation.world().position(dummy).expect("a position");
-        let before = health(&simulation, dummy);
-
-        simulation
-            .cast_at(FireAbility::Meteor, position)
-            .expect("in range");
-        // Through the cast, then not yet through the impact delay.
-        for _ in 0..60 {
-            simulation.step_once();
-        }
-        assert_eq!(health(&simulation, dummy), before, "it landed early");
-
-        simulation.step_many(120);
-        assert!(health(&simulation, dummy) < before, "it never landed");
-        assert!(
-            simulation.mage().ignite.stacks(dummy) >= 2,
-            "meteor applies two stacks"
-        );
-    }
-
-    #[test]
-    fn a_ground_ability_out_of_range_is_refused() {
-        let mut simulation = arena();
-        let far = Vec3::new(500.0, 0.0, 500.0);
-        assert_eq!(
-            simulation.cast_at(FireAbility::Meteor, far),
-            Err(AbilityError::GroundOutOfRange)
-        );
-        assert!(simulation.mage().abilities.is_ready(FireAbility::Meteor));
-    }
-
-    #[test]
-    fn a_ground_ability_cast_without_a_placement_says_so() {
-        let mut simulation = arena();
-        assert_eq!(
-            simulation.cast(FireAbility::Firestorm),
-            Err(AbilityError::NeedsGroundTarget)
-        );
-    }
-
-    #[test]
-    fn firestorm_leaves_a_zone_that_burns_and_then_expires() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let position = simulation.world().position(dummy).expect("a position");
-        let before = health(&simulation, dummy);
-
-        simulation
-            .cast_at(FireAbility::Firestorm, position)
-            .expect("in range");
-        // Through the 0.8 s cast and two of the zone's half-second ticks.
-        simulation.step_many(120);
-        assert!(simulation.mage().zones.has(ZoneKind::Firestorm), "no zone");
-        assert!(health(&simulation, dummy) < before, "the zone did not burn");
-
-        simulation.step_many(60 * 8);
-        assert!(
-            !simulation.mage().zones.has(ZoneKind::Firestorm),
-            "the zone outlived its duration"
-        );
-    }
-
-    #[test]
-    fn inferno_follows_the_caster_and_ignites_what_it_touches() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        // Inferno is point blank: stand next to the dummy, which is what casting it means.
-        let beside = simulation
-            .world()
-            .position(dummy)
-            .map(|position| position + Vec3::new(2.0, 0.0, 0.0))
-            .expect("a position");
-        simulation.push_command(crate::command::PlayerCommand::Teleport { position: beside });
-        simulation.step_once();
-        simulation.cast(FireAbility::Inferno).expect("instant");
-        assert!(simulation.mage().zones.has(ZoneKind::Inferno));
-
-        simulation.step_many(70);
-        assert!(
-            simulation.mage().ignite.stacks(dummy) >= 1,
-            "inferno did not ignite a nearby dummy"
-        );
-    }
-
-    #[test]
-    fn flame_shield_reduces_incoming_damage_while_it_lasts() {
-        let mut simulation = arena();
-        simulation.cast(FireAbility::FlameShield).expect("instant");
-        assert!(simulation.mage().flame_shield.is_active());
-        assert!((simulation.mage().incoming_damage(100.0) - 70.0).abs() < 0.01);
-
-        simulation.step_many(60 * 6);
-        assert!(!simulation.mage().flame_shield.is_active());
-    }
-
-    #[test]
-    fn blink_moves_the_character_forward_and_goes_on_cooldown() {
-        let mut simulation = arena();
-        let before = simulation.player_position();
-        simulation.cast(FireAbility::Blink).expect("instant");
-        let after = simulation.player_position();
-
-        let travelled = horizontal_distance(before, after);
-        assert!(travelled > 1.0, "blink went nowhere: {travelled}");
-        assert!(
-            travelled <= FireAbility::Blink.definition().range + 0.01,
-            "blink overshot: {travelled}"
-        );
-        assert!(!simulation.mage().abilities.is_ready(FireAbility::Blink));
-    }
-
-    #[test]
-    fn casting_generates_heat_and_ultimate_energy() {
-        let mut simulation = arena();
-        assert_eq!(simulation.mage().heat.value(), 0.0);
-        cast_through(&mut simulation, FireAbility::Firebolt);
-
-        let firebolt = FireAbility::Firebolt.definition();
-        assert!((simulation.mage().heat.value() - firebolt.heat).abs() < 0.01);
-        assert!(simulation.mage().energy.value() >= firebolt.energy);
-    }
-
-    #[test]
-    fn a_hundred_heat_overheats_and_then_drains() {
-        let mut simulation = arena();
-        simulation.mage_mut().gain_heat(100.0);
-        assert!(simulation.mage().heat.is_overheated());
-        assert!((simulation.mage().fire_damage_multiplier() - 1.15).abs() < 1e-4);
-
-        simulation.step_many(60 * 10);
-        assert!(!simulation.mage().heat.is_overheated(), "it never cooled");
-    }
-
-    #[test]
-    fn the_ultimate_needs_a_full_bar_and_empties_it() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let position = simulation.world().position(dummy).expect("a position");
-
-        assert_eq!(
-            simulation.cast_at(FireAbility::Cataclysm, position),
-            Err(AbilityError::NotEnoughEnergy)
-        );
-
-        simulation.mage_mut().gain_energy(100.0);
-        assert!(simulation.cast_at(FireAbility::Cataclysm, position).is_ok());
-        // Paid when it lands, so the cast has to run out first.
-        simulation.step_many(80);
-        assert!(
-            simulation.mage().energy.value() < 100.0,
-            "the bar was not spent"
-        );
-    }
-
-    #[test]
-    fn cataclysm_hits_hard_and_then_burns_the_ground() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let position = simulation.world().position(dummy).expect("a position");
-        let before = health(&simulation, dummy);
-
-        simulation.mage_mut().gain_energy(100.0);
-        simulation
-            .cast_at(FireAbility::Cataclysm, position)
-            .expect("a full bar");
-        simulation.step_many(120);
-
-        let after_impact = health(&simulation, dummy);
-        assert!(after_impact < before, "the meteor never landed");
-        assert!(
-            simulation.mage().ignite.stacks(dummy) >= 3,
-            "cataclysm applies three stacks"
-        );
-        assert!(
-            simulation.mage().zones.has(ZoneKind::InfernalGround),
-            "phase two never started"
-        );
-
-        simulation.step_many(120);
-        assert!(
-            health(&simulation, dummy) < after_impact,
-            "the infernal ground did not burn"
-        );
-    }
-
-    #[test]
-    fn ignite_burns_over_time_and_falls_off_on_its_own() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        ignite(&mut simulation, dummy, 3);
-        let before = health(&simulation, dummy);
-
-        simulation.step_many(120);
-        assert!(
-            health(&simulation, dummy) < before,
-            "the burn dealt nothing"
-        );
-
-        simulation.step_many(60 * 10);
-        assert_eq!(
-            simulation.mage().ignite.stacks(dummy),
-            0,
-            "it never expired"
-        );
-    }
-
-    #[test]
-    fn a_dead_target_stops_burning() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        ignite(&mut simulation, dummy, 5);
-        simulation.world_mut().damage(dummy, 1_000_000.0);
-        simulation.step_many(120);
-        assert_eq!(simulation.mage().ignite.stacks(dummy), 0);
-    }
-
-    #[test]
-    fn a_targeted_ability_is_refused_when_the_target_is_gone() {
-        // The simulation retargets on its own, so "nothing selected" is a moment rather
-        // than a state: what matters is that a dead target refuses cleanly and spends
-        // nothing.
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        simulation.world_mut().damage(dummy, 1_000_000.0);
-
-        for ability in FireAbility::BAR {
-            if !ability.definition().target.needs_target() {
-                continue;
-            }
-            let refusal = simulation.cast(ability);
-            assert!(
-                matches!(
-                    refusal,
-                    Err(AbilityError::TargetInvalid
-                        | AbilityError::NoTarget
-                        | AbilityError::NotEnoughIgnite)
-                ),
-                "{ability:?} was allowed against a corpse: {refusal:?}"
-            );
-            assert!(
-                simulation.mage().abilities.is_ready(ability),
-                "{ability:?} spent a charge on a refusal"
-            );
-        }
-    }
-
-    #[test]
-    fn an_out_of_range_target_is_refused() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        if let Some(body) = simulation.world_mut().body_mut(dummy) {
-            body.position = Vec3::new(0.0, 0.0, -500.0);
-        }
-        assert_eq!(
-            simulation.cast(FireAbility::Firebolt),
-            Err(AbilityError::OutOfRange)
-        );
-    }
-
-    #[test]
-    fn the_same_seed_produces_the_same_fight() {
-        // Every chance in the class goes through the simulation's own generator, so a
-        // replay of the same commands is the same fight.
-        let run = || {
-            let mut simulation = arena();
-            for _ in 0..6 {
-                let _ = simulation.cast(FireAbility::Firebolt);
-                simulation.step_many(70);
-            }
-            simulation.meter().total_damage()
-        };
-        assert!((run() - run()).abs() < 1e-3);
-    }
-
-    #[test]
-    fn pressing_another_ability_queues_it_instead_of_cancelling_the_cast() {
-        // The whole point: a long cast is safe to commit to. Only moving and backing out
-        // stop it, and what was pressed meanwhile happens next.
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Pyroblast).expect("in range");
-        let started = simulation.casting().map(|cast| cast.ability);
-        assert_eq!(started, Some(FireAbility::Pyroblast));
-
-        simulation.cast(FireAbility::Firebolt).expect("queued");
-        assert_eq!(
-            simulation.casting().map(|cast| cast.ability),
-            Some(FireAbility::Pyroblast),
-            "the second press threw away the first cast"
-        );
-        assert_eq!(
-            simulation.player().queued.map(|queued| queued.ability),
-            Some(FireAbility::Firebolt)
-        );
-
-        // When Pyroblast lands, Firebolt starts on its own.
-        for _ in 0..200 {
-            simulation.step_once();
-            if simulation
-                .casting()
-                .is_some_and(|cast| cast.ability == FireAbility::Firebolt)
-            {
-                break;
-            }
-        }
-        assert_eq!(
-            simulation.casting().map(|cast| cast.ability),
-            Some(FireAbility::Firebolt),
-            "the queued ability never started"
-        );
-    }
-
-    #[test]
-    fn only_the_newest_request_is_queued() {
-        // Mashing four keys means "then that one", not a rotation the player stopped
-        // wanting three seconds ago.
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Pyroblast).expect("in range");
-        simulation.cast(FireAbility::Firebolt).expect("queued");
-        simulation.cast(FireAbility::FlameLance).expect("queued");
-        assert_eq!(
-            simulation.player().queued.map(|queued| queued.ability),
-            Some(FireAbility::FlameLance)
-        );
-    }
-
-    #[test]
-    fn escape_cancels_the_cast_and_the_queue_with_it() {
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Pyroblast).expect("in range");
-        simulation.cast(FireAbility::Firebolt).expect("queued");
-
-        assert!(simulation.cancel_cast(), "there was nothing to cancel");
-        assert!(simulation.casting().is_none());
-        assert!(
-            simulation.player().queued.is_none(),
-            "backing out left the queue behind"
-        );
-        assert!(!simulation.cancel_cast(), "it cancelled twice");
-    }
-
-    #[test]
-    fn moving_cancels_the_cast_and_the_queue_with_it() {
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Pyroblast).expect("in range");
-        simulation.cast(FireAbility::Firebolt).expect("queued");
-
-        simulation.push_command(crate::command::PlayerCommand::Move {
-            forward: 1.0,
-            right: 0.0,
-            yaw: 0.0,
-        });
-        simulation.step_many(10);
-        assert!(simulation.casting().is_none(), "movement did not break it");
-        assert!(simulation.player().queued.is_none());
-    }
-
-    #[test]
-    fn an_instant_ability_does_not_disturb_a_cast_either() {
-        // Blink mid-Pyroblast is a queue, not an interrupt: nothing but movement and escape
-        // takes a cast away.
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Pyroblast).expect("in range");
-        simulation.cast(FireAbility::Blink).expect("queued");
-        assert_eq!(
-            simulation.casting().map(|cast| cast.ability),
-            Some(FireAbility::Pyroblast)
-        );
-        assert!(
-            simulation.mage().abilities.is_ready(FireAbility::Blink),
-            "the queued instant was cast immediately"
-        );
-    }
-
-    #[test]
-    fn two_instants_cannot_go_off_in_the_same_moment() {
-        // The global cooldown's whole job.
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Blink).expect("instant");
-        assert_eq!(
-            simulation.cast(FireAbility::FlameShield),
-            Err(AbilityError::GlobalCooldown),
-            "a second instant went off immediately"
-        );
-        assert!(
-            simulation
-                .mage()
-                .abilities
-                .is_ready(FireAbility::FlameShield),
-            "the refusal spent a charge"
-        );
-
-        // Half a second later it is allowed.
-        simulation.step_many(35);
-        assert!(simulation.cast(FireAbility::FlameShield).is_ok());
-    }
-
-    #[test]
-    fn a_cast_outlasts_the_global_cooldown_so_the_next_one_starts_at_once() {
-        // Firebolt casts for a second and the global cooldown is half of that, so a player
-        // casting it back to back is limited by the cast and never by the timer.
-        let mut simulation = arena();
-        cast_through(&mut simulation, FireAbility::Firebolt);
-        assert!(
-            simulation.mage().off_global_cooldown(),
-            "the global cooldown outlived the cast"
-        );
-        assert!(
-            simulation.cast(FireAbility::Firebolt).is_ok(),
-            "the next firebolt was refused"
-        );
-    }
-
-    #[test]
-    fn the_global_cooldown_does_not_stop_a_press_from_queueing() {
-        // Pressing during a cast queues, and the queue is started when the cast lands - by
-        // which time the global cooldown started with that cast has long expired.
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Pyroblast).expect("in range");
-        assert!(
-            simulation.cast(FireAbility::Firebolt).is_ok(),
-            "queueing was refused"
-        );
-        assert_eq!(
-            simulation.player().queued.map(|queued| queued.ability),
-            Some(FireAbility::Firebolt)
-        );
-
-        for _ in 0..260 {
-            simulation.step_once();
-            if simulation
-                .casting()
-                .is_some_and(|cast| cast.ability == FireAbility::Firebolt)
-            {
-                break;
-            }
-        }
-        assert_eq!(
-            simulation.casting().map(|cast| cast.ability),
-            Some(FireAbility::Firebolt),
-            "the queued cast never started"
-        );
-    }
-
-    #[test]
-    fn a_cone_is_aimed_at_where_the_player_pointed() {
-        // Flame Wave is chosen by direction: the point the player clicked decides which way
-        // the wedge faces, not exactly which way the character is standing. The character is
-        // turned well off the dummy - but still within the frontal half-circle, which is all
-        // the facing rule asks for.
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let towards = simulation.world().position(dummy).expect("a position");
-        let origin = simulation.player_position();
-        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
-
-        let player = simulation.player().entity;
-        if let Some(body) = simulation.world_mut().body_mut(player) {
-            body.facing_yaw = straight_at + std::f32::consts::FRAC_PI_3;
-        }
-        let before = health(&simulation, dummy);
-
-        simulation
-            .cast_at(FireAbility::FlameWave, towards)
-            .expect("aimed inside the frontal half-circle");
-        for _ in 0..120 {
-            if simulation.casting().is_none() {
-                break;
-            }
-            simulation.step_once();
-        }
-        assert!(
-            health(&simulation, dummy) < before,
-            "the cone did not follow the aim"
-        );
-    }
-
-    #[test]
-    fn a_cone_is_never_refused_for_being_out_of_range() {
-        // A direction always exists, however far away the player clicked.
-        let mut simulation = arena();
-        let origin = simulation.player_position();
-        let facing = simulation
-            .world()
-            .body(simulation.player().entity)
-            .map_or(0.0, |body| body.facing_yaw);
-        let far = origin + Vec3::new(-facing.sin(), 0.0, -facing.cos()) * 1_000.0;
-        assert!(
-            simulation.cast_at(FireAbility::FlameWave, far).is_ok(),
-            "an aimed ability was refused a direction"
-        );
-    }
-
-    #[test]
-    fn a_cast_cannot_be_aimed_behind_the_character() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let towards = simulation.world().position(dummy).expect("a position");
-        let origin = simulation.player_position();
-        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
-
-        // Turned right around.
-        let player = simulation.player().entity;
-        if let Some(body) = simulation.world_mut().body_mut(player) {
-            body.facing_yaw = straight_at + std::f32::consts::PI;
-        }
-
-        assert_eq!(
-            simulation.cast(FireAbility::Firebolt),
-            Err(AbilityError::FacingWrongWay),
-            "a spell was thrown backwards"
-        );
-        // An area ability is allowed from any facing: aiming it *is* choosing a direction,
-        // and casting it turns the character that way.
-        assert!(
-            simulation.cast_at(FireAbility::Meteor, towards).is_ok(),
-            "an aimed ability was refused for facing"
-        );
-        assert!(
-            simulation.is_facing(towards),
-            "the cast did not turn the character"
-        );
-
-        // Turning back is all it takes.
-        if let Some(body) = simulation.world_mut().body_mut(player) {
-            body.facing_yaw = straight_at;
-        }
-        assert!(simulation.cast(FireAbility::Firebolt).is_ok());
-    }
-
-    #[test]
-    fn the_frontal_half_circle_is_generous() {
-        // Ninety degrees either side: a player pointing roughly the right way can cast.
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let towards = simulation.world().position(dummy).expect("a position");
-        let origin = simulation.player_position();
-        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
-        let player = simulation.player().entity;
-
-        for offset in [0.0, 0.7, -0.7, 1.4, -1.4] {
-            if let Some(body) = simulation.world_mut().body_mut(player) {
-                body.facing_yaw = straight_at + offset;
-            }
-            assert!(
-                simulation.is_facing(towards),
-                "{offset} radians off was refused"
-            );
-        }
-        for offset in [2.0, -2.0, std::f32::consts::PI] {
-            if let Some(body) = simulation.world_mut().body_mut(player) {
-                body.facing_yaw = straight_at + offset;
-            }
-            assert!(
-                !simulation.is_facing(towards),
-                "{offset} radians off was allowed"
-            );
-        }
-    }
-
-    #[test]
-    fn nothing_is_spent_until_a_cast_lands() {
-        // Requirements are checked before the cast starts; the charge and the energy buy
-        // what actually happened.
-        let mut simulation = arena();
-        simulation.cast(FireAbility::Pyroblast).expect("in range");
-        assert!(
-            simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
-            "the charge was spent before the cast landed"
-        );
-
-        assert!(simulation.cancel_cast());
-        assert!(
-            simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
-            "a cancelled cast cost a charge"
-        );
-
-        // Let one land, and it is paid for.
-        simulation.step_many(40);
-        cast_through(&mut simulation, FireAbility::Pyroblast);
-        assert!(
-            !simulation.mage().abilities.is_ready(FireAbility::Pyroblast),
-            "a landed cast was free"
-        );
-    }
-
-    #[test]
-    fn the_ultimate_pays_its_energy_when_it_lands_and_not_before() {
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let position = simulation.world().position(dummy).expect("a position");
-        simulation.mage_mut().gain_energy(100.0);
-
-        simulation
-            .cast_at(FireAbility::Cataclysm, position)
-            .expect("a full bar");
-        assert!(
-            simulation.mage().energy.is_full(),
-            "the energy went before the cast did"
-        );
-
-        assert!(simulation.cancel_cast());
-        assert!(
-            simulation.mage().energy.is_full(),
-            "a cancelled ultimate spent the bar"
-        );
-    }
-
-    #[test]
-    fn aiming_an_area_ability_turns_the_character_towards_it() {
-        // Choosing a direction is how the player says which way they are pointing, so being
-        // made to turn first would be asking the same question twice.
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let towards = simulation.world().position(dummy).expect("a position");
-        let player = simulation.player().entity;
-        if let Some(body) = simulation.world_mut().body_mut(player) {
-            body.facing_yaw = 0.0;
-        }
-
-        simulation
-            .cast_at(FireAbility::FlameWave, towards)
-            .expect("an aimed ability is allowed from any facing");
-        assert!(
-            simulation.is_facing(towards),
-            "the cone did not turn the character to its own aim"
-        );
-    }
-
-    #[test]
-    fn a_targeted_ability_never_turns_the_character_for_you() {
-        // The facing rule is the point of a targeted cast; snapping to the target would
-        // remove it.
-        let mut simulation = arena();
-        let dummy = target(&simulation);
-        let towards = simulation.world().position(dummy).expect("a position");
-        let origin = simulation.player_position();
-        let straight_at = (-(towards.x - origin.x)).atan2(-(towards.z - origin.z));
-        let player = simulation.player().entity;
-        if let Some(body) = simulation.world_mut().body_mut(player) {
-            body.facing_yaw = straight_at + std::f32::consts::PI;
-        }
-
-        assert_eq!(
-            simulation.cast(FireAbility::Firebolt),
-            Err(AbilityError::FacingWrongWay)
-        );
-        assert!(
-            !simulation.is_facing(towards),
-            "the refused cast turned the character anyway"
-        );
-    }
-
-    #[test]
-    fn a_refusal_stops_being_shown_after_five_seconds() {
-        let mut simulation = arena();
-        let _ = simulation.cast(FireAbility::FireDetonation);
-        assert_eq!(
-            simulation.recent_error(),
-            Some(AbilityError::NotEnoughIgnite),
-            "the refusal was not reported at all"
-        );
-
-        simulation.step_many(60 * 4);
-        assert!(simulation.recent_error().is_some(), "it expired early");
-
-        simulation.step_many(60 * 2);
-        assert_eq!(simulation.recent_error(), None, "it never expired");
-        assert!(
-            simulation.player().last_error.is_some(),
-            "the reason itself should still be readable"
-        );
-    }
 }

@@ -105,15 +105,45 @@ impl BroadPhase {
     /// Returns nothing: the caller reads `out.len()` for the candidate count, because the
     /// count *is* the length and returning it separately invites the two to disagree.
     pub fn query(&self, proxies: &[Proxy], bounds: &Aabb, mask: CollisionMask, out: &mut Vec<u32>) {
+        let first = out.len();
+        self.for_each_candidate(proxies, bounds, mask, &mut |index| out.push(index));
+
+        // An object straddling a cell boundary is offered by both cells and would otherwise
+        // be tested — and reported as a contact — twice. Sorting a handful of indices is
+        // cheaper than the duplicate narrow-phase tests it prevents, and it makes the
+        // candidate order independent of the grid, which is what keeps movement
+        // deterministic across a rebuild.
+        let candidates = &mut out[first..];
+        candidates.sort_unstable();
+        let unique = dedup_len(candidates);
+        out.truncate(first + unique);
+    }
+
+    /// Calls `visit` with the index of every proxy that might overlap `bounds`.
+    ///
+    /// The same walk [`BroadPhase::query`] does, without the vector: a query that reduces
+    /// its candidates to one answer — the nearest hit along a ray — needs no storage at all,
+    /// and asking it to bring a `Vec` would be an allocation in a path that has none.
+    ///
+    /// A candidate may be offered **more than once**, because an object can be in several
+    /// grid cells. `query` dedups; a reduction does not need to, since testing a shape twice
+    /// gives the same answer twice.
+    pub fn for_each_candidate(
+        &self,
+        proxies: &[Proxy],
+        bounds: &Aabb,
+        mask: CollisionMask,
+        visit: &mut impl FnMut(u32),
+    ) {
         match self {
             Self::Linear => {
                 for (index, proxy) in proxies.iter().enumerate() {
                     if proxy.matches(bounds, mask) {
-                        out.push(index as u32);
+                        visit(index as u32);
                     }
                 }
             }
-            Self::Grid(grid) => grid.query(proxies, bounds, mask, out),
+            Self::Grid(grid) => grid.for_each_candidate(proxies, bounds, mask, visit),
         }
     }
 }
@@ -290,13 +320,20 @@ impl UniformGrid {
         }
     }
 
-    /// Appends candidate indices for `bounds` to `out`.
-    fn query(&self, proxies: &[Proxy], bounds: &Aabb, mask: CollisionMask, out: &mut Vec<u32>) {
-        let first = out.len();
-
+    /// Offers every candidate for `bounds` to `visit`, cell by cell.
+    ///
+    /// May offer the same index twice, for an object that spans a cell boundary; the caller
+    /// decides whether that matters.
+    fn for_each_candidate(
+        &self,
+        proxies: &[Proxy],
+        bounds: &Aabb,
+        mask: CollisionMask,
+        visit: &mut impl FnMut(u32),
+    ) {
         for &index in &self.unbounded {
             if proxies[index as usize].matches(bounds, mask) {
-                out.push(index);
+                visit(index);
             }
         }
 
@@ -306,7 +343,7 @@ impl UniformGrid {
                 let end = self.cell_start[cell as usize + 1] as usize;
                 for &index in &self.items[start..end] {
                     if proxies[index as usize].matches(bounds, mask) {
-                        out.push(index);
+                        visit(index);
                     }
                 }
             }
@@ -315,20 +352,10 @@ impl UniformGrid {
             // deliberately huge sweep — and answering it with a scan is still correct.
             for (index, proxy) in proxies.iter().enumerate() {
                 if proxy.matches(bounds, mask) {
-                    out.push(index as u32);
+                    visit(index as u32);
                 }
             }
         }
-
-        // An object straddling a cell boundary is in both cells and would otherwise be
-        // tested — and reported as a contact — twice. Sorting a handful of indices is
-        // cheaper than the duplicate narrow-phase tests it prevents, and it makes the
-        // candidate order independent of the grid, which is what keeps movement
-        // deterministic across a rebuild.
-        let candidates = &mut out[first..];
-        candidates.sort_unstable();
-        let unique = dedup_len(candidates);
-        out.truncate(first + unique);
     }
 }
 

@@ -41,8 +41,16 @@ use crate::status::StatusSet;
 pub enum EntityKind {
     /// The character the local player controls.
     Player,
-    /// A training dummy.
+    /// A training dummy: hostile, and deliberately inert.
     Dummy,
+    /// A *friendly* training dummy, kept wounded so healing can be practised on it.
+    ///
+    /// The same inert body as [`EntityKind::Dummy`] on the other side of the factions, which
+    /// is the whole difference: a heal cannot be pointed at something hostile, and a class
+    /// whose kit is mostly healing has nothing to press in a room full of enemies.
+    HealingDummy,
+    /// Something that fights back.
+    Enemy,
 }
 
 impl EntityKind {
@@ -52,6 +60,8 @@ impl EntityKind {
         match self {
             Self::Player => "PLAYER",
             Self::Dummy => "DUMMY",
+            Self::HealingDummy => "HEALING DUMMY",
+            Self::Enemy => "ENEMY",
         }
     }
 }
@@ -96,9 +106,9 @@ impl EntityDesc {
             kind: EntityKind::Player,
             faction: Faction::Player,
             position,
-            max_health: 500.0,
-            radius: 0.5,
-            height: 1.8,
+            max_health: engine_core::tuning::player::MAX_HEALTH,
+            radius: engine_core::tuning::player::RADIUS,
+            height: engine_core::tuning::player::HEIGHT,
         }
     }
 
@@ -114,6 +124,48 @@ impl EntityDesc {
             height: 2.2,
         }
     }
+
+    /// A friendly training dummy at `position`, for practising healing on.
+    ///
+    /// The same body as [`EntityDesc::dummy`] in the player's own faction. It spawns whole
+    /// and is put at [`HEALING_DUMMY_FRACTION`] by [`GameWorld::spawn`]'s caller — see
+    /// [`GameWorld::restore`], which is where the rule lives so that every reset obeys it.
+    #[must_use]
+    pub fn healing_dummy(position: Vec3, max_health: f32) -> Self {
+        Self {
+            kind: EntityKind::HealingDummy,
+            faction: Faction::Player,
+            position,
+            max_health,
+            radius: 0.7,
+            height: 2.2,
+        }
+    }
+}
+
+/// The fraction of its health a healing dummy is restored to.
+///
+/// Half, so there is always something to heal and always somewhere for an overheal to be
+/// visible. It is what [`GameWorld::restore`] puts the dummy back to, so an encounter reset
+/// and a fresh scene produce the same target rather than a full-health one nothing can be
+/// practised on.
+pub const HEALING_DUMMY_FRACTION: f32 = 0.5;
+
+/// An enemy of `kind` at `position`, for [`GameWorld::spawn`].
+///
+/// Its numbers come from the archetype table, so "how much health does a Brute have" is
+/// answered in exactly one place.
+#[must_use]
+pub fn enemy_desc(kind: crate::enemy::EnemyKind, position: Vec3) -> EntityDesc {
+    let archetype = kind.archetype();
+    EntityDesc {
+        kind: EntityKind::Enemy,
+        faction: Faction::Hostile,
+        position,
+        max_health: archetype.max_health,
+        radius: archetype.radius,
+        height: archetype.height,
+    }
 }
 
 /// Every entity's gameplay state.
@@ -121,6 +173,10 @@ impl EntityDesc {
 pub struct GameWorld {
     allocator: EntityAllocator,
     kinds: Vec<EntityKind>,
+    /// A name an entity is shown under, when it is more than its kind: another player's
+    /// character in an online party. Interned, so the interface can hold it as `&'static str`
+    /// like every other name it prints.
+    labels: Vec<Option<&'static str>>,
     factions: Vec<Faction>,
     bodies: Vec<Body>,
     /// Every body as it was at the start of the current tick.
@@ -152,6 +208,7 @@ impl GameWorld {
         Self {
             allocator: EntityAllocator::with_capacity(capacity),
             kinds: Vec::with_capacity(capacity),
+            labels: Vec::new(),
             factions: Vec::with_capacity(capacity),
             bodies: Vec::with_capacity(capacity),
             previous_bodies: Vec::with_capacity(capacity),
@@ -172,6 +229,7 @@ impl GameWorld {
 
         if slot < self.kinds.len() {
             self.kinds[slot] = desc.kind;
+            self.labels[slot] = None;
             self.factions[slot] = desc.faction;
             self.bodies[slot] = body;
             // A new entity has no history: interpolating from wherever the slot's previous
@@ -188,6 +246,7 @@ impl GameWorld {
         }
 
         self.kinds.push(desc.kind);
+        self.labels.push(None);
         self.factions.push(desc.faction);
         self.bodies.push(body);
         self.previous_bodies.push(body);
@@ -197,6 +256,26 @@ impl GameWorld {
         self.heights.push(desc.height);
         self.spawn_positions.push(desc.position);
         id
+    }
+
+    /// Gives an entity a name to be shown under. Names are interned: the same name set twice
+    /// is stored once, so the set grows with the distinct names a session has seen.
+    pub fn set_label(&mut self, id: EntityId, label: &str) {
+        if !self.allocator.contains(id) {
+            return;
+        }
+        if let Some(slot) = self.labels.get_mut(id.index()) {
+            *slot = Some(intern_label(label));
+        }
+    }
+
+    /// The name an entity was given with [`GameWorld::set_label`].
+    #[must_use]
+    pub fn label(&self, id: EntityId) -> Option<&'static str> {
+        if !self.allocator.contains(id) {
+            return None;
+        }
+        self.labels.get(id.index()).copied().flatten()
     }
 
     /// Removes an entity. A stale id is reported rather than panicking.
@@ -327,11 +406,49 @@ impl GameWorld {
     }
 
     /// Restores health and reports what landed.
+    ///
+    /// **The one heal path**: what the target's effects take off the healing it receives
+    /// (the Plague Explosion modifier's Plagued) is applied here, so no heal can skip it.
     pub fn heal(&mut self, id: EntityId, amount: f32) -> DamageResult {
         if !self.contains(id) {
             return DamageResult::NONE;
         }
-        self.healths[id.index()].heal(amount)
+        let multiplier = self.statuses[id.index()].healing_received_multiplier();
+        self.healths[id.index()].heal(amount * multiplier)
+    }
+
+    /// Changes an entity's maximum health, keeping the fraction it is at.
+    ///
+    /// What a change of Stamina reaches the world through. See [`Health::set_max`] for why
+    /// the fraction is what is preserved.
+    pub fn set_max_health(&mut self, id: EntityId, max: f32) {
+        if !self.contains(id) {
+            return;
+        }
+        self.healths[id.index()].set_max(max);
+    }
+
+    /// Changes an entity's maximum health, keeping the health it currently has.
+    ///
+    /// What a *buff* reaches the world through, as opposed to a change of gear. See
+    /// [`Health::set_max_keeping_current`].
+    pub fn set_max_health_keeping_current(&mut self, id: EntityId, max: f32) {
+        if !self.contains(id) {
+            return;
+        }
+        self.healths[id.index()].set_max_keeping_current(max);
+    }
+
+    /// An entity's health, for arena setup and a developer control.
+    ///
+    /// Gameplay goes through [`GameWorld::damage`] and [`GameWorld::heal`] so every change
+    /// produces an event; this is the same escape hatch [`GameWorld::body_mut`] is, for the
+    /// same callers.
+    pub fn health_mut(&mut self, id: EntityId) -> Option<&mut Health> {
+        if !self.contains(id) {
+            return None;
+        }
+        self.healths.get_mut(id.index())
     }
 
     /// An entity's statuses.
@@ -401,6 +518,12 @@ impl GameWorld {
         // slide back to its spawn over the following frame.
         self.previous_bodies[slot] = self.bodies[slot];
         self.healths[slot].restore();
+        // A healing dummy is restored to *half*: it exists to be healed, and putting it back
+        // at full health would make the reset key the one thing that takes the target away.
+        if self.kinds[slot] == EntityKind::HealingDummy {
+            let max = self.healths[slot].max();
+            self.healths[slot].damage(max * (1.0 - HEALING_DUMMY_FRACTION));
+        }
         self.statuses[slot].clear();
         true
     }
@@ -434,6 +557,24 @@ impl GameWorld {
 #[must_use]
 pub fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     (a.x - b.x).hypot(a.z - b.z)
+}
+
+/// Interns an entity label, returning a `'static` copy shared by every caller that asks for
+/// the same text.
+fn intern_label(label: &str) -> &'static str {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+    static LABELS: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
+    let labels = LABELS.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let Ok(mut labels) = labels.lock() else {
+        return "";
+    };
+    if let Some(existing) = labels.get(label) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(label.to_owned().into_boxed_str());
+    labels.insert(leaked);
+    leaked
 }
 
 #[cfg(test)]

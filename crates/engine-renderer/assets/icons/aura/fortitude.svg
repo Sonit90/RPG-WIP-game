@@ -1,0 +1,21 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="fortitude_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(40, 30, 10)"></stop>
+<stop offset="1" stop-color="rgb(110, 84, 34)"></stop>
+</linearGradient>
+<radialGradient id="fortitude_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(250, 210, 120)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(250, 210, 120)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(250, 210, 120)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="fortitude_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#fortitude_tile)">
+<path fill="url(#fortitude_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#fortitude_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(232,196,110)" d="M 256 86 L 404 136 L 392 280 C 380 360 324 412 256 444 C 188 412 132 360 120 280 L 108 136 Z"></path>
+<path fill="rgb(160,120,52)" d="M 256 86 L 404 136 L 392 280 C 380 360 324 412 256 444 Z"></path>
+<path fill="rgb(255,246,214)" d="M 232 160 L 280 160 L 280 230 L 340 230 L 340 278 L 280 278 L 280 370 L 232 370 L 232 278 L 172 278 L 172 230 L 232 230 Z"></path>
+</g>
+</svg>

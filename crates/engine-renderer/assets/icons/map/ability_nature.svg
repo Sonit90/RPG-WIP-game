@@ -1,0 +1,15 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="nature_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+<stop offset="0" stop-color="rgb(12,34,14)"></stop>
+<stop offset="1" stop-color="rgb(40,96,40)"></stop>
+</linearGradient>
+<clipPath id="nature_tile"><path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#nature_tile)">
+<path fill="url(#nature_panel)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+<path fill="rgb(150,226,96)" d="M 420 92 C 420 300 300 410 130 410 C 120 240 230 100 420 92 Z"></path>
+<path fill="rgb(90,180,64)" d="M 420 92 C 420 300 300 410 130 410 Z"></path>
+<path fill="none" stroke="rgb(20,60,20)" stroke-width="16" d="M 110 430 C 200 340 300 230 390 130"></path>
+</g>
+</svg>

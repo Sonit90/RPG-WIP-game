@@ -7,6 +7,7 @@
 //! These use the same pipeline, constant buffers and depth state as `Renderer::render_world`,
 //! so a failure here is a failure of the path the window runs.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

@@ -1,0 +1,609 @@
+# Shadows
+
+What the engine draws shadows with, why each piece is the way it is, what it costs, and how
+to find out when it goes wrong.
+
+The code is `crates/engine-renderer/src/shadow/` (nine modules), the shader half is
+`crates/engine-renderer/shaders/scene_frame.hlsli` and `shadow_depth.hlsl`, and the settings
+the player sees are `crates/engine-settings/src/graphics.rs`. Everything below is about those
+files; where a number appears here it is the number in the code, and where the two disagree
+the code is right and this document is stale.
+
+## The shape of a frame
+
+```text
+extract ──► RenderWorld ──┬─► shadow.prepare()     cascades, caster lists      CPU
+                          │
+                          ├─► shadow.record()      depth-only, into the atlas   GPU
+                          │       one viewport per view, no render target
+                          │
+                          ├─► depth prepass        every preset: the camera pass is drawn primed
+                          │       (contact shadows then sample its depth in place)
+                          │
+                          └─► mesh pass            samples the atlas, shades      GPU
+```
+
+The shadow stage sits between `begin_recording` and the mesh pass in
+`Renderer::render_frame`, bracketed by its own GPU-timer query pair, and it is the same code
+the offscreen test path runs — `offscreen::render_scene_shadowed` drives the real
+`ShadowRenderer`, not a copy of it, which is what makes a pixel test evidence about the game.
+
+There is one new pass and one conditional one. Nothing else about the frame changed shape.
+
+## Directional light: cascaded shadow maps
+
+### Splitting
+
+`cascade::split_cascades` divides the view distance into up to four slices at the distances a
+preset names — 15 m, 50 m, 150 m, 320 m by default. Practical-split schemes (a blend of
+logarithmic and uniform) were not used: the distances are content decisions here, and a
+scene whose combat happens inside thirty metres wants a near cascade sized for combat rather
+than for a formula.
+
+### One sphere per cascade, anchored at the origin
+
+Each slice's eight frustum corners get a **bounding sphere**, not a bounding box. A sphere's
+radius does not change when the camera rotates, so the cascade's extent — and therefore its
+texel size — is constant as you turn. A box's is not, and a shadow whose resolution changes
+while you turn shimmers.
+
+The light's view matrix then looks from the **world origin**, not from the cascade's centre:
+
+```rust
+let view = Mat4::look_at(Vec3::ZERO, direction, up);
+```
+
+This is the subtle half of stabilisation and it was got wrong once during implementation. If
+the eye follows the cascade centre, the light space itself translates as the camera moves,
+and snapping a coordinate to a texel grid inside a space that is itself sliding snaps nothing.
+With the eye pinned, light space is fixed to the world, and snapping the centre's light-space
+position to a texel makes the cascade advance in whole texels:
+
+```rust
+let texel = diameter / resolution;
+let snap = |v: f32| (v / texel).floor() * texel;
+```
+
+`stabilize` can be turned off in `ShadowSettings`; it exists so a test can show the difference
+rather than because anyone should.
+
+### Extrusion, not a tight near plane
+
+The orthographic near plane is pushed back by `caster_extrusion` (60 m) and the **atlas**
+depth pipelines are created with `DepthClipEnable: false`. An object behind the cascade's
+near plane still casts into it — a wall outside the slice still shadows the ground inside
+it — without needing a second "caster bounds" pass to widen the projection.
+
+**The camera's depth prepass is the exception, and getting that wrong was a real bug.** The
+prepass shares the shadow module's pipeline code, so it originally inherited the clipping
+setting too. For the camera that is wrong: the main pass clips, so the prepass has to clip.
+With clipping off, the part of a surface between the eye and the near plane is *flattened
+onto depth 0* instead of being discarded, and every real fragment behind it then fails the
+main pass's `LESS_EQUAL` and is never shaded — a swathe of unlit background with no shadow
+in it, moving as the camera turns, and only at High and Ultra because only they run a
+prepass. `shadow/pipeline.rs` now sets `DepthClipEnable: is_prepass`, and a unit test asserts
+the two passes get opposite settings.
+
+### Blending
+
+`blend_fraction` (0.1) of each cascade's depth is a cross-fade with the next one, computed by
+`cascade_blend` on the CPU side and applied in `directional_shadow` in the shader by sampling
+both cascades and lerping. The seam is what a player would otherwise see as a line drawn
+across the ground; `tests/shadow_render.rs::the_floor_shows_no_seam_where_one_cascade_meets_the_next`
+asserts it is not there.
+
+## Bias
+
+Three biases, because they fail differently:
+
+| Bias | Where it is applied | What it fixes | Default |
+| --- | --- | --- | --- |
+| constant depth | rasterizer state, baked per PSO | flat surfaces facing the light | 200 units |
+| slope-scaled | rasterizer state, same PSO | surfaces at a glancing angle | 2.5 |
+| normal offset | the shader, before projecting | the rest, without peter-panning | 1.4 texels, capped at 0.35 m |
+
+Depth bias lives in the pipeline state rather than in a constant because D3D12 puts it there;
+that is why there are two variants of every depth pipeline — a biased one for shadow views and
+an unbiased one for the camera's prepass, where bias would be a lie about scene depth.
+
+The normal offset is scaled by `cascade_texel_world`, so "1.4 texels" means the same physical
+nudge in every cascade instead of being invisible near and enormous far.
+
+## Filtering
+
+`PcfKernel` is `Single`, `Poisson4` (the default above Low), `Poisson6` (Ultra), `Poisson8`, or
+one of the two grids `Tap3x3` and `Tap5x5`. Every tap goes through a `SamplerComparisonState`
+with `LESS_EQUAL` and a white border, so the hardware does the comparison and the bilinear
+filter in one fetch — a six-tap disc is six fetches covering twenty-four texels. Each width is
+its own unrolled branch, because a dynamic loop around a texture fetch is markedly slower and
+costs registers in the frame's largest shader.
+
+### The disc
+
+`vogel_disc` places `n` taps on a golden-angle spiral of `filter_radius_texels` (2.5), rotated
+per pixel by interleaved gradient noise. A golden-angle spiral rather than a stored Poisson
+set, because it is well spread for *any* tap count — 4, 6 and 8 are one piece of code and one
+radius to tune rather than three tables to keep in agreement.
+
+**The rotation is a function of the pixel and of nothing else.** There is no temporal
+accumulation in this engine and no TAA, so an angle that changed per frame would turn a static
+penumbra into boiling noise. Fixed per pixel it is a dither that stands still.
+
+Measured against the 5×5 grid it replaced, on the same scene: the same 6-pixel penumbra, drift
+on a one-centimetre camera move of 0.034 against 0.031, local noise 0.108 against 0.064 — and
+six fetches instead of twenty-five, which is 14 % of the frame at every resolution. The
+four-tap disc beats the 3×3 grid on penumbra, noise *and* stability for five fewer fetches.
+`docs/performance/shadows/03-shadow-filtering.md` has the radius sweep and the rest.
+
+The two grids are kept so the tests have something to compare against; no preset selects the
+5×5 any more.
+
+`clamp_to_tile` keeps every tap half a texel inside its own atlas rectangle. Without it a
+kernel at a tile edge reads its neighbour, and one light's depth showing up inside another's
+shadow is a bug that looks exactly like a light leak.
+
+## Culling and levels of detail
+
+`ShadowCasterCollector` walks the same `RenderWorld` the camera culls, once per view, and
+keeps a caster when its bounds intersect the view's volume. It reuses `RenderList` and the
+counting-sort batching the main pass uses; there is no second scene representation.
+
+The lists are grouped by material and mesh with the camera's own counting sort, over the
+renderer's real key space (`materials.len() x meshes.len()`), so a shadow view draws one
+instanced batch per distinct mesh rather than one draw per caster. Until 2026-10 it was
+called with `usize::MAX` for both, which overflowed the bucket limit and fell back to gather
+order: environment parts are interleaved and level-of-detail swaps reuse slots last-in-first-
+out, so that was a draw per caster per view — 1,506 cascade draws in the 1,071-object
+environment stress, 54 grouped. The sort walks only the keys a list contains (a shadow view
+holds a few dozen of the graveyard's 7,332), because walking and clearing every bucket for
+every view cost more than the instancing saved.
+
+Then `shadow_lod_for` picks one of four levels:
+
+| Level | Meaning |
+| --- | --- |
+| `Full` | the geometry the camera draws |
+| `Reduced` | one level coarser, if the entity has one |
+| `Simplified` | the coarsest stand-in the entity has |
+| `None` | not drawn into this view at all |
+
+Two rules choose it: each cascade beyond the first steps down `levels_per_cascade` (1) levels,
+and any caster whose shadow would cover fewer than `cull_texels` (2, or 3 at Low) texels drops
+to `None`.
+
+The **receiving** half is `filter_reduction_cascade` (1): a cascade at or beyond that index
+filters with `PcfKernel::cheaper()` instead of the full kernel — six taps inside 15 m and four
+beyond it at Ultra. The floor is four taps and not one, because four and six give the same
+penumbra width and a single tap does not: stepping to it would draw a seam across the world at
+the cascade split. It is worth about 1 % of the frame, which is small because Milestone 4
+already took the twenty-five-tap kernel away from the far cascades. A pebble at 140 m occupies a fraction of a texel of the last cascade; drawing it is
+a draw call that changes nothing, and a scene made of pebbles is thousands of them.
+
+The stand-in meshes come from the model's own LOD chain —
+`engine_presentation::environment::shadow_lods` fills them — so a shadow LOD is never a
+separate asset somebody has to remember to author.
+
+## Static casters, recorded once
+
+The level's own geometry — the environment, the terrain, the water — is spawned with
+`RenderWorld::spawn_static`, and every change to a static slot (spawned, despawned, moved,
+hidden, re-shaded: a level-of-detail swap, an editor edit) bumps
+`RenderWorld::static_generation`. Everything else is a mover: training dummies and rigid
+stand-ins, which `extract` moves every frame. Characters are the skinned list, as before.
+
+`shadow::static_cache` keeps, per view, the static casters gathered for it — the grouped list
+and the instance data composed in batch order — and gathers them again only when they are
+stale. The frame then gathers just the movers, from one short list built once per frame, and
+memcpys each view's cached instances into the upload ring. What is cached is the
+*recording*, not the depth: the GPU still rasterizes every static caster into the atlas every
+frame, which is a few hundredths of a millisecond, while restoring a cached depth tile would
+cost a full-tile copy per view per frame — more than drawing the casters again.
+
+| View | Stale when |
+| --- | --- |
+| every view | the static generation or the shadow settings changed |
+| a local view | its light and face are keyed with the exact view-projection; static lights never move, so it is gathered once per light per scene, whatever the selection does frame to frame |
+| a cascade | its snapped light-space centre has moved more than the margin (15 % of its radius) from where the cached list was gathered |
+
+The cascade case is exact: the list is gathered for the box grown by the margin
+(`CascadeView::expanded_frustum`), so it holds every caster any box within the margin could
+need, and the extras land outside the tile, where the viewport clips them, or past its far
+plane, where they write the clear depth. The reuse test is a containment test, not an
+equality: the cascade radius is computed from the rotated frustum and differs in its last bits
+from one camera angle to the next, and an equality test rebuilt two views every frame the
+camera turned. `static_cache::tests` checks over a walk and a turn that a reused list is a
+superset of an exact gather, with the same level of detail for every caster.
+
+Measured at 720p, cache off against on in the same binary: the shadow stage's preparation went
+from 0.075 to 0.003 ms in the graveyard and from 0.100 to 0.004 ms in the environment stress,
+the frame from 0.497 to 0.414 and 0.316 to 0.234 ms. With the camera turning at 1.5 rad/s the
+graveyard rebuilds 0.08 views a frame and the environment stress 0.35 (level-of-detail swaps
+bump the generation), 0.004 and 0.011 ms of preparation.
+
+## Who casts and who receives
+
+`engine_render_data::ShadowCasting` carries two flags and up to two stand-in meshes, per
+renderable. Opaque scene geometry is `CASTS_AND_RECEIVES` by default. Deliberate exceptions:
+
+| Thing | Setting | Why |
+| --- | --- | --- |
+| ground / floor | `RECEIVES_ONLY` | a flat plane's shadow is the plane |
+| ridges (distant backdrop) | `RECEIVES_ONLY` | they stand past every cascade |
+| the sky dome | `NONE` | a shadow across the sky is unexplainable |
+| target markers, decals | `NONE` | they are already a lie about lighting |
+| particles, VFX | `NONE` | thousands of quads for a shadow nobody reads |
+| debug geometry, UI | `NONE` | not part of the world |
+| skinned characters | casts and receives | the shadows a player actually watches |
+
+Scene props go through `engine_presentation::environment::base_casting`, which is the one
+place that decision is made for the environment library; gameplay entities go through
+`extract`, and the two agree on floors deliberately.
+
+## Alpha-tested casters
+
+A cutout material's silhouette is in its texture, so the depth pass has to run a pixel shader
+that `discard`s. `ShadowSurface::AlphaTested` selects a PSO with `PSAlpha` from
+`shadow_depth.hlsl` and `CULL_MODE_NONE`; `ShadowSurface::Opaque` has a **null pixel shader**,
+which is the fast path and stays the fast path for almost everything. The cutoff comes from
+the same `material.hlsli` constant buffer the mesh pass reads, so the two cannot disagree
+about where a leaf ends.
+
+Content that exercises it: `leaf_screen` in the environment library, and bay D of the shadow
+course.
+
+## Local lights
+
+### Which lights a pixel evaluates
+
+The frustum is a fixed grid of clusters — 16 tiles across, 9 down, 24 exponentially-spaced
+depth slices — and every frame each light is assigned on the CPU to the clusters its bounding
+sphere reaches. One `u32` per cluster, bit `i` for light `i`; the shader finds its cluster
+from `SV_Position` and the view depth and walks the mask with `firstbitlow`.
+
+```text
+   screen tiles x depth slices          a fragment evaluates the lights of one cluster,
+   +----+----+----+                     which in the shipping arena is one or none, and
+   |    |    |####|  <- one cluster     in a 32-light scene is at most nine
+   +----+----+----+
+```
+
+The grid is a `ByteAddressBuffer` in the upload ring, bound as a **root SRV** at `t3`. It was
+in the frame constant buffer first and that cost 0.34 ms a frame at 4K: 13.5 KB took the
+buffer past the hardware's constant cache and made every read of it slower, cascade matrices
+included. `crates/engine-renderer/src/light_cluster.rs` carries the rest of the reasoning.
+
+Assignment is on the CPU and output-sensitive — a light walks the clusters its projected
+bounds cover, not all 3456 — which is why there is no compute pass: the renderer has no
+compute pipelines at all, and one for a table this small would be the larger change.
+
+`--lights <count>` adds decorative point lights to any scene as a stress control, and
+`--shadow-tweak clusters=off` switches the grid off so the two paths can be compared in one
+binary.
+
+### The lights themselves
+
+`engine_render_data::LocalLight` is a point or a spot. A light asks for shadows with
+`casts_shadow` and a `priority`; the renderer decides.
+
+`select_shadow_lights` rejects what cannot matter — not asking, out of view, past
+`local.max_distance` — scores the rest with `shadow_importance`, and spends the budget greedily
+on the highest scores. It **skips rather than stops**: a point light that does not fit is passed
+over and a later spot light that does fit still gets its view.
+
+```text
+importance = intensity x (range / distance)^2 x range fade x 4 ^ priority
+```
+
+Four per step of priority is a thumb on the scale, not an override: a boss's light at priority 2
+outranks a decorative one four times closer, and a priority-1 light on the far side of the world
+still loses to the torch burning next to the player. Both directions are asserted.
+
+`local.min_importance` (0.02) is a *floor* beneath the budget's ceiling. Without it a budget
+with room left in it is always spent, and the last views go to lights whose shadow map is four
+hundred texels of nothing.
+
+Measured: thirty-six lights all asking for shadow maps cost 0.042 ms more at 4K than the same
+thirty-six asking for none. See `docs/performance/shadows/05-shadow-lod.md`, which also records
+why per-light map *resolution* was rejected.
+
+The budget is counted in **views**: a spot is one, a point is six (the cube faces of
+`CUBE_FACE_DIRECTIONS`). Local views are 512² — a torch lights a few metres where a cascade
+covers a hundred, so its texels are already far denser at half the side, and halving the side
+buys four times as many views out of the same atlas.
+
+Range is `local.max_distance` (40 m). Past that a light lights but does not shadow, which is
+why bay F of the shadow course has to be walked into to be judged.
+
+## Contact shadows
+
+Short-range screen-space shadows for the contact region a 2048² cascade cannot resolve: a
+foot on the ground, a crate against a wall. `contact_shadow` marches `contact.steps` (8)
+samples along the light direction through this frame's depth buffer, up to `contact.length`
+(0.35 m), with a `thickness` (0.06 m) test to avoid shadowing through thin geometry. It only
+ever *reduces* the shadow factor, never invents one, and it is disabled past
+`contact.max_distance` (20 m at Ultra, 15 m at High).
+
+### It is a pass, at half resolution
+
+The march runs in `shaders/contact.hlsl`, as a fullscreen triangle into a target of its own at
+`contact.divisor` (2) on each axis — a quarter of the rays. It used to be a function called
+from the mesh pixel shader, and at 4K that was 1.31 ms of a 2.50 ms frame, the largest single
+item in it. It is 0.38 ms now.
+
+The target is `R16G16_FLOAT`: red the shadow factor, green the view distance the ray started
+from. The green channel is what makes half resolution look like full resolution —
+`contact_shadow_at` in `scene_frame.hlsli` weights each of the four neighbouring texels by how
+well its recorded distance agrees with the pixel being shaded, so a foot's contact shadow does
+not smear onto the wall behind it, and where no neighbour agrees the answer is "unoccluded"
+rather than a guess.
+
+The normal the march lifts its origin along is reconstructed from the depth buffer's own
+screen-space derivatives: this is a forward renderer and there is no G-buffer to read one from.
+
+The gating stayed in the mesh shader — `receives_shadow` and the sun-facing test — so a
+surface that does not receive shadows is still not darkened by this.
+
+`docs/performance/shadows/02-contact-shadows.md` has the measurements, including why quarter
+resolution and a four-step march were both rejected.
+
+The march starts **half a step off the surface along the normal**. Starting on the surface
+itself makes the early samples project back onto that same surface, so on a floor the march
+reads the floor's own screen-space slope as an occluder; below a certain eye height that
+difference lands inside the thickness window across most of the ground at once, and which
+part depends on the camera's angle — grey that swims about as you turn.
+
+It needs the camera's depth as a texture, and it reads the depth buffer itself. The march runs
+between the depth prepass and the camera pass, when nothing writes depth, so the buffer —
+`R32_TYPELESS`, with a `D32_FLOAT` DSV and an `R32_FLOAT` SRV — is moved to
+`PIXEL_SHADER_RESOURCE` for the march and back to `DEPTH_WRITE` after it
+(`ShadowRenderer::copy_scene_depth` / `finish_scene_depth`). It used to `CopyResource` the
+depth buffer into a texture of its own every frame: 0.10 ms at 4K and 33 MB of VRAM, gone
+with the same picture. No read-only DSV and no second set of PSOs was needed, because nothing
+is bound as depth while the march reads it. The offscreen test path still copies; it has its
+own depth texture.
+
+One consequence worth knowing: the depth prepass forced `depth_stencil_desc()` from `LESS` to
+`LESS_EQUAL`, because after a prepass the main pass draws each surface at exactly the depth
+already there. That change is why `tests/depth_ordering.rs` now asserts that coplanar surfaces
+keep the *last* one drawn.
+
+### Depth priming
+
+The prepass runs at **every** preset, not only where contact shadows need it, and the camera
+pass draws everything it covered with depth writes **off** (`DepthMode::Primed`): same
+`LESS_EQUAL` test, nothing written, because the buffer already holds exactly that depth. That
+is for the pixel shader, not the depth buffer. Every mesh pixel shader can `discard` (the fade
+dither, the alpha test), and a pipeline that can discard *and* writes depth makes the hardware
+shade a fragment before it may test it; with writes off the test moves ahead of the shader and
+a hidden fragment is never shaded. Pipeline statistics (`--pipeline-stats`) measured the mesh
+pass at 1.65 pixel-shader invocations per screen pixel in the arena and the environment stress,
+and 1.000 primed; the pass fell by a third to two fifths at 1440p and 4K.
+
+The prepass draws the camera's own lists: the rigid `visible` list and every whole character
+(caster or not). What the camera may dither this frame is split out of `visible` first — a
+faded entity, or a see-through one whose bounds reach the camera fade's near zone or its tube
+(`may_be_dithered`, conservative against the shader's `camera_fade_opacity`) — and drawn after
+the primed batches with ordinary depth writes. The prepass used to write those surfaces whole,
+so the dither's holes kept the occluder's depth and hid what they should have shown.
+
+The floors and the backdrop are never see-through (`environment::camera_may_fade`): they have
+no collision either, and were marked see-through with the decoration until it turned out that
+the ground, the arena floor and the sky dome — most of the screen — were then always in the
+split, and always shaded wherever they were hidden.
+
+`--shadow-tweak prime=off` draws without priming and `prime-prepass=off` keeps the prepass to
+High and Ultra, for A/B runs.
+
+## The atlas
+
+One `R32_TYPELESS` texture, a `D32_FLOAT` DSV to draw into and an `R32_FLOAT` SRV to sample,
+cleared to 1.0. Every cascade and every local view is a rectangle inside it:
+
+```text
+tile = one cascade's resolution
+
++--------+--------+
+| casc 0 | casc 1 |    cascades take slots in order; local views fill the
++--------+--------+    slots left over, then rows beneath, each slot
+| casc 2 |LLLL LLLL|   subdivided into 512-texel local tiles
++--------+--------+
+```
+
+### Why an atlas rather than a texture per light
+
+§24 of the plan asked for this decision to be justified rather than assumed. For **this**
+backend it is an atlas, for three reasons that are properties of this renderer and not general
+truths:
+
+* **One shader-visible descriptor heap.** The renderer binds a single CBV/SRV/UAV heap per
+  frame and never switches it. A texture per light is a descriptor per light and a table bind
+  per light in the lighting pass; the atlas is one SRV bound beside the material table.
+* **Root arguments are scarce.** Per-light maps need a table per light or an unbounded array.
+  The atlas needs neither: a light's tile is four floats of UV rectangle in a constant buffer
+  the pass already binds.
+* **One barrier.** The stage ends with a single `DEPTH_WRITE → PIXEL_SHADER_RESOURCE`
+  transition instead of one per map.
+
+The cost: every view shares one format and one resolution class, and a cascade cannot be
+resized without recreating the whole atlas. Neither bites — the cascades are one size by
+construction, and a resolution change already recreates the resource and stalls once.
+
+The layout is **fixed, not packed**. A packer would waste less space and would also move a
+light's tile between frames as the casting set changed; a tile that moves is a tile whose
+filtering bleeds across its neighbour's edge for a frame. A view's rectangle depends only on
+its index.
+
+## Quality presets
+
+`ShadowPreset` in `shadow/settings.rs` is the only place a quality level becomes numbers.
+Every setting the player can choose is implemented — there is no preset field that the
+renderer ignores.
+
+| | Off | Low | Medium | High (default) | Ultra |
+| --- | --- | --- | --- | --- | --- |
+| cascades | – | 2 | 3 | 3 | 4 |
+| resolution | – | 1024 | 1024 | 1536 | 2048 |
+| shadow distance | – | 35 m | 150 m | 150 m | 320 m |
+| PCF | – | 1 tap | 4-tap disc | 4-tap disc | 6-tap disc |
+| local views | – | 0 | 4 (no point lights) | 8 | 16 |
+| contact shadows | – | off | off | on, 8 steps, 15 m, ½ res | on, 8 steps, 20 m, ½ res |
+| atlas | 0 | 2048×1024, 8 MB | 2048×2048, 16 MB | 3072×3072, 36 MB | 4096×5120, 80 MB |
+
+High is 1536 rather than 2048: 2.25× Medium's texels for 2.25× its memory, where the next
+power of two is four times both for a difference that has to be looked for once contact
+shadows are resolving the seam anyway. `validated()` therefore rounds a resolution to a
+multiple of 256 rather than to a power of two — nothing needed a power of two, and the rule's
+only effect was to make 1536 impossible.
+
+Low's shadow distance is 35 m rather than 50: two cascades over a shorter range puts 40 % more
+texels on the ground the player is standing on, and past it there are no shadows at all.
+
+Medium turns point lights **off** rather than rationing them: one point light is six views, so
+a four-view budget with points enabled is one torch and nothing else. High's eight views fit
+in the quarter of the atlas three cascades leave empty, so they cost no extra memory at all.
+A test (`a_preset_that_allows_point_lights_can_afford_one`) fails any preset that permits
+point lights on a budget smaller than six — the bug it exists to prevent is a setting that is
+silently never applied, which is what High shipped with for an afternoon.
+
+`ShadowSettings::validated()` repairs rather than rejects: out-of-range values are clamped,
+resolutions are rounded to a power of two, a hand-edited cascade list is re-sorted. A shadow
+configuration is never worth failing a frame over.
+
+## Settings and controls
+
+The player's setting is `graphics.shadows` in `settings.cfg`, one of `off`, `low`, `medium`,
+`high`, `ultra`, persisted by the existing settings system and validated on load.
+
+**ESC → SETTINGS → GRAPHICS** is where a player changes it: the SHADOW QUALITY dropdown under
+the display settings, levels cheapest first, with a line under it saying what the chosen level
+buys. Nothing changes until **APPLY**, which applies and saves it (BACK forgets the choice).
+APPLY does not close the menu: the point is to look at the result and try the next one down if
+it is not fast enough.
+
+| Control | What it does |
+| --- | --- |
+| the GRAPHICS screen | the player's way in: pick a level from the dropdown, APPLY applies and saves it |
+| `F4` | cycles the quality and **saves it** — the same code path the screen uses, so the key and the screen cannot disagree |
+| `F7` | cycles the debug view: off → cascade tint → shadow factor → the atlas → caster bounds |
+| `F5` | the developer overlay, which carries the shadow statistics block |
+| `--shadows <level>` | overrides the setting for one run **without** writing it back |
+| `--shadow-tweak key=value,...` | one field of the preset for one run, never written back: `cascades`, `res`, `distance`, `blend`, `pcf`, `contact`, `contact-steps`, `contact-length`, `contact-distance`, `contact-divisor`, `local`, `local-views`, `filter-lod`, `min-importance`, plus the A/B controls `clusters`, `local-lights`, `prime`, `prime-prepass`, `static-cache`, `cache-margin` and the trade-off `far-movers` |
+| `--pipeline-stats` | counts the mesh pass's pixel-shader invocations per screen pixel, in three sections, into the run profile |
+| `--camera-spin <rad/s>` | turns the follow camera on its own, for measuring what is cached against the view |
+| `--fixed-step <ms>` | advances every frame by a constant, so two builds capture the same frame (`--screenshot`) |
+
+`--shadows` deliberately does not persist: it is a measurement control, and a benchmark run
+must not change what the player sees next time they start the game.
+
+Changing quality recreates the atlas, which means `wait_for_idle()` — a stall. That is why the
+screen is a row of ticks and not a slider that would fire every frame while it was dragged,
+and why the **application** moves the tick after the renderer has accepted the level rather
+than the click moving it: switching can fail, and a screen that had already ticked the new row
+would be showing a level that is not running.
+
+## Debugging
+
+* **F7 view 1 — cascade tint.** Each pixel takes the colour of the cascade it sampled, blended
+  across the transition. A visible band edge on the ground means blending is off or too narrow.
+* **F7 view 2 — shadow factor.** The factor alone on a neutral surface, with albedo and
+  lighting out of the way. Acne, peter-panning and filter width are all judged here.
+* **F7 view 3 — the atlas.** The depth texture itself, drawn bottom-left with the cascade
+  tiles outlined in red. Empty is white. This is where "the third cascade is empty" and "a
+  light got no tile" become one glance instead of a debugger session.
+* **F7 view 4 — caster bounds.** A yellow sphere at every caster's bounding sphere and a
+  small blue one at every receiver's, drawn from the same arrays the culler reads
+  (`engine_presentation::shadow_debug`). This is the view for "why is that thing not casting":
+  a sphere in the wrong place or wildly the wrong size is a bug in extraction, not in the
+  shadow pass. It is CPU geometry rather than a shader mode, which is why the F7 cycle has
+  five stops and the renderer only knows about four.
+* **F5 overlay.** Quality, cascade count, resolution, atlas size and bytes; CPU ms, GPU ms,
+  draws, triangles; casters, skinned draws, dropped-by-LOD, prepass on/off.
+* **`--report <seconds>`.** The same numbers on their own log line, plus how many local views
+  were granted and how many were refused.
+
+The debug views are not reachable from the game UI, by design: they are developer tools, and
+F7 is behind no menu a player opens.
+
+## Testing
+
+Non-GPU logic is unit-tested where it lives: splitting, sphere fitting, stabilisation,
+cascade selection and blending, LOD choice, atlas rectangles (including a non-overlap
+assertion), light selection and the budget, caster visibility, and every preset.
+
+GPU behaviour is asserted in pixels, offscreen, through the real shadow stage:
+
+* `tests/shadow_render.rs` — 11 tests: a caster darkens the floor; shadows off is evenly lit;
+  `receives = false` is not darkened; `casts = false` leaves nothing; no acne at any preset;
+  every preset renders a shadow; alpha-tested casters; no cascade seam; spot shadows; point
+  shadows; contact shadows do not darken open ground.
+* `tests/shadow_course_render.rs` — the shipping shadow course, not a synthetic scene: bay A
+  casts a shadow that disappears when shadows are switched off, no pixel gets *brighter* with
+  shadows on, bay B's hundred crates are all casters, and the atlas debug view draws the atlas.
+  `every_preset_that_draws_a_shadow_draws_it_from_every_angle` sweeps 24 viewpoints across
+  three eye heights and bounds High against Medium in both directions — it is what catches a
+  bug that only appears at some camera angles at some presets, which both of the bugs above
+  were.
+* `tests/root_signature_identity.rs` — the mesh, instanced and shadow pipelines share one root
+  signature object, which is what lets the shadow pass rebind nothing but a PSO.
+
+The static-caster cache and the grouping are unit-tested where they live
+(`shadow::static_cache::tests`, `render_list::tests::the_sparse_grouping_matches_a_walk_over_every_bucket`,
+`world::tests::only_changes_to_the_static_scene_move_its_generation`). Their pictures were
+checked the other way: `--fixed-step 4` screenshots of the arena, the dungeon, the graveyard
+and the environment demo at Low through Ultra, and with `--camera-spin`, against the build
+before them — zero differing pixels in every still frame, and in three of the twelve
+spinning-camera frames at most 18 pixels by at most 5 levels, the same with the cache and
+priming switched off.
+
+The visual test bed is `--scene shadows` (`engine_environment::shadow_course`): six bays on
+flat ground — an isolated caster, a hundred crates in a grid, a line of rocks crossing every
+cascade split, alpha-tested foliage, spot lights, point lights. Flat ground on purpose: terrain
+hides acne by making it look like shading.
+
+## What it costs
+
+Release build, RTX-class desktop GPU, `--scene shadows` (152 objects, ~230–390 casters), mean
+over 900 frames:
+
+| Preset | Frame GPU (mean) | Shadow stage CPU | Shadow stage GPU | Shadow draws | Casters |
+| --- | --- | --- | --- | --- | --- |
+| Off | 0.125 ms | – | – | – | – |
+| Low | 0.177 ms | 0.014 ms | 0.016 ms | 31 | 49 |
+| Medium | 0.213 ms | 0.030 ms | 0.032 ms | 82 | 215 |
+| High | 0.342 ms | 0.037 ms | 0.065 ms | 82 | 215 |
+| Ultra | 0.422 ms | 0.045 ms | 0.071 ms | 117 | 371 |
+
+The dungeon at High, which is the heaviest shipping scene: 0.062 ms CPU, 0.079 ms GPU, 252
+draws, 151 026 triangles, 393 casters, 6 local views granted and 19 refused.
+
+Two things to read out of that table. First, High roughly doubles the frame's GPU time
+against Off — but from 0.145 ms, and most of the increase is the depth prepass and the extra
+sampling in the mesh pass rather than the shadow stage itself, which is under a tenth of a
+millisecond. Second, the shadow stage's CPU cost is flat in the presets and scales with
+casters, which is what the culling and the LOD are for.
+
+The stage allocates nothing per frame: caster lists and batch scratch are owned buffers
+reused every frame, and the constants go through the existing upload ring.
+
+## Deliberate limits
+
+* **`MAX_LOCAL_LIGHTS` is 32 per frame.** It was eight, and the lighting pass looped over all
+  eight for every pixel; `crates/engine-renderer/src/light_cluster.rs` now assigns each light
+  to the clusters of the frustum it reaches and a pixel evaluates only its own cluster's.
+  Thirty-two is the cap because a cluster's light set is one `u32` bitmask, which is what
+  keeps the whole grid to 13.5 KB and one root SRV. Going past it is a change of
+  representation rather than of a constant. See `docs/performance/shadows/01-local-light-culling.md`.
+* **`MAX_LOCAL_SHADOW_VIEWS` is 16.** The atlas is laid out for it and the frame constants
+  carry sixteen matrices.
+* **Cascade count is capped at 4**, which is the four sets of matrices and rectangles in the
+  frame constants.
+* **No cached shadow depth.** Static casters' *recording* is cached (see "Static casters,
+  recorded once"); their depth is rasterized every frame, because restoring a cached tile costs
+  more GPU than drawing it.
+* **Characters are one draw per submesh per view.** Skinned casters are not instanced; in the
+  character-heavy scenes they are now most of the shadow draws. `far-movers=off` drops them
+  (and the rigid movers) from the last cascade: graveyard shadow skinned draws 204 to 31, the
+  frame 4–7 % at 720p, for no shadow on something moving more than 50 m away. Off by default.
+* **The atlas debug view lives inside the mesh pixel shader.** It draws only where some
+  fragment covers the corner. That is a real constraint, taken knowingly: the alternative is a
+  second pipeline, root signature and draw for a developer tool.

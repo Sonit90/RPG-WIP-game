@@ -32,8 +32,12 @@
 //! has passed. [`DeferredReleaseQueue`] does the second, so releasing a resource costs a
 //! push rather than a pipeline drain.
 
-use std::cell::Cell;
+#[cfg(windows)]
+use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicI32, Ordering};
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_DEPTH_STENCIL_VALUE, D3D12_HEAP_TYPE,
     D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
@@ -41,11 +45,15 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ,
     D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
 
+#[cfg(windows)]
 /// A resource whose current state the engine tracks.
 ///
 /// Implemented by every wrapper in this module. The command context takes this rather than
@@ -66,15 +74,102 @@ pub trait TrackedResource {
     fn set_state(&self, state: D3D12_RESOURCE_STATES);
 }
 
+/// A pointer into a permanently mapped upload buffer.
+///
+/// # Why this exists rather than a bare `NonNull<u8>`
+///
+/// A raw pointer is not `Send`, and the renderer is: it is built on the thread that starts
+/// the game and moved to the one that records frames. Every mapped pointer the renderer
+/// holds points into an upload-heap resource the renderer itself owns, so moving the
+/// renderer moves the buffer and the pointer together — which is exactly the property the
+/// automatic `!Send` on a raw pointer exists to make the author state.
+///
+/// # Safety
+///
+/// The invariant this asserts, and which every construction site must uphold:
+///
+/// * the address comes from `ID3D12Resource::Map` on a buffer owned by the same object that
+///   owns this pointer, so it cannot outlive its mapping;
+/// * the mapping is never released while the pointer lives — there is no matching `Unmap`,
+///   the mapping ends with the resource;
+/// * the memory is only ever dereferenced by the thread that owns the renderer, one thread
+///   at a time. This type is deliberately **not** `Sync`: sharing it between threads would
+///   need synchronization this asserts nothing about.
+#[derive(Debug, Clone, Copy)]
+pub struct MappedPtr(std::ptr::NonNull<u8>);
+
+// SAFETY: see the invariant above. The pointee is owned by the same object as the pointer
+// and travels with it, so a move across threads moves the whole mapping.
+unsafe impl Send for MappedPtr {}
+
+impl MappedPtr {
+    /// Wraps a freshly mapped address.
+    ///
+    /// # Safety
+    ///
+    /// `pointer` must satisfy the invariant documented on the type.
+    #[must_use]
+    pub const unsafe fn new(pointer: std::ptr::NonNull<u8>) -> Self {
+        Self(pointer)
+    }
+
+    /// The address, for a write.
+    #[must_use]
+    pub fn as_ptr(self) -> *mut u8 {
+        self.0.as_ptr()
+    }
+
+    /// The address `bytes` further into the same mapping.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` must stay within the mapped length, or the result addresses memory outside
+    /// the allocation the pointer came from.
+    #[must_use]
+    pub unsafe fn add(self, bytes: usize) -> Self {
+        // SAFETY: the caller guarantees the offset stays inside the mapping, which is the
+        // same allocation `self.0` came from.
+        Self(unsafe { std::ptr::NonNull::new_unchecked(self.0.as_ptr().add(bytes)) })
+    }
+}
+
+#[cfg(windows)]
+/// A resource's current state, tracked on the CPU so a barrier can be elided.
+///
+/// An atomic rather than a `Cell` because the renderer is `Send`: it is created on the
+/// thread that starts the game and handed to the one that records frames. Only ever one
+/// thread at a time touches a resource — the barrier bookkeeping is single-threaded by
+/// construction, since the command list is — so `Relaxed` is the whole ordering that is
+/// needed. What the atomic buys is `Sync`, not synchronization.
+#[derive(Debug)]
+struct ResourceState(AtomicI32);
+
+#[cfg(windows)]
+impl ResourceState {
+    fn new(state: D3D12_RESOURCE_STATES) -> Self {
+        Self(AtomicI32::new(state.0))
+    }
+
+    fn get(&self) -> D3D12_RESOURCE_STATES {
+        D3D12_RESOURCE_STATES(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, state: D3D12_RESOURCE_STATES) {
+        self.0.store(state.0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(windows)]
 /// A GPU buffer: vertices, indices, constants or instance data.
 pub struct GpuBuffer {
     resource: ID3D12Resource,
     size: usize,
     heap_type: D3D12_HEAP_TYPE,
-    state: Cell<D3D12_RESOURCE_STATES>,
+    state: ResourceState,
     gpu_address: u64,
 }
 
+#[cfg(windows)]
 impl GpuBuffer {
     /// Creates a buffer of `size` bytes in device-local memory.
     ///
@@ -127,7 +222,9 @@ impl GpuBuffer {
                 reason: "a buffer needs a non-zero size".to_owned(),
             });
         }
+        let probe = crate::upload_timing::Probe::start();
         let resource = device.create_buffer(size, heap_type, initial_state)?;
+        probe.buffer();
         // SAFETY: FFI call returning the resource's GPU address, valid while it lives.
         let gpu_address = unsafe { resource.GetGPUVirtualAddress() };
 
@@ -135,7 +232,7 @@ impl GpuBuffer {
             resource,
             size,
             heap_type,
-            state: Cell::new(initial_state),
+            state: ResourceState::new(initial_state),
             gpu_address,
         })
     }
@@ -169,7 +266,7 @@ impl GpuBuffer {
     ///
     /// Returns [`RendererError::InvalidConfig`] if this is not an upload buffer, or
     /// [`RendererError::Api`] if mapping fails.
-    pub fn map_persistent(&self) -> Result<std::ptr::NonNull<u8>, RendererError> {
+    pub fn map_persistent(&self) -> Result<MappedPtr, RendererError> {
         if !self.is_upload() {
             return Err(RendererError::InvalidConfig {
                 reason: "only an upload-heap buffer can be mapped".to_owned(),
@@ -185,9 +282,15 @@ impl GpuBuffer {
         unsafe { self.resource.Map(0, Some(&read_range), Some(&mut mapped)) }
             .map_err(|error| RendererError::api("ID3D12Resource::Map", error))?;
 
-        std::ptr::NonNull::new(mapped.cast::<u8>()).ok_or_else(|| RendererError::InvalidConfig {
-            reason: "mapping an upload buffer produced a null pointer".to_owned(),
-        })
+        let pointer = std::ptr::NonNull::new(mapped.cast::<u8>()).ok_or_else(|| {
+            RendererError::InvalidConfig {
+                reason: "mapping an upload buffer produced a null pointer".to_owned(),
+            }
+        })?;
+        // SAFETY: the address was just returned by `Map` on `self.resource`, which this
+        // buffer owns and never unmaps — the mapping ends with the resource. That is the
+        // invariant `MappedPtr` documents.
+        Ok(unsafe { MappedPtr::new(pointer) })
     }
 
     /// Copies `data` into an upload-heap buffer.
@@ -231,6 +334,7 @@ impl GpuBuffer {
     }
 }
 
+#[cfg(windows)]
 impl TrackedResource for GpuBuffer {
     fn resource(&self) -> &ID3D12Resource {
         &self.resource
@@ -245,15 +349,220 @@ impl TrackedResource for GpuBuffer {
     }
 }
 
+#[cfg(windows)]
+/// A range of a buffer: the whole of a dedicated one, or a suballocation out of an arena.
+///
+/// # Why a mesh no longer owns a resource
+///
+/// `CreateCommittedResource` is a driver allocation, measured at about half a millisecond on
+/// the reference machine. A model's geometry is two buffers per submesh per level of detail
+/// and one constant buffer per material, so a level's content was three hundred of them —
+/// 170 ms of a 500 ms launch, for about a megabyte of data. Static geometry and material
+/// constants are written once and never resized, which is exactly the shape suballocation
+/// suits: one resource per few megabytes, and a mesh is an offset into it.
+///
+/// The slice keeps the chunk alive, so a mesh released while others still live in its chunk
+/// releases nothing, and the last one out frees the whole resource.
+#[derive(Clone)]
+pub struct BufferSlice {
+    buffer: Arc<GpuBuffer>,
+    offset: usize,
+    size: usize,
+}
+
+#[cfg(windows)]
+impl BufferSlice {
+    /// The whole of a buffer nothing else shares.
+    ///
+    /// `Arc` and not `Rc`: the renderer is moved to the thread that records frames, so
+    /// everything reachable from it has to be `Send`. The COM handles themselves already are
+    /// — asserted in `device.rs` — and the count is touched when content is loaded and
+    /// released, not per frame, so the atomic costs nothing a frame can measure.
+    #[must_use]
+    pub fn whole(buffer: Arc<GpuBuffer>) -> Self {
+        let size = buffer.size();
+        Self {
+            buffer,
+            offset: 0,
+            size,
+        }
+    }
+
+    /// The resource this range lives in.
+    #[must_use]
+    pub fn buffer(&self) -> &GpuBuffer {
+        &self.buffer
+    }
+
+    /// Where the range starts inside the resource, in bytes.
+    #[must_use]
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// How many bytes it covers.
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// The GPU virtual address of the range's first byte, for a view or a root descriptor.
+    #[must_use]
+    pub fn gpu_address(&self) -> u64 {
+        self.buffer.gpu_address() + self.offset as u64
+    }
+}
+
+#[cfg(windows)]
+/// How large one arena chunk is, in bytes.
+///
+/// Eight megabytes: a level's whole static geometry fits in one or two, and an asset larger
+/// than a chunk gets one of its own rather than being refused.
+const ARENA_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(windows)]
+/// One chunk and how much of it is spoken for.
+struct ArenaChunk {
+    buffer: Arc<GpuBuffer>,
+    used: usize,
+}
+
+#[cfg(windows)]
+/// Device-local memory for data that is written once and lives as long as the content does.
+///
+/// Never freed piecemeal: a chunk is released when the last slice out of it is, and nothing
+/// is reused in between. That is the right trade for static geometry — a level is loaded and
+/// unloaded whole — and the wrong one for anything that changes size, which is why nothing
+/// per-frame goes through here. [`crate::upload::UploadRing`] is that path.
+pub struct BufferArena {
+    chunks: Vec<ArenaChunk>,
+    state: D3D12_RESOURCE_STATES,
+}
+
+#[cfg(windows)]
+impl BufferArena {
+    /// An arena whose chunks are created in `state`. No memory until the first allocation.
+    #[must_use]
+    pub fn new(state: D3D12_RESOURCE_STATES) -> Self {
+        Self {
+            chunks: Vec::new(),
+            state,
+        }
+    }
+
+    /// Reserves `size` bytes aligned to `alignment`, growing by a chunk when nothing fits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a chunk cannot be created.
+    pub fn allocate(
+        &mut self,
+        device: &RenderDevice,
+        size: usize,
+        alignment: usize,
+    ) -> Result<BufferSlice, RendererError> {
+        if size == 0 {
+            return Err(RendererError::InvalidConfig {
+                reason: "a buffer slice needs a non-zero size".to_owned(),
+            });
+        }
+        let alignment = alignment.max(1);
+        for chunk in &mut self.chunks {
+            let offset = chunk.used.next_multiple_of(alignment);
+            if offset + size <= chunk.buffer.size() {
+                chunk.used = offset + size;
+                return Ok(BufferSlice {
+                    buffer: Arc::clone(&chunk.buffer),
+                    offset,
+                    size,
+                });
+            }
+        }
+
+        let bytes = ARENA_CHUNK_BYTES.max(size.next_multiple_of(alignment));
+        let buffer = Arc::new(GpuBuffer::new(
+            device,
+            bytes,
+            D3D12_HEAP_TYPE_DEFAULT,
+            self.state,
+        )?);
+        self.chunks.push(ArenaChunk {
+            buffer: Arc::clone(&buffer),
+            used: size,
+        });
+        Ok(BufferSlice {
+            buffer,
+            offset: 0,
+            size,
+        })
+    }
+
+    /// How many chunks have been created, and how many bytes they hold.
+    #[must_use]
+    pub fn stats(&self) -> (usize, usize) {
+        (
+            self.chunks.len(),
+            self.chunks.iter().map(|chunk| chunk.buffer.size()).sum(),
+        )
+    }
+}
+
+#[cfg(windows)]
+/// Where a buffer for a mesh or a material comes from.
+///
+/// Two callers, one code path: the renderer suballocates out of its arena, and a test or a
+/// one-off upload takes a resource of its own. Passing this rather than duplicating the
+/// upload functions is what keeps "how a mesh is uploaded" a single description.
+pub enum BufferSource<'a> {
+    /// A resource per buffer, owned by whatever the upload returns.
+    Dedicated,
+    /// A range of an arena chunk.
+    Arena(&'a mut BufferArena),
+}
+
+#[cfg(windows)]
+impl BufferSource<'_> {
+    /// Reserves `size` bytes aligned to `alignment`, however this source provides them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if a resource cannot be created.
+    pub fn allocate(
+        &mut self,
+        device: &RenderDevice,
+        size: usize,
+        alignment: usize,
+    ) -> Result<BufferSlice, RendererError> {
+        match self {
+            Self::Dedicated => Ok(BufferSlice::whole(Arc::new(GpuBuffer::new(
+                device,
+                size,
+                D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_RESOURCE_STATE_COMMON,
+            )?))),
+            Self::Arena(arena) => arena.allocate(device, size, alignment),
+        }
+    }
+}
+
+#[cfg(windows)]
 /// A 2D texture: a render target, a depth buffer, or a sampled image.
 pub struct GpuTexture {
     resource: ID3D12Resource,
     width: u32,
     height: u32,
+    /// Subresources in the chain, counting the full-size level. One for a render target, a
+    /// depth buffer or an unmipped upload; `mipmap::level_count` for a sampled texture.
+    ///
+    /// Kept on the texture because the uploader has to know how many subresources to fill
+    /// and the SRV has to say how many to read, and asking the resource description at each
+    /// of those points would be two places that could disagree with the third.
+    mip_levels: u32,
     format: DXGI_FORMAT,
-    state: Cell<D3D12_RESOURCE_STATES>,
+    state: ResourceState,
 }
 
+#[cfg(windows)]
 impl GpuTexture {
     /// Wraps an existing resource whose state is known.
     ///
@@ -271,8 +580,9 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels: 1,
             format,
-            state: Cell::new(state),
+            state: ResourceState::new(state),
         }
     }
 
@@ -295,6 +605,7 @@ impl GpuTexture {
         let resource = device.create_texture_2d(
             width,
             height,
+            1,
             format,
             D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -304,8 +615,9 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels: 1,
             format,
-            state: Cell::new(D3D12_RESOURCE_STATE_RENDER_TARGET),
+            state: ResourceState::new(D3D12_RESOURCE_STATE_RENDER_TARGET),
         })
     }
 
@@ -337,6 +649,7 @@ impl GpuTexture {
         let resource = device.create_texture_2d(
             width,
             height,
+            1,
             format,
             D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
@@ -346,8 +659,61 @@ impl GpuTexture {
             resource,
             width,
             height,
+            mip_levels: 1,
             format,
-            state: Cell::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            state: ResourceState::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
+        })
+    }
+
+    /// Creates a depth texture that can also be sampled.
+    ///
+    /// Two things separate this from [`GpuTexture::depth_buffer`], and both are required
+    /// together: the resource is created **typeless**, and the depth-stencil view names the
+    /// typed format instead of inheriting it. D3D12 refuses a shader-resource view of a
+    /// `D32_FLOAT` resource — a depth format is not readable as colour — so a shadow map,
+    /// which is written as depth and read as a value, has to be `R32_TYPELESS` with a
+    /// `D32_FLOAT` DSV and an `R32_FLOAT` SRV over the same memory.
+    ///
+    /// The optimized clear value still names the typed format: it describes what a *clear*
+    /// writes, and a clear goes through the depth-stencil view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request.
+    pub fn sampleable_depth(
+        device: &RenderDevice,
+        width: u32,
+        height: u32,
+        clear_depth: f32,
+    ) -> Result<Self, RendererError> {
+        use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_TYPELESS,
+        };
+        let clear_value = D3D12_CLEAR_VALUE {
+            Format: DXGI_FORMAT_D32_FLOAT,
+            Anonymous: D3D12_CLEAR_VALUE_0 {
+                DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                    Depth: clear_depth,
+                    Stencil: 0,
+                },
+            },
+        };
+        let resource = device.create_texture_2d(
+            width,
+            height,
+            1,
+            DXGI_FORMAT_R32_TYPELESS,
+            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            Some(clear_value),
+        )?;
+        Ok(Self {
+            resource,
+            width,
+            height,
+            mip_levels: 1,
+            format: DXGI_FORMAT_R32_TYPELESS,
+            state: ResourceState::new(D3D12_RESOURCE_STATE_DEPTH_WRITE),
         })
     }
 
@@ -363,21 +729,53 @@ impl GpuTexture {
         format: DXGI_FORMAT,
         initial_state: D3D12_RESOURCE_STATES,
     ) -> Result<Self, RendererError> {
+        Self::with_mips(device, width, height, 1, format, initial_state)
+    }
+
+    /// Creates a plain texture with `mip_levels` subresources.
+    ///
+    /// The chain is *allocated* here and filled by
+    /// [`crate::upload::StagingUploader::queue_texture_mips`]. A texture whose lower levels
+    /// were never written samples garbage at distance rather than failing, so the two calls
+    /// belong together and the uploader checks the count it is given against this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::Api`] if the device rejects the request.
+    pub fn with_mips(
+        device: &RenderDevice,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+        format: DXGI_FORMAT,
+        initial_state: D3D12_RESOURCE_STATES,
+    ) -> Result<Self, RendererError> {
+        let mip_levels = mip_levels.max(1);
+        let probe = crate::upload_timing::Probe::start();
         let resource = device.create_texture_2d(
             width,
             height,
+            mip_levels,
             format,
             D3D12_RESOURCE_FLAG_NONE,
             initial_state,
             None,
         )?;
+        probe.resource();
         Ok(Self {
             resource,
             width,
             height,
+            mip_levels,
             format,
-            state: Cell::new(initial_state),
+            state: ResourceState::new(initial_state),
         })
+    }
+
+    /// Subresources in this texture's mip chain, counting the full-size level.
+    #[must_use]
+    pub fn mip_levels(&self) -> u32 {
+        self.mip_levels
     }
 
     /// Size in pixels.
@@ -391,8 +789,85 @@ impl GpuTexture {
     pub fn format(&self) -> DXGI_FORMAT {
         self.format
     }
+
+    /// Bytes one texel occupies, or `None` for a format nothing uploads through.
+    ///
+    /// Only the formats the engine actually stages data into are listed. A format reaching
+    /// here that is not one of them means an upload is about to compute the wrong row pitch
+    /// and copy garbage, so it returns `None` and the caller reports it rather than guessing
+    /// a size from a format it does not understand.
+    #[must_use]
+    pub fn bytes_per_texel(&self) -> Option<usize> {
+        self.layout()
+            .filter(|layout| layout.block == 1)
+            .map(|layout| layout.bytes)
+    }
+
+    /// How this texture's format is laid out in memory, or `None` for a format nothing
+    /// uploads through.
+    ///
+    /// Block-compressed formats do not have a bytes-per-texel at all — BC1 is eight bytes for
+    /// a 4x4 block whatever a single texel might mean — so the uploader asks this instead and
+    /// computes row pitches in blocks. Keeping the two in one table is what stops a new
+    /// format being added to one and forgotten in the other.
+    #[must_use]
+    pub fn layout(&self) -> Option<FormatLayout> {
+        use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC5_UNORM,
+            DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        };
+        match self.format {
+            DXGI_FORMAT_R8_UNORM => Some(FormatLayout { block: 1, bytes: 1 }),
+            // sRGB is the same four bytes; the colour space is in how the *view* reads them,
+            // not in how many bytes a row occupies.
+            DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => {
+                Some(FormatLayout { block: 1, bytes: 4 })
+            }
+            DXGI_FORMAT_BC1_UNORM | DXGI_FORMAT_BC1_UNORM_SRGB => {
+                Some(FormatLayout { block: 4, bytes: 8 })
+            }
+            DXGI_FORMAT_BC5_UNORM => Some(FormatLayout {
+                block: 4,
+                bytes: 16,
+            }),
+            _ => None,
+        }
+    }
 }
 
+/// How many bytes one block of a format occupies, and how many texels a block covers.
+///
+/// An uncompressed format is described as a block of one texel, so the row-pitch arithmetic
+/// is the same expression for both kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatLayout {
+    /// Texels along each edge of a block. 1 for an uncompressed format, 4 for BC.
+    pub block: u32,
+    /// Bytes one block occupies.
+    pub bytes: usize,
+}
+
+impl FormatLayout {
+    /// Bytes one row of blocks occupies for an image `width` texels across.
+    #[must_use]
+    pub fn row_pitch(&self, width: u32) -> usize {
+        width.div_ceil(self.block) as usize * self.bytes
+    }
+
+    /// Rows of blocks in an image `height` texels tall.
+    #[must_use]
+    pub fn rows(&self, height: u32) -> usize {
+        height.div_ceil(self.block) as usize
+    }
+
+    /// Bytes a whole image of this size occupies.
+    #[must_use]
+    pub fn image_size(&self, width: u32, height: u32) -> usize {
+        self.row_pitch(width) * self.rows(height)
+    }
+}
+
+#[cfg(windows)]
 impl TrackedResource for GpuTexture {
     fn resource(&self) -> &ID3D12Resource {
         &self.resource
@@ -407,6 +882,7 @@ impl TrackedResource for GpuTexture {
     }
 }
 
+#[cfg(windows)]
 /// Resources awaiting release, each with the fence value that must pass first.
 ///
 /// The alternative — blocking until the GPU is idle before every release — is correct and
@@ -441,6 +917,7 @@ pub struct DeferredReleaseQueue {
     peak_pending: usize,
 }
 
+#[cfg(windows)]
 impl DeferredReleaseQueue {
     /// Creates an empty queue.
     #[must_use]
@@ -509,6 +986,7 @@ impl DeferredReleaseQueue {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::*;
 
     /// The queue's ordering logic, exercised without D3D12 resources.
@@ -558,6 +1036,7 @@ mod tests {
         assert_eq!(releasable_prefix(&[], 100), 0);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_new_queue_is_empty() {
         let queue = DeferredReleaseQueue::new();

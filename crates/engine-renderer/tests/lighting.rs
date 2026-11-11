@@ -5,6 +5,7 @@
 //! compare renders against each other rather than against magic colours, so they say
 //! something about the relationship between geometry and light rather than about a constant.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

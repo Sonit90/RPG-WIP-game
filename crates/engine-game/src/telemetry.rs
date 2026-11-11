@@ -63,7 +63,7 @@ pub struct TargetTotals {
 /// Allocation: the per-ability totals are a fixed array, and the per-target list and its
 /// slot index are `Vec`s that are cleared rather than freed on reset. A session that has
 /// been reset a hundred times allocates as much as one that has never been.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct CombatMeter {
     abilities: [AbilityTotals; ABILITY_SLOTS],
     targets: Vec<TargetTotals>,
@@ -73,11 +73,41 @@ pub struct CombatMeter {
     total_damage: f64,
     total_healing: f64,
     total_overkill: f64,
+    /// Damage the owner took, which is a different question from the damage it dealt.
+    total_damage_taken: f64,
+    /// Whose meter this is.
+    ///
+    /// [`EntityId::INVALID`] until a fight names an owner, which is what every existing
+    /// caller does implicitly by never having had an enemy: with no owner the meter counts
+    /// every damage event, exactly as it did before enemies existed.
+    owner: EntityId,
     deaths: u32,
     first_damage_at: Option<f64>,
     last_damage_at: f64,
     session_started_at: f64,
     now: f64,
+}
+
+impl Default for CombatMeter {
+    /// Written out rather than derived, because the per-ability array is longer than the
+    /// thirty-two `Default` covers. One row per ability in the game, all of them empty.
+    fn default() -> Self {
+        Self {
+            abilities: [AbilityTotals::default(); ABILITY_SLOTS],
+            targets: Vec::new(),
+            by_slot: Vec::new(),
+            total_damage: 0.0,
+            total_healing: 0.0,
+            total_overkill: 0.0,
+            total_damage_taken: 0.0,
+            owner: EntityId::INVALID,
+            deaths: 0,
+            first_damage_at: None,
+            last_damage_at: 0.0,
+            session_started_at: 0.0,
+            now: 0.0,
+        }
+    }
 }
 
 impl CombatMeter {
@@ -95,6 +125,28 @@ impl CombatMeter {
     pub fn observe(&mut self, events: &[CombatEvent], now: f64) {
         self.now = now;
         for event in events {
+            // Damage *to* the owner is never damage *by* the owner. Before enemies existed
+            // nothing could hit the player and every damage event was the player's own;
+            // with something fighting back, counting a hit taken as damage dealt would make
+            // the meter report a DPS the player never did.
+            if let CombatEvent::Damage(damage) = *event
+                && self.owner.is_valid()
+                && damage.target == self.owner
+            {
+                self.total_damage_taken += f64::from(damage.amount);
+                let index = self.target_index(damage.target);
+                let target = &mut self.targets[index];
+                target.damage += f64::from(damage.amount);
+                target.hits += 1;
+                continue;
+            }
+            if self.owner.is_valid()
+                && let CombatEvent::Damage(damage) = *event
+                && damage.source != self.owner
+            {
+                // Somebody else's damage on somebody else: not this meter's business.
+                continue;
+            }
             match *event {
                 CombatEvent::AbilityUsed { ability, .. } => {
                     if let Some(totals) = self.ability_mut(ability) {
@@ -121,6 +173,13 @@ impl CombatMeter {
                 CombatEvent::Healing {
                     amount, ability, ..
                 } => {
+                    // Healing that came from no ability is out-of-combat regeneration: the
+                    // character mending on the walk between pulls. Counting it would report
+                    // a player who took the long way round as having healed for more than
+                    // one who fought well, which is not what the meter is for.
+                    if ability == AbilityId::NONE {
+                        continue;
+                    }
                     self.total_healing += f64::from(amount);
                     if let Some(totals) = self.ability_mut(ability) {
                         totals.healing += f64::from(amount);
@@ -134,10 +193,76 @@ impl CombatMeter {
                 // Statuses and casts move no damage number. A cast that lands emits its own
                 // `AbilityUsed` and `Damage` when it does, so counting the cast as well
                 // would report every cast ability twice.
+                // A teleport moves nobody's health either; it is here for the camera.
                 CombatEvent::StatusApplied { .. }
                 | CombatEvent::StatusRemoved { .. }
                 | CombatEvent::CastStarted { .. }
-                | CombatEvent::CastEnded { .. } => {}
+                | CombatEvent::CastEnded { .. }
+                | CombatEvent::Teleported { .. }
+                // A phase change moves no health. What the new phase does arrives as damage
+                // like everything else.
+                | CombatEvent::PhaseChanged { .. }
+                // Presentation events. A projectile, an impact, an area of fire, a jump and
+                // a landing all move health through `Damage` and nowhere else — counting
+                // them here would report the same damage under two names.
+                | CombatEvent::ProjectileLaunched { .. }
+                | CombatEvent::ImpactScheduled { .. }
+                | CombatEvent::ImpactLanded { .. }
+                | CombatEvent::AreaEffectStarted { .. }
+                | CombatEvent::AreaEffectEnded { .. }
+                | CombatEvent::Jumped { .. }
+                // A telegraph is an announcement. Its damage arrives as `Damage` when it
+                // lands, and a telegraph that was interrupted moved no health at all.
+                | CombatEvent::TelegraphStarted { .. }
+                | CombatEvent::TelegraphEnded { .. }
+                | CombatEvent::Landed { .. }
+                // The dungeon's own progress. Completion, a gate and an add are facts about
+                // the run, not about damage, and the meter measures damage.
+                | CombatEvent::DungeonProgress { .. }
+                | CombatEvent::BossUnlocked { .. }
+                | CombatEvent::AddSummoned { .. }
+                | CombatEvent::DungeonCompleted { .. }
+                // The chest and its loot are not damage either.
+                | CombatEvent::ChestSpawned { .. }
+                | CombatEvent::ChestOpened { .. }
+                | CombatEvent::LootAwarded { .. }
+                | CombatEvent::LootMailed { .. }
+                | CombatEvent::MobLoot { .. }
+                | CombatEvent::MobCurrency { .. }
+                | CombatEvent::MailTaken { .. }
+                | CombatEvent::MailBagFull { .. }
+                // A dungeon modifier's beams and plague are announcements; the damage they do
+                // arrives as `Damage` like everything else.
+                | CombatEvent::ModifierBeamsStarted { .. }
+                | CombatEvent::ModifierBeamsEnded { .. }
+                | CombatEvent::PlagueArmed { .. }
+                | CombatEvent::PlagueExploded { .. }
+                | CombatEvent::PlagueCloudEnded { .. }
+                // The beam's channel is a state; the damage it deals arrives as `Damage`.
+                | CombatEvent::BeamChannelStarted { .. }
+                | CombatEvent::BeamYaw { .. }
+                | CombatEvent::BeamChannelEnded { .. }
+                | CombatEvent::TrinketUsed { .. }
+                // The Warrior's defensive stream. A Block, a Parry, a Dodge, a point of
+                // Valor and a shield taking a hit all *prevent* damage rather than
+                // move any, and the healing they cause arrives as `Healing` like every
+                // other heal. A reflected spell is the same: it is announced here and it
+                // deals its damage through `Damage`, credited to Spell Reflect, so counting
+                // the announcement as well would report it twice.
+                | CombatEvent::AttackDefended { .. }
+                | CombatEvent::ValorGained { .. }
+                | CombatEvent::AstralPowerGained { .. }
+                | CombatEvent::AstralPowerArmed { .. }
+                | CombatEvent::AstralPowerSpent { .. }
+                | CombatEvent::ManaSpent { .. }
+                | CombatEvent::ManaRestored { .. }
+                | CombatEvent::Dispelled { .. }
+                | CombatEvent::AbsorbApplied { .. }
+                | CombatEvent::Absorbed { .. }
+                | CombatEvent::SpellReflected { .. }
+                | CombatEvent::ControlApplied { .. }
+                // Who an enemy is attacking moves no health.
+                | CombatEvent::Aggro { .. } => {}
             }
         }
     }
@@ -146,6 +271,26 @@ impl CombatMeter {
     #[must_use]
     pub fn total_damage(&self) -> f64 {
         self.total_damage
+    }
+
+    /// Total damage the owner took this session.
+    #[must_use]
+    pub fn total_damage_taken(&self) -> f64 {
+        self.total_damage_taken
+    }
+
+    /// Whose damage this meter counts.
+    #[must_use]
+    pub fn owner(&self) -> EntityId {
+        self.owner
+    }
+
+    /// Names whose meter this is.
+    ///
+    /// Called once, when the arena spawns the player. Without it the meter counts every
+    /// damage event in the world, which is what it did before anything could fight back.
+    pub fn set_owner(&mut self, owner: EntityId) {
+        self.owner = owner;
     }
 
     /// Total healing done this session.
@@ -267,6 +412,7 @@ impl CombatMeter {
         self.total_damage = 0.0;
         self.total_healing = 0.0;
         self.total_overkill = 0.0;
+        self.total_damage_taken = 0.0;
         self.deaths = 0;
         self.first_damage_at = None;
         self.last_damage_at = now;
@@ -348,6 +494,9 @@ mod tests {
             ability: ability(slot),
             damage_type: DamageType::Fire,
             killed: false,
+            critical: false,
+            periodic: false,
+            position: engine_core::math::Vec3::ZERO,
             tick: 0,
         })
     }
@@ -409,6 +558,7 @@ mod tests {
             source: player(),
             ability: ability(2),
             targets: 4,
+            facing: 0.0,
             tick: 1,
         }];
         for index in 0..4 {
@@ -422,6 +572,9 @@ mod tests {
             ability: ability(2),
             damage_type: DamageType::Fire,
             killed: true,
+            critical: false,
+            periodic: false,
+            position: engine_core::math::Vec3::ZERO,
             tick: 1,
         }));
         events.push(CombatEvent::Death {

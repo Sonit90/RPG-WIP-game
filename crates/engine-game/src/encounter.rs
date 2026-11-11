@@ -1,0 +1,457 @@
+//! A fight, as an object: who is in it, what state it is in, and how to put it back.
+//!
+//! ```text
+//! NotStarted ──▶ Active ──▶ Completed
+//!      ▲            │            │
+//!      └──────── Resetting ◀─────┘
+//! ```
+//!
+//! # Why this is not inside the AI
+//!
+//! An enemy knows about its own leash and its own home. It does not know that it is the
+//! second of five, that the fight is over when all five are down, or that a reset means
+//! everybody comes back. Those are properties of the *encounter*, and putting them in the
+//! brain is how "wipe and retry" ends up implemented five times, once per enemy type.
+//!
+//! # What it holds
+//!
+//! Spawn points — a kind and a place — and the entities they became. Nothing else: it does
+//! not own health, positions or AI, because those live on the entities and are reset through
+//! the simulation, which is the only thing allowed to change them.
+//!
+//! # Deliberately not here
+//!
+//! Waves, phases, scripted timelines, adds, loot and objectives. Every one of them is a
+//! layer *above* this lifecycle, and none of them changes its shape.
+
+use std::borrow::Cow;
+
+use engine_core::math::Vec3;
+
+use crate::dungeon::SpawnDetail;
+use crate::enemy::EnemyKind;
+use crate::entity::EntityId;
+
+/// Where the fight is in its life.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EncounterState {
+    /// Built, populated, nobody has been pulled.
+    #[default]
+    NotStarted,
+    /// At least one member has been pulled and is still alive.
+    Active,
+    /// Every member is dead.
+    Completed,
+    /// Being put back to [`EncounterState::NotStarted`].
+    ///
+    /// A state rather than an instant, because a reset is a *request* the simulation
+    /// carries out on its next tick: resetting in the middle of resolving a tick's damage
+    /// would despawn entities that this tick's events still name.
+    Resetting,
+}
+
+impl EncounterState {
+    /// Short uppercase name, for the developer readout.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "NOT STARTED",
+            Self::Active => "ACTIVE",
+            Self::Completed => "COMPLETED",
+            Self::Resetting => "RESETTING",
+        }
+    }
+
+    /// Whether the fight is running.
+    #[must_use]
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
+/// One enemy the encounter puts in the world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnemySpawn {
+    /// What to spawn.
+    pub kind: EnemyKind,
+    /// Where its feet go.
+    pub position: Vec3,
+    /// Which way it faces while it is idle.
+    pub facing_yaw: f32,
+    /// Everything a level placement said about it beyond kind and place, if it said anything.
+    ///
+    /// An index into the dungeon's own table of details rather than the details themselves,
+    /// so a spawn point stays a small `Copy` value; `None` is the monster as designed.
+    pub detail: Option<SpawnDetail>,
+}
+
+impl EnemySpawn {
+    /// A `kind` standing at `position`, facing −Z.
+    #[must_use]
+    pub fn new(kind: EnemyKind, position: Vec3) -> Self {
+        Self {
+            kind,
+            position,
+            facing_yaw: 0.0,
+            detail: None,
+        }
+    }
+
+    /// The same spawn, with a level placement's details.
+    #[must_use]
+    pub fn detailed(mut self, detail: SpawnDetail) -> Self {
+        self.detail = Some(detail);
+        self
+    }
+
+    /// The same spawn, facing `yaw`.
+    #[must_use]
+    pub fn facing(mut self, yaw: f32) -> Self {
+        self.facing_yaw = yaw;
+        self
+    }
+}
+
+/// A fight: its members, its spawn points and its state.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Encounter {
+    name: Cow<'static, str>,
+    state: EncounterState,
+    spawns: Vec<EnemySpawn>,
+    /// The entity each spawn point currently is, in the same order.
+    members: Vec<EntityId>,
+    /// How many times it has been reset, for the readout.
+    resets: u32,
+    /// Whether the pack has already been woken as a whole since it was last at rest.
+    ///
+    /// One member being pulled pulls the rest, and it has to happen *once*. Without this the
+    /// condition "somebody in this pack is awake" is true for as long as anybody is walking
+    /// home, and the first member to arrive is woken again by the last one still returning —
+    /// a pack that can never go back to sleep.
+    pulled_together: bool,
+    /// Who killed a member, until the pack has been woken by it.
+    ///
+    /// The alarm a corpse cannot raise for itself. A member killed outright never leaves
+    /// Idle, so "somebody in this pack is awake" is false on every tick and the pack would
+    /// sleep through its neighbour being deleted. The killer is remembered here instead, and
+    /// the next tick pulls the pack with it exactly as a live member's target would.
+    alarm: Option<EntityId>,
+    /// How many of [`Encounter::members`] were called into the fight rather than spawned
+    /// with the level: a boss's adds.
+    ///
+    /// Always the *last* members, so the ones that stand in for spawn points keep their
+    /// indices and a reset can hand the summons back to be taken out of the world.
+    summons: usize,
+}
+
+impl Encounter {
+    /// An empty encounter named `name`.
+    #[must_use]
+    pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            name: name.into(),
+            state: EncounterState::NotStarted,
+            spawns: Vec::new(),
+            members: Vec::new(),
+            resets: 0,
+            pulled_together: false,
+            alarm: None,
+            summons: 0,
+        }
+    }
+
+    /// An encounter with these spawn points, not yet populated.
+    #[must_use]
+    pub fn with_spawns(name: impl Into<Cow<'static, str>>, spawns: Vec<EnemySpawn>) -> Self {
+        Self {
+            name: name.into(),
+            state: EncounterState::NotStarted,
+            members: Vec::with_capacity(spawns.len()),
+            spawns,
+            resets: 0,
+            pulled_together: false,
+            alarm: None,
+            summons: 0,
+        }
+    }
+
+    /// Its name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Where it is in its life.
+    #[must_use]
+    pub fn state(&self) -> EncounterState {
+        self.state
+    }
+
+    /// Its spawn points.
+    #[must_use]
+    pub fn spawns(&self) -> &[EnemySpawn] {
+        &self.spawns
+    }
+
+    /// The entities currently standing in for its spawn points.
+    #[must_use]
+    pub fn members(&self) -> &[EntityId] {
+        &self.members
+    }
+
+    /// How many enemies it holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    /// Whether it holds nobody.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    /// How many times it has been reset.
+    #[must_use]
+    pub fn resets(&self) -> u32 {
+        self.resets
+    }
+
+    /// Whether `entity` belongs to this encounter.
+    #[must_use]
+    pub fn contains(&self, entity: EntityId) -> bool {
+        self.members.contains(&entity)
+    }
+
+    /// Adds a spawn point. Only meaningful before the encounter is populated.
+    pub fn push_spawn(&mut self, spawn: EnemySpawn) {
+        self.spawns.push(spawn);
+    }
+
+    /// Records the entities the spawn points became.
+    ///
+    /// Called by the simulation, which is the only thing that can spawn.
+    pub fn set_members(&mut self, members: Vec<EntityId>) {
+        self.members = members;
+        self.summons = 0;
+        self.state = EncounterState::NotStarted;
+        self.pulled_together = false;
+        self.alarm = None;
+    }
+
+    /// Adds a member that was called into the fight rather than spawned with the level.
+    ///
+    /// It counts towards the encounter like any member — the fight is not won while it
+    /// stands — and a reset hands it back through [`Encounter::take_summons`].
+    pub fn add_summon(&mut self, entity: EntityId) {
+        self.members.push(entity);
+        self.summons += 1;
+    }
+
+    /// How many members were called in rather than spawned.
+    #[must_use]
+    pub fn summon_count(&self) -> usize {
+        self.summons
+    }
+
+    /// The members that were called in rather than spawned with the level.
+    #[must_use]
+    pub fn summoned(&self) -> &[EntityId] {
+        let keep = self.members.len().saturating_sub(self.summons);
+        &self.members[keep..]
+    }
+
+    /// Removes and returns every called-in member.
+    pub fn take_summons(&mut self) -> Vec<EntityId> {
+        let keep = self.members.len().saturating_sub(self.summons);
+        self.summons = 0;
+        self.members.split_off(keep)
+    }
+
+    /// Marks the fight as running. Idempotent.
+    ///
+    /// A fight starts when an enemy is *pulled*, not when the player walks into the room:
+    /// the simulation calls this the first time a member leaves Idle.
+    pub fn activate(&mut self) {
+        if matches!(self.state, EncounterState::NotStarted) {
+            self.state = EncounterState::Active;
+        }
+    }
+
+    /// Marks the fight as won.
+    pub fn complete(&mut self) {
+        if self.state.is_active() {
+            self.state = EncounterState::Completed;
+        }
+    }
+
+    /// Whether the pack has already been woken as a whole.
+    #[must_use]
+    pub fn pack_pulled(&self) -> bool {
+        self.pulled_together
+    }
+
+    /// Records that the whole pack has been woken, so it is not woken again.
+    pub fn note_pack_pull(&mut self) {
+        self.pulled_together = true;
+    }
+
+    /// Declares the pack at rest again: every member is home and idle.
+    ///
+    /// What re-arms the pack pull. A pack that leashed and walked home is a pack that can be
+    /// pulled a second time, and that second pull has to bring everybody exactly as the
+    /// first one did.
+    pub fn relax(&mut self) {
+        self.pulled_together = false;
+        self.alarm = None;
+    }
+
+    /// Records that `killer` killed one of its members.
+    ///
+    /// The pull a one-shot kill would otherwise never produce. Called by the simulation from
+    /// the one place damage lands, because the killer's identity exists nowhere else — a
+    /// corpse's threat table is cleared when it dies.
+    pub fn raise_alarm(&mut self, killer: EntityId) {
+        self.alarm = Some(killer);
+    }
+
+    /// Who killed a member, if the pack has not been woken by it yet.
+    #[must_use]
+    pub fn alarm(&self) -> Option<EntityId> {
+        self.alarm
+    }
+
+    /// Asks for a reset. The simulation performs it on its next tick.
+    pub fn request_reset(&mut self) {
+        self.state = EncounterState::Resetting;
+    }
+
+    /// Whether a reset is pending.
+    #[must_use]
+    pub fn is_resetting(&self) -> bool {
+        matches!(self.state, EncounterState::Resetting)
+    }
+
+    /// Declares the reset finished.
+    pub fn finish_reset(&mut self) {
+        self.state = EncounterState::NotStarted;
+        self.pulled_together = false;
+        self.alarm = None;
+        self.resets += 1;
+    }
+
+    /// Updates the state from how many members are still alive.
+    ///
+    /// Called once a tick by the simulation with the count it already has. Returns whether
+    /// the state changed, so the caller can announce a completion exactly once.
+    pub fn observe_alive(&mut self, alive: usize) -> bool {
+        match self.state {
+            EncounterState::Active if alive == 0 => {
+                self.state = EncounterState::Completed;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "test code may assert on known-good values"
+)]
+mod tests {
+    use super::*;
+
+    fn encounter() -> Encounter {
+        Encounter::with_spawns(
+            "TEST",
+            vec![
+                EnemySpawn::new(EnemyKind::Melee, Vec3::new(0.0, 0.0, -10.0)),
+                EnemySpawn::new(EnemyKind::Caster, Vec3::new(6.0, 0.0, -14.0)).facing(1.0),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_fresh_encounter_has_not_started() {
+        let encounter = encounter();
+        assert_eq!(encounter.state(), EncounterState::NotStarted);
+        assert_eq!(encounter.spawns().len(), 2);
+        assert!(
+            encounter.is_empty(),
+            "nothing is spawned until it is populated"
+        );
+    }
+
+    #[test]
+    fn it_runs_from_not_started_to_completed_and_back() {
+        let mut encounter = encounter();
+        encounter.set_members(vec![EntityId::new(1, 1), EntityId::new(2, 1)]);
+        assert_eq!(encounter.len(), 2);
+
+        encounter.activate();
+        assert!(encounter.state().is_active());
+        // Activating twice changes nothing.
+        encounter.activate();
+        assert!(encounter.state().is_active());
+
+        assert!(!encounter.observe_alive(1), "one alive is still a fight");
+        assert!(encounter.observe_alive(0), "the last death completes it");
+        assert_eq!(encounter.state(), EncounterState::Completed);
+        assert!(!encounter.observe_alive(0), "completion is announced once");
+
+        encounter.request_reset();
+        assert!(encounter.is_resetting());
+        encounter.finish_reset();
+        assert_eq!(encounter.state(), EncounterState::NotStarted);
+        assert_eq!(encounter.resets(), 1);
+    }
+
+    #[test]
+    fn an_encounter_that_never_started_cannot_complete() {
+        let mut encounter = encounter();
+        encounter.set_members(vec![EntityId::new(1, 1)]);
+        assert!(!encounter.observe_alive(0));
+        assert_eq!(encounter.state(), EncounterState::NotStarted);
+    }
+
+    #[test]
+    fn an_alarm_outlives_the_member_that_raised_it_but_not_the_pack_going_home() {
+        let mut encounter = encounter();
+        encounter.set_members(vec![EntityId::new(1, 1), EntityId::new(2, 1)]);
+        assert_eq!(
+            encounter.alarm(),
+            None,
+            "a quiet pack has nothing to answer"
+        );
+
+        let killer = EntityId::new(0, 1);
+        encounter.raise_alarm(killer);
+        assert_eq!(
+            encounter.alarm(),
+            Some(killer),
+            "the pack has to still hear it on the tick after the death"
+        );
+
+        // Going back to sleep is what makes it quiet again, and a reset does the same.
+        encounter.relax();
+        assert_eq!(encounter.alarm(), None);
+        encounter.raise_alarm(killer);
+        encounter.request_reset();
+        encounter.finish_reset();
+        assert_eq!(encounter.alarm(), None);
+    }
+
+    #[test]
+    fn membership_is_by_entity() {
+        let mut encounter = encounter();
+        let member = EntityId::new(3, 2);
+        encounter.set_members(vec![member]);
+        assert!(encounter.contains(member));
+        assert!(
+            !encounter.contains(EntityId::new(3, 3)),
+            "a stale id is not a member"
+        );
+    }
+}

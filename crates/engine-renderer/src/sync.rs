@@ -19,9 +19,32 @@ use crate::error::RendererError;
 /// A fence and the event used to block on it.
 pub struct GpuFence {
     fence: ID3D12Fence,
-    event: HANDLE,
+    event: WaitEvent,
     next_value: u64,
 }
+
+/// The auto-reset event a fence wait blocks on.
+///
+/// # Why this exists rather than a bare `HANDLE`
+///
+/// A `HANDLE` wraps a raw pointer and is therefore not `Send`, but a Win32 event handle is
+/// a process-wide kernel object: any thread in the process may wait on it or signal it, and
+/// which thread created it is not part of its contract. The renderer is moved to the thread
+/// that records frames, so this states that in the type system instead of blocking the move.
+///
+/// # Safety
+///
+/// The invariant this asserts:
+///
+/// * the handle comes from `CreateEventW` in this process and is owned solely by the
+///   [`GpuFence`] that holds it, which closes it in `Drop`;
+/// * exactly one thread waits on it at a time — the one that owns the renderer. An
+///   auto-reset event woken by two waiters would hand the wake to one of them, and this
+///   type is deliberately **not** `Sync` so that cannot be arranged by accident.
+struct WaitEvent(HANDLE);
+
+// SAFETY: see the invariant above. A Win32 event is owned by the process, not by a thread.
+unsafe impl Send for WaitEvent {}
 
 impl GpuFence {
     /// Creates a fence starting at value 0 and its wait event.
@@ -39,7 +62,7 @@ impl GpuFence {
 
         Ok(Self {
             fence,
-            event,
+            event: WaitEvent(event),
             next_value: 1,
         })
     }
@@ -77,10 +100,10 @@ impl GpuFence {
         }
         // SAFETY: FFI call. `self.event` is a live auto-reset event owned by this struct
         // and is only waited on by this thread.
-        unsafe { self.fence.SetEventOnCompletion(value, self.event) }
+        unsafe { self.fence.SetEventOnCompletion(value, self.event.0) }
             .map_err(|error| RendererError::api("ID3D12Fence::SetEventOnCompletion", error))?;
         // SAFETY: FFI call blocking on the event signalled above.
-        let wait = unsafe { WaitForSingleObject(self.event, INFINITE) };
+        let wait = unsafe { WaitForSingleObject(self.event.0, INFINITE) };
         if wait != WAIT_OBJECT_0 {
             return Err(RendererError::api(
                 "WaitForSingleObject",
@@ -103,6 +126,12 @@ impl GpuFence {
         self.wait(value)
     }
 
+    /// The value the latest [`Fence::signal`] asked the GPU to reach; zero before any.
+    #[must_use]
+    pub fn last_signaled_value(&self) -> u64 {
+        self.next_value.saturating_sub(1)
+    }
+
     /// Highest fence value the GPU has passed.
     #[must_use]
     pub fn completed_value(&self) -> u64 {
@@ -115,7 +144,7 @@ impl Drop for GpuFence {
     fn drop(&mut self) {
         // SAFETY: the event handle was created in `new`, is owned solely by this struct
         // and is not waited on any more.
-        if let Err(error) = unsafe { CloseHandle(self.event) } {
+        if let Err(error) = unsafe { CloseHandle(self.event.0) } {
             log::warn!("CloseHandle(fence event) failed: {error}");
         }
     }

@@ -1,0 +1,6 @@
+{
+  "spacetimedb_url": "https://realm.example.com",
+  "spacetimedb_database": "realm",
+  "auth_api_url": "https://api.example.com",
+  "persistence_api_url": "https://api.example.com"
+}

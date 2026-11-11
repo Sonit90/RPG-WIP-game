@@ -6,6 +6,7 @@
 //!
 //! Not behind the `debug-overlay` feature: blending is what game UI is drawn with.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

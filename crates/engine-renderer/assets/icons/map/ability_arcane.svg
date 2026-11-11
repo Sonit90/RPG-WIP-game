@@ -1,0 +1,15 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="arcane_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+<stop offset="0" stop-color="rgb(20,10,40)"></stop>
+<stop offset="1" stop-color="rgb(70,34,120)"></stop>
+</linearGradient>
+<clipPath id="arcane_tile"><path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#arcane_tile)">
+<path fill="url(#arcane_panel)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+<circle cx="256" cy="256" r="130" fill="rgb(150,90,230)" fill-opacity="0.45"></circle>
+<path fill="rgb(246,226,255)" d="M 256 70 L 290 222 L 442 256 L 290 290 L 256 442 L 222 290 L 70 256 L 222 222 Z"></path>
+<circle cx="256" cy="256" r="122" fill="none" stroke="rgb(200,150,255)" stroke-width="14"></circle>
+</g>
+</svg>

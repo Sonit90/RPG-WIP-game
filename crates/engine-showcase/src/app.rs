@@ -92,7 +92,14 @@ impl Showcase {
         renderer.set_culling_enabled(args.culling);
         renderer.set_instancing(args.instancing);
 
-        let scene = Scene::new(&mut renderer, args.preset)?;
+        let mut scene = Scene::new(&mut renderer, args.preset)?;
+        if args.transparency {
+            // Built and then replaced rather than branched at construction: `Scene::new`
+            // uploads the shared meshes and the palette either way, and the debug scene wants
+            // the ground plane it places.
+            scene.load_transparency_debug(&mut renderer)?;
+        }
+        let scene = scene;
 
         let controller = FlyCamera::START;
         let mut camera = Camera::new(Projection::perspective(aspect_of(width, height)))?;
@@ -494,7 +501,7 @@ impl Application for Showcase {
 
     fn end_frame(&mut self, ctx: &mut EngineContext) {
         self.graph
-            .record((ctx.time().real_delta().as_secs_f64() * 1e3) as f32);
+            .record((ctx.time().measured_delta().as_secs_f64() * 1e3) as f32);
         self.maybe_report(ctx);
         #[cfg(feature = "debug-overlay")]
         self.maybe_update_overlay(ctx);

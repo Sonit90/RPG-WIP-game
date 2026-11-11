@@ -156,6 +156,7 @@ mod tests {
                 p50_ms: 2.4,
                 p95_ms: 3.0,
                 p99_ms: 3.6,
+                p999_ms: 3.6,
             },
             gpu: Some(FrameStats {
                 count: 500,
@@ -165,6 +166,7 @@ mod tests {
                 p50_ms: 1.85,
                 p95_ms: 2.1,
                 p99_ms: 2.3,
+                p999_ms: 2.3,
             }),
             stages: StageAverages::default(),
             frame_index: 1_000,

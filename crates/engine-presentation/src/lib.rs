@@ -24,39 +24,77 @@
 //! character's mesh ends up, how the camera follows it, and what the overlay prints is unit
 //! tested without a device, a window or an adapter.
 
+/// Combat heard: the layer that decides what an ability sounds like.
+pub mod audio;
+pub mod aura;
+/// Every Moving Fire Beam being channelled, tracked for drawing.
+pub mod beam;
 pub mod camera;
+/// The character visual controller: gameplay state in, a posed and placed character out.
+pub mod character;
+/// The character file and the roster, in both directions.
+pub mod character_save;
+/// The boss's loot chest: falls, bounces, opens.
+pub mod chest;
 pub mod collision_debug;
 pub mod collision_hud;
 pub mod damage_numbers;
+pub mod environment;
 pub mod extract;
 pub mod game_ui;
 pub mod hud;
+/// The developer readout for targeted-ability line of sight.
+pub mod los_debug;
+pub mod monster_visual;
 pub mod mouse_look;
 pub mod nameplate;
+/// Where nameplates end up once they are not allowed to overlap.
+pub mod nameplate_layout;
+pub mod shadow_debug;
 pub mod snapshot;
+/// Monster telegraphs tracked for drawing as static, filling ground indicators.
+pub mod telegraph_indicator;
 /// The reusable UI framework and the game's menus.
 pub mod ui;
+/// Combat drawn: the layer that decides what an ability looks like.
+pub mod vfx;
 
+pub use audio::{AudioDirector, AudioDirectorStats, HEAVY_DAMAGE, STRIDE};
+pub use beam::{BeamTracker, BeamView, MAX_BEAMS};
 pub use camera::ThirdPersonCamera;
+pub use character_save::{apply_config, config_of};
+pub use chest::{ChestDirector, ChestVisuals};
 pub use collision_debug::{CollisionDebug, DebugBindings};
 pub use collision_hud::CollisionHudModel;
-pub use damage_numbers::{FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS};
+pub use damage_numbers::{
+    CombatTextFilter, CombatTextKind, FloatingNumber, FloatingNumbers, MAX_FLOATING_NUMBERS,
+};
+pub use environment::{
+    EnvironmentPlacer, EnvironmentStats, EnvironmentVisuals, scene_light, scene_lighting,
+};
 pub use extract::{
-    RenderExtractor, VisualBindings, VisualStats, interpolated_player_position, lerp_angle,
-    lerp_position,
+    RemoteFrame, RenderExtractor, VisualBindings, VisualStats, interpolated_player_position,
+    lerp_angle, lerp_position,
 };
 pub use game_ui::{GameUi, UiTheme};
 pub use hud::{HudModel, write_lines};
+pub use monster_visual::{MonsterModel, MonsterVisuals};
 pub use mouse_look::{LOOK_BUTTON, LookChange, MouseLook, RelativeMotion};
 pub use nameplate::{
-    MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet,
-    NameplateStatus, project,
+    MAX_NAMEPLATES, NAMEPLATE_MAX_DISTANCE, Nameplate, NameplateConfig, NameplateSet, project,
 };
+pub use nameplate_layout::{LayoutConstraints, NameplateLayout, PlateBox};
+pub use shadow_debug::ShadowCasterDebug;
 pub use snapshot::{
-    AbilitySlotView, CastView, CombatView, NotificationView, PlayerView, SlotAvailability,
-    StatusList, StatusView, TargetView, UiSnapshot,
+    AbilitySlotView, CastView, CharacterView, CombatView, NotificationView, PartyMemberView,
+    PlayerView, SlotAvailability, StatusList, StatusView, TargetView, UiSnapshot,
+};
+pub use telegraph_indicator::{
+    IndicatorKind, MAX_INDICATORS, TelegraphIndicator, TelegraphIndicators,
 };
 pub use ui::{
-    MenuAction, MenuScreen, MenuSystem, MenuTheme, PauseItem, SettingsItem, UiInput, UiScreen,
-    Widget, WidgetEvent, WidgetState,
+    CharacterMenu, CharacterMenuOutcome, CharacterTheme, MenuAction, MenuScreen, MenuSystem,
+    MenuTheme, NameplateItem, PauseItem, SettingsItem, UiInput, UiScreen, VolumeChannel, Widget,
+    WidgetEvent, WidgetState, volume_of,
 };
+pub use vfx::{ShapeBinding, VfxDirector, VfxDirectorStats, VfxVisuals};

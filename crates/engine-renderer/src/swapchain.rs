@@ -1,24 +1,33 @@
 //! Flip-model swap chain, its back buffers and their render-target views.
 
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_RESOURCE_STATE_PRESENT,
     ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{
     DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_NONE,
     DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
     DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGISwapChain3,
 };
 
+#[cfg(windows)]
 use windows::core::Interface;
 
+#[cfg(windows)]
 use crate::descriptor::{CpuDescriptorHeap, DescriptorHandle};
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::resource::GpuTexture;
 
 /// Number of back buffers, and therefore of frames the CPU may run ahead.
@@ -27,9 +36,11 @@ use crate::resource::GpuTexture;
 /// extra buffer of memory; two would serialize more often at 240+ FPS.
 pub const FRAME_COUNT: usize = 3;
 
+#[cfg(windows)]
 /// Back-buffer format. 8-bit UNORM is enough for Phase 0; HDR is out of scope.
 pub const BACK_BUFFER_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 
+#[cfg(windows)]
 /// The swap chain, its back buffers and the RTV heap describing them.
 pub struct SwapChain {
     swap_chain: IDXGISwapChain3,
@@ -49,6 +60,7 @@ pub struct SwapChain {
     vsync: bool,
 }
 
+#[cfg(windows)]
 impl SwapChain {
     /// Creates a flip-discard swap chain for `hwnd` at the given size.
     ///
@@ -263,6 +275,7 @@ impl SwapChain {
     }
 }
 
+#[cfg(windows)]
 /// Swap-chain creation flags for the current tearing capability.
 fn swap_chain_flags(allow_tearing: bool) -> DXGI_SWAP_CHAIN_FLAG {
     if allow_tearing {
@@ -276,6 +289,7 @@ fn swap_chain_flags(allow_tearing: bool) -> DXGI_SWAP_CHAIN_FLAG {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn tearing_capability_controls_the_creation_flag() {
         assert_eq!(swap_chain_flags(true), DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);

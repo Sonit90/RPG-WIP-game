@@ -66,6 +66,8 @@ pub enum WidgetEvent {
     ValueChanged(f32),
     /// A slider's interaction finished at this value. The moment worth persisting.
     ValueCommitted(f32),
+    /// A dropdown's option at this index was chosen.
+    Chosen(usize),
 }
 
 /// A labelled button.
@@ -219,6 +221,8 @@ pub struct Slider {
     maximum: f32,
     step: f32,
     value: f32,
+    /// How many decimal places the value is printed to.
+    decimals: usize,
 }
 
 impl Slider {
@@ -249,9 +253,28 @@ impl Slider {
             maximum,
             step,
             value: minimum,
+            decimals: 2,
         };
         slider.set_value(value);
         slider
+    }
+
+    /// The same slider, printing its value to `decimals` places.
+    ///
+    /// Two by default, which is what a sensitivity or a volume wants. A setting whose step is
+    /// a whole number prints none: `11.00` for a size of eleven is three characters of noise,
+    /// and a number printed to more places than its step can reach is one the player cannot
+    /// land on.
+    #[must_use]
+    pub fn with_decimals(mut self, decimals: usize) -> Self {
+        self.decimals = decimals.min(4);
+        self
+    }
+
+    /// How many decimal places its value is printed to.
+    #[must_use]
+    pub fn decimals(&self) -> usize {
+        self.decimals
     }
 
     /// The same slider, disabled.
@@ -366,6 +389,169 @@ impl Slider {
     }
 }
 
+/// A closed box showing one choice, which opens into a list of every choice below it.
+///
+/// The options' *text* is not the widget's: a resolution list is built from the monitor at
+/// runtime, and a widget holding strings would stop being `Copy` and stop being a few bytes.
+/// The widget holds how many options there are and which is chosen; whoever owns it supplies
+/// the words when it is drawn.
+///
+/// While open it is modal: a click on an option chooses it, a click anywhere else — or
+/// escape — closes it without choosing. The screen that owns it routes input to it alone
+/// while it is open (see [`Dropdown::is_open`]), because its list is drawn over whatever is
+/// below it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dropdown {
+    /// What it is for, printed above it.
+    pub label: &'static str,
+    /// The closed box, in client pixels. The open list hangs below it, one box-height a row.
+    pub rect: UiRect,
+    /// How it looks and whether it takes input.
+    pub state: WidgetState,
+    /// The chosen option.
+    pub selected: usize,
+    /// How many options there are.
+    pub len: usize,
+    /// Whether the list is showing.
+    pub open: bool,
+    /// The option under the pointer while the list is showing.
+    pub hovered_option: Option<usize>,
+    /// Height of one row of the open list. The box's own height unless the layout had to
+    /// squeeze the list onto a short screen.
+    pub row_height: f32,
+    /// Whether the list opens above the box: the layout's choice when there is no room below.
+    pub upward: bool,
+}
+
+impl Dropdown {
+    /// A dropdown of `len` options with `selected` chosen, positioned later by the layout.
+    #[must_use]
+    pub fn new(label: &'static str, len: usize, selected: usize) -> Self {
+        Self {
+            label,
+            rect: UiRect::new(0.0, 0.0, 0.0, 0.0),
+            state: WidgetState::default(),
+            selected: selected.min(len.saturating_sub(1)),
+            len,
+            open: false,
+            hovered_option: None,
+            row_height: 0.0,
+            upward: false,
+        }
+    }
+
+    /// Sets where the open list goes on a screen `screen_height` tall: below the box if it
+    /// fits, above it if that fits better, and with rows squeezed to fit if neither does.
+    /// Called by the layout after the box is placed.
+    pub fn fit_list(&mut self, screen_height: f32, margin: f32) {
+        let rows = self.len.max(1) as f32;
+        let below = (screen_height - margin - self.rect.bottom()).max(0.0);
+        let above = (self.rect.y - margin).max(0.0);
+        let wanted = self.rect.height * rows;
+        self.upward = wanted > below && above > below;
+        let room = if self.upward { above } else { below };
+        self.row_height = (room / rows)
+            .min(self.rect.height)
+            .max(self.rect.height * 0.5);
+    }
+
+    fn row(&self) -> f32 {
+        if self.row_height > 0.0 {
+            self.row_height
+        } else {
+            self.rect.height
+        }
+    }
+
+    /// Replaces the options' count and the choice: the list was rebuilt.
+    pub fn set_options(&mut self, len: usize, selected: usize) {
+        self.len = len;
+        self.selected = selected.min(len.saturating_sub(1));
+        self.open = false;
+        self.hovered_option = None;
+    }
+
+    /// Whether the list is showing.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Closes the list without choosing.
+    pub fn close(&mut self) {
+        self.open = false;
+        self.hovered_option = None;
+        self.state.pressed = false;
+    }
+
+    /// Where option `index` is drawn while the list is open.
+    #[must_use]
+    pub fn option_rect(&self, index: usize) -> UiRect {
+        let list = self.list_rect();
+        UiRect::new(
+            list.x,
+            list.y + self.row() * index as f32,
+            list.width,
+            self.row(),
+        )
+    }
+
+    /// The whole open list.
+    #[must_use]
+    pub fn list_rect(&self) -> UiRect {
+        let height = self.row() * self.len as f32;
+        let y = if self.upward {
+            self.rect.y - height
+        } else {
+            self.rect.bottom()
+        };
+        UiRect::new(self.rect.x, y, self.rect.width, height)
+    }
+
+    /// Applies one frame of input.
+    ///
+    /// A press on the closed box opens it — a press rather than a click, the way every
+    /// desktop dropdown answers. While open, a press on an option chooses it and closes the
+    /// list; a press anywhere else, or escape, only closes it.
+    pub fn update(&mut self, input: &UiInput) -> Option<WidgetEvent> {
+        if !self.state.enabled || self.len == 0 {
+            self.close();
+            self.state.clear_interaction();
+            return None;
+        }
+        let (x, y) = input.pointer;
+        self.state.hovered = self.rect.contains(x, y);
+        if !self.open {
+            self.hovered_option = None;
+            if input.pointer_pressed && self.state.hovered {
+                self.open = true;
+                self.state.pressed = true;
+            }
+            if input.pointer_released {
+                self.state.pressed = false;
+            }
+            return None;
+        }
+        self.hovered_option = (0..self.len).find(|index| self.option_rect(*index).contains(x, y));
+        if input.cancel {
+            self.close();
+            return None;
+        }
+        if input.pointer_released {
+            self.state.pressed = false;
+        }
+        if input.pointer_pressed {
+            if let Some(index) = self.hovered_option {
+                self.selected = index;
+                self.close();
+                return Some(WidgetEvent::Chosen(index));
+            }
+            self.close();
+        }
+        None
+    }
+}
+
 /// One of the widget kinds, so a screen can hold a list of them.
 ///
 /// An enum rather than `Box<dyn Widget>`: there are three kinds, they are `Copy`, and a
@@ -378,6 +564,8 @@ pub enum Widget {
     Checkbox(Checkbox),
     /// A slider.
     Slider(Slider),
+    /// A dropdown.
+    Dropdown(Dropdown),
 }
 
 impl Widget {
@@ -388,6 +576,7 @@ impl Widget {
             Self::Button(button) => &button.state,
             Self::Checkbox(checkbox) => &checkbox.state,
             Self::Slider(slider) => &slider.state,
+            Self::Dropdown(dropdown) => &dropdown.state,
         }
     }
 
@@ -397,6 +586,7 @@ impl Widget {
             Self::Button(button) => &mut button.state,
             Self::Checkbox(checkbox) => &mut checkbox.state,
             Self::Slider(slider) => &mut slider.state,
+            Self::Dropdown(dropdown) => &mut dropdown.state,
         }
     }
 
@@ -407,6 +597,7 @@ impl Widget {
             Self::Button(button) => button.rect,
             Self::Checkbox(checkbox) => checkbox.rect,
             Self::Slider(slider) => slider.rect,
+            Self::Dropdown(dropdown) => dropdown.rect,
         }
     }
 
@@ -416,6 +607,7 @@ impl Widget {
             Self::Button(button) => button.rect = rect,
             Self::Checkbox(checkbox) => checkbox.rect = rect,
             Self::Slider(slider) => slider.rect = rect,
+            Self::Dropdown(dropdown) => dropdown.rect = rect,
         }
     }
 
@@ -431,6 +623,7 @@ impl Widget {
             Self::Button(button) => button.update(input),
             Self::Checkbox(checkbox) => checkbox.update(input),
             Self::Slider(slider) => slider.update(input),
+            Self::Dropdown(dropdown) => dropdown.update(input),
         }
     }
 }
@@ -453,6 +646,12 @@ impl From<Slider> for Widget {
     }
 }
 
+impl From<Dropdown> for Widget {
+    fn from(dropdown: Dropdown) -> Self {
+        Self::Dropdown(dropdown)
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -460,6 +659,68 @@ impl From<Slider> for Widget {
 )]
 mod tests {
     use super::*;
+
+    fn placed_dropdown() -> Dropdown {
+        let mut dropdown = Dropdown::new("RESOLUTION", 4, 1);
+        dropdown.rect = UiRect::new(100.0, 100.0, 300.0, 40.0);
+        dropdown.fit_list(1080.0, 10.0);
+        dropdown
+    }
+
+    #[test]
+    fn a_dropdown_opens_on_a_press_and_chooses_the_option_pressed() {
+        let mut dropdown = placed_dropdown();
+        assert_eq!(dropdown.update(&press(150.0, 120.0)), None);
+        assert!(dropdown.is_open());
+        let third = dropdown.option_rect(2);
+        assert_eq!(third.y, 100.0 + 40.0 * 3.0, "rows hang below the box");
+        let hover = UiInput {
+            pointer: (third.x + 5.0, third.y + 5.0),
+            ..UiInput::default()
+        };
+        dropdown.update(&hover);
+        assert_eq!(dropdown.hovered_option, Some(2));
+        assert_eq!(
+            dropdown.update(&press(third.x + 5.0, third.y + 5.0)),
+            Some(WidgetEvent::Chosen(2))
+        );
+        assert_eq!(dropdown.selected, 2);
+        assert!(!dropdown.is_open());
+    }
+
+    #[test]
+    fn a_click_elsewhere_or_escape_closes_without_choosing() {
+        let mut dropdown = placed_dropdown();
+        dropdown.update(&press(150.0, 120.0));
+        assert_eq!(dropdown.update(&press(900.0, 900.0)), None);
+        assert!(!dropdown.is_open());
+        assert_eq!(dropdown.selected, 1);
+        dropdown.update(&press(150.0, 120.0));
+        let escape = UiInput {
+            cancel: true,
+            ..UiInput::default()
+        };
+        assert_eq!(dropdown.update(&escape), None);
+        assert!(!dropdown.is_open());
+        assert_eq!(dropdown.selected, 1);
+    }
+
+    #[test]
+    fn a_dropdown_near_the_bottom_opens_upward_and_a_long_one_is_squeezed() {
+        let mut dropdown = Dropdown::new("RESOLUTION", 12, 0);
+        dropdown.rect = UiRect::new(0.0, 600.0, 300.0, 40.0);
+        dropdown.fit_list(720.0, 10.0);
+        assert!(dropdown.upward);
+        let list = dropdown.list_rect();
+        assert!(
+            list.y >= 10.0 - 0.01 && list.bottom() <= 600.0 + 0.01,
+            "{list:?}"
+        );
+        let mut disabled = placed_dropdown();
+        disabled.state.enabled = false;
+        assert_eq!(disabled.update(&press(150.0, 120.0)), None);
+        assert!(!disabled.is_open());
+    }
 
     const RECT: UiRect = UiRect {
         x: 100.0,

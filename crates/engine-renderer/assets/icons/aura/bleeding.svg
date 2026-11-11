@@ -1,0 +1,22 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="bleeding_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(30,6,8)"></stop>
+<stop offset="1" stop-color="rgb(84,14,18)"></stop>
+</linearGradient>
+<radialGradient id="bleeding_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(200,30,30)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(200,30,30)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(200,30,30)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="bleeding_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#bleeding_tile)">
+<path fill="url(#bleeding_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#bleeding_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(150,22,26)"  d="M 160 140.8 C 188.6 187.6 212 221.4 212 250 C 212 279.12 189.12 302 160 302 C 130.88 302 108 279.12 108 250 C 108 221.4 131.4 187.6 160 140.8 Z"></path>
+<path fill="rgb(150,22,26)"  d="M 360 133.39999999999998 C 385.3 174.8 406 204.7 406 230 C 406 255.76 385.76 276 360 276 C 334.24 276 314 255.76 314 230 C 314 204.7 334.7 174.8 360 133.39999999999998 Z"></path>
+<path fill="rgb(206,34,34)"  d="M 256 169.4 C 303.3 246.8 342 302.7 342 350 C 342 398.16 304.16 436 256 436 C 207.84 436 170 398.16 170 350 C 170 302.7 208.7 246.8 256 169.4 Z"></path>
+<path fill="rgb(255,150,140)" fill-opacity="0.55" d="M 236 275.4 C 250.3 298.8 262 315.7 262 330 C 262 344.56 250.56 356 236 356 C 221.44 356 210 344.56 210 330 C 210 315.7 221.7 298.8 236 275.4 Z"></path>
+</g>
+</svg>

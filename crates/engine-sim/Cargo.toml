@@ -1,0 +1,22 @@
+[package]
+name = "engine-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The combat simulator. It depends on the gameplay crate and nothing else, which is the
+# whole point: it drives the *real* simulation rather than a model of it, so there is one
+# implementation of every damage formula, cooldown and talent in the project. A second copy
+# of the numbers here would be a second game to balance.
+[dependencies]
+engine-core = { workspace = true }
+engine-game = { workspace = true }
+engine-realm = { workspace = true }
+
+[[bin]]
+name = "engine-sim"
+path = "src/main.rs"
+
+[lints]
+workspace = true

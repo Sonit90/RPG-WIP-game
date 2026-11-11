@@ -1,0 +1,14 @@
+# Only what deploy/api.Dockerfile copies is needed; everything else stays out of the context.
+**/target/
+.git/
+.realm-dev/
+dist/
+artifacts/
+assets/*
+!assets/catalog/
+backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.development.example
+backend/data/
+**/*.log

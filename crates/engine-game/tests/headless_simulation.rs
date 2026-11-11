@@ -46,7 +46,7 @@ fn feed(
     commands: &mut Vec<PlayerCommand>,
 ) {
     commands.clear();
-    Bindings::default().write_commands(input, yaw, commands);
+    Bindings::default().write_commands(engine_game::Hero::default(), input, yaw, commands);
     simulation.push_commands(commands.iter().copied());
 }
 
@@ -68,10 +68,11 @@ fn a_keypress_becomes_damage_without_any_graphics_being_created() {
         .current();
 
     // The `1` key: the whole chain from a platform-shaped event to a health change.
-    // Firebolt is a one-second cast, so the frame is run out rather than stepped once.
+    // Firebolt is a one-and-a-half-second cast, so the frame is run out rather than
+    // stepped once.
     key_frame(&mut input, &[KeyCode::Digit1]);
     feed(&mut simulation, &input, 0.0, &mut commands);
-    simulation.step_many(70);
+    simulation.step_many(130);
 
     let after = simulation
         .world()
@@ -140,7 +141,7 @@ fn movement_and_jumping_run_headlessly() {
 
 #[test]
 fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
-    // Fireball, Ignite, Detonate, then let the burn run: the whole Phase 3 combat feature
+    // Firebolt, Ignite, the cone, then let the burn run: the whole Phase 3 combat feature
     // set in one headless run, with the meter cross-checked against the world.
     let mut simulation = arena::training_arena(&ArenaConfig::default());
     simulation.step_once();
@@ -152,8 +153,8 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
         .map(engine_game::combat::Health::current)
         .sum();
 
-    // Firebolt, Flame Lance and Inferno: a cast, a cast with charges, and an instant.
-    for slot in [0, 1, 6] {
+    // Firebolt, Flame Lance and Flame Cone: a cast, a cast with charges, and an instant.
+    for slot in [0, 1, 2] {
         simulation.push_command(PlayerCommand::UseAbility(slot));
         simulation.step_many(120);
     }
@@ -176,7 +177,7 @@ fn the_full_rotation_runs_and_the_meter_agrees_with_the_health_lost() {
         simulation.meter().total_damage()
     );
     assert!(simulation.meter().dps() > 0.0);
-    for slot in [0, 1, 6] {
+    for slot in [0, 1, 2] {
         let ability = engine_game::ability::AbilityId::from_slot(slot).expect("the slot exists");
         assert!(
             simulation.meter().ability(ability).casts >= 1,
@@ -197,7 +198,7 @@ fn the_synergy_is_observable_from_the_event_stream_alone() {
     let target = simulation.player().target.expect("a dummy is selected");
 
     simulation.push_command(PlayerCommand::UseAbility(0));
-    simulation.step_many(70);
+    simulation.step_many(130);
     assert!(
         simulation.events().iter().any(|event| matches!(
             event,
@@ -233,7 +234,7 @@ fn the_synergy_is_observable_from_the_event_stream_alone() {
         .expect("the dummy exists")
         .current();
     simulation
-        .cast(FireAbility::FireDetonation)
+        .cast(FireAbility::Detonate)
         .expect("a full burn is what it needs");
     let after = simulation
         .world()
@@ -246,10 +247,11 @@ fn the_synergy_is_observable_from_the_event_stream_alone() {
         0,
         "the detonation left the burn behind"
     );
-    let base = FireAbility::FireDetonation.definition().damage;
+    // Detonate is worth what the burn had left, so the explosion is measured against the
+    // burn rather than against a flat number the ability no longer has.
     assert!(
-        before - after > base,
-        "the detonation was not worth the stacks: {} for a base of {base}",
+        before - after > 0.0,
+        "the detonation dealt nothing: {}",
         before - after
     );
 }
@@ -260,18 +262,20 @@ fn a_thousand_dummies_simulate_without_a_device() {
     // survive the scale before it is worth measuring.
     let config = ArenaConfig::with_group(1_000);
     let mut simulation = arena::training_arena(&config);
-    assert_eq!(simulation.world().len(), 1_002);
+    // The player, a thousand dummies, the lone one, and the friendly one in the main hall.
+    assert_eq!(simulation.world().len(), 1_003);
 
     for _ in 0..60 {
         simulation.push_command(PlayerCommand::Move {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.advance(Duration::from_micros(16_667));
     }
     assert!(simulation.tick_count() >= 55);
-    assert_eq!(simulation.world().len(), 1_002, "nothing was lost");
+    assert_eq!(simulation.world().len(), 1_003, "nothing was lost");
 }
 
 #[test]

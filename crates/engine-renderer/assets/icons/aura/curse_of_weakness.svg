@@ -1,0 +1,23 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="curse_of_weakness_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(24, 8, 34)"></stop>
+<stop offset="1" stop-color="rgb(76, 28, 100)"></stop>
+</linearGradient>
+<radialGradient id="curse_of_weakness_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(200, 110, 240)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(200, 110, 240)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(200, 110, 240)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="curse_of_weakness_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#curse_of_weakness_tile)">
+<path fill="url(#curse_of_weakness_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#curse_of_weakness_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(196,190,210)" d="M 238 92 L 274 92 L 274 236 L 238 252 Z"></path>
+<path fill="rgb(196,190,210)" d="M 238 286 L 274 270 L 274 352 L 238 352 Z"></path>
+<path fill="rgb(150,100,60)" d="M 196 352 L 316 352 L 316 378 L 196 378 Z"></path>
+<path fill="rgb(120,80,50)" d="M 240 378 L 272 378 L 272 440 L 240 440 Z"></path>
+<path fill="none" stroke="rgb(210,120,255)" stroke-width="16" stroke-dasharray="26 20" d="M 256 268 m -170 0 a 170 170 0 1 0 340 0 a 170 170 0 1 0 -340 0"></path>
+</g>
+</svg>

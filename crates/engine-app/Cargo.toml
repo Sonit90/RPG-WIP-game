@@ -10,11 +10,36 @@ name = "mygame"
 path = "src/main.rs"
 
 [features]
-default = ["debug-overlay"]
+default = ["debug-overlay", "dev-tools"]
+# Developer-only controls: the HUD button that teleports to the boss and kills it. Default on
+# for development; `tools/package.ps1` never enables it, and verifies the shipped binary
+# does not contain it. Every use is `#[cfg(feature = "dev-tools")]`, so without it none of the
+# code is compiled at all.
+dev-tools = ["engine-game/dev-tools", "engine-presentation/dev-tools"]
 # Forwards to engine-renderer. A shipping build uses --no-default-features.
 debug-overlay = ["engine-renderer/debug-overlay"]
+# The in-game level editor, on F6. Off by default: a player's build must not carry the
+# palette, the fly camera or the scene writer, and `dep:` means the crate is not even
+# compiled without this. Development builds enable it with `--features editor`.
+editor = ["dep:engine-editor"]
+# Startup timing: the table printed after the first frame. Off by default, so a shipping
+# build contains no stopwatch, no stage names and no mutex — every function in `startup` is
+# an empty inline body without it. Development builds measure with
+# `--features startup-timing`.
+startup-timing = ["engine-renderer/startup-timing"]
+# Counts every heap allocation the process makes and reports allocations per frame. Off by
+# default and never in a shipping build: without it the game uses the system allocator
+# directly. Development builds measure with `--features alloc-count`.
+alloc-count = []
+# A single-file build: the content under assets/ that the game reads is embedded in the
+# executable and unpacked to %LOCALAPPDATA%\mygame on first launch, and the game opens on
+# the Graveyard unless told otherwise. See `src/standalone.rs`.
+standalone = []
 
 [dependencies]
+engine-assets = { workspace = true }
+# The level as data: which arena to load, and what is in it.
+engine-environment = { workspace = true }
 engine-core = { workspace = true }
 engine-platform = { workspace = true }
 engine-render-data = { workspace = true }
@@ -23,8 +48,27 @@ engine-renderer = { workspace = true }
 # the only place all three meet; neither of them links D3D12.
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }
+# Development only; see the `editor` feature above.
+engine-editor = { workspace = true, optional = true }
+# The effect catalogue, so the VFX test bed can name an effect to play. The director that
+# plays them in ordinary combat lives in engine-presentation and needs nothing from here.
+engine-vfx = { workspace = true }
+# The sound catalogue, so the audio test bed can name a sound to play, and the runtime the
+# device callback mixes. The director that plays them in ordinary combat lives in
+# engine-presentation and needs nothing from here.
+engine-audio = { workspace = true }
+# The audio backend, and the only crate in the workspace that talks to sound hardware. It is
+# a device wrapper, not an engine: the mixing is ours, in engine-audio, where it is testable
+# without a machine having speakers. See phase_audio.md, Milestone 2.
+cpal = "0.18"
 # The player's settings and the file they live in.
 engine-settings = { workspace = true }
+# The online game: the network layer and the realm's shared rules. Both are plain Rust with
+# no window or device; the app is the only crate that joins them to the renderer.
+engine-net = { workspace = true }
+engine-realm = { workspace = true }
+engine-collision = { workspace = true }
+serde_json = { workspace = true }
 # `release_max_level_info` compiles trace! and debug! out of release builds entirely:
 # no branch, no argument evaluation, nothing left in the binary. The feature is enabled
 # here, in the binary crate, because it is a process-wide decision — a library enabling it

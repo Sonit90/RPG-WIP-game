@@ -16,6 +16,12 @@ use engine_renderer::{
 
 use crate::geometry::cylinder;
 
+/// Where the transparency debug scene is placed, in metres above the ground plane.
+///
+/// High enough that the ground does not sit inside the transparent quads and low enough that
+/// the showcase's start camera is looking at it.
+const DEBUG_SCENE_HEIGHT: f32 = 2.0;
+
 /// Half-width of the ground plane, in metres.
 ///
 /// Large enough that the free-fly camera can travel for a while without running off the
@@ -197,6 +203,48 @@ impl Scene {
         Ok(scene)
     }
 
+    /// Replaces the world with the transparency debug scene.
+    ///
+    /// The scene itself comes from [`engine_renderer::transparency::debug_scene`], which is the
+    /// same definition the renderer's pixel tests use - so what is on screen here and what the
+    /// suite asserts about are one set of objects, not two that resemble each other.
+    ///
+    /// The ground plane is kept underneath it: a transparent quad over nothing is a quad
+    /// blending with the clear colour, and half the point of looking at it is seeing what it
+    /// does to the geometry behind it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError`] if one of the scene's meshes or materials cannot be created.
+    pub fn load_transparency_debug(
+        &mut self,
+        renderer: &mut Renderer,
+    ) -> Result<(), RendererError> {
+        self.world.clear();
+        self.animated.clear();
+        self.scene_triangles = 0;
+        self.spawn_ground();
+        self.preset = 0;
+
+        for object in engine_renderer::transparency::debug_scene() {
+            let mesh = renderer.create_mesh(&object.mesh)?;
+            let bounds = object.mesh.bounds();
+            let triangles = object.mesh.triangle_count() as u64;
+            let material = renderer.create_material(object.material)?;
+            let mut transform = object.transform;
+            transform.translation.y += DEBUG_SCENE_HEIGHT;
+            self.world.spawn(RenderEntityDesc {
+                transform,
+                mesh,
+                material,
+                bounds,
+                ..RenderEntityDesc::default()
+            });
+            self.scene_triangles += triangles;
+        }
+        Ok(())
+    }
+
     /// Which preset is loaded.
     #[must_use]
     pub fn preset(&self) -> usize {
@@ -225,6 +273,26 @@ impl Scene {
     ///
     /// Meshes and materials are already on the GPU and are not touched, so switching
     /// presets costs a world rebuild and nothing else — no upload, no device stall.
+    /// Places the ground plane and counts its triangles.
+    ///
+    /// Its own function because every scene the showcase can load wants it and none of them
+    /// wants a second copy of the shadow and bounds decisions it encodes.
+    fn spawn_ground(&mut self) {
+        self.world.spawn(RenderEntityDesc {
+            transform: Transform::IDENTITY,
+            mesh: self.ground,
+            material: self.ground_material,
+            // Local bounds: `RenderWorld::spawn` places them in world space itself, and
+            // pre-transforming them here would apply the transform twice.
+            bounds: self.ground_bounds,
+            visible: true,
+            style: engine_renderer::InstanceStyle::NEUTRAL,
+            // The floor receives the scene's shadows and casts none of its own.
+            shadow: engine_renderer::ShadowCasting::RECEIVES_ONLY,
+        });
+        self.scene_triangles += u64::from(self.ground_triangles);
+    }
+
     pub fn load(&mut self, index: usize) {
         let index = index.min(PRESETS.len() - 1);
         let target = PRESETS[index];
@@ -235,17 +303,7 @@ impl Scene {
 
         // The ground first, so it exists at every preset: without it there is no horizon
         // and no sense of where the objects are.
-        self.world.spawn(RenderEntityDesc {
-            transform: Transform::IDENTITY,
-            mesh: self.ground,
-            material: self.ground_material,
-            // Local bounds: `RenderWorld::spawn` places them in world space itself, and
-            // pre-transforming them here would apply the transform twice.
-            bounds: self.ground_bounds,
-            visible: true,
-            style: engine_renderer::InstanceStyle::NEUTRAL,
-        });
-        self.scene_triangles += u64::from(self.ground_triangles);
+        self.spawn_ground();
 
         let remaining = target.saturating_sub(1);
         let mut placements = Vec::with_capacity(SHOWCASE_CAPACITY);
@@ -286,6 +344,8 @@ impl Scene {
             bounds: local_bounds,
             visible: true,
             style: engine_renderer::InstanceStyle::NEUTRAL,
+            // Ordinary scene geometry, which is what the showcase is a field of.
+            shadow: engine_renderer::ShadowCasting::CASTS_AND_RECEIVES,
         });
         self.scene_triangles += u64::from(triangles);
 

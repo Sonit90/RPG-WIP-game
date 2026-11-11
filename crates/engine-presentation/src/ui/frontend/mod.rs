@@ -1,0 +1,8085 @@
+//! The online front-end: every screen between launching the game and standing in a dungeon.
+//!
+//! ```text
+//! FrontEndView (plain data the app builds from the realm mirror)
+//!        │
+//!        ▼
+//! FrontEndUi::update(input) ──► Vec<FrontEndAction> ──► the app sends network commands
+//! FrontEndUi::draw(list)    ──► UiDrawList (the same single UI batch as the HUD)
+//! ```
+//!
+//! The screens never decide anything about the realm. Which screen shows is the view's
+//! `screen`, chosen by the app from what the *server* says (a party in its ready check →
+//! ReadyCheck, a party choosing its key → KeySelect ...), so a reconnect lands on the right
+//! screen by construction. The only state kept here is the interface's own: what is typed in
+//! the login fields, which field has focus, whether the sign-in form is in "create account"
+//! mode.
+//!
+//! Two screens are not full-screen front-ends but overlays on the playable world: the
+//! [`Screen::Hub`] (the player's panel, and the queue panel while a ticket exists) and
+//! [`Screen::InWorld`] (the countdown, the leave control and, once a run ends, the completion
+//! panel). Only the rectangles they draw take the pointer.
+//!
+//! Layout is a pure function of the view, the viewport and the UI scale; `update` and `draw`
+//! both call it, so what is clicked is always what was drawn.
+
+pub mod community;
+pub mod records;
+pub mod text_field;
+
+use engine_game::character::equipment::{INVENTORY_COLUMNS, INVENTORY_SLOTS};
+use engine_game::character::{ItemIcon, ItemQuality};
+use engine_realm::Role;
+use engine_realm::instance::CountdownDisplay;
+use engine_render_data::font::UiFont;
+use engine_render_data::ui::{TextAlign, TextStyle, UiColor, UiDrawList, UiRect, UiScale};
+
+pub use community::{
+    CommunityAction, CommunityCard, IssueLine, MAP_ROWS, MapDetailCard, MapRowCard,
+};
+pub use records::{
+    BOARD_ROWS, BoardCard, BoardRow, HISTORY_ROWS, HistoryCard, HistoryDetail, HistoryRow,
+    OutcomeTag,
+};
+pub use text_field::{FieldKeys, FieldOutcome, TextField};
+
+use crate::ui::kit::{self, Kit, tone};
+use crate::ui::modifiers::ModifierLine;
+
+/// Which screen is up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    /// The game's name and a little lore, before anything else. Once per launch.
+    #[default]
+    Title,
+    /// Sign in or create an account.
+    Login,
+    /// Choose a character.
+    Characters,
+    /// The hub: the playable start area with the player's panel (and the queue panel while
+    /// searching) over it.
+    Hub,
+    /// Choose a dungeon.
+    Dungeons,
+    /// Choose a role.
+    Roles,
+    /// Salvage bag items and exchange resources.
+    Workshop,
+    /// The character's run history.
+    History,
+    /// The leaderboards.
+    Leaderboards,
+    /// Community maps: browse, play, upload.
+    Community,
+    /// "Dungeon found": accept or decline.
+    ReadyCheck,
+    /// The party is choosing whose key to use.
+    KeySelect,
+    /// The party, waiting for its leader (the key's owner).
+    Party,
+    /// In the dungeon: no full-screen interface, only overlays.
+    InWorld,
+}
+
+impl Screen {
+    /// Whether the screen is drawn over the playable world instead of covering it.
+    #[must_use]
+    pub fn is_overlay(self) -> bool {
+        matches!(self, Self::Hub | Self::InWorld)
+    }
+}
+
+/// How good some status is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusLevel {
+    /// All well.
+    Good,
+    /// In progress.
+    Busy,
+    /// Worth noticing.
+    Warning,
+    /// Broken.
+    Bad,
+}
+
+/// One character on the selection screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CharacterCard {
+    /// Name.
+    pub name: String,
+    /// Class.
+    pub class: String,
+    /// Roles it can queue as.
+    pub roles: Vec<Role>,
+    /// Level.
+    pub level: u32,
+    /// Experience into the level.
+    pub experience: u64,
+    /// Experience the level needs (0 at the cap).
+    pub next_level: u64,
+    /// Gear score, from the server.
+    pub gear_score: u32,
+    /// Items worn.
+    pub equipped: usize,
+    /// The dungeon key it holds.
+    pub key: Option<KeyCard>,
+    /// Resources held, all kinds together.
+    pub resources: u64,
+}
+
+/// A dungeon key, as the cards show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyCard {
+    /// The dungeon it opens.
+    pub dungeon: String,
+    /// Its level.
+    pub level: u32,
+    /// The modifiers it carries.
+    pub modifiers: Vec<ModifierLine>,
+    /// Whether a downgrade is possible (the key is above its dungeon's lowest level).
+    pub can_downgrade: bool,
+    /// What a cleanse costs, in gold.
+    pub cleanse_cost: u32,
+    /// How much gold the character holds.
+    pub gold: u64,
+}
+
+impl PartyCard {
+    /// The level of the local player's key, when it opens this party's dungeon.
+    #[must_use]
+    pub fn my_key(&self) -> Option<u32> {
+        self.members.iter().find(|m| m.me).and_then(|m| m.key_level)
+    }
+}
+
+impl KeyCard {
+    /// "Graveyard Crypt key . level 3".
+    fn text(&self) -> String {
+        format!("{} key \u{b7} level {}", self.dungeon, self.level)
+    }
+}
+
+/// The title screen's words, from `assets/catalog/intro.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntroCard {
+    /// The game's name.
+    pub title: String,
+    /// A line under it.
+    pub subtitle: String,
+    /// Paragraphs of lore.
+    pub lore: Vec<String>,
+    /// What the button says.
+    pub continue_label: String,
+}
+
+impl Default for IntroCard {
+    fn default() -> Self {
+        Self {
+            title: "SHADOWS OF THE CRYPT".into(),
+            subtitle: "Online".into(),
+            lore: vec![
+                "The dead of the old churchyard no longer rest. Beneath the stones a crypt \
+                 keeps opening, and every key that fits it leads a little deeper."
+                    .into(),
+            ],
+            continue_label: "Continue".into(),
+        }
+    }
+}
+
+/// The hub's panel: who the player is, what they hold, what they may do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubCard {
+    /// Character name.
+    pub name: String,
+    /// Class.
+    pub class: String,
+    /// Level.
+    pub level: u32,
+    /// Experience into the level.
+    pub experience: u64,
+    /// Experience the level needs (0 at the cap).
+    pub next_level: u64,
+    /// The dungeon key.
+    pub key: Option<KeyCard>,
+    /// Resources held: display name and amount.
+    pub resources: Vec<(String, u64)>,
+    /// Whether the Dungeon Finder may be opened (not while searching or saving rewards).
+    pub can_find_dungeon: bool,
+    /// Whether the character may be changed (not while queued or in a party).
+    pub can_change_character: bool,
+}
+
+/// One bag cell on the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BagRow {
+    /// The bag cell, as the API addresses it.
+    pub index: u32,
+    /// Item name.
+    pub name: String,
+    /// How many.
+    pub quantity: u16,
+    /// Item level.
+    pub item_level: u16,
+    /// The picture the cell shows.
+    pub icon: ItemIcon,
+    /// The rank the cell's edge is coloured by.
+    pub quality: ItemQuality,
+    /// What salvaging the whole stack yields, as text ("+8 Crypt Dust").
+    pub yields: String,
+}
+
+/// One exchange on the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExchangeRow {
+    /// The catalog id.
+    pub id: String,
+    /// "10 Crypt Dust for 1 Ember Shard".
+    pub label: String,
+    /// Whether the character can pay for one trade.
+    pub affordable: bool,
+}
+
+/// An item the sharpen panel can act on, as the app addresses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SharpenTarget {
+    /// A worn item, by its slot's key.
+    Worn(String),
+    /// A bag cell.
+    Bag(u32),
+}
+
+/// One worn item in the sharpen panel's row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharpenWorn {
+    /// The slot's key (`ring1`).
+    pub slot: String,
+    /// The picture.
+    pub icon: ItemIcon,
+    /// The rank its edge is coloured by.
+    pub quality: ItemQuality,
+    /// Its sharpening level (zero when broken).
+    pub level: u8,
+    /// Whether it is broken.
+    pub broken: bool,
+}
+
+/// One resource of a sharpening's price.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharpenCost {
+    /// Display name.
+    pub name: String,
+    /// What one attempt takes.
+    pub needed: u64,
+    /// What the character holds.
+    pub owned: u64,
+}
+
+/// What sharpening the selected item would cost and risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharpenDetail {
+    /// The item's name.
+    pub name: String,
+    /// Its rank, for the name's colour.
+    pub quality: ItemQuality,
+    /// Its current state: `Sharpening +7%  Effective Quality 113%`.
+    pub current: String,
+    /// Why it cannot be sharpened (broken, fully sharpened, not equipment), if it cannot.
+    pub blocked: Option<String>,
+    /// The next level and what it adds: `Next: +8  ->  Effective Quality 114%`.
+    pub next: String,
+    /// The price of one attempt.
+    pub cost: Vec<SharpenCost>,
+    /// The chance the attempt breaks the item, as text (`95%`); `None` when it cannot.
+    pub break_chance: Option<String>,
+}
+
+/// The sharpen half of the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SharpenCard {
+    /// The worn items, in slot order.
+    pub worn: Vec<SharpenWorn>,
+    /// The selected item, if one is.
+    pub selected: Option<SharpenTarget>,
+    /// Its price and risk.
+    pub detail: Option<SharpenDetail>,
+}
+
+/// One band of the reforge outcome table, as the panel prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReforgeOdds {
+    /// The quality range: `100-104%`.
+    pub range: String,
+    /// The chance of landing in it: `4.0%`.
+    pub chance: String,
+}
+
+/// What reforging the selected item would cost and risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReforgeDetail {
+    /// The item's name.
+    pub name: String,
+    /// Its rank, for the name's colour.
+    pub quality: ItemQuality,
+    /// Its current state: `Base 87%  Sharpening +3%  Effective Quality 90%`.
+    pub current: String,
+    /// Why it cannot be reforged (broken, not equipment), if it cannot.
+    pub blocked: Option<String>,
+    /// The whole outcome table, lowest band first.
+    pub odds: Vec<ReforgeOdds>,
+    /// The table's mean and top chances, as one line.
+    pub expected: String,
+    /// The price, in gold.
+    pub cost: Vec<SharpenCost>,
+}
+
+/// The last reforge's result, shown until another item is picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReforgeReveal {
+    /// `Ashgrave Seal: 87% -> 62%`.
+    pub text: String,
+    /// Whether the new base quality is better (`Some(true)`), worse (`Some(false)`) or the same.
+    pub improved: Option<bool>,
+}
+
+/// The reforge half of the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReforgeCard {
+    /// The worn items, in slot order.
+    pub worn: Vec<SharpenWorn>,
+    /// The selected item, if one is.
+    pub selected: Option<SharpenTarget>,
+    /// Its price and odds.
+    pub detail: Option<ReforgeDetail>,
+    /// Whether the player pressed Reforge and is being asked to confirm.
+    pub confirming: bool,
+    /// What the last reforge did.
+    pub result: Option<ReforgeReveal>,
+}
+
+/// One socket of the selected item, as the Gems panel prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemSocketRow {
+    /// The gem in it, as `Perfect Ruby  +6 Main Stat`; `None` for a hollow socket.
+    pub filled: Option<String>,
+    /// The rank of the gem in it, for its colour.
+    pub quality: ItemQuality,
+    /// What taking the gem out costs (gold), when it is filled.
+    pub unsocket: Option<SharpenCost>,
+    /// Whether the picked gem could go in it now (it is empty and a gem is picked).
+    pub can_socket: bool,
+}
+
+/// The item selected in the Gems panel and its sockets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemItemDetail {
+    /// The item's name.
+    pub name: String,
+    /// Its rank, for the name's colour.
+    pub quality: ItemQuality,
+    /// One row per socket (empty when it has none).
+    pub sockets: Vec<GemSocketRow>,
+    /// Why nothing can be done with it (no sockets), if so.
+    pub blocked: Option<String>,
+}
+
+/// What upgrading the picked gem would take and risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemUpgradeView {
+    /// How many gems an attempt consumes.
+    pub consume: u16,
+    /// The gem it would become: `Flawed Ruby`.
+    pub result: String,
+    /// The success chance, as text (`90%`).
+    pub chance: String,
+    /// What a failure does: `One gem is returned, the rest are lost.`
+    pub on_fail: String,
+    /// The gold price.
+    pub cost: SharpenCost,
+    /// Whether the stack has enough gems.
+    pub enough_gems: bool,
+}
+
+/// The gem picked from the bag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GemPickDetail {
+    /// `Chipped Ruby  +1 Main Stat`.
+    pub name: String,
+    /// Its rank, for the colour.
+    pub quality: ItemQuality,
+    /// How many are in the stack.
+    pub quantity: u16,
+    /// The upgrade, unless it is at the top level.
+    pub upgrade: Option<GemUpgradeView>,
+}
+
+/// The gems half of the workshop screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GemsCard {
+    /// The worn items, in slot order.
+    pub worn: Vec<SharpenWorn>,
+    /// The selected item, if one is.
+    pub selected: Option<SharpenTarget>,
+    /// Its sockets.
+    pub item: Option<GemItemDetail>,
+    /// The picked gem.
+    pub pick: Option<GemPickDetail>,
+    /// Whether the player pressed Upgrade and is being asked to confirm.
+    pub confirming: bool,
+    /// What the last action did.
+    pub result: Option<ReforgeReveal>,
+}
+
+/// The salvage and exchange screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkshopCard {
+    /// The occupied bag cells.
+    pub bag: Vec<BagRow>,
+    /// The bag cells in the salvage tray, in the order they were put there.
+    pub tray: Vec<u32>,
+    /// How many cells the tray has.
+    pub tray_slots: usize,
+    /// What salvaging the tray yields, as text ("+34 Bone Shard"); empty for an empty tray.
+    pub tray_yield: String,
+    /// Resources held: display name and amount.
+    pub resources: Vec<(String, u64)>,
+    /// Available exchanges.
+    pub exchanges: Vec<ExchangeRow>,
+    /// The sharpen panel, while it is the one showing (instead of the tray and exchanges).
+    pub sharpen: Option<SharpenCard>,
+    /// The reforge panel, while it is the one showing.
+    pub reforge: Option<ReforgeCard>,
+    /// The gems panel, while it is the one showing.
+    pub gems: Option<GemsCard>,
+}
+
+/// One chest item on the completion panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionItem {
+    /// Display name.
+    pub name: String,
+    /// Its rank, for the colour.
+    pub quality: ItemQuality,
+    /// Rolled quality, per cent of the base stats.
+    pub percent: u8,
+}
+
+/// How a run ended, for the panel over the world.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionCard {
+    /// Whether the boss fell.
+    pub success: bool,
+    /// Dungeon name.
+    pub dungeon: String,
+    /// The key level the run used.
+    pub key_level: u32,
+    /// Whether the local player's key was the one used.
+    pub key_owner: bool,
+    /// The local player's own key level after the run (the owner's raised key, or a participant's
+    /// lower key that rose); zero when it did not change.
+    pub key_level_after: u32,
+    /// The reward bonus a reroll gave the run, per cent.
+    pub bonus_pct: u32,
+    /// How long it took.
+    pub duration_seconds: u64,
+    /// Experience granted.
+    pub experience: u32,
+    /// Resources granted: display name and amount.
+    pub resources: Vec<(String, u32)>,
+    /// The chest items, once rolled: name, rarity colour and quality.
+    pub items: Vec<CompletionItem>,
+    /// The prompt shown instead of items until they are known (open the chest).
+    pub loot: Option<String>,
+    /// How many items monsters dropped (they were mailed).
+    pub mob_drops: u32,
+    /// Gold and aether shards picked up from monsters: display name and amount.
+    pub looted: Vec<(String, u32)>,
+    /// Whether Return to Hub was pressed and the rewards are being saved.
+    pub returning: bool,
+}
+
+/// One dungeon on the selection screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DungeonCard {
+    /// Name.
+    pub name: String,
+    /// A paragraph.
+    pub description: String,
+    /// Difficulty name.
+    pub difficulty: String,
+    /// Level range.
+    pub levels: (u32, u32),
+    /// Recommended gear score.
+    pub recommended_gear_score: u32,
+    /// Required gear score.
+    pub min_gear_score: u32,
+    /// Rewards.
+    pub rewards: Vec<String>,
+    /// Players searching: tanks, healers, dps.
+    pub population: [u32; 3],
+}
+
+/// The local player's queue ticket.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueueCard {
+    /// Dungeon name.
+    pub dungeon: String,
+    /// Role.
+    pub role: Role,
+    /// Character name.
+    pub character: String,
+    /// Seconds in the queue.
+    pub waited_seconds: u64,
+    /// Current matchmaking range, +/- percent.
+    pub tolerance_percent: u32,
+    /// A group was found and the ready check is opening.
+    pub matched: bool,
+}
+
+/// A member's ready-check state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadyState {
+    /// Not answered.
+    Waiting,
+    /// Accepted.
+    Ready,
+    /// Declined.
+    Declined,
+}
+
+/// One party member.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberRow {
+    /// Their account id (the target of kick / transfer).
+    pub account_id: String,
+    /// Character name.
+    pub character: String,
+    /// Player display name.
+    pub player: String,
+    /// Class.
+    pub class: String,
+    /// Role.
+    pub role: Role,
+    /// Level.
+    pub level: u32,
+    /// Gear score.
+    pub gear_score: u32,
+    /// The level of the key they brought, when it opens this party's dungeon.
+    pub key_level: Option<u32>,
+    /// The modifiers that key carries.
+    pub key_modifiers: Vec<ModifierLine>,
+    /// Ready-check answer.
+    pub ready: ReadyState,
+    /// Connected.
+    pub present: bool,
+    /// Leads the party.
+    pub leader: bool,
+    /// Their key is the one in the lock.
+    pub owner: bool,
+    /// Is the local player.
+    pub me: bool,
+}
+
+/// The local player's party.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PartyCard {
+    /// Dungeon name.
+    pub dungeon: String,
+    /// A sentence about it.
+    pub description: String,
+    /// The key level in the lock (0 while none is).
+    pub key_level: u32,
+    /// The modifiers of the key in the lock.
+    pub key_modifiers: Vec<ModifierLine>,
+    /// Whose key it is, by character name.
+    pub key_owner: Option<String>,
+    /// Whether the local player's key is the one in the lock.
+    pub i_own_key: bool,
+    /// Members, in party order.
+    pub members: Vec<MemberRow>,
+    /// Whether the local player leads (the key's owner).
+    pub i_lead: bool,
+    /// Whether the local player has answered the ready check.
+    pub i_answered: bool,
+    /// Seconds left on the ready check.
+    pub seconds_left: u64,
+    /// Fraction of the ready check left, for the bar.
+    pub fraction_left: f32,
+}
+
+/// A transient message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Toast {
+    /// How it looks.
+    pub level: StatusLevel,
+    /// What it says.
+    pub message: String,
+}
+
+/// A party member who dropped out of the run and may still return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwayMember {
+    /// Identifies this particular drop (a member who drops again gets a new key), so a "Wait"
+    /// answered to one does not hide the next.
+    pub key: String,
+    /// Their character's name.
+    pub name: String,
+    /// Whole seconds left before the realm removes them, from the server's timestamps.
+    pub seconds_left: u64,
+}
+
+/// Everything the front-end draws, built by the app from the realm mirror each frame.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FrontEndView {
+    /// Which screen.
+    pub screen: Screen,
+    /// The realm connection, as a short line.
+    pub connection: Option<(StatusLevel, String)>,
+    /// The signed-in account's name.
+    pub account: Option<String>,
+    /// Something in progress ("Signing in...").
+    pub busy: Option<String>,
+    /// The last refusal, for the current screen.
+    pub error: Option<String>,
+    /// The account's characters.
+    pub characters: Vec<CharacterCard>,
+    /// Which is selected.
+    pub selected_character: Option<usize>,
+    /// The title screen's words.
+    pub intro: IntroCard,
+    /// The hub panel, while a character is chosen.
+    pub hub: Option<HubCard>,
+    /// The salvage and exchange screen.
+    pub workshop: Option<WorkshopCard>,
+    /// The run history screen.
+    pub history: Option<HistoryCard>,
+    /// The leaderboards screen.
+    pub board: Option<BoardCard>,
+    /// The community maps screen.
+    pub community: Option<CommunityCard>,
+    /// The dungeon the player is about to queue for when it is not one of the catalog's
+    /// (a community map), for the role page's heading.
+    pub queue_target: Option<String>,
+    /// The panel over the world once a run has ended.
+    pub completion: Option<CompletionCard>,
+    /// The dungeon catalog.
+    pub dungeons: Vec<DungeonCard>,
+    /// Which is selected.
+    pub selected_dungeon: Option<usize>,
+    /// The chosen role.
+    pub selected_role: Option<Role>,
+    /// The queue ticket.
+    pub queue: Option<QueueCard>,
+    /// The party.
+    pub party: Option<PartyCard>,
+    /// The countdown, while it runs.
+    pub countdown: Option<CountdownDisplay>,
+    /// Shown over everything while the connection is being re-established.
+    pub reconnecting: Option<String>,
+    /// Recent messages from the server.
+    pub toasts: Vec<Toast>,
+    /// Party members who dropped during the run and are being waited for: the world shows
+    /// "<Name> has disconnected" with a countdown and the choice to wait or leave.
+    pub away: Vec<AwayMember>,
+}
+
+/// What the player asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrontEndAction {
+    /// Sign in.
+    Login {
+        /// Email.
+        email: String,
+        /// Password.
+        password: String,
+        /// Keep the session.
+        remember: bool,
+    },
+    /// Create an account.
+    Register {
+        /// Email.
+        email: String,
+        /// Password.
+        password: String,
+        /// Display name.
+        display_name: String,
+        /// Keep the session.
+        remember: bool,
+    },
+    /// Leave the title screen.
+    ContinueFromTitle,
+    /// Sign out.
+    Logout,
+    /// Leave the game.
+    Quit,
+    /// Open the Dungeon Finder from the hub.
+    OpenDungeonFinder,
+    /// Open the character sheet.
+    OpenEquipment,
+    /// Open the salvage and exchange screen.
+    OpenWorkshop,
+    /// Open the run history (fetches its first page).
+    OpenHistory,
+    /// Open the leaderboards (fetches the board shown).
+    OpenLeaderboards,
+    /// Open the community maps page (fetches the list).
+    OpenCommunity,
+    /// Something on the community maps page.
+    Community(CommunityAction),
+    /// Open the detail of the history row.
+    HistorySelect(usize),
+    /// Fetch the next older page of the history.
+    HistoryOlder,
+    /// Back to the newest page of the history.
+    HistoryNewest,
+    /// Step the leaderboard's dungeon.
+    BoardDungeon(i32),
+    /// Step the leaderboard's key level.
+    BoardKey(i32),
+    /// Switch between the fastest (`true`) and highest (`false`) boards.
+    BoardKind(bool),
+    /// Step the leaderboard's page.
+    BoardPage(i32),
+    /// Back to the character list.
+    ChangeCharacter,
+    /// Highlight a character.
+    SelectCharacter(usize),
+    /// Continue with the highlighted character.
+    ConfirmCharacter,
+    /// Highlight a dungeon.
+    SelectDungeon(usize),
+    /// Continue to role selection.
+    ConfirmDungeon,
+    /// Choose a role.
+    SelectRole(Role),
+    /// Join the queue.
+    JoinQueue,
+    /// One screen back.
+    Back,
+    /// Leave the queue.
+    LeaveQueue,
+    /// Accept the ready check.
+    Accept,
+    /// Decline the ready check.
+    Decline,
+    /// Put the local player's key in the lock.
+    InsertKey,
+    /// Take the key back out (its owner).
+    WithdrawKey,
+    /// Start the dungeon (the key's owner).
+    StartDungeon,
+    /// Remove a member (leader).
+    Kick(String),
+    /// Leave the party.
+    LeaveParty,
+    /// Leave a finished run and return to the hub.
+    ReturnToHub,
+    /// Put the bag cell's item in the salvage tray.
+    StageSalvage(u32),
+    /// Take the bag cell's item back out of the salvage tray.
+    UnstageSalvage(u32),
+    /// Break down everything in the salvage tray.
+    SalvageTray,
+    /// Make this exchange once.
+    Exchange(String),
+    /// Show the sharpen panel (`true`) or the salvage tray and exchanges (`false`).
+    WorkshopMode(bool),
+    /// Select an item to sharpen.
+    SelectSharpen(SharpenTarget),
+    /// Try to sharpen the selected item one level.
+    Sharpen,
+    /// Show the reforge panel.
+    ReforgeMode,
+    /// The Reforge button was pressed: ask the player to confirm.
+    ReforgeAsk,
+    /// The player backed out of the reforge confirmation.
+    ReforgeCancel,
+    /// Reforge the selected item (confirmed).
+    Reforge,
+    /// Show the gems panel.
+    GemsMode,
+    /// A bag cell was clicked in the gems panel: a gem to pick, or an item to inspect.
+    GemsPick(u32),
+    /// Put the picked gem into this socket of the selected item.
+    SocketGem(u8),
+    /// Take the gem out of this socket of the selected item.
+    UnsocketGem(u8),
+    /// The Upgrade button was pressed: ask the player to confirm.
+    GemUpgradeAsk,
+    /// The player backed out of the upgrade confirmation.
+    GemUpgradeCancel,
+    /// Upgrade the picked gem (confirmed).
+    GemUpgrade,
+    /// Lower the character's key one level (confirmed).
+    DowngradeKey,
+    /// Strip the character's key of its modifiers for gold (confirmed).
+    CleanseKey,
+}
+
+/// A key change waiting for the player's confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyChange {
+    Downgrade,
+    Cleanse,
+}
+
+/// The frame's input, as the front-end reads it.
+pub struct FrontInput<'a> {
+    /// Pointer, client pixels.
+    pub pointer: (f32, f32),
+    /// Left button went down this frame.
+    pub pressed: bool,
+    /// Characters typed this frame (editing controls included).
+    pub typed: &'a [char],
+    /// Navigation keys pressed this frame.
+    pub keys: FieldKeys,
+    /// Escape pressed this frame.
+    pub escape: bool,
+    /// Reads the clipboard, when a field asks to paste.
+    pub clipboard: &'a dyn Fn() -> Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldId {
+    Email,
+    DisplayName,
+    Password,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Hit {
+    Field(FieldId),
+    Remember,
+    Submit,
+    ToggleRegister,
+    Quit,
+    Logout,
+    Character(usize),
+    Continue,
+    Back,
+    DungeonFinder,
+    Equipment,
+    Workshop,
+    HistoryButton,
+    BoardsButton,
+    HistoryRow(usize),
+    HistoryOlder,
+    HistoryNewest,
+    BoardDungeon(i32),
+    BoardKey(i32),
+    BoardKind(bool),
+    BoardPage(i32),
+    CommunityButton,
+    Community(community::CommunityHit),
+    ChangeCharacter,
+    Dungeon(usize),
+    Role(Role),
+    LeaveQueue,
+    Accept,
+    Decline,
+    InsertKey,
+    WithdrawKey,
+    Start,
+    LeaveParty,
+    /// "Wait" on the disconnect prompt: hides it for the drops it shows.
+    AwayWait,
+    ReturnToHub,
+    Kick(String),
+    /// A bag cell on the workshop screen, by bag index.
+    BagCell(u32),
+    /// A tray cell on the workshop screen, by position in the tray.
+    TrayCell(usize),
+    SalvageTray,
+    Exchange(String),
+    /// The workshop's switch between salvage and sharpen.
+    SharpenMode(bool),
+    /// A worn item in the sharpen row, by position.
+    SharpenWorn(usize),
+    /// The Sharpen button.
+    SharpenGo,
+    /// The switch to the reforge panel.
+    ReforgeMode,
+    /// A worn item in the reforge row, by position.
+    ReforgeWorn(usize),
+    /// The Reforge button (asks to confirm).
+    ReforgeGo,
+    /// Confirms the reforge.
+    ReforgeConfirm,
+    /// Backs out of the reforge confirmation.
+    ReforgeCancel,
+    /// The switch to the gems panel.
+    GemsMode,
+    /// A worn item in the gems row, by position.
+    GemsWorn(usize),
+    /// Socket the picked gem into socket `n`.
+    GemSocket(u8),
+    /// Take the gem out of socket `n`.
+    GemUnsocket(u8),
+    /// The Upgrade button (asks to confirm).
+    GemUpgradeGo,
+    /// Confirms the upgrade.
+    GemUpgradeConfirm,
+    /// Backs out of the upgrade confirmation.
+    GemUpgradeCancel,
+    /// The hub key panel's Downgrade button (asks to confirm).
+    KeyDowngrade,
+    /// The hub key panel's Cleanse button (asks to confirm).
+    KeyCleanse,
+    /// Confirms the pending key change.
+    KeyConfirm,
+    /// Withdraws the pending key change.
+    KeyCancel,
+    /// A panel with nothing to press: it only keeps the pointer from the camera.
+    Panel,
+}
+
+/// The front-end's own state: typed text, focus, form mode.
+#[derive(Debug)]
+pub struct FrontEndUi {
+    email: TextField,
+    display_name: TextField,
+    password: TextField,
+    focus: Option<FieldId>,
+    register: bool,
+    remember: bool,
+    pointer: (f32, f32),
+    clock: f32,
+    /// The key change the hub key panel is asking to confirm.
+    confirm: Option<KeyChange>,
+    /// Disconnect prompts the player answered "Wait" to, by drop key.
+    waited: Vec<String>,
+    /// The community page's title search.
+    search: TextField,
+    /// The community page's level file path.
+    path: TextField,
+    community_focus: Option<community::CommunityField>,
+}
+
+impl Default for FrontEndUi {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// --- palette ----------------------------------------------------------------------------
+
+const BACKDROP_TOP: UiColor = [0.015, 0.02, 0.035, 0.90];
+const BACKDROP_BOTTOM: UiColor = [0.04, 0.03, 0.05, 0.96];
+const TITLE_TOP: UiColor = [0.01, 0.015, 0.03, 0.55];
+const TITLE_BOTTOM: UiColor = [0.02, 0.015, 0.03, 0.82];
+const PANEL_TOP: UiColor = [0.11, 0.12, 0.16, 0.97];
+const PANEL_BOTTOM: UiColor = [0.06, 0.065, 0.09, 0.97];
+const GOLD: UiColor = tone::CURRENCY;
+const GOLD_EDGE: UiColor = [0.62, 0.50, 0.28, 0.85];
+const TEXT: UiColor = [0.91, 0.92, 0.95, 1.0];
+const DIM: UiColor = [0.62, 0.64, 0.71, 1.0];
+const FAINT: UiColor = [0.40, 0.42, 0.48, 1.0];
+const GOOD: UiColor = tone::GOOD;
+const BUSY: UiColor = tone::WARN;
+const BAD: UiColor = tone::DANGER;
+const FIELD: UiColor = [0.04, 0.045, 0.06, 1.0];
+const SELECTED: UiColor = [0.96, 0.82, 0.48, 0.95];
+
+fn status_color(level: StatusLevel) -> UiColor {
+    match level {
+        StatusLevel::Good => GOOD,
+        StatusLevel::Busy => BUSY,
+        StatusLevel::Warning => BUSY,
+        StatusLevel::Bad => BAD,
+    }
+}
+
+fn role_color(role: Role) -> UiColor {
+    match role {
+        Role::Tank => [0.38, 0.58, 0.98, 1.0],
+        Role::Healer => [0.40, 0.88, 0.50, 1.0],
+        Role::Dps => [0.96, 0.44, 0.38, 1.0],
+    }
+}
+
+/// A modifier's colour: stronger than designed is danger, weaker is good, as designed is plain.
+fn modifier_tone(magnitude_pct: i16) -> UiColor {
+    match magnitude_pct.cmp(&0) {
+        std::cmp::Ordering::Greater => BAD,
+        std::cmp::Ordering::Less => GOOD,
+        std::cmp::Ordering::Equal => TEXT,
+    }
+}
+
+fn role_blurb(role: Role) -> &'static str {
+    match role {
+        Role::Tank => "Hold the enemy's attention and take the hits.",
+        Role::Healer => "Keep the party alive through every pull.",
+        Role::Dps => "Bring the enemies down before they bring you down.",
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ButtonKind {
+    /// The one action a screen is for.
+    Primary,
+    /// An ordinary control.
+    Secondary,
+    /// A quiet one: text until the pointer is on it. Sign out, change character, leave.
+    Ghost,
+    /// One that throws something away.
+    Danger,
+}
+
+/// The logical size the full-screen pages are arranged for. A larger interface scale than
+/// fits is reduced until it does (see [`kit::fit_scale`]), so no panel or button is ever
+/// pushed off a small window.
+const DESIGN: (f32, f32) = (1000.0, 720.0);
+
+/// The scale the front-end lays out and draws at in a window of `viewport` pixels.
+fn fitted(scale: UiScale, viewport: (u32, u32)) -> UiScale {
+    kit::fit_scale(scale, DESIGN, viewport)
+}
+
+/// Logical sizes the pages share, so a button or a corner is the same everywhere.
+mod size {
+    /// A panel's corner radius.
+    pub const PANEL_CORNER: f32 = 12.0;
+    /// A button's corner radius.
+    pub const BUTTON_CORNER: f32 = 8.0;
+    /// The primary button of a panel.
+    pub const PRIMARY_HEIGHT: f32 = 48.0;
+    /// A secondary button beside it.
+    pub const SECONDARY_HEIGHT: f32 = 40.0;
+    /// A button inside the hub's small panels.
+    pub const COMPACT_HEIGHT: f32 = 32.0;
+    /// Inside a full-screen panel: the margin to its content.
+    pub const PANEL_PAD: f32 = 30.0;
+    /// A party member's row, and the pitch between rows.
+    pub const MEMBER_ROW: f32 = 62.0;
+    pub const MEMBER_PITCH: f32 = 68.0;
+}
+
+/// What the pointer is resting on that has something to say.
+struct Hint {
+    title: String,
+    detail: String,
+}
+
+/// One frame's interactive regions.
+struct Layout {
+    hits: Vec<(Hit, UiRect)>,
+}
+
+impl Layout {
+    fn new() -> Self {
+        Self {
+            hits: Vec::with_capacity(32),
+        }
+    }
+
+    fn add(&mut self, hit: Hit, rect: UiRect) -> UiRect {
+        self.hits.push((hit, rect));
+        rect
+    }
+
+    fn at(&self, pointer: (f32, f32)) -> Option<&Hit> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|(_, rect)| rect.contains(pointer.0, pointer.1))
+            .map(|(hit, _)| hit)
+    }
+}
+
+/// Seconds as `m:ss`.
+fn clock_text(seconds: u64) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+impl FrontEndUi {
+    /// A fresh front-end on the sign-in form.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            email: TextField::new(96),
+            display_name: TextField::new(24),
+            password: TextField::password(128),
+            focus: Some(FieldId::Email),
+            register: false,
+            remember: true,
+            pointer: (0.0, 0.0),
+            clock: 0.0,
+            confirm: None,
+            waited: Vec::new(),
+            search: TextField::new(48),
+            path: TextField::new(260),
+            community_focus: None,
+        }
+    }
+
+    /// Pre-fills the email field (a remembered account).
+    pub fn set_email(&mut self, email: &str) {
+        self.email.set_text(email);
+        self.focus = Some(FieldId::Password);
+    }
+
+    /// Clears the password: after every attempt, successful or not.
+    pub fn clear_password(&mut self) {
+        self.password.clear();
+    }
+
+    /// Whether a text field has the keyboard (the app then sends no keys to gameplay).
+    #[must_use]
+    pub fn wants_keyboard(&self, view: &FrontEndView) -> bool {
+        (view.screen == Screen::Login && self.focus.is_some())
+            || (view.screen == Screen::Community && self.community_focus.is_some())
+    }
+
+    /// Whether the pointer is over front-end interface (the app then keeps it from the camera).
+    #[must_use]
+    pub fn wants_pointer(&self, view: &FrontEndView, viewport: (u32, u32), scale: UiScale) -> bool {
+        !view.screen.is_overlay()
+            || self
+                .layout(view, viewport, scale)
+                .at(self.pointer)
+                .is_some()
+    }
+
+    fn field_mut(&mut self, id: FieldId) -> &mut TextField {
+        match id {
+            FieldId::Email => &mut self.email,
+            FieldId::DisplayName => &mut self.display_name,
+            FieldId::Password => &mut self.password,
+        }
+    }
+
+    fn field_order(&self) -> Vec<FieldId> {
+        if self.register {
+            vec![FieldId::Email, FieldId::DisplayName, FieldId::Password]
+        } else {
+            vec![FieldId::Email, FieldId::Password]
+        }
+    }
+
+    fn submit_login(&mut self) -> Option<FrontEndAction> {
+        let email = self.email.text().trim().to_owned();
+        let password = self.password.text().to_owned();
+        if email.is_empty() || password.is_empty() {
+            return None;
+        }
+        Some(if self.register {
+            FrontEndAction::Register {
+                email,
+                password,
+                display_name: self.display_name.text().trim().to_owned(),
+                remember: self.remember,
+            }
+        } else {
+            FrontEndAction::Login {
+                email,
+                password,
+                remember: self.remember,
+            }
+        })
+    }
+
+    /// Reads one frame of input against the screen the view describes.
+    pub fn update(
+        &mut self,
+        input: &FrontInput<'_>,
+        view: &FrontEndView,
+        viewport: (u32, u32),
+        scale: UiScale,
+        delta_seconds: f32,
+    ) -> Vec<FrontEndAction> {
+        self.clock += delta_seconds;
+        self.pointer = input.pointer;
+        let mut actions = Vec::new();
+
+        // Typing, on the sign-in form.
+        if view.screen == Screen::Login && view.busy.is_none() {
+            if let Some(focus) = self.focus {
+                let outcome = self.field_mut(focus).apply(input.typed, input.keys);
+                if outcome.paste_requested
+                    && let Some(text) = (input.clipboard)()
+                {
+                    self.field_mut(focus).paste(&text);
+                }
+                if outcome.tabbed {
+                    let order = self.field_order();
+                    let next = order
+                        .iter()
+                        .position(|id| *id == focus)
+                        .map_or(0, |i| (i + 1) % order.len());
+                    self.focus = order.get(next).copied();
+                }
+                if outcome.submitted
+                    && let Some(action) = self.submit_login()
+                {
+                    actions.push(action);
+                }
+            }
+        }
+
+        // Typing, on the community page (search and file path).
+        if view.screen == Screen::Community
+            && let Some(focus) = self.community_focus
+        {
+            let field = match focus {
+                community::CommunityField::Search => &mut self.search,
+                community::CommunityField::Path => &mut self.path,
+            };
+            let outcome = field.apply(input.typed, input.keys);
+            if outcome.paste_requested
+                && let Some(text) = (input.clipboard)()
+            {
+                field.paste(&text);
+            }
+            if outcome.submitted {
+                match focus {
+                    community::CommunityField::Search => {
+                        actions.push(FrontEndAction::Community(CommunityAction::Search(
+                            self.search.text().trim().to_owned(),
+                        )));
+                    }
+                    community::CommunityField::Path => {
+                        actions.push(FrontEndAction::Community(CommunityAction::Upload(
+                            self.path.text().trim().to_owned(),
+                        )));
+                    }
+                }
+            }
+        }
+
+        if view.screen == Screen::Title
+            && input.typed.iter().any(|c| matches!(c, '\r' | '\n' | ' '))
+        {
+            actions.push(FrontEndAction::ContinueFromTitle);
+        }
+
+        // Enter confirms the page's one primary action where nothing can be lost by it. Not on
+        // pages with chat up (Enter opens the chat line there), and never on a destructive one.
+        let enter = input.typed.iter().any(|c| matches!(c, '\r' | '\n'));
+        if enter && view.busy.is_none() {
+            match view.screen {
+                Screen::Characters if view.selected_character.is_some() => {
+                    actions.push(FrontEndAction::ConfirmCharacter);
+                }
+                Screen::ReadyCheck
+                    if view.party.as_ref().is_some_and(|party| !party.i_answered) =>
+                {
+                    actions.push(FrontEndAction::Accept);
+                }
+                _ => {}
+            }
+        }
+
+        // Escape closes the topmost thing: a pending confirmation, then a prompt, then the page.
+        if input.escape {
+            match view.screen {
+                Screen::Community if self.community_focus.is_some() => {
+                    self.community_focus = None;
+                }
+                Screen::Dungeons
+                | Screen::Roles
+                | Screen::Workshop
+                | Screen::History
+                | Screen::Community
+                | Screen::Leaderboards => {
+                    actions.push(FrontEndAction::Back);
+                }
+                Screen::Login if self.register => self.register = false,
+                Screen::Hub if self.confirm.is_some() => self.confirm = None,
+                Screen::InWorld if view.completion.is_none() => {
+                    // "Wait" is the harmless answer to the disconnect prompt.
+                    let shown: Vec<String> = pending_away(view, &self.waited)
+                        .iter()
+                        .map(|away| away.key.clone())
+                        .collect();
+                    self.waited.extend(shown);
+                }
+                _ => {}
+            }
+        }
+
+        if view.screen != Screen::Hub || view.busy.is_some() {
+            self.confirm = None;
+        }
+        // An answered drop that is over (the member came back, or was removed) is forgotten, so
+        // a later drop of the same member asks again.
+        self.waited
+            .retain(|key| view.away.iter().any(|away| away.key == *key));
+        if !input.pressed {
+            return actions;
+        }
+        let layout = self.layout(view, viewport, scale);
+        let Some(hit) = layout.at(input.pointer).cloned() else {
+            if view.screen == Screen::Login {
+                self.focus = None;
+            }
+            self.community_focus = None;
+            return actions;
+        };
+        match hit {
+            Hit::Field(id) => self.focus = Some(id),
+            Hit::Remember => self.remember = !self.remember,
+            Hit::Submit => {
+                if let Some(action) = self.submit_login() {
+                    actions.push(action);
+                }
+            }
+            Hit::ToggleRegister => {
+                self.register = !self.register;
+                self.focus = Some(FieldId::Email);
+            }
+            Hit::Quit => actions.push(FrontEndAction::Quit),
+            Hit::Logout => actions.push(FrontEndAction::Logout),
+            Hit::Character(index) => actions.push(FrontEndAction::SelectCharacter(index)),
+            Hit::Continue => actions.push(match view.screen {
+                Screen::Title => FrontEndAction::ContinueFromTitle,
+                Screen::Characters => FrontEndAction::ConfirmCharacter,
+                Screen::Dungeons => FrontEndAction::ConfirmDungeon,
+                _ => FrontEndAction::JoinQueue,
+            }),
+            Hit::Back => actions.push(FrontEndAction::Back),
+            Hit::DungeonFinder => actions.push(FrontEndAction::OpenDungeonFinder),
+            Hit::Equipment => actions.push(FrontEndAction::OpenEquipment),
+            Hit::Workshop => actions.push(FrontEndAction::OpenWorkshop),
+            Hit::HistoryButton => actions.push(FrontEndAction::OpenHistory),
+            Hit::BoardsButton => actions.push(FrontEndAction::OpenLeaderboards),
+            Hit::HistoryRow(index) => actions.push(FrontEndAction::HistorySelect(index)),
+            Hit::HistoryOlder => actions.push(FrontEndAction::HistoryOlder),
+            Hit::HistoryNewest => actions.push(FrontEndAction::HistoryNewest),
+            Hit::BoardDungeon(step) => actions.push(FrontEndAction::BoardDungeon(step)),
+            Hit::BoardKey(step) => actions.push(FrontEndAction::BoardKey(step)),
+            Hit::BoardKind(fastest) => actions.push(FrontEndAction::BoardKind(fastest)),
+            Hit::BoardPage(step) => actions.push(FrontEndAction::BoardPage(step)),
+            Hit::CommunityButton => actions.push(FrontEndAction::OpenCommunity),
+            Hit::Community(hit) => self.community_hit(hit, &mut actions),
+            Hit::ChangeCharacter => actions.push(FrontEndAction::ChangeCharacter),
+            Hit::InsertKey => actions.push(FrontEndAction::InsertKey),
+            Hit::WithdrawKey => actions.push(FrontEndAction::WithdrawKey),
+            Hit::ReturnToHub => actions.push(FrontEndAction::ReturnToHub),
+            Hit::BagCell(index) => {
+                if view.workshop.as_ref().is_some_and(|w| w.gems.is_some()) {
+                    actions.push(FrontEndAction::GemsPick(index));
+                } else if view
+                    .workshop
+                    .as_ref()
+                    .is_some_and(|w| w.sharpen.is_some() || w.reforge.is_some())
+                {
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Bag(index)));
+                } else {
+                    actions.push(FrontEndAction::StageSalvage(index));
+                }
+            }
+            Hit::SharpenMode(on) => actions.push(FrontEndAction::WorkshopMode(on)),
+            Hit::SharpenGo => actions.push(FrontEndAction::Sharpen),
+            Hit::ReforgeMode => actions.push(FrontEndAction::ReforgeMode),
+            Hit::GemsMode => actions.push(FrontEndAction::GemsMode),
+            Hit::GemSocket(n) => actions.push(FrontEndAction::SocketGem(n)),
+            Hit::GemUnsocket(n) => actions.push(FrontEndAction::UnsocketGem(n)),
+            Hit::GemUpgradeGo => actions.push(FrontEndAction::GemUpgradeAsk),
+            Hit::GemUpgradeConfirm => actions.push(FrontEndAction::GemUpgrade),
+            Hit::GemUpgradeCancel => actions.push(FrontEndAction::GemUpgradeCancel),
+            Hit::GemsWorn(position) => {
+                if let Some(worn) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|w| w.gems.as_ref())
+                    .and_then(|g| g.worn.get(position))
+                {
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                        worn.slot.clone(),
+                    )));
+                }
+            }
+            Hit::ReforgeGo => actions.push(FrontEndAction::ReforgeAsk),
+            Hit::ReforgeConfirm => actions.push(FrontEndAction::Reforge),
+            Hit::ReforgeCancel => actions.push(FrontEndAction::ReforgeCancel),
+            Hit::ReforgeWorn(position) => {
+                if let Some(worn) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|w| w.reforge.as_ref())
+                    .and_then(|r| r.worn.get(position))
+                {
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                        worn.slot.clone(),
+                    )));
+                }
+            }
+            Hit::SharpenWorn(position) => {
+                if let Some(worn) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|w| w.sharpen.as_ref())
+                    .and_then(|e| e.worn.get(position))
+                {
+                    actions.push(FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                        worn.slot.clone(),
+                    )));
+                }
+            }
+            Hit::TrayCell(position) => {
+                if let Some(index) = view
+                    .workshop
+                    .as_ref()
+                    .and_then(|workshop| workshop.tray.get(position))
+                {
+                    actions.push(FrontEndAction::UnstageSalvage(*index));
+                }
+            }
+            Hit::SalvageTray => actions.push(FrontEndAction::SalvageTray),
+            Hit::Exchange(id) => actions.push(FrontEndAction::Exchange(id)),
+            Hit::KeyDowngrade => self.confirm = Some(KeyChange::Downgrade),
+            Hit::KeyCleanse => self.confirm = Some(KeyChange::Cleanse),
+            Hit::KeyCancel => self.confirm = None,
+            Hit::KeyConfirm => match self.confirm.take() {
+                Some(KeyChange::Downgrade) => actions.push(FrontEndAction::DowngradeKey),
+                Some(KeyChange::Cleanse) => actions.push(FrontEndAction::CleanseKey),
+                None => {}
+            },
+            Hit::Panel => {}
+            Hit::AwayWait => {
+                let shown: Vec<String> = pending_away(view, &self.waited)
+                    .iter()
+                    .map(|away| away.key.clone())
+                    .collect();
+                self.waited.extend(shown);
+            }
+            Hit::Dungeon(index) => actions.push(FrontEndAction::SelectDungeon(index)),
+            Hit::Role(role) => actions.push(FrontEndAction::SelectRole(role)),
+            Hit::LeaveQueue => actions.push(FrontEndAction::LeaveQueue),
+            Hit::Accept => actions.push(FrontEndAction::Accept),
+            Hit::Decline => actions.push(FrontEndAction::Decline),
+            Hit::Start => actions.push(FrontEndAction::StartDungeon),
+            Hit::LeaveParty => actions.push(FrontEndAction::LeaveParty),
+            Hit::Kick(account) => actions.push(FrontEndAction::Kick(account)),
+        }
+        actions
+    }
+
+    fn community_hit(&mut self, hit: community::CommunityHit, actions: &mut Vec<FrontEndAction>) {
+        use community::CommunityHit as H;
+        let action = match hit {
+            H::SearchField => {
+                self.community_focus = Some(community::CommunityField::Search);
+                return;
+            }
+            H::PathField => {
+                self.community_focus = Some(community::CommunityField::Path);
+                return;
+            }
+            H::Tab(mine) => CommunityAction::Tab(mine),
+            H::Row(index) => CommunityAction::Select(index),
+            H::Sort => CommunityAction::Sort,
+            H::Filter => CommunityAction::Filter,
+            H::Page(step) => CommunityAction::Page(step),
+            H::Refresh => CommunityAction::Refresh,
+            H::Difficulty(step) => CommunityAction::Difficulty(step),
+            H::Play => CommunityAction::Play,
+            H::Publish => CommunityAction::Publish,
+            H::Unpublish => CommunityAction::Unpublish,
+            H::Upload => CommunityAction::Upload(self.path.text().trim().to_owned()),
+            H::UploadVersion => CommunityAction::UploadVersion(self.path.text().trim().to_owned()),
+        };
+        self.community_focus = None;
+        actions.push(FrontEndAction::Community(action));
+    }
+
+    // --- layout -----------------------------------------------------------------------
+
+    fn layout(&self, view: &FrontEndView, viewport: (u32, u32), scale: UiScale) -> Layout {
+        let scale = fitted(scale, viewport);
+        let mut layout = Layout::new();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "viewport sizes are small integers"
+        )]
+        let (w, h) = (viewport.0 as f32, viewport.1 as f32);
+        let px = |v: f32| scale.px(v);
+
+        // Top bar: account and sign-out, on every signed-in full-screen page.
+        if shows_account(view) {
+            layout.add(
+                Hit::Logout,
+                UiRect::new(w - px(140.0), px(18.0), px(120.0), px(34.0)),
+            );
+        }
+
+        match view.screen {
+            Screen::Title => {
+                layout.add(Hit::Continue, title_continue(w, h, scale));
+                layout.add(Hit::Quit, quit_button(h, scale));
+            }
+            Screen::Login => {
+                let panel = login_panel(w, h, scale, self.register);
+                let mut y = panel.y + px(118.0);
+                layout.add(
+                    Hit::Field(FieldId::Email),
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)),
+                );
+                y += px(76.0);
+                if self.register {
+                    layout.add(
+                        Hit::Field(FieldId::DisplayName),
+                        UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)),
+                    );
+                    y += px(76.0);
+                }
+                layout.add(
+                    Hit::Field(FieldId::Password),
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(44.0)),
+                );
+                y += px(60.0);
+                layout.add(
+                    Hit::Remember,
+                    UiRect::new(panel.x + px(36.0), y, px(200.0), px(28.0)),
+                );
+                y += px(44.0);
+                layout.add(
+                    Hit::Submit,
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(48.0)),
+                );
+                y += px(60.0);
+                layout.add(
+                    Hit::ToggleRegister,
+                    UiRect::new(panel.x + px(36.0), y, panel.width - px(72.0), px(36.0)),
+                );
+                layout.add(Hit::Quit, quit_button(h, scale));
+            }
+            Screen::Characters => {
+                for (index, rect) in character_cards(view.characters.len(), w, h, scale)
+                    .into_iter()
+                    .enumerate()
+                {
+                    layout.add(Hit::Character(index), rect);
+                }
+                if view.selected_character.is_some() {
+                    layout.add(Hit::Continue, enter_world_button(w, h, scale));
+                }
+            }
+            Screen::Hub => {
+                if let Some(hub) = &view.hub {
+                    let rects = hub_rects(hub.resources.len(), view.busy.is_some(), w, h, scale);
+                    layout.add(Hit::Panel, rects.panel);
+                    if hub.can_find_dungeon {
+                        layout.add(Hit::DungeonFinder, rects.finder);
+                    }
+                    layout.add(Hit::Equipment, rects.equipment);
+                    layout.add(Hit::Workshop, rects.workshop);
+                    layout.add(Hit::HistoryButton, rects.history);
+                    layout.add(Hit::BoardsButton, rects.boards);
+                    layout.add(Hit::CommunityButton, rects.community);
+                    if hub.can_change_character {
+                        layout.add(Hit::ChangeCharacter, rects.change);
+                    }
+                    layout.add(Hit::Logout, rects.logout);
+                    if let Some(key) = &hub.key {
+                        let keys = key_card_rects(rects.panel, key, scale);
+                        layout.add(Hit::Panel, keys.panel);
+                        let idle = view.busy.is_none() && hub.can_change_character;
+                        if idle {
+                            if self.confirm.is_some() {
+                                layout.add(Hit::KeyConfirm, keys.first);
+                                layout.add(Hit::KeyCancel, keys.second);
+                            } else {
+                                if key.can_downgrade {
+                                    layout.add(Hit::KeyDowngrade, keys.first);
+                                }
+                                if !key.modifiers.is_empty()
+                                    && key.gold >= u64::from(key.cleanse_cost)
+                                {
+                                    layout.add(Hit::KeyCleanse, keys.second);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(queue) = &view.queue {
+                    let (panel, leave) = queue_panel(h, scale);
+                    layout.add(Hit::Panel, panel);
+                    if !queue.matched {
+                        layout.add(Hit::LeaveQueue, leave);
+                    }
+                }
+            }
+            Screen::Dungeons => {
+                let (list, _) = dungeon_panels(w, h, scale);
+                for index in 0..view.dungeons.len() {
+                    let row = UiRect::new(
+                        list.x + px(12.0),
+                        list.y + px(64.0) + px(74.0) * index as f32,
+                        list.width - px(24.0),
+                        px(64.0),
+                    );
+                    layout.add(Hit::Dungeon(index), row);
+                }
+                layout.add(Hit::CommunityButton, community_button(w, scale));
+                let (back, next) = footer_buttons(w, h, scale);
+                layout.add(Hit::Back, back);
+                if view.selected_dungeon.is_some() {
+                    layout.add(Hit::Continue, next);
+                }
+            }
+            Screen::Roles => {
+                let playable = view
+                    .selected_character
+                    .and_then(|i| view.characters.get(i))
+                    .map(|c| c.roles.clone())
+                    .unwrap_or_default();
+                for (role, rect) in Role::ALL.into_iter().zip(role_tiles(w, h, scale)) {
+                    if playable.contains(&role) {
+                        layout.add(Hit::Role(role), rect);
+                    }
+                }
+                let (back, next) = footer_buttons(w, h, scale);
+                layout.add(Hit::Back, back);
+                if view.selected_role.is_some() && view.busy.is_none() {
+                    layout.add(Hit::Continue, next);
+                }
+            }
+            Screen::Workshop => {
+                let panels = workshop_panels(w, h, scale);
+                let exchange = panels.exchange;
+                if let Some(workshop) = &view.workshop
+                    && let Some(sharpen) = &workshop.sharpen
+                {
+                    let idle = view.busy.is_none();
+                    let panel = sharpen_panel(&panels);
+                    layout.add(Hit::Panel, panel);
+                    layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
+                    layout.add(Hit::ReforgeMode, second_mode_button(panel, scale));
+                    layout.add(Hit::GemsMode, third_mode_button(panel, scale));
+                    for row in &workshop.bag {
+                        layout.add(
+                            Hit::BagCell(row.index),
+                            bag_cell_rect(panels.bag, row.index as usize, scale),
+                        );
+                    }
+                    for position in 0..sharpen.worn.len() {
+                        layout.add(
+                            Hit::SharpenWorn(position),
+                            sharpen_worn_rect(panel, position, scale),
+                        );
+                    }
+                    if idle
+                        && sharpen.detail.as_ref().is_some_and(|d| {
+                            d.blocked.is_none() && d.cost.iter().all(|c| c.owned >= c.needed)
+                        })
+                    {
+                        layout.add(Hit::SharpenGo, sharpen_button(panel, scale));
+                    }
+                } else if let Some(workshop) = &view.workshop
+                    && let Some(reforge) = &workshop.reforge
+                {
+                    let idle = view.busy.is_none();
+                    let panel = sharpen_panel(&panels);
+                    layout.add(Hit::Panel, panel);
+                    layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
+                    layout.add(Hit::SharpenMode(true), second_mode_button(panel, scale));
+                    layout.add(Hit::GemsMode, third_mode_button(panel, scale));
+                    for row in &workshop.bag {
+                        layout.add(
+                            Hit::BagCell(row.index),
+                            bag_cell_rect(panels.bag, row.index as usize, scale),
+                        );
+                    }
+                    for position in 0..reforge.worn.len() {
+                        layout.add(
+                            Hit::ReforgeWorn(position),
+                            sharpen_worn_rect(panel, position, scale),
+                        );
+                    }
+                    if idle
+                        && reforge.detail.as_ref().is_some_and(|d| {
+                            d.blocked.is_none() && d.cost.iter().all(|c| c.owned >= c.needed)
+                        })
+                    {
+                        if reforge.confirming {
+                            layout.add(Hit::ReforgeConfirm, sharpen_button(panel, scale));
+                            layout.add(Hit::ReforgeCancel, reforge_cancel_button(panel, scale));
+                        } else {
+                            layout.add(Hit::ReforgeGo, sharpen_button(panel, scale));
+                        }
+                    }
+                } else if let Some(workshop) = &view.workshop
+                    && let Some(gems) = &workshop.gems
+                {
+                    let idle = view.busy.is_none();
+                    let panel = sharpen_panel(&panels);
+                    layout.add(Hit::Panel, panel);
+                    layout.add(Hit::SharpenMode(false), mode_button(panel, scale));
+                    layout.add(Hit::SharpenMode(true), second_mode_button(panel, scale));
+                    layout.add(Hit::ReforgeMode, third_mode_button(panel, scale));
+                    for row in &workshop.bag {
+                        layout.add(
+                            Hit::BagCell(row.index),
+                            bag_cell_rect(panels.bag, row.index as usize, scale),
+                        );
+                    }
+                    for position in 0..gems.worn.len() {
+                        layout.add(
+                            Hit::GemsWorn(position),
+                            sharpen_worn_rect(panel, position, scale),
+                        );
+                    }
+                    if idle {
+                        if let Some(item) = &gems.item {
+                            for (socket, row) in item.sockets.iter().enumerate() {
+                                let n = u8::try_from(socket).unwrap_or(u8::MAX);
+                                let rect =
+                                    gem_socket_button(panel, gems.worn.len(), socket, scale);
+                                if row.filled.is_some() {
+                                    if row.unsocket.as_ref().is_some_and(|c| c.owned >= c.needed) {
+                                        layout.add(Hit::GemUnsocket(n), rect);
+                                    }
+                                } else if row.can_socket {
+                                    layout.add(Hit::GemSocket(n), rect);
+                                }
+                            }
+                        }
+                        if let Some(upgrade) = gems.pick.as_ref().and_then(|p| p.upgrade.as_ref())
+                            && upgrade.enough_gems
+                            && upgrade.cost.owned >= upgrade.cost.needed
+                        {
+                            if gems.confirming {
+                                layout.add(Hit::GemUpgradeConfirm, sharpen_button(panel, scale));
+                                layout.add(
+                                    Hit::GemUpgradeCancel,
+                                    reforge_cancel_button(panel, scale),
+                                );
+                            } else {
+                                layout.add(Hit::GemUpgradeGo, sharpen_button(panel, scale));
+                            }
+                        }
+                    }
+                } else if let Some(workshop) = &view.workshop {
+                    let idle = view.busy.is_none();
+                    layout.add(Hit::GemsMode, mode_button(panels.bag, scale));
+                    layout.add(Hit::SharpenMode(true), mode_button(panels.salvage, scale));
+                    layout.add(Hit::ReforgeMode, mode_button(panels.exchange, scale));
+                    if idle {
+                        for row in &workshop.bag {
+                            if !workshop.tray.contains(&row.index) {
+                                layout.add(
+                                    Hit::BagCell(row.index),
+                                    bag_cell_rect(panels.bag, row.index as usize, scale),
+                                );
+                            }
+                        }
+                        for position in 0..workshop.tray.len().min(TRAY_CELLS) {
+                            layout.add(
+                                Hit::TrayCell(position),
+                                tray_cell_rect(panels.salvage, position, scale),
+                            );
+                        }
+                        if !workshop.tray.is_empty() {
+                            layout.add(Hit::SalvageTray, salvage_button(panels.salvage, scale));
+                        }
+                    }
+                    for (index, row) in workshop
+                        .exchanges
+                        .iter()
+                        .enumerate()
+                        .take(workshop_rows(exchange, scale))
+                    {
+                        if row.affordable && idle {
+                            layout.add(
+                                Hit::Exchange(row.id.clone()),
+                                workshop_button(workshop_row(exchange, index, scale), scale),
+                            );
+                        }
+                    }
+                }
+                let (back, _) = footer_buttons(w, h, scale);
+                layout.add(Hit::Back, back);
+            }
+            Screen::History => {
+                if let Some(card) = &view.history {
+                    records::history_hits(&mut layout, card, w, h, scale);
+                }
+            }
+            Screen::Leaderboards => {
+                if let Some(card) = &view.board {
+                    records::board_hits(&mut layout, card, w, h, scale);
+                }
+            }
+            Screen::Community => {
+                if let Some(card) = &view.community {
+                    community::hits(&mut layout, card, w, h, scale);
+                }
+            }
+            Screen::ReadyCheck => {
+                let panel = ready_panel(w, h, scale);
+                let answered = view.party.as_ref().is_some_and(|p| p.i_answered);
+                if !answered {
+                    let (accept, decline) = ready_buttons(panel, scale);
+                    layout.add(Hit::Accept, accept);
+                    layout.add(Hit::Decline, decline);
+                }
+            }
+            Screen::KeySelect => {
+                let panel = key_panel(w, h, scale);
+                let (leave, _) = key_buttons(panel, scale);
+                if let Some(party) = &view.party
+                    && view.busy.is_none()
+                {
+                    for (index, member) in party.members.iter().enumerate() {
+                        if member.me && member.key_level.is_some() {
+                            layout.add(
+                                Hit::InsertKey,
+                                key_insert_button(key_row(panel, index, scale), scale),
+                            );
+                        }
+                    }
+                    layout.add(Hit::LeaveParty, leave);
+                }
+            }
+            Screen::Party => {
+                let panel = party_panel(w, h, scale);
+                if let Some(party) = &view.party {
+                    let idle = view.busy.is_none();
+                    for (index, member) in party.members.iter().enumerate() {
+                        let row = member_row(panel, index, PARTY_ROWS_TOP, scale);
+                        if party.i_lead && !member.me && idle {
+                            layout.add(
+                                Hit::Kick(member.account_id.clone()),
+                                kick_button(row, scale),
+                            );
+                        }
+                    }
+                    let buttons = party_buttons(panel, scale);
+                    if party.i_own_key && idle {
+                        layout.add(Hit::WithdrawKey, buttons.withdraw);
+                    }
+                    if start_enabled(view, party) {
+                        layout.add(Hit::Start, buttons.start);
+                    }
+                    if idle {
+                        layout.add(Hit::LeaveParty, buttons.leave);
+                    }
+                }
+            }
+            Screen::InWorld => {
+                if let Some(card) = &view.completion {
+                    let (panel, button) = completion_rects(card, w, h, scale);
+                    layout.add(Hit::Panel, panel);
+                    if !card.returning {
+                        layout.add(Hit::ReturnToHub, button);
+                    }
+                } else {
+                    // A small "leave" control while in the dungeon.
+                    layout.add(Hit::LeaveParty, in_world_leave(w, scale));
+                    let away = pending_away(view, &self.waited);
+                    if !away.is_empty() {
+                        let panel = away_panel(away.len(), w, h, scale);
+                        layout.add(Hit::Panel, panel.panel);
+                        layout.add(Hit::AwayWait, panel.wait);
+                        layout.add(Hit::LeaveParty, panel.leave);
+                    }
+                }
+            }
+        }
+        layout
+    }
+
+    // --- drawing ----------------------------------------------------------------------
+
+    /// Draws the front-end for `view`.
+    pub fn draw(
+        &self,
+        list: &mut UiDrawList,
+        view: &FrontEndView,
+        viewport: (u32, u32),
+        scale: UiScale,
+    ) {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "viewport sizes are small integers"
+        )]
+        let (w, h) = (viewport.0 as f32, viewport.1 as f32);
+        let layout = self.layout(view, viewport, scale);
+        let scale = fitted(scale, viewport);
+        let hovered = layout.at(self.pointer).cloned();
+        let ctx = Painter {
+            list,
+            scale,
+            hovered: hovered.as_ref(),
+            pointer: self.pointer,
+            hint: None,
+        };
+        let mut ctx = ctx;
+
+        if !view.screen.is_overlay() {
+            // The title lets the world show through; every other page covers it.
+            let (top, bottom) = if view.screen == Screen::Title {
+                (TITLE_TOP, TITLE_BOTTOM)
+            } else {
+                (BACKDROP_TOP, BACKDROP_BOTTOM)
+            };
+            ctx.list
+                .panel(UiRect::new(0.0, 0.0, w, h), 0.0, top, bottom);
+            ctx.top_bar(view, w);
+        }
+        match view.screen {
+            Screen::Title => draw_title(&mut ctx, view, w, h, self.clock),
+            Screen::Login => self.draw_login(&mut ctx, view, w, h),
+            Screen::Characters => draw_characters(&mut ctx, view, w, h),
+            Screen::Hub => draw_hub(&mut ctx, view, self.confirm, w, h, self.clock),
+            Screen::Dungeons => draw_dungeons(&mut ctx, view, w, h),
+            Screen::Roles => draw_roles(&mut ctx, view, w, h),
+            Screen::Workshop => draw_workshop(&mut ctx, view, w, h),
+            Screen::History => {
+                let empty = HistoryCard::default();
+                records::draw_history(
+                    &mut ctx,
+                    view.history.as_ref().unwrap_or(&empty),
+                    view.busy.is_some(),
+                    w,
+                    h,
+                );
+            }
+            Screen::Leaderboards => {
+                let empty = BoardCard::default();
+                records::draw_boards(&mut ctx, view.board.as_ref().unwrap_or(&empty), w, h);
+            }
+            Screen::Community => {
+                let empty = CommunityCard::default();
+                let fields = community::FieldView {
+                    focus: self.community_focus,
+                    search: (self.search.text(), &self.search.display_before_caret()),
+                    path: (self.path.text(), &self.path.display_before_caret()),
+                    clock: self.clock,
+                };
+                community::draw(
+                    &mut ctx,
+                    view.community.as_ref().unwrap_or(&empty),
+                    &fields,
+                    w,
+                    h,
+                );
+            }
+            Screen::ReadyCheck => draw_ready_check(&mut ctx, view, w, h),
+            Screen::KeySelect => draw_key_select(&mut ctx, view, w, h),
+            Screen::Party => draw_party(&mut ctx, view, w, h),
+            Screen::InWorld => draw_in_world(&mut ctx, view, &self.waited, w, h),
+        }
+        // Over the world a refusal is a toast; a full page keeps the sentence on screen.
+        if let Some(error) = &view.error
+            && !view.screen.is_overlay()
+            && view.screen != Screen::Login
+        {
+            ctx.banner(error, StatusLevel::Bad, w, h - ctx.scale.px(120.0));
+        }
+        draw_toasts(&mut ctx, view, w, h);
+        if let Some(text) = &view.reconnecting {
+            ctx.reconnecting(text, w, h, self.clock);
+        } else if let Some(hint) = ctx.hint.take() {
+            kit::hint(
+                ctx.list,
+                &Kit::new(scale),
+                self.pointer,
+                viewport,
+                &hint.title,
+                &hint.detail,
+            );
+        }
+    }
+
+    fn draw_login(&self, ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+        let scale = ctx.scale;
+        let px = move |v: f32| scale.px(v);
+        // The game's name over the form.
+        ctx.text_styled(
+            (w * 0.5, h * 0.12),
+            "SHADOWS OF THE CRYPT",
+            GOLD,
+            UiFont::Display,
+            46.0,
+            TextAlign::Center,
+        );
+        ctx.text(
+            (w * 0.5, h * 0.12 + px(60.0)),
+            "Online",
+            DIM,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
+
+        let panel = login_panel(w, h, ctx.scale, self.register);
+        ctx.panel(panel);
+        let title = if self.register {
+            "CREATE ACCOUNT"
+        } else {
+            "SIGN IN"
+        };
+        ctx.text(
+            (panel.x + panel.width * 0.5, panel.y + px(34.0)),
+            title,
+            GOLD,
+            UiFont::Display,
+            28.0,
+            TextAlign::Center,
+        );
+
+        let mut y = panel.y + px(118.0);
+        let x = panel.x + px(36.0);
+        let width = panel.width - px(72.0);
+        ctx.text(
+            (x, y - px(26.0)),
+            "Email",
+            DIM,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Left,
+        );
+        self.draw_field(
+            ctx,
+            FieldId::Email,
+            UiRect::new(x, y, width, px(44.0)),
+            &self.email,
+        );
+        y += px(76.0);
+        if self.register {
+            ctx.text(
+                (x, y - px(26.0)),
+                "Display name",
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            self.draw_field(
+                ctx,
+                FieldId::DisplayName,
+                UiRect::new(x, y, width, px(44.0)),
+                &self.display_name,
+            );
+            y += px(76.0);
+        }
+        ctx.text(
+            (x, y - px(26.0)),
+            "Password",
+            DIM,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Left,
+        );
+        self.draw_field(
+            ctx,
+            FieldId::Password,
+            UiRect::new(x, y, width, px(44.0)),
+            &self.password,
+        );
+        y += px(60.0);
+        // Remember me.
+        let tick = UiRect::new(x, y + px(3.0), px(22.0), px(22.0));
+        ctx.list.panel_stroke(tick, px(4.0), px(2.0), GOLD_EDGE);
+        if self.remember {
+            ctx.list.panel(tick.inset(px(5.0)), px(2.0), GOLD, GOLD);
+        }
+        ctx.text(
+            (tick.right() + px(10.0), y + px(4.0)),
+            "Remember me on this computer",
+            TEXT,
+            UiFont::Regular,
+            16.0,
+            TextAlign::Left,
+        );
+        y += px(44.0);
+        let busy = view.busy.is_some();
+        let label = if busy {
+            view.busy.as_deref().unwrap_or("Working...")
+        } else if self.register {
+            "Create Account"
+        } else {
+            "Sign In"
+        };
+        let ready =
+            !busy && !self.email.text().trim().is_empty() && !self.password.text().is_empty();
+        ctx.button(
+            UiRect::new(x, y, width, px(48.0)),
+            label,
+            ButtonKind::Primary,
+            &Hit::Submit,
+            ready,
+        );
+        y += px(60.0);
+        let toggle = if self.register {
+            "I already have an account"
+        } else {
+            "Create a new account"
+        };
+        ctx.link(
+            UiRect::new(x, y, width, px(36.0)),
+            toggle,
+            &Hit::ToggleRegister,
+        );
+        y += px(50.0);
+        if let Some(error) = &view.error {
+            for (line_index, line) in UiFont::Medium
+                .wrap(error, ctx.scale.px(15.0), width)
+                .iter()
+                .enumerate()
+            {
+                ctx.text(
+                    (
+                        panel.x + panel.width * 0.5,
+                        y + px(20.0) * line_index as f32,
+                    ),
+                    line,
+                    BAD,
+                    UiFont::Medium,
+                    15.0,
+                    TextAlign::Center,
+                );
+            }
+        }
+        ctx.button(
+            quit_button(h, ctx.scale),
+            "Quit",
+            ButtonKind::Secondary,
+            &Hit::Quit,
+            true,
+        );
+    }
+
+    fn draw_field(&self, ctx: &mut Painter<'_>, id: FieldId, rect: UiRect, field: &TextField) {
+        let scale = ctx.scale;
+        let px = move |v: f32| scale.px(v);
+        let focused = self.focus == Some(id);
+        ctx.list.panel(rect, px(6.0), FIELD, FIELD);
+        ctx.list.panel_stroke(
+            rect,
+            px(6.0),
+            px(if focused { 2.0 } else { 1.0 }),
+            if focused {
+                GOLD
+            } else {
+                [0.30, 0.32, 0.38, 1.0]
+            },
+        );
+        let size = 18.0;
+        let baseline_top = rect.y + (rect.height - UiFont::Regular.line_height(px(size))) * 0.5;
+        let shown = field.display();
+        ctx.list.label(
+            (rect.x + px(14.0), baseline_top),
+            &shown,
+            TEXT,
+            UiFont::Regular,
+            px(size),
+            TextAlign::Left,
+        );
+        if focused && (self.clock * 2.0).fract() < 0.6 {
+            let caret_x =
+                rect.x + px(14.0) + UiFont::Regular.width(&field.display_before_caret(), px(size));
+            ctx.list.rect(
+                UiRect::new(caret_x, rect.y + px(10.0), px(2.0), rect.height - px(20.0)),
+                GOLD,
+            );
+        }
+    }
+}
+
+/// Drawing helpers over one draw list.
+struct Painter<'a> {
+    list: &'a mut UiDrawList,
+    scale: UiScale,
+    hovered: Option<&'a Hit>,
+    /// Where the pointer is: icon-only things check it for their tooltip.
+    pointer: (f32, f32),
+    /// The tooltip to open once the page is drawn, so it lands over everything.
+    hint: Option<Hint>,
+}
+
+impl Painter<'_> {
+    fn text(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: UiColor,
+        font: UiFont,
+        size: f32,
+        align: TextAlign,
+    ) {
+        self.list
+            .label(origin, text, color, font, self.scale.px(size), align);
+    }
+
+    fn text_styled(
+        &mut self,
+        origin: (f32, f32),
+        text: &str,
+        color: UiColor,
+        font: UiFont,
+        size: f32,
+        align: TextAlign,
+    ) {
+        let px = self.scale.px(1.0);
+        self.list.styled_label(
+            origin,
+            text,
+            color,
+            font,
+            self.scale.px(size),
+            align,
+            TextStyle::outlined([0.0, 0.0, 0.0, 0.8], 2.0 * px, 2.0 * px, 0.3 * px),
+        );
+    }
+
+    fn panel(&mut self, rect: UiRect) {
+        let px = self.scale.px(1.0);
+        let corner = size::PANEL_CORNER * px;
+        self.list
+            .shadow(rect, corner, 24.0 * px, [0.0, 0.0, 0.0, 0.55]);
+        self.list.panel(rect, corner, PANEL_TOP, PANEL_BOTTOM);
+        self.list.panel_stroke(rect, corner, 1.5 * px, GOLD_EDGE);
+    }
+
+    fn is_hovered(&self, hit: &Hit) -> bool {
+        self.hovered == Some(hit)
+    }
+
+    fn button(&mut self, rect: UiRect, label: &str, kind: ButtonKind, hit: &Hit, enabled: bool) {
+        let px = self.scale.px(1.0);
+        let hovered = enabled && self.is_hovered(hit);
+        let (top, bottom, text) = match (kind, enabled) {
+            (_, false) => ([0.13, 0.13, 0.15, 1.0], [0.10, 0.10, 0.12, 1.0], FAINT),
+            (ButtonKind::Primary, true) => {
+                if hovered {
+                    (
+                        [0.72, 0.52, 0.18, 1.0],
+                        [0.50, 0.33, 0.09, 1.0],
+                        [1.0, 0.97, 0.88, 1.0],
+                    )
+                } else {
+                    (
+                        [0.58, 0.40, 0.13, 1.0],
+                        [0.40, 0.26, 0.07, 1.0],
+                        [1.0, 0.95, 0.84, 1.0],
+                    )
+                }
+            }
+            (ButtonKind::Secondary, true) => {
+                if hovered {
+                    ([0.24, 0.27, 0.35, 1.0], [0.16, 0.18, 0.24, 1.0], TEXT)
+                } else {
+                    ([0.17, 0.19, 0.25, 1.0], [0.11, 0.12, 0.16, 1.0], TEXT)
+                }
+            }
+            (ButtonKind::Ghost, true) => {
+                if hovered {
+                    ([0.17, 0.19, 0.25, 1.0], [0.11, 0.12, 0.16, 1.0], TEXT)
+                } else {
+                    ([0.0; 4], [0.0; 4], DIM)
+                }
+            }
+            (ButtonKind::Danger, true) => {
+                if hovered {
+                    ([0.62, 0.20, 0.17, 1.0], [0.42, 0.11, 0.09, 1.0], TEXT)
+                } else {
+                    ([0.46, 0.15, 0.13, 1.0], [0.30, 0.08, 0.07, 1.0], TEXT)
+                }
+            }
+        };
+        let corner = size::BUTTON_CORNER * px;
+        if hovered {
+            self.list
+                .glow(rect, corner, 10.0 * px, [0.96, 0.78, 0.40, 0.18]);
+        } else if kind == ButtonKind::Primary && enabled {
+            // The one action the page is for keeps a faint halo at rest.
+            self.list
+                .glow(rect, corner, 8.0 * px, [0.96, 0.78, 0.40, 0.08]);
+        }
+        let resting_ghost = kind == ButtonKind::Ghost && !hovered;
+        if top[3] > 0.0 {
+            self.list.panel(rect, corner, top, bottom);
+        }
+        if !resting_ghost {
+            self.list.panel_stroke(
+                rect,
+                corner,
+                1.0 * px,
+                [1.0, 0.9, 0.7, if enabled { 0.25 } else { 0.08 }],
+            );
+        }
+        let size = 17.0;
+        let top_y =
+            rect.y + (rect.height - UiFont::SemiBold.line_height(self.scale.px(size))) * 0.5;
+        self.text(
+            (rect.x + rect.width * 0.5, top_y),
+            label,
+            text,
+            UiFont::SemiBold,
+            size,
+            TextAlign::Center,
+        );
+    }
+
+    fn link(&mut self, rect: UiRect, label: &str, hit: &Hit) {
+        let color = if self.is_hovered(hit) { GOLD } else { DIM };
+        let top_y = rect.y + (rect.height - UiFont::Medium.line_height(self.scale.px(16.0))) * 0.5;
+        self.text(
+            (rect.x + rect.width * 0.5, top_y),
+            label,
+            color,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    }
+
+    fn top_bar(&mut self, view: &FrontEndView, w: f32) {
+        let scale = self.scale;
+        let px = move |v: f32| scale.px(v);
+        if let Some((level, text)) = &view.connection {
+            let dot = (px(28.0), px(35.0));
+            self.list.disc(dot, px(6.0), status_color(*level));
+            self.text(
+                (px(44.0), px(25.0)),
+                text,
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+        }
+        if let Some(account) = &view.account
+            && shows_account(view)
+        {
+            self.text(
+                (w - px(160.0), px(25.0)),
+                account,
+                TEXT,
+                UiFont::SemiBold,
+                16.0,
+                TextAlign::Right,
+            );
+            self.button(
+                UiRect::new(w - px(140.0), px(18.0), px(120.0), px(34.0)),
+                "Log Out",
+                ButtonKind::Secondary,
+                &Hit::Logout,
+                true,
+            );
+        }
+    }
+
+    fn heading(&mut self, title: &str, subtitle: &str, w: f32) {
+        let scale = self.scale;
+        let px = move |v: f32| scale.px(v);
+        self.text_styled(
+            (w * 0.5, px(70.0)),
+            title,
+            GOLD,
+            UiFont::Display,
+            36.0,
+            TextAlign::Center,
+        );
+        self.text(
+            (w * 0.5, px(122.0)),
+            subtitle,
+            DIM,
+            UiFont::Regular,
+            17.0,
+            TextAlign::Center,
+        );
+    }
+
+    fn banner(&mut self, text: &str, level: StatusLevel, w: f32, y: f32) {
+        let scale = self.scale;
+        let px = move |v: f32| scale.px(v);
+        let width = UiFont::Medium.width(text, px(16.0)) + px(48.0);
+        let rect = UiRect::new((w - width) * 0.5, y, width, px(40.0));
+        self.list.panel(
+            rect,
+            px(8.0),
+            [0.08, 0.06, 0.07, 0.95],
+            [0.05, 0.04, 0.05, 0.95],
+        );
+        self.list
+            .panel_stroke(rect, px(8.0), px(1.5), status_color(level));
+        let top_y = rect.y + (rect.height - UiFont::Medium.line_height(px(16.0))) * 0.5;
+        self.text(
+            (w * 0.5, top_y),
+            text,
+            TEXT,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    }
+
+    fn reconnecting(&mut self, text: &str, w: f32, h: f32, clock: f32) {
+        let scale = self.scale;
+        let px = move |v: f32| scale.px(v);
+        self.list
+            .rect(UiRect::new(0.0, 0.0, w, h), [0.0, 0.0, 0.0, 0.55]);
+        let panel = centered(w, h, px(520.0), px(170.0));
+        self.panel(panel);
+        self.text(
+            (w * 0.5, panel.y + px(28.0)),
+            "Connection lost",
+            BAD,
+            UiFont::Display,
+            28.0,
+            TextAlign::Center,
+        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small animation phase"
+        )]
+        let dots = ".".repeat(((clock * 2.0) as usize % 3) + 1);
+        self.text(
+            (w * 0.5, panel.y + px(84.0)),
+            &format!("{text}{dots}"),
+            TEXT,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
+        self.text(
+            (w * 0.5, panel.y + px(118.0)),
+            "Your character is safe. The party is waiting for you.",
+            DIM,
+            UiFont::Regular,
+            15.0,
+            TextAlign::Center,
+        );
+    }
+
+    /// Notes a tooltip for the pointer to open when the page is done.
+    fn set_hint(&mut self, title: &str, detail: &str) {
+        self.hint = Some(Hint {
+            title: title.to_owned(),
+            detail: detail.to_owned(),
+        });
+    }
+
+    /// A key's modifiers in a line: each an icon, its name and its magnitude. Returns the x
+    /// after the last. Stronger-than-designed reads red, weaker green. A modifier that does not
+    /// fit is counted in a trailing "+N", and the pointer on one opens what it does.
+    fn modifier_chips(&mut self, x: f32, y: f32, lines: &[ModifierLine], limit: f32) -> f32 {
+        let scale = self.scale;
+        let px = move |v: f32| scale.px(v);
+        let mut x = x;
+        for (index, line) in lines.iter().enumerate() {
+            let magnitude = engine_realm::modifiers::magnitude_text(line.magnitude_pct);
+            let label = format!("{} {}", line.name, magnitude);
+            let width = px(22.0) + UiFont::Medium.width(&label, px(13.0)) + px(14.0);
+            if x + width > limit {
+                let hidden = lines.len() - index;
+                let more = format!("+{hidden}");
+                if x + UiFont::SemiBold.width(&more, px(13.0)) <= limit {
+                    self.text(
+                        (x, y + px(1.0)),
+                        &more,
+                        DIM,
+                        UiFont::SemiBold,
+                        13.0,
+                        TextAlign::Left,
+                    );
+                }
+                break;
+            }
+            let rect = UiRect::new(x, y - px(2.0), width - px(6.0), px(20.0));
+            if rect.contains(self.pointer.0, self.pointer.1) {
+                self.list.panel(
+                    rect.inset(-px(2.0)),
+                    px(5.0),
+                    [1.0, 1.0, 1.0, 0.07],
+                    [1.0, 1.0, 1.0, 0.07],
+                );
+                self.set_hint(&format!("{} {}", line.name, magnitude), &line.description);
+            }
+            self.list.icon(
+                UiRect::new(x, y - px(2.0), px(20.0), px(20.0)),
+                line.icon,
+                [1.0, 1.0, 1.0, 1.0],
+            );
+            let color = modifier_tone(line.magnitude_pct);
+            self.text(
+                (x + px(24.0), y + px(1.0)),
+                &label,
+                color,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            x += width;
+        }
+        x
+    }
+
+    fn role_chip(&mut self, role: Role, x: f32, y: f32) -> f32 {
+        let scale = self.scale;
+        let px = move |v: f32| scale.px(v);
+        let width = UiFont::SemiBold.width(role.name(), px(13.0)) + px(18.0);
+        let rect = UiRect::new(x, y, width, px(22.0));
+        let color = role_color(role);
+        self.list.panel(
+            rect,
+            px(11.0),
+            [color[0] * 0.35, color[1] * 0.35, color[2] * 0.35, 0.95],
+            [color[0] * 0.22, color[1] * 0.22, color[2] * 0.22, 0.95],
+        );
+        self.list.panel_stroke(rect, px(11.0), px(1.0), color);
+        self.text(
+            (rect.x + width * 0.5, rect.y + px(2.0)),
+            role.name(),
+            color,
+            UiFont::SemiBold,
+            13.0,
+            TextAlign::Center,
+        );
+        width
+    }
+}
+
+/// The in-world "Leave Party" control: under the minimap, clear of the HUD's top-right buttons.
+fn in_world_leave(w: f32, scale: UiScale) -> UiRect {
+    UiRect::new(
+        w - scale.px(160.0),
+        scale.px(360.0),
+        scale.px(140.0),
+        scale.px(32.0),
+    )
+}
+
+fn centered(w: f32, h: f32, width: f32, height: f32) -> UiRect {
+    UiRect::new((w - width) * 0.5, (h - height) * 0.5, width, height)
+}
+
+fn login_panel(w: f32, h: f32, scale: UiScale, register: bool) -> UiRect {
+    let height = if register { 560.0 } else { 484.0 };
+    let panel = centered(w, h, scale.px(460.0), scale.px(height));
+    UiRect::new(panel.x, panel.y + scale.px(40.0), panel.width, panel.height)
+}
+
+fn footer_buttons(w: f32, h: f32, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    (
+        UiRect::new(w * 0.5 - px(250.0), h - px(96.0), px(220.0), px(50.0)),
+        UiRect::new(w * 0.5 + px(30.0), h - px(96.0), px(220.0), px(50.0)),
+    )
+}
+
+/// Enter World, alone and centred under the character cards: the one action of the page.
+fn enter_world_button(w: f32, h: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(w * 0.5 - px(150.0), h - px(98.0), px(300.0), px(54.0))
+}
+
+fn character_cards(count: usize, w: f32, h: f32, scale: UiScale) -> Vec<UiRect> {
+    let px = |v: f32| scale.px(v);
+    let card = (px(280.0), px(440.0));
+    let gap = px(28.0);
+    let per_row = (((w - px(80.0)) + gap) / (card.0 + gap)).floor().max(1.0) as usize;
+    let rows = count.div_ceil(per_row).max(1);
+    let total_height = rows as f32 * card.1 + (rows as f32 - 1.0) * gap;
+    // Centred, but never under the heading nor over the footer's Enter World button.
+    let lowest = (h - px(112.0) - total_height).max(px(150.0));
+    let top = ((h - total_height) * 0.5).clamp(px(150.0), lowest);
+    (0..count)
+        .map(|index| {
+            let row = index / per_row;
+            let in_row = (count - row * per_row).min(per_row);
+            let column = index % per_row;
+            let row_width = in_row as f32 * card.0 + (in_row as f32 - 1.0) * gap;
+            UiRect::new(
+                (w - row_width) * 0.5 + column as f32 * (card.0 + gap),
+                top + row as f32 * (card.1 + gap),
+                card.0,
+                card.1,
+            )
+        })
+        .collect()
+}
+
+/// The Dungeon Finder's link to the community maps page, top right under the account bar.
+fn community_button(w: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(w - px(260.0), px(64.0), px(230.0), px(36.0))
+}
+
+fn dungeon_panels(w: f32, h: f32, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    let top = px(170.0);
+    let height = h - top - px(130.0);
+    let total = (w - px(120.0)).min(px(1200.0));
+    let left = (w - total) * 0.5;
+    (
+        UiRect::new(left, top, total * 0.36, height),
+        UiRect::new(
+            left + total * 0.36 + px(24.0),
+            top,
+            total * 0.64 - px(24.0),
+            height,
+        ),
+    )
+}
+
+fn role_tiles(w: f32, h: f32, scale: UiScale) -> Vec<UiRect> {
+    let px = |v: f32| scale.px(v);
+    let tile = (px(300.0), px(300.0));
+    let gap = px(36.0);
+    let total = tile.0 * 3.0 + gap * 2.0;
+    let top = (h - tile.1) * 0.5;
+    (0..3)
+        .map(|i| {
+            UiRect::new(
+                (w - total) * 0.5 + i as f32 * (tile.0 + gap),
+                top,
+                tile.0,
+                tile.1,
+            )
+        })
+        .collect()
+}
+
+/// Where the first member's row starts inside the party panel (below the key information).
+const PARTY_ROWS_TOP: f32 = 200.0;
+
+fn member_row(panel: UiRect, index: usize, top: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.x + px(size::PANEL_PAD),
+        panel.y + px(top) + index as f32 * px(size::MEMBER_PITCH),
+        panel.width - px(size::PANEL_PAD * 2.0),
+        px(size::MEMBER_ROW),
+    )
+}
+
+/// Where a member's row starts on the key-selection panel: taller than a party row, to list
+/// the key's modifiers.
+fn key_row(panel: UiRect, index: usize, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.x + px(size::PANEL_PAD),
+        panel.y + px(KEY_ROWS_TOP) + index as f32 * px(KEY_ROW_PITCH),
+        panel.width - px(size::PANEL_PAD * 2.0),
+        px(KEY_ROW_PITCH - 8.0),
+    )
+}
+
+/// Where the first key row starts inside the key-selection panel.
+const KEY_ROWS_TOP: f32 = 108.0;
+/// The pitch of the key rows: two lines of text and the modifier chips.
+const KEY_ROW_PITCH: f32 = 90.0;
+
+/// The Insert button on the local player's key row.
+fn key_insert_button(row: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        row.right() - px(146.0),
+        row.bottom() - px(44.0),
+        px(130.0),
+        px(34.0),
+    )
+}
+
+/// The hub's key panel, to the left of the hub panel: its rectangle and its two button slots.
+struct KeyCardRects {
+    panel: UiRect,
+    first: UiRect,
+    second: UiRect,
+}
+
+fn key_card_rects(hub: UiRect, key: &KeyCard, scale: UiScale) -> KeyCardRects {
+    let px = |v: f32| scale.px(v);
+    let width = px(300.0);
+    let mods = key.modifiers.len().max(1) as f32;
+    let to_buttons = px(78.0) + mods * px(34.0) + px(30.0);
+    let height = to_buttons + px(38.0) * 2.0 + px(8.0);
+    let panel = UiRect::new(
+        hub.x - width - px(12.0),
+        hub.bottom() - height,
+        width,
+        height,
+    );
+    let button = |i: f32| {
+        UiRect::new(
+            panel.x + px(16.0),
+            panel.y + to_buttons + i * px(38.0),
+            width - px(32.0),
+            px(size::COMPACT_HEIGHT),
+        )
+    };
+    KeyCardRects {
+        panel,
+        first: button(0.0),
+        second: button(1.0),
+    }
+}
+
+fn kick_button(row: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        row.right() - px(106.0),
+        row.y + px(14.0),
+        px(90.0),
+        px(34.0),
+    )
+}
+
+/// Whether the account name and sign-out sit in the top bar.
+fn shows_account(view: &FrontEndView) -> bool {
+    view.account.is_some()
+        && !matches!(
+            view.screen,
+            Screen::Title | Screen::Login | Screen::Hub | Screen::InWorld
+        )
+}
+
+/// Whether the local player may start the dungeon now: the key's owner, with everyone here.
+fn start_enabled(view: &FrontEndView, party: &PartyCard) -> bool {
+    party.i_lead
+        && party.i_own_key
+        && party.members.iter().all(|m| m.present)
+        && view.busy.is_none()
+}
+
+fn quit_button(h: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(px(20.0), h - px(54.0), px(110.0), px(34.0))
+}
+
+fn title_continue(w: f32, h: f32, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(w * 0.5 - px(150.0), h - px(190.0), px(300.0), px(56.0))
+}
+
+fn ready_panel(w: f32, h: f32, scale: UiScale) -> UiRect {
+    centered(w, h, scale.px(660.0), scale.px(540.0))
+}
+
+/// Accept (the wide primary on the right) and Decline (the quieter one on the left).
+fn ready_buttons(panel: UiRect, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    (
+        UiRect::new(
+            panel.right() - px(40.0) - px(300.0),
+            panel.bottom() - px(76.0),
+            px(300.0),
+            px(size::PRIMARY_HEIGHT + 4.0),
+        ),
+        UiRect::new(
+            panel.x + px(40.0),
+            panel.bottom() - px(74.0),
+            px(160.0),
+            px(size::SECONDARY_HEIGHT + 4.0),
+        ),
+    )
+}
+
+fn key_panel(w: f32, h: f32, scale: UiScale) -> UiRect {
+    centered(w, h, scale.px(760.0), scale.px(640.0))
+}
+
+/// Leave Party (the quiet one on the left); the primary, Insert Key, sits on the player's own row.
+fn key_buttons(panel: UiRect, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    (
+        UiRect::new(
+            panel.x + px(40.0),
+            panel.bottom() - px(64.0),
+            px(180.0),
+            px(size::SECONDARY_HEIGHT),
+        ),
+        UiRect::new(
+            panel.right() - px(320.0),
+            panel.bottom() - px(64.0),
+            px(280.0),
+            px(size::PRIMARY_HEIGHT),
+        ),
+    )
+}
+
+fn party_panel(w: f32, h: f32, scale: UiScale) -> UiRect {
+    centered(w, h, scale.px(760.0), scale.px(640.0))
+}
+
+struct PartyButtons {
+    leave: UiRect,
+    withdraw: UiRect,
+    start: UiRect,
+}
+
+fn party_buttons(panel: UiRect, scale: UiScale) -> PartyButtons {
+    let px = |v: f32| scale.px(v);
+    let y = panel.bottom() - px(64.0);
+    let secondary = px(size::SECONDARY_HEIGHT);
+    PartyButtons {
+        leave: UiRect::new(panel.x + px(40.0), y, px(160.0), secondary),
+        withdraw: UiRect::new(panel.x + px(216.0), y, px(180.0), secondary),
+        start: UiRect::new(
+            panel.right() - px(40.0) - px(260.0),
+            y - px(4.0),
+            px(260.0),
+            px(size::PRIMARY_HEIGHT),
+        ),
+    }
+}
+
+/// The hub panel and its six buttons (History and Boards share a row).
+struct HubRects {
+    panel: UiRect,
+    finder: UiRect,
+    equipment: UiRect,
+    workshop: UiRect,
+    history: UiRect,
+    boards: UiRect,
+    community: UiRect,
+    change: UiRect,
+    logout: UiRect,
+}
+
+/// The hub panel in the bottom-right corner (clear of the minimap above it and the action bars
+/// beside it), tall enough for `resource_lines` resources and, while something is in flight, a
+/// status line.
+fn hub_rects(resource_lines: usize, status_line: bool, w: f32, h: f32, scale: UiScale) -> HubRects {
+    let px = |v: f32| scale.px(v);
+    let lines = resource_lines.max(1) as f32;
+    let width = px(280.0);
+    let x = w - width - px(20.0);
+    let status = if status_line { px(22.0) } else { 0.0 };
+    let to_buttons = px(112.0) + lines * px(19.0) + px(8.0) + status;
+    let height = to_buttons + px(38.0) * 7.0 - px(6.0) + px(14.0);
+    let y = h - height - px(20.0);
+    let button = |i: f32| {
+        UiRect::new(
+            x + px(16.0),
+            y + to_buttons + i * px(38.0),
+            width - px(32.0),
+            px(size::COMPACT_HEIGHT),
+        )
+    };
+    // History and Leaderboards share one row.
+    let half = |left: bool| {
+        let row = button(3.0);
+        let each = (row.width - px(8.0)) * 0.5;
+        UiRect::new(
+            if left { row.x } else { row.x + each + px(8.0) },
+            row.y,
+            each,
+            row.height,
+        )
+    };
+    HubRects {
+        panel: UiRect::new(x, y, width, height),
+        finder: button(0.0),
+        equipment: button(1.0),
+        workshop: button(2.0),
+        history: half(true),
+        boards: half(false),
+        community: button(4.0),
+        change: button(5.0),
+        logout: button(6.0),
+    }
+}
+
+/// The queue panel in the bottom-left corner of the hub, and its Leave Queue button.
+fn queue_panel(h: f32, scale: UiScale) -> (UiRect, UiRect) {
+    let px = |v: f32| scale.px(v);
+    let panel = UiRect::new(px(20.0), h - px(104.0) - px(20.0), px(380.0), px(104.0));
+    let leave = UiRect::new(
+        panel.right() - px(150.0),
+        panel.bottom() - px(48.0),
+        px(134.0),
+        px(34.0),
+    );
+    (panel, leave)
+}
+
+/// How many cells the salvage tray draws: two rows of the bag's width.
+const TRAY_CELLS: usize = INVENTORY_COLUMNS * 2;
+
+/// The workshop's three panels: the bag on the left, the salvage tray and the exchanges stacked
+/// on the right.
+struct WorkshopPanels {
+    bag: UiRect,
+    salvage: UiRect,
+    exchange: UiRect,
+}
+
+fn workshop_panels(w: f32, h: f32, scale: UiScale) -> WorkshopPanels {
+    let px = |v: f32| scale.px(v);
+    let top = px(156.0);
+    let height = h - top - px(108.0);
+    let total = (w - px(120.0)).min(px(1200.0));
+    let left = (w - total) * 0.5;
+    // Wide enough for a row of bag cells and the panel's padding either side.
+    let bag_width = cells_width(INVENTORY_COLUMNS, scale) + px(40.0);
+    let right = left + bag_width + px(24.0);
+    let right_width = total - bag_width - px(24.0);
+    let salvage_height = px(230.0);
+    WorkshopPanels {
+        bag: UiRect::new(left, top, bag_width, height),
+        salvage: UiRect::new(right, top, right_width, salvage_height),
+        exchange: UiRect::new(
+            right,
+            top + salvage_height + px(12.0),
+            right_width,
+            height - salvage_height - px(12.0),
+        ),
+    }
+}
+
+/// The width of `columns` item cells and the gaps between them: the character sheet's cell.
+fn cells_width(columns: usize, scale: UiScale) -> f32 {
+    use super::character_menu::{BAG_CELL, BAG_CELL_GAP};
+    scale.px(BAG_CELL) * columns as f32 + scale.px(BAG_CELL_GAP) * (columns as f32 - 1.0)
+}
+
+/// The rect of the item cell in `column`, `row` of a grid whose first cell is at `origin`.
+fn item_cell(origin: (f32, f32), column: usize, row: usize, scale: UiScale) -> UiRect {
+    use super::character_menu::{BAG_CELL, BAG_CELL_GAP};
+    let cell = scale.px(BAG_CELL);
+    let pitch = cell + scale.px(BAG_CELL_GAP);
+    UiRect::new(
+        origin.0 + pitch * column as f32,
+        origin.1 + pitch * row as f32,
+        cell,
+        cell,
+    )
+}
+
+/// Bag cell `index` in the bag panel.
+fn bag_cell_rect(bag: UiRect, index: usize, scale: UiScale) -> UiRect {
+    let origin = (bag.x + scale.px(20.0), bag.y + scale.px(52.0));
+    item_cell(
+        origin,
+        index % INVENTORY_COLUMNS,
+        index / INVENTORY_COLUMNS,
+        scale,
+    )
+}
+
+/// Tray cell `position` in the salvage panel.
+fn tray_cell_rect(salvage: UiRect, position: usize, scale: UiScale) -> UiRect {
+    let origin = (salvage.x + scale.px(20.0), salvage.y + scale.px(46.0));
+    item_cell(
+        origin,
+        position % INVENTORY_COLUMNS,
+        position / INVENTORY_COLUMNS,
+        scale,
+    )
+}
+
+/// The sharpen panel: the salvage tray's and the exchanges' space together.
+fn sharpen_panel(panels: &WorkshopPanels) -> UiRect {
+    UiRect::new(
+        panels.salvage.x,
+        panels.salvage.y,
+        panels.salvage.width,
+        panels.exchange.bottom() - panels.salvage.y,
+    )
+}
+
+/// The switch between the salvage and sharpen halves, on a panel's title row.
+fn mode_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.right() - px(160.0),
+        panel.y + px(10.0),
+        px(140.0),
+        px(28.0),
+    )
+}
+
+/// The second switch on a big panel's title row, left of [`mode_button`].
+fn second_mode_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let first = mode_button(panel, scale);
+    UiRect::new(
+        first.x - scale.px(150.0),
+        first.y,
+        first.width,
+        first.height,
+    )
+}
+
+/// The third switch on a big panel's title row, left of [`second_mode_button`].
+fn third_mode_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let second = second_mode_button(panel, scale);
+    UiRect::new(
+        second.x - scale.px(150.0),
+        second.y,
+        second.width,
+        second.height,
+    )
+}
+
+/// Where the Gems panel's text starts: below the worn row.
+fn gems_body_origin(panel: UiRect, worn: usize, scale: UiScale) -> (f32, f32) {
+    let rows = worn.div_ceil(INVENTORY_COLUMNS).max(1);
+    let first = sharpen_worn_rect(panel, 0, scale);
+    let second = sharpen_worn_rect(panel, INVENTORY_COLUMNS, scale);
+    (
+        panel.x + scale.px(20.0),
+        first.y + (second.y - first.y) * rows as f32 + scale.px(8.0),
+    )
+}
+
+/// The button of socket `socket` in the Gems panel (Socket or Unsocket), on its row.
+fn gem_socket_button(panel: UiRect, worn: usize, socket: usize, scale: UiScale) -> UiRect {
+    let (_, y) = gems_body_origin(panel, worn, scale);
+    UiRect::new(
+        panel.right() - scale.px(20.0) - scale.px(220.0),
+        y + scale.px(52.0) + scale.px(36.0) * socket as f32,
+        scale.px(220.0),
+        scale.px(30.0),
+    )
+}
+
+/// The reforge confirmation's Cancel button, left of the (Confirm) button.
+fn reforge_cancel_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let button = sharpen_button(panel, scale);
+    UiRect::new(
+        button.x - scale.px(160.0),
+        button.y,
+        scale.px(140.0),
+        button.height,
+    )
+}
+
+/// Worn item `position` in the sharpen panel's row.
+fn sharpen_worn_rect(panel: UiRect, position: usize, scale: UiScale) -> UiRect {
+    let origin = (panel.x + scale.px(20.0), panel.y + scale.px(46.0));
+    item_cell(
+        origin,
+        position % INVENTORY_COLUMNS,
+        position / INVENTORY_COLUMNS,
+        scale,
+    )
+}
+
+/// The Sharpen button, at the bottom right of the sharpen panel.
+fn sharpen_button(panel: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.right() - px(20.0) - px(150.0),
+        panel.bottom() - px(48.0),
+        px(150.0),
+        px(36.0),
+    )
+}
+
+/// The Salvage button, at the bottom right of the salvage panel.
+fn salvage_button(salvage: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        salvage.x + px(20.0) + cells_width(INVENTORY_COLUMNS, scale) - px(150.0),
+        salvage.bottom() - px(48.0),
+        px(150.0),
+        px(36.0),
+    )
+}
+
+/// How many rows of the exchange list fit in `panel`.
+fn workshop_rows(panel: UiRect, scale: UiScale) -> usize {
+    let rows = ((panel.height - scale.px(64.0)) / scale.px(44.0)).floor();
+    if rows < 1.0 {
+        return 0;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small positive row count"
+    )]
+    let rows = rows as usize;
+    rows
+}
+
+fn workshop_row(panel: UiRect, index: usize, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        panel.x + px(12.0),
+        panel.y + px(52.0) + px(44.0) * index as f32,
+        panel.width - px(24.0),
+        px(38.0),
+    )
+}
+
+fn workshop_button(row: UiRect, scale: UiScale) -> UiRect {
+    let px = |v: f32| scale.px(v);
+    UiRect::new(
+        row.right() - px(124.0),
+        row.y + px(4.0),
+        px(112.0),
+        px(30.0),
+    )
+}
+
+fn draw_characters(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.heading(
+        "CHOOSE YOUR CHARACTER",
+        "Your progress, gear and talents travel with each character.",
+        w,
+    );
+    if view.characters.is_empty() {
+        let text = view.busy.as_deref().unwrap_or("Loading characters...");
+        ctx.text(
+            (w * 0.5, h * 0.5),
+            text,
+            DIM,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
+    }
+    for (index, (card, rect)) in view
+        .characters
+        .iter()
+        .zip(character_cards(view.characters.len(), w, h, ctx.scale))
+        .enumerate()
+    {
+        let selected = view.selected_character == Some(index);
+        let hovered = ctx.is_hovered(&Hit::Character(index));
+        if selected {
+            ctx.list
+                .glow(rect, px(14.0), px(18.0), [0.96, 0.78, 0.40, 0.30]);
+        }
+        ctx.list.panel(
+            rect,
+            px(14.0),
+            if hovered {
+                [0.15, 0.16, 0.21, 0.98]
+            } else {
+                PANEL_TOP
+            },
+            PANEL_BOTTOM,
+        );
+        ctx.list.panel_stroke(
+            rect,
+            px(14.0),
+            px(if selected { 2.5 } else { 1.0 }),
+            if selected { SELECTED } else { GOLD_EDGE },
+        );
+        let cx = rect.x + rect.width * 0.5;
+        // A crest: the class initial in a ring.
+        let crest = (cx, rect.y + px(78.0));
+        ctx.list.disc(crest, px(46.0), [0.20, 0.17, 0.12, 1.0]);
+        ctx.list.disc(crest, px(42.0), [0.08, 0.08, 0.11, 1.0]);
+        let initial: String = card.class.chars().take(1).collect();
+        ctx.text_styled(
+            (cx, crest.1 - px(26.0)),
+            &initial,
+            GOLD,
+            UiFont::Display,
+            40.0,
+            TextAlign::Center,
+        );
+        ctx.text_styled(
+            (cx, rect.y + px(140.0)),
+            &card.name,
+            TEXT,
+            UiFont::SemiBold,
+            24.0,
+            TextAlign::Center,
+        );
+        ctx.text(
+            (cx, rect.y + px(176.0)),
+            &format!("Level {} {}", card.level, card.class),
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+        // Role chips, centred.
+        let widths: f32 = card
+            .roles
+            .iter()
+            .map(|r| UiFont::SemiBold.width(r.name(), px(13.0)) + px(18.0))
+            .sum::<f32>()
+            + px(8.0) * card.roles.len().saturating_sub(1) as f32;
+        let mut x = cx - widths * 0.5;
+        for role in &card.roles {
+            x += ctx.role_chip(*role, x, rect.y + px(208.0)) + px(8.0);
+        }
+        // Stats.
+        let line = |ctx: &mut Painter<'_>, y: f32, label: &str, value: &str| {
+            ctx.text(
+                (rect.x + px(28.0), y),
+                label,
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            ctx.text(
+                (rect.right() - px(28.0), y),
+                value,
+                TEXT,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
+        };
+        line(
+            ctx,
+            rect.y + px(256.0),
+            "Gear Score",
+            &card.gear_score.to_string(),
+        );
+        line(
+            ctx,
+            rect.y + px(284.0),
+            "Equipment",
+            &format!(
+                "{} / {} slots",
+                card.equipped,
+                engine_game::character::EquipSlot::COUNT
+            ),
+        );
+        // The dungeon key, and what the character holds.
+        match &card.key {
+            Some(key) => ctx.text(
+                (cx, rect.y + px(312.0)),
+                &key.text(),
+                GOLD,
+                UiFont::SemiBold,
+                14.0,
+                TextAlign::Center,
+            ),
+            None => ctx.text(
+                (cx, rect.y + px(312.0)),
+                "No dungeon key",
+                FAINT,
+                UiFont::Medium,
+                14.0,
+                TextAlign::Center,
+            ),
+        }
+        line(
+            ctx,
+            rect.y + px(338.0),
+            "Resources",
+            &card.resources.to_string(),
+        );
+        // Experience bar.
+        let bar = UiRect::new(
+            rect.x + px(28.0),
+            rect.y + px(390.0),
+            rect.width - px(56.0),
+            px(10.0),
+        );
+        xp_bar(ctx, bar, card.experience, card.next_level);
+        ctx.text(
+            (cx, rect.y + px(406.0)),
+            &xp_text(card.experience, card.next_level),
+            FAINT,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Center,
+        );
+    }
+    let enter = enter_world_button(w, h, ctx.scale);
+    ctx.button(
+        enter,
+        "Enter World",
+        ButtonKind::Primary,
+        &Hit::Continue,
+        view.selected_character.is_some(),
+    );
+    let (note, color) = if view.selected_character.is_some() {
+        ("Press Enter or click to play", FAINT)
+    } else if view.characters.is_empty() {
+        ("", FAINT)
+    } else {
+        ("Select a character to continue", DIM)
+    };
+    ctx.text(
+        (w * 0.5, enter.bottom() + px(8.0)),
+        note,
+        color,
+        UiFont::Medium,
+        13.0,
+        TextAlign::Center,
+    );
+}
+
+fn draw_dungeons(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.button(
+        community_button(w, scale),
+        "Community Maps",
+        ButtonKind::Secondary,
+        &Hit::CommunityButton,
+        true,
+    );
+    ctx.heading(
+        "DUNGEON FINDER",
+        "Choose a dungeon. The realm finds a Tank, a Healer and a DPS of similar gear.",
+        w,
+    );
+    let (list, detail) = dungeon_panels(w, h, ctx.scale);
+    ctx.panel(list);
+    ctx.text(
+        (list.x + px(20.0), list.y + px(18.0)),
+        "DUNGEONS",
+        GOLD,
+        UiFont::SemiBold,
+        17.0,
+        TextAlign::Left,
+    );
+    let character_gs = view
+        .selected_character
+        .and_then(|i| view.characters.get(i))
+        .map(|c| (c.level, c.gear_score));
+    for (index, dungeon) in view.dungeons.iter().enumerate() {
+        let row = UiRect::new(
+            list.x + px(12.0),
+            list.y + px(64.0) + px(74.0) * index as f32,
+            list.width - px(24.0),
+            px(64.0),
+        );
+        let selected = view.selected_dungeon == Some(index);
+        let hovered = ctx.is_hovered(&Hit::Dungeon(index));
+        let fill = if selected {
+            [0.22, 0.18, 0.11, 1.0]
+        } else if hovered {
+            [0.15, 0.16, 0.21, 1.0]
+        } else {
+            [0.09, 0.10, 0.13, 1.0]
+        };
+        ctx.list.panel(row, px(8.0), fill, fill);
+        if selected {
+            ctx.list.panel_stroke(row, px(8.0), px(1.5), SELECTED);
+        }
+        ctx.text(
+            (row.x + px(16.0), row.y + px(10.0)),
+            &dungeon.name,
+            TEXT,
+            UiFont::SemiBold,
+            18.0,
+            TextAlign::Left,
+        );
+        let meta = format!(
+            "{} | Levels {}-{}",
+            dungeon.difficulty, dungeon.levels.0, dungeon.levels.1
+        );
+        ctx.text(
+            (row.x + px(16.0), row.y + px(36.0)),
+            &meta,
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+    }
+    ctx.panel(detail);
+    if let Some(dungeon) = view.selected_dungeon.and_then(|i| view.dungeons.get(i)) {
+        let x = detail.x + px(32.0);
+        let width = detail.width - px(64.0);
+        let mut y = detail.y + px(26.0);
+        ctx.text_styled(
+            (x, y),
+            &dungeon.name,
+            GOLD,
+            UiFont::Display,
+            32.0,
+            TextAlign::Left,
+        );
+        y += px(54.0);
+        ctx.text(
+            (x, y),
+            &format!(
+                "{} | Levels {}-{}",
+                dungeon.difficulty, dungeon.levels.0, dungeon.levels.1
+            ),
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Left,
+        );
+        y += px(40.0);
+        for line in UiFont::Regular.wrap(&dungeon.description, px(16.0), width) {
+            ctx.text((x, y), &line, TEXT, UiFont::Regular, 16.0, TextAlign::Left);
+            y += px(24.0);
+        }
+        y += px(20.0);
+        let gs_color = match character_gs {
+            Some((_, gs)) if gs < dungeon.min_gear_score => BAD,
+            Some((_, gs)) if gs < dungeon.recommended_gear_score => BUSY,
+            _ => GOOD,
+        };
+        let info = [
+            (
+                "Recommended gear score",
+                dungeon.recommended_gear_score.to_string(),
+                gs_color,
+            ),
+            ("Group", "1 Tank | 1 Healer | 1 DPS".to_owned(), TEXT),
+            (
+                "Searching now",
+                format!(
+                    "{} Tank | {} Healer | {} DPS",
+                    dungeon.population[0], dungeon.population[1], dungeon.population[2]
+                ),
+                TEXT,
+            ),
+        ];
+        for (label, value, color) in info {
+            ctx.text((x, y), label, DIM, UiFont::Medium, 15.0, TextAlign::Left);
+            ctx.text(
+                (x + width, y),
+                &value,
+                color,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
+            y += px(30.0);
+        }
+        if let Some((_, gs)) = character_gs {
+            ctx.text(
+                (x, y),
+                "Your gear score",
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            ctx.text(
+                (x + width, y),
+                &gs.to_string(),
+                gs_color,
+                UiFont::SemiBold,
+                15.0,
+                TextAlign::Right,
+            );
+            y += px(30.0);
+        }
+        y += px(14.0);
+        ctx.text(
+            (x, y),
+            "REWARDS",
+            GOLD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Left,
+        );
+        y += px(28.0);
+        for reward in &dungeon.rewards {
+            ctx.list.disc((x + px(6.0), y + px(10.0)), px(3.0), GOLD);
+            ctx.text(
+                (x + px(18.0), y),
+                reward,
+                TEXT,
+                UiFont::Regular,
+                15.0,
+                TextAlign::Left,
+            );
+            y += px(24.0);
+        }
+    } else {
+        ctx.text(
+            (
+                detail.x + detail.width * 0.5,
+                detail.y + detail.height * 0.5,
+            ),
+            "Select a dungeon",
+            DIM,
+            UiFont::Medium,
+            18.0,
+            TextAlign::Center,
+        );
+    }
+    let (back, next) = footer_buttons(w, h, ctx.scale);
+    ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
+    ctx.button(
+        next,
+        "Choose Role",
+        ButtonKind::Primary,
+        &Hit::Continue,
+        view.selected_dungeon.is_some(),
+    );
+}
+
+fn draw_roles(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let character = view.selected_character.and_then(|i| view.characters.get(i));
+    let dungeon = view
+        .selected_dungeon
+        .and_then(|i| view.dungeons.get(i))
+        .map_or_else(
+            || view.queue_target.as_deref().unwrap_or(""),
+            |d| d.name.as_str(),
+        );
+    ctx.heading(
+        "CHOOSE YOUR ROLE",
+        &format!(
+            "{} | {}",
+            character.map_or("", |c| c.name.as_str()),
+            dungeon
+        ),
+        w,
+    );
+    let playable = character.map(|c| c.roles.clone()).unwrap_or_default();
+    for (role, rect) in Role::ALL.into_iter().zip(role_tiles(w, h, ctx.scale)) {
+        let can = playable.contains(&role);
+        let selected = view.selected_role == Some(role);
+        let hovered = can && ctx.is_hovered(&Hit::Role(role));
+        let color = role_color(role);
+        if selected {
+            ctx.list.glow(
+                rect,
+                px(16.0),
+                px(20.0),
+                [color[0], color[1], color[2], 0.30],
+            );
+        }
+        let top = if hovered {
+            [0.16, 0.17, 0.22, 0.98]
+        } else {
+            PANEL_TOP
+        };
+        ctx.list.panel(rect, px(16.0), top, PANEL_BOTTOM);
+        ctx.list.panel_stroke(
+            rect,
+            px(16.0),
+            px(if selected { 2.5 } else { 1.0 }),
+            if selected {
+                color
+            } else if can {
+                GOLD_EDGE
+            } else {
+                [0.25, 0.25, 0.28, 1.0]
+            },
+        );
+        let cx = rect.x + rect.width * 0.5;
+        let faded = |c: UiColor| {
+            if can {
+                c
+            } else {
+                [c[0] * 0.4, c[1] * 0.4, c[2] * 0.4, 1.0]
+            }
+        };
+        ctx.list.disc(
+            (cx, rect.y + px(90.0)),
+            px(48.0),
+            faded([color[0] * 0.3, color[1] * 0.3, color[2] * 0.3, 1.0]),
+        );
+        let letter = match role {
+            Role::Tank => "T",
+            Role::Healer => "H",
+            Role::Dps => "D",
+        };
+        ctx.text_styled(
+            (cx, rect.y + px(62.0)),
+            letter,
+            faded(color),
+            UiFont::Display,
+            44.0,
+            TextAlign::Center,
+        );
+        ctx.text_styled(
+            (cx, rect.y + px(158.0)),
+            role.name(),
+            faded(TEXT),
+            UiFont::SemiBold,
+            26.0,
+            TextAlign::Center,
+        );
+        let blurb = if can {
+            role_blurb(role)
+        } else {
+            "Your character cannot fill this role."
+        };
+        for (i, line) in UiFont::Regular
+            .wrap(blurb, px(15.0), rect.width - px(48.0))
+            .iter()
+            .enumerate()
+        {
+            ctx.text(
+                (cx, rect.y + px(206.0) + px(22.0) * i as f32),
+                line,
+                if can { DIM } else { FAINT },
+                UiFont::Regular,
+                15.0,
+                TextAlign::Center,
+            );
+        }
+    }
+    let (back, next) = footer_buttons(w, h, ctx.scale);
+    ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
+    let busy = view.busy.is_some();
+    ctx.button(
+        next,
+        if busy { "Joining..." } else { "Find Group" },
+        ButtonKind::Primary,
+        &Hit::Continue,
+        view.selected_role.is_some() && !busy,
+    );
+}
+
+/// An experience bar filled to `experience / next_level` (full at the cap, `next_level` 0).
+fn xp_bar(ctx: &mut Painter<'_>, bar: UiRect, experience: u64, next_level: u64) {
+    let px = ctx.scale.px(1.0);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "experience values are far below 2^24"
+    )]
+    let fraction = if next_level == 0 {
+        1.0
+    } else {
+        experience as f32 / next_level as f32
+    };
+    ctx.list.panel(
+        bar,
+        5.0 * px,
+        [0.05, 0.05, 0.07, 1.0],
+        [0.05, 0.05, 0.07, 1.0],
+    );
+    ctx.list.panel(
+        bar.fraction_of_width(fraction.clamp(0.0, 1.0)),
+        5.0 * px,
+        [0.55, 0.40, 0.95, 1.0],
+        [0.38, 0.26, 0.75, 1.0],
+    );
+}
+
+fn xp_text(experience: u64, next_level: u64) -> String {
+    if next_level == 0 {
+        "Max level".to_owned()
+    } else {
+        format!("{experience} / {next_level} XP")
+    }
+}
+
+fn draw_title(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32, clock: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let intro = &view.intro;
+    let top = h * 0.14;
+    ctx.text_styled(
+        (w * 0.5, top),
+        &intro.title,
+        GOLD,
+        UiFont::Display,
+        56.0,
+        TextAlign::Center,
+    );
+    ctx.text(
+        (w * 0.5, top + px(84.0)),
+        &intro.subtitle,
+        DIM,
+        UiFont::Medium,
+        20.0,
+        TextAlign::Center,
+    );
+    let width = (w - px(80.0)).min(px(720.0));
+    let mut y = top + px(160.0);
+    for paragraph in &intro.lore {
+        for line in UiFont::Regular.wrap(paragraph, px(18.0), width) {
+            ctx.text(
+                (w * 0.5, y),
+                &line,
+                TEXT,
+                UiFont::Regular,
+                18.0,
+                TextAlign::Center,
+            );
+            y += px(28.0);
+        }
+        y += px(14.0);
+    }
+    let button = title_continue(w, h, scale);
+    ctx.button(
+        button,
+        &intro.continue_label,
+        ButtonKind::Primary,
+        &Hit::Continue,
+        true,
+    );
+    // The hint breathes, so the page is seen to be waiting for the player.
+    let pulse = 0.55 + 0.45 * (clock * 2.4).sin().abs();
+    ctx.text(
+        (w * 0.5, button.bottom() + px(16.0)),
+        "or press Enter",
+        [DIM[0], DIM[1], DIM[2], pulse],
+        UiFont::Medium,
+        14.0,
+        TextAlign::Center,
+    );
+    if let Some(busy) = &view.busy {
+        ctx.text(
+            (w * 0.5, button.y - px(34.0)),
+            busy,
+            BUSY,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    }
+    ctx.button(
+        quit_button(h, scale),
+        "Quit",
+        ButtonKind::Secondary,
+        &Hit::Quit,
+        true,
+    );
+}
+
+fn draw_hub(
+    ctx: &mut Painter<'_>,
+    view: &FrontEndView,
+    confirm: Option<KeyChange>,
+    w: f32,
+    h: f32,
+    clock: f32,
+) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    if let Some(hub) = &view.hub {
+        let rects = hub_rects(hub.resources.len(), view.busy.is_some(), w, h, scale);
+        let panel = rects.panel;
+        ctx.panel(panel);
+        let x = panel.x + px(16.0);
+        let width = panel.width - px(32.0);
+        ctx.text_styled(
+            (x, panel.y + px(10.0)),
+            &hub.name,
+            TEXT,
+            UiFont::SemiBold,
+            18.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (x, panel.y + px(34.0)),
+            &format!("Level {} {}", hub.level, hub.class),
+            DIM,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
+        );
+        xp_bar(
+            ctx,
+            UiRect::new(x, panel.y + px(56.0), width, px(8.0)),
+            hub.experience,
+            hub.next_level,
+        );
+        ctx.text(
+            (x, panel.y + px(68.0)),
+            &xp_text(hub.experience, hub.next_level),
+            FAINT,
+            UiFont::Medium,
+            12.0,
+            TextAlign::Left,
+        );
+        match &hub.key {
+            Some(key) => ctx.text(
+                (x, panel.y + px(88.0)),
+                &key.text(),
+                GOLD,
+                UiFont::SemiBold,
+                14.0,
+                TextAlign::Left,
+            ),
+            None => ctx.text(
+                (x, panel.y + px(88.0)),
+                "No dungeon key",
+                FAINT,
+                UiFont::Medium,
+                14.0,
+                TextAlign::Left,
+            ),
+        }
+        let first = panel.y + px(112.0);
+        if hub.resources.is_empty() {
+            ctx.text(
+                (x, first),
+                "No resources yet",
+                FAINT,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+        }
+        for (index, (name, amount)) in hub.resources.iter().enumerate() {
+            let y = first + px(19.0) * index as f32;
+            ctx.text((x, y), name, DIM, UiFont::Medium, 13.0, TextAlign::Left);
+            // Currency is gold, wherever it is counted.
+            ctx.text(
+                (x + width, y),
+                &amount.to_string(),
+                GOLD,
+                UiFont::SemiBold,
+                13.0,
+                TextAlign::Right,
+            );
+        }
+        if let Some(busy) = &view.busy {
+            ctx.text(
+                (
+                    x,
+                    first + px(19.0) * hub.resources.len().max(1) as f32 + px(6.0),
+                ),
+                busy,
+                BUSY,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+        }
+        ctx.button(
+            rects.finder,
+            if view.queue.is_some() {
+                "In Queue"
+            } else {
+                "Dungeon Finder"
+            },
+            ButtonKind::Primary,
+            &Hit::DungeonFinder,
+            hub.can_find_dungeon,
+        );
+        ctx.button(
+            rects.equipment,
+            "Equipment",
+            ButtonKind::Secondary,
+            &Hit::Equipment,
+            true,
+        );
+        ctx.button(
+            rects.workshop,
+            "Salvage & Exchange",
+            ButtonKind::Secondary,
+            &Hit::Workshop,
+            true,
+        );
+        ctx.button(
+            rects.history,
+            "History",
+            ButtonKind::Secondary,
+            &Hit::HistoryButton,
+            true,
+        );
+        ctx.button(
+            rects.boards,
+            "Boards",
+            ButtonKind::Secondary,
+            &Hit::BoardsButton,
+            true,
+        );
+        ctx.button(
+            rects.community,
+            "Community Maps",
+            ButtonKind::Secondary,
+            &Hit::CommunityButton,
+            true,
+        );
+        ctx.button(
+            rects.change,
+            "Change Character",
+            ButtonKind::Ghost,
+            &Hit::ChangeCharacter,
+            hub.can_change_character,
+        );
+        ctx.button(
+            rects.logout,
+            "Log Out",
+            ButtonKind::Ghost,
+            &Hit::Logout,
+            true,
+        );
+    }
+    if let Some(queue) = &view.queue {
+        draw_queue_panel(ctx, queue, h, clock);
+    }
+    if let Some(hub) = &view.hub
+        && let Some(key) = &hub.key
+    {
+        draw_key_card(ctx, view, hub, key, confirm, w, h);
+    }
+    if let Some((level, text)) = &view.connection
+        && *level != StatusLevel::Good
+    {
+        ctx.text(
+            (px(24.0), px(24.0)),
+            text,
+            status_color(*level),
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+    }
+}
+
+/// The hub's key panel: the key, its modifiers, and the two ways to change it.
+fn draw_key_card(
+    ctx: &mut Painter<'_>,
+    view: &FrontEndView,
+    hub: &HubCard,
+    key: &KeyCard,
+    confirm: Option<KeyChange>,
+    w: f32,
+    h: f32,
+) {
+    let _ = (w, h);
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let hub_panel = hub_rects(hub.resources.len(), view.busy.is_some(), w, h, scale).panel;
+    let rects = key_card_rects(hub_panel, key, scale);
+    let panel = rects.panel;
+    ctx.panel(panel);
+    let x = panel.x + px(16.0);
+    ctx.text_styled(
+        (x, panel.y + px(10.0)),
+        "Dungeon Key",
+        GOLD,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (x, panel.y + px(36.0)),
+        &key.text(),
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (x, panel.y + px(58.0)),
+        "Modifiers",
+        FAINT,
+        UiFont::Medium,
+        12.0,
+        TextAlign::Left,
+    );
+    if key.modifiers.is_empty() {
+        ctx.text(
+            (x, panel.y + px(80.0)),
+            "None",
+            DIM,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
+        );
+    }
+    for (index, line) in key.modifiers.iter().enumerate() {
+        let y = panel.y + px(78.0) + px(34.0) * index as f32;
+        let row = UiRect::new(
+            panel.x + px(8.0),
+            y - px(3.0),
+            panel.width - px(16.0),
+            px(34.0),
+        );
+        if row.contains(ctx.pointer.0, ctx.pointer.1) {
+            ctx.list
+                .panel(row, px(6.0), [1.0, 1.0, 1.0, 0.06], [1.0, 1.0, 1.0, 0.06]);
+            ctx.set_hint(
+                &format!(
+                    "{} {}",
+                    line.name,
+                    engine_realm::modifiers::magnitude_text(line.magnitude_pct)
+                ),
+                &line.description,
+            );
+        }
+        ctx.list.icon(
+            UiRect::new(x, y, px(28.0), px(28.0)),
+            line.icon,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        ctx.text(
+            (x + px(36.0), y + px(6.0)),
+            &line.name,
+            TEXT,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (panel.right() - px(16.0), y + px(6.0)),
+            &engine_realm::modifiers::magnitude_text(line.magnitude_pct),
+            modifier_tone(line.magnitude_pct),
+            UiFont::SemiBold,
+            13.0,
+            TextAlign::Right,
+        );
+    }
+    let idle = view.busy.is_none() && hub.can_change_character;
+    let prompt_y = rects.first.y - px(22.0);
+    match confirm {
+        Some(KeyChange::Downgrade) => {
+            ctx.text(
+                (x, prompt_y),
+                &format!(
+                    "Lower the key to level {}? It is free.",
+                    key.level.saturating_sub(1)
+                ),
+                BUSY,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            ctx.button(
+                rects.first,
+                "Confirm Downgrade",
+                ButtonKind::Danger,
+                &Hit::KeyConfirm,
+                idle,
+            );
+            ctx.button(
+                rects.second,
+                "Cancel",
+                ButtonKind::Secondary,
+                &Hit::KeyCancel,
+                idle,
+            );
+        }
+        Some(KeyChange::Cleanse) => {
+            ctx.text(
+                (x, prompt_y),
+                &format!("Remove every modifier for {} gold?", key.cleanse_cost),
+                BUSY,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            ctx.button(
+                rects.first,
+                &format!("Confirm Cleanse ({} gold)", key.cleanse_cost),
+                ButtonKind::Danger,
+                &Hit::KeyConfirm,
+                idle,
+            );
+            ctx.button(
+                rects.second,
+                "Cancel",
+                ButtonKind::Secondary,
+                &Hit::KeyCancel,
+                idle,
+            );
+        }
+        None => {
+            ctx.text(
+                (x, prompt_y),
+                &format!("Gold: {}", key.gold),
+                GOLD,
+                UiFont::Medium,
+                13.0,
+                TextAlign::Left,
+            );
+            ctx.button(
+                rects.first,
+                "Downgrade Key (free)",
+                ButtonKind::Secondary,
+                &Hit::KeyDowngrade,
+                idle && key.can_downgrade,
+            );
+            ctx.button(
+                rects.second,
+                &format!("Cleanse Key ({} gold)", key.cleanse_cost),
+                ButtonKind::Secondary,
+                &Hit::KeyCleanse,
+                idle && !key.modifiers.is_empty() && key.gold >= u64::from(key.cleanse_cost),
+            );
+        }
+    }
+}
+
+/// The queue ticket over the hub: what is being searched, for how long, and the way out.
+fn draw_queue_panel(ctx: &mut Painter<'_>, queue: &QueueCard, h: f32, clock: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let (panel, leave) = queue_panel(h, scale);
+    ctx.panel(panel);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small animation phase"
+    )]
+    let dots = ".".repeat(((clock * 2.0) as usize % 3) + 1);
+    let (title, color) = if queue.matched {
+        ("Match found!".to_owned(), GOOD)
+    } else {
+        (format!("Searching{dots}"), GOLD)
+    };
+    let x = panel.x + px(18.0);
+    ctx.text(
+        (x, panel.y + px(12.0)),
+        &title,
+        color,
+        UiFont::SemiBold,
+        19.0,
+        TextAlign::Left,
+    );
+    // The wait, on the right of the heading: the number the player looks at.
+    ctx.text(
+        (panel.right() - px(18.0), panel.y + px(12.0)),
+        &clock_text(queue.waited_seconds),
+        TEXT,
+        UiFont::SemiBold,
+        19.0,
+        TextAlign::Right,
+    );
+    ctx.text(
+        (x, panel.y + px(42.0)),
+        &queue.dungeon,
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    let name_end = x + UiFont::Medium.width(&queue.dungeon, px(14.0)) + px(10.0);
+    ctx.role_chip(queue.role, name_end, panel.y + px(41.0));
+    ctx.text(
+        (x, panel.y + px(72.0)),
+        &if queue.matched {
+            "Opening the ready check...".to_owned()
+        } else {
+            format!("Range +/-{}%", queue.tolerance_percent)
+        },
+        DIM,
+        UiFont::Medium,
+        13.0,
+        TextAlign::Left,
+    );
+    ctx.button(
+        leave,
+        "Leave Queue",
+        ButtonKind::Secondary,
+        &Hit::LeaveQueue,
+        !queue.matched,
+    );
+}
+
+/// One item cell, as the character sheet draws a bag cell: a well, or a pocket tinted by the
+/// item's quality with its icon, and the stack size when there is more than one.
+fn draw_item_cell(
+    ctx: &mut Painter<'_>,
+    rect: UiRect,
+    row: Option<&BagRow>,
+    dimmed: bool,
+    hit: Option<&Hit>,
+) {
+    let px = ctx.scale.px(1.0);
+    let corner = 6.0 * px;
+    let hovered = hit.is_some_and(|hit| ctx.is_hovered(hit));
+    let Some(row) = row else {
+        ctx.list.panel(rect, corner, FIELD, FIELD);
+        ctx.list
+            .panel_stroke(rect, corner, px, [0.30, 0.32, 0.38, 1.0]);
+        return;
+    };
+    let quality = super::character_menu::quality_color(row.quality);
+    let fade = if dimmed { 0.35 } else { 1.0 };
+    let tint = |amount: f32| {
+        [
+            FIELD[0] + (quality[0] - FIELD[0]) * amount * fade,
+            FIELD[1] + (quality[1] - FIELD[1]) * amount * fade,
+            FIELD[2] + (quality[2] - FIELD[2]) * amount * fade,
+            1.0,
+        ]
+    };
+    ctx.list.panel(rect, corner, tint(0.22), tint(0.08));
+    ctx.list.icon(
+        rect.inset(rect.width * 0.14),
+        super::character_menu::icon_for_item(row.icon),
+        [1.0, 1.0, 1.0, fade],
+    );
+    if row.quantity > 1 {
+        ctx.text(
+            (rect.right() - 5.0 * px, rect.bottom() - 18.0 * px),
+            &row.quantity.to_string(),
+            [1.0, 1.0, 1.0, fade],
+            UiFont::SemiBold,
+            13.0,
+            TextAlign::Right,
+        );
+    }
+    if hovered {
+        ctx.list
+            .glow(rect, corner, 10.0 * px, [0.96, 0.78, 0.40, 0.35]);
+    }
+    let edge = if hovered {
+        GOLD
+    } else {
+        [quality[0], quality[1], quality[2], 0.85 * fade]
+    };
+    ctx.list.panel_stroke(
+        rect,
+        corner,
+        if hovered { 2.0 * px } else { 1.5 * px },
+        edge,
+    );
+}
+
+fn draw_workshop(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let empty = WorkshopCard::default();
+    let workshop = view.workshop.as_ref().unwrap_or(&empty);
+    let holding = if workshop.resources.is_empty() {
+        "You hold no resources yet.".to_owned()
+    } else {
+        let parts: Vec<String> = workshop
+            .resources
+            .iter()
+            .map(|(name, amount)| format!("{name} {amount}"))
+            .collect();
+        format!("Holding: {}", parts.join("  \u{b7}  "))
+    };
+    ctx.heading("SALVAGE & EXCHANGE", &holding, w);
+    let panels = workshop_panels(w, h, scale);
+    let (bag, salvage, exchange) = (panels.bag, panels.salvage, panels.exchange);
+    let sharpening = workshop.sharpen.is_some();
+    let reforging = workshop.reforge.is_some();
+    let gemming = workshop.gems.is_some();
+    let big = sharpen_panel(&panels);
+    let shown: Vec<(UiRect, &str)> = if gemming {
+        vec![(bag, "BAG"), (big, "GEMS")]
+    } else if reforging {
+        vec![(bag, "BAG"), (big, "REFORGE")]
+    } else if sharpening {
+        vec![(bag, "BAG"), (big, "SHARPEN")]
+    } else {
+        vec![(bag, "BAG"), (salvage, "SALVAGE"), (exchange, "EXCHANGE")]
+    };
+    for (panel, title) in shown {
+        ctx.panel(panel);
+        ctx.text(
+            (panel.x + px(20.0), panel.y + px(18.0)),
+            title,
+            GOLD,
+            UiFont::SemiBold,
+            17.0,
+            TextAlign::Left,
+        );
+    }
+    let find = |index: u32| workshop.bag.iter().find(|row| row.index == index);
+
+    // The whole bag, laid out like the character sheet's. What is in the tray stays visible
+    // but dimmed, so the player sees where it came from.
+    for index in 0..INVENTORY_SLOTS {
+        let row = find(u32::try_from(index).unwrap_or(u32::MAX));
+        let staged = !sharpening
+            && !reforging
+            && !gemming
+            && row.is_some_and(|row| workshop.tray.contains(&row.index));
+        let hit = row.map(|row| Hit::BagCell(row.index));
+        draw_item_cell(
+            ctx,
+            bag_cell_rect(bag, index, scale),
+            row,
+            staged,
+            hit.as_ref(),
+        );
+    }
+    let grid_bottom = bag_cell_rect(bag, INVENTORY_SLOTS.saturating_sub(1), scale).bottom();
+    let hovered_row = match ctx.hovered {
+        Some(Hit::BagCell(index)) => find(*index),
+        Some(Hit::TrayCell(position)) => {
+            workshop.tray.get(*position).and_then(|index| find(*index))
+        }
+        _ => None,
+    };
+    let hint = match hovered_row {
+        Some(row) => {
+            let name = if row.quantity > 1 {
+                format!("{} x{}", row.name, row.quantity)
+            } else {
+                row.name.clone()
+            };
+            format!(
+                "{name} \u{b7} Item level {} \u{b7} {}",
+                row.item_level, row.yields
+            )
+        }
+        None if workshop.bag.is_empty() => "Your bag is empty.".to_owned(),
+        None if gemming => "Click a gem to pick it, or an item to see its sockets.".to_owned(),
+        None if reforging => "Click an item to reforge it.".to_owned(),
+        None if sharpening => "Click an item to sharpen it.".to_owned(),
+        None => "Click an item to put it in the salvage tray.".to_owned(),
+    };
+    ctx.text(
+        (bag.x + px(20.0), grid_bottom + px(12.0)),
+        &hint,
+        if hovered_row.is_some() { TEXT } else { DIM },
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+
+    if let Some(sharpen) = &workshop.sharpen {
+        draw_sharpen(ctx, view, sharpen, big);
+    } else if let Some(reforge) = &workshop.reforge {
+        draw_reforge(ctx, view, reforge, big);
+    } else if let Some(gems) = &workshop.gems {
+        draw_gems(ctx, view, gems, big);
+    }
+    if sharpening || reforging || gemming {
+        let (back, _) = footer_buttons(w, h, scale);
+        ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
+        if let Some(busy) = &view.busy {
+            ctx.text(
+                (w * 0.5 + px(140.0), back.y + px(15.0)),
+                busy,
+                BUSY,
+                UiFont::Medium,
+                16.0,
+                TextAlign::Left,
+            );
+        }
+        return;
+    }
+    ctx.button(
+        mode_button(bag, scale),
+        "Gems",
+        ButtonKind::Secondary,
+        &Hit::GemsMode,
+        true,
+    );
+    ctx.button(
+        mode_button(salvage, scale),
+        "Sharpen items",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(true),
+        true,
+    );
+    ctx.button(
+        mode_button(exchange, scale),
+        "Reforge items",
+        ButtonKind::Secondary,
+        &Hit::ReforgeMode,
+        true,
+    );
+
+    // The tray: the same cells, filled in the order the player chose.
+    for position in 0..workshop.tray_slots.min(TRAY_CELLS) {
+        let row = workshop.tray.get(position).and_then(|index| find(*index));
+        let hit = row.map(|_| Hit::TrayCell(position));
+        draw_item_cell(
+            ctx,
+            tray_cell_rect(salvage, position, scale),
+            row,
+            false,
+            hit.as_ref(),
+        );
+    }
+    let button = salvage_button(salvage, scale);
+    let (line, color) = if workshop.tray_yield.is_empty() {
+        ("Nothing in the tray.", DIM)
+    } else {
+        (workshop.tray_yield.as_str(), TEXT)
+    };
+    ctx.text(
+        (salvage.x + px(20.0), button.y + px(9.0)),
+        line,
+        color,
+        UiFont::SemiBold,
+        16.0,
+        TextAlign::Left,
+    );
+    ctx.button(
+        button,
+        "Salvage",
+        ButtonKind::Danger,
+        &Hit::SalvageTray,
+        !workshop.tray.is_empty() && view.busy.is_none(),
+    );
+    if workshop.exchanges.is_empty() {
+        ctx.text(
+            (exchange.x + exchange.width * 0.5, exchange.y + px(90.0)),
+            "No exchanges are offered.",
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    }
+    for (index, row) in workshop
+        .exchanges
+        .iter()
+        .enumerate()
+        .take(workshop_rows(exchange, scale))
+    {
+        let rect = workshop_row(exchange, index, scale);
+        ctx.list.panel(
+            rect,
+            px(8.0),
+            [0.09, 0.10, 0.13, 1.0],
+            [0.09, 0.10, 0.13, 1.0],
+        );
+        ctx.text(
+            (rect.x + px(12.0), rect.y + px(11.0)),
+            &row.label,
+            if row.affordable { TEXT } else { FAINT },
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+        );
+        ctx.button(
+            workshop_button(rect, scale),
+            "Exchange",
+            ButtonKind::Primary,
+            &Hit::Exchange(row.id.clone()),
+            row.affordable && view.busy.is_none(),
+        );
+    }
+    let (back, _) = footer_buttons(w, h, scale);
+    ctx.button(back, "Back", ButtonKind::Secondary, &Hit::Back, true);
+    if let Some(busy) = &view.busy {
+        ctx.text(
+            (w * 0.5 + px(140.0), back.y + px(15.0)),
+            busy,
+            BUSY,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Left,
+        );
+    }
+}
+
+/// The sharpen panel's contents: the worn items, then the selected item's state, price and
+/// risk, then the button. The break chance is red whenever it is above zero.
+fn draw_sharpen(ctx: &mut Painter<'_>, view: &FrontEndView, sharpen: &SharpenCard, panel: UiRect) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.button(
+        mode_button(panel, scale),
+        "Salvage & Exchange",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(false),
+        true,
+    );
+    ctx.button(
+        second_mode_button(panel, scale),
+        "Reforge items",
+        ButtonKind::Secondary,
+        &Hit::ReforgeMode,
+        true,
+    );
+    ctx.button(
+        third_mode_button(panel, scale),
+        "Gems",
+        ButtonKind::Secondary,
+        &Hit::GemsMode,
+        true,
+    );
+    let selected_slot = match &sharpen.selected {
+        Some(SharpenTarget::Worn(slot)) => Some(slot.as_str()),
+        _ => None,
+    };
+    for (position, worn) in sharpen.worn.iter().enumerate() {
+        let row = BagRow {
+            index: 0,
+            name: String::new(),
+            quantity: 1,
+            item_level: 0,
+            icon: worn.icon,
+            quality: worn.quality,
+            yields: String::new(),
+        };
+        let rect = sharpen_worn_rect(panel, position, scale);
+        let hit = Hit::SharpenWorn(position);
+        draw_item_cell(ctx, rect, Some(&row), false, Some(&hit));
+        if selected_slot == Some(worn.slot.as_str()) {
+            ctx.list
+                .panel_stroke(rect, 6.0 * px(1.0), 2.5 * px(1.0), SELECTED);
+        }
+        if worn.broken || worn.level > 0 {
+            let (label, color) = if worn.broken {
+                ("!".to_owned(), BAD)
+            } else {
+                (format!("+{}", worn.level), GOOD)
+            };
+            ctx.text(
+                (rect.x + px(4.0), rect.y + px(2.0)),
+                &label,
+                color,
+                UiFont::SemiBold,
+                13.0,
+                TextAlign::Left,
+            );
+        }
+    }
+    let rows = sharpen.worn.len().div_ceil(INVENTORY_COLUMNS).max(1);
+    let mut y = sharpen_worn_rect(panel, 0, scale).y
+        + (sharpen_worn_rect(panel, INVENTORY_COLUMNS, scale).y
+            - sharpen_worn_rect(panel, 0, scale).y)
+            * rows as f32
+        + px(8.0);
+    let x = panel.x + px(20.0);
+    let Some(detail) = &sharpen.detail else {
+        ctx.text(
+            (x, y),
+            "Select a worn item above or an item in your bag.",
+            DIM,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Left,
+        );
+        return;
+    };
+    ctx.text(
+        (x, y),
+        &detail.name,
+        super::character_menu::quality_color(detail.quality),
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    y += px(26.0);
+    ctx.text(
+        (x, y),
+        &detail.current,
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    if let Some(blocked) = &detail.blocked {
+        ctx.text(
+            (x, y),
+            blocked,
+            BAD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Left,
+        );
+        return;
+    }
+    ctx.text(
+        (x, y),
+        &detail.next,
+        GOOD,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    for cost in &detail.cost {
+        let color = if cost.owned >= cost.needed { TEXT } else { BAD };
+        ctx.text(
+            (x, y),
+            &format!("{}: {} / {}", cost.name, cost.owned, cost.needed),
+            color,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        y += px(20.0);
+    }
+    let (chance, color) = match &detail.break_chance {
+        Some(chance) => (format!("Break chance: {chance}"), BAD),
+        None => ("Break chance: none".to_owned(), GOOD),
+    };
+    ctx.text(
+        (x, y + px(4.0)),
+        &chance,
+        color,
+        UiFont::SemiBold,
+        15.0,
+        TextAlign::Left,
+    );
+    let affordable = detail.cost.iter().all(|c| c.owned >= c.needed);
+    ctx.button(
+        sharpen_button(panel, scale),
+        "Sharpen",
+        ButtonKind::Primary,
+        &Hit::SharpenGo,
+        affordable && view.busy.is_none(),
+    );
+}
+
+/// The reforge panel's contents: the worn items, then the selected item's state, the whole
+/// outcome table, its mean, the price, and the button (which asks to confirm). The warning that
+/// the new roll replaces the old one is always red; the last result is shown until another
+/// item is picked.
+fn draw_reforge(ctx: &mut Painter<'_>, view: &FrontEndView, reforge: &ReforgeCard, panel: UiRect) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.button(
+        mode_button(panel, scale),
+        "Salvage & Exchange",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(false),
+        true,
+    );
+    ctx.button(
+        second_mode_button(panel, scale),
+        "Sharpen items",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(true),
+        true,
+    );
+    ctx.button(
+        third_mode_button(panel, scale),
+        "Gems",
+        ButtonKind::Secondary,
+        &Hit::GemsMode,
+        true,
+    );
+    let selected_slot = match &reforge.selected {
+        Some(SharpenTarget::Worn(slot)) => Some(slot.as_str()),
+        _ => None,
+    };
+    for (position, worn) in reforge.worn.iter().enumerate() {
+        let row = BagRow {
+            index: 0,
+            name: String::new(),
+            quantity: 1,
+            item_level: 0,
+            icon: worn.icon,
+            quality: worn.quality,
+            yields: String::new(),
+        };
+        let rect = sharpen_worn_rect(panel, position, scale);
+        let hit = Hit::ReforgeWorn(position);
+        draw_item_cell(ctx, rect, Some(&row), false, Some(&hit));
+        if selected_slot == Some(worn.slot.as_str()) {
+            ctx.list
+                .panel_stroke(rect, 6.0 * px(1.0), 2.5 * px(1.0), SELECTED);
+        }
+    }
+    let rows = reforge.worn.len().div_ceil(INVENTORY_COLUMNS).max(1);
+    let mut y = sharpen_worn_rect(panel, 0, scale).y
+        + (sharpen_worn_rect(panel, INVENTORY_COLUMNS, scale).y
+            - sharpen_worn_rect(panel, 0, scale).y)
+            * rows as f32
+        + px(8.0);
+    let x = panel.x + px(20.0);
+    let Some(detail) = &reforge.detail else {
+        let line = match &reforge.result {
+            Some(result) => result.text.as_str(),
+            None => "Select a worn item above or an item in your bag.",
+        };
+        let color = match reforge.result.as_ref().and_then(|r| r.improved) {
+            Some(true) => GOOD,
+            Some(false) => BAD,
+            None => DIM,
+        };
+        ctx.text((x, y), line, color, UiFont::SemiBold, 16.0, TextAlign::Left);
+        return;
+    };
+    ctx.text(
+        (x, y),
+        &detail.name,
+        super::character_menu::quality_color(detail.quality),
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    y += px(26.0);
+    ctx.text(
+        (x, y),
+        &detail.current,
+        TEXT,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    if let Some(blocked) = &detail.blocked {
+        ctx.text(
+            (x, y),
+            blocked,
+            BAD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Left,
+        );
+        return;
+    }
+    if let Some(result) = &reforge.result {
+        let color = match result.improved {
+            Some(true) => GOOD,
+            Some(false) => BAD,
+            None => TEXT,
+        };
+        ctx.text(
+            (x, y),
+            &result.text,
+            color,
+            UiFont::SemiBold,
+            16.0,
+            TextAlign::Left,
+        );
+        y += px(24.0);
+    }
+    // The whole table, in two columns: nothing hidden before the player confirms.
+    let half = detail.odds.len().div_ceil(2).max(1);
+    let column = px(190.0);
+    for (index, odds) in detail.odds.iter().enumerate() {
+        let (col, row) = (index / half, index % half);
+        let at = (x + column * col as f32, y + px(18.0) * row as f32);
+        ctx.text(
+            at,
+            &format!("{}   {}", odds.range, odds.chance),
+            TEXT,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+    }
+    y += px(18.0) * half as f32 + px(4.0);
+    ctx.text(
+        (x, y),
+        &detail.expected,
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    y += px(22.0);
+    for cost in &detail.cost {
+        let color = if cost.owned >= cost.needed { TEXT } else { BAD };
+        ctx.text(
+            (x, y),
+            &format!("{}: {} / {}", cost.name, cost.owned, cost.needed),
+            color,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        y += px(20.0);
+    }
+    ctx.text(
+        (x, y),
+        "The new roll REPLACES the old one. It can be worse.",
+        BAD,
+        UiFont::SemiBold,
+        14.0,
+        TextAlign::Left,
+    );
+    let affordable = detail.cost.iter().all(|c| c.owned >= c.needed);
+    let idle = view.busy.is_none();
+    if reforge.confirming {
+        let needed = detail.cost.first().map_or(0, |c| c.needed);
+        ctx.button(
+            sharpen_button(panel, scale),
+            &format!("Confirm ({needed} gold)"),
+            ButtonKind::Primary,
+            &Hit::ReforgeConfirm,
+            affordable && idle,
+        );
+        ctx.button(
+            reforge_cancel_button(panel, scale),
+            "Cancel",
+            ButtonKind::Secondary,
+            &Hit::ReforgeCancel,
+            true,
+        );
+    } else {
+        ctx.button(
+            sharpen_button(panel, scale),
+            "Reforge",
+            ButtonKind::Primary,
+            &Hit::ReforgeGo,
+            affordable && idle,
+        );
+    }
+}
+
+/// The Gems panel: the worn items, the selected item's sockets (a hollow marker when empty, the
+/// gem and its stat when filled, with the price of taking it out), and the picked gem's upgrade
+/// (consume count, gold, success chance and the failure rule, behind a confirm).
+fn draw_gems(ctx: &mut Painter<'_>, view: &FrontEndView, gems: &GemsCard, panel: UiRect) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    ctx.button(
+        mode_button(panel, scale),
+        "Salvage & Exchange",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(false),
+        true,
+    );
+    ctx.button(
+        second_mode_button(panel, scale),
+        "Sharpen items",
+        ButtonKind::Secondary,
+        &Hit::SharpenMode(true),
+        true,
+    );
+    ctx.button(
+        third_mode_button(panel, scale),
+        "Reforge items",
+        ButtonKind::Secondary,
+        &Hit::ReforgeMode,
+        true,
+    );
+    let selected_slot = match &gems.selected {
+        Some(SharpenTarget::Worn(slot)) => Some(slot.as_str()),
+        _ => None,
+    };
+    for (position, worn) in gems.worn.iter().enumerate() {
+        let row = BagRow {
+            index: 0,
+            name: String::new(),
+            quantity: 1,
+            item_level: 0,
+            icon: worn.icon,
+            quality: worn.quality,
+            yields: String::new(),
+        };
+        let rect = sharpen_worn_rect(panel, position, scale);
+        let hit = Hit::GemsWorn(position);
+        draw_item_cell(ctx, rect, Some(&row), false, Some(&hit));
+        if selected_slot == Some(worn.slot.as_str()) {
+            ctx.list
+                .panel_stroke(rect, 6.0 * px(1.0), 2.5 * px(1.0), SELECTED);
+        }
+    }
+    let (x, mut y) = gems_body_origin(panel, gems.worn.len(), scale);
+    let idle = view.busy.is_none();
+    match &gems.item {
+        Some(item) => {
+            ctx.text(
+                (x, y),
+                &item.name,
+                super::character_menu::quality_color(item.quality),
+                UiFont::SemiBold,
+                18.0,
+                TextAlign::Left,
+            );
+            if let Some(blocked) = &item.blocked {
+                ctx.text(
+                    (x, y + px(26.0)),
+                    blocked,
+                    DIM,
+                    UiFont::Medium,
+                    14.0,
+                    TextAlign::Left,
+                );
+            }
+            for (socket, row) in item.sockets.iter().enumerate() {
+                let row_y = y + px(52.0) + px(36.0) * socket as f32;
+                // A hollow marker for an empty socket, a filled one for a gem.
+                let (marker, color, label) = match &row.filled {
+                    Some(gem) => (
+                        "(*)",
+                        super::character_menu::quality_color(row.quality),
+                        gem.as_str(),
+                    ),
+                    None => ("( )", DIM, "Empty socket"),
+                };
+                let at = (x, row_y + px(6.0));
+                ctx.text(at, marker, color, UiFont::SemiBold, 16.0, TextAlign::Left);
+                let at = (x + px(36.0), row_y + px(6.0));
+                ctx.text(at, label, color, UiFont::Medium, 15.0, TextAlign::Left);
+                let rect = gem_socket_button(panel, gems.worn.len(), socket, scale);
+                let n = u8::try_from(socket).unwrap_or(u8::MAX);
+                match (&row.filled, &row.unsocket) {
+                    (Some(_), Some(cost)) => ctx.button(
+                        rect,
+                        &format!("Unsocket ({} {})", cost.needed, cost.name),
+                        ButtonKind::Secondary,
+                        &Hit::GemUnsocket(n),
+                        idle && cost.owned >= cost.needed,
+                    ),
+                    (None, _) => ctx.button(
+                        rect,
+                        "Socket picked gem",
+                        ButtonKind::Secondary,
+                        &Hit::GemSocket(n),
+                        idle && row.can_socket,
+                    ),
+                    _ => {}
+                }
+            }
+            y += px(52.0) + px(36.0) * item.sockets.len().max(1) as f32 + px(10.0);
+        }
+        None => {
+            ctx.text(
+                (x, y),
+                "Select a worn item above or an item in your bag.",
+                DIM,
+                UiFont::Medium,
+                15.0,
+                TextAlign::Left,
+            );
+            y += px(30.0);
+        }
+    }
+    if let Some(result) = &gems.result {
+        let color = match result.improved {
+            Some(true) => GOOD,
+            Some(false) => BAD,
+            None => TEXT,
+        };
+        ctx.text(
+            (x, y),
+            &result.text,
+            color,
+            UiFont::SemiBold,
+            16.0,
+            TextAlign::Left,
+        );
+        y += px(26.0);
+    }
+    let Some(pick) = &gems.pick else {
+        ctx.text(
+            (x, y),
+            "Click a gem in your bag to socket or upgrade it.",
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        return;
+    };
+    ctx.text(
+        (x, y),
+        &format!("Picked: {}  x{}", pick.name, pick.quantity),
+        super::character_menu::quality_color(pick.quality),
+        UiFont::SemiBold,
+        16.0,
+        TextAlign::Left,
+    );
+    y += px(24.0);
+    let Some(upgrade) = &pick.upgrade else {
+        ctx.text(
+            (x, y),
+            "Highest level: it cannot be upgraded.",
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        return;
+    };
+    let paid = upgrade.cost.owned >= upgrade.cost.needed;
+    let lines = [
+        (
+            format!(
+                "Upgrade: consume {} for 1 {}",
+                upgrade.consume, upgrade.result
+            ),
+            if upgrade.enough_gems { TEXT } else { BAD },
+        ),
+        (format!("Success chance: {}", upgrade.chance), TEXT),
+        (upgrade.on_fail.clone(), BAD),
+        (
+            format!(
+                "{}: {} / {}",
+                upgrade.cost.name, upgrade.cost.owned, upgrade.cost.needed
+            ),
+            if paid { TEXT } else { BAD },
+        ),
+    ];
+    for (text, color) in lines {
+        ctx.text((x, y), &text, color, UiFont::Medium, 14.0, TextAlign::Left);
+        y += px(20.0);
+    }
+    let affordable = upgrade.enough_gems && paid;
+    if gems.confirming {
+        ctx.button(
+            sharpen_button(panel, scale),
+            &format!("Confirm ({} gold)", upgrade.cost.needed),
+            ButtonKind::Primary,
+            &Hit::GemUpgradeConfirm,
+            affordable && idle,
+        );
+        ctx.button(
+            reforge_cancel_button(panel, scale),
+            "Cancel",
+            ButtonKind::Secondary,
+            &Hit::GemUpgradeCancel,
+            true,
+        );
+    } else {
+        ctx.button(
+            sharpen_button(panel, scale),
+            "Upgrade",
+            ButtonKind::Primary,
+            &Hit::GemUpgradeGo,
+            affordable && idle,
+        );
+    }
+}
+
+fn ready_label(state: ReadyState) -> (&'static str, UiColor) {
+    match state {
+        ReadyState::Waiting => ("Waiting...", BUSY),
+        ReadyState::Ready => ("Ready", GOOD),
+        ReadyState::Declined => ("Declined", BAD),
+    }
+}
+
+/// Under this many seconds the ready check's clock turns red.
+const READY_URGENT_SECONDS: u64 = 10;
+
+fn draw_ready_check(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let panel = ready_panel(w, h, scale);
+    ctx.list
+        .glow(panel, px(16.0), px(40.0), [0.96, 0.78, 0.40, 0.20]);
+    ctx.panel(panel);
+    let left = panel.x + px(40.0);
+    let right = panel.right() - px(40.0);
+    ctx.text_styled(
+        (w * 0.5, panel.y + px(24.0)),
+        "Dungeon Found!",
+        GOLD,
+        UiFont::Display,
+        34.0,
+        TextAlign::Center,
+    );
+    let Some(party) = &view.party else { return };
+    // What is being offered: the dungeon first, then what the player brings to it.
+    ctx.text(
+        (w * 0.5, panel.y + px(76.0)),
+        &party.dungeon,
+        TEXT,
+        UiFont::SemiBold,
+        22.0,
+        TextAlign::Center,
+    );
+    let me = party.members.iter().find(|member| member.me);
+    let mut info_y = panel.y + px(114.0);
+    if let Some(me) = me {
+        let chip = ctx.role_chip(me.role, left, info_y);
+        ctx.text(
+            (left + chip + px(10.0), info_y + px(2.0)),
+            "Your role",
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        match me.key_level {
+            Some(level) => ctx.text(
+                (right, info_y + px(1.0)),
+                &format!("Your key: level {level}"),
+                GOLD,
+                UiFont::SemiBold,
+                16.0,
+                TextAlign::Right,
+            ),
+            None => ctx.text(
+                (right, info_y + px(2.0)),
+                "You have no key for this dungeon",
+                FAINT,
+                UiFont::Medium,
+                14.0,
+                TextAlign::Right,
+            ),
+        }
+        if !me.key_modifiers.is_empty() {
+            info_y += px(30.0);
+            ctx.modifier_chips(left, info_y, &me.key_modifiers, right);
+        }
+    }
+    let rule = info_y + px(32.0);
+    ctx.list.rect(
+        UiRect::new(left, rule, right - left, px(1.0)),
+        [1.0, 1.0, 1.0, 0.07],
+    );
+    let mut y = rule + px(14.0);
+    for member in &party.members {
+        let x = left;
+        ctx.role_chip(member.role, x, y);
+        let name = if member.me {
+            format!("{} (you)", member.character)
+        } else {
+            member.character.clone()
+        };
+        ctx.text(
+            (x + px(90.0), y + px(1.0)),
+            &name,
+            TEXT,
+            UiFont::Medium,
+            17.0,
+            TextAlign::Left,
+        );
+        let name_end = x + px(90.0) + UiFont::Medium.width(&name, px(17.0)) + px(10.0);
+        ctx.text(
+            (name_end, y + px(3.0)),
+            &member.class,
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Left,
+        );
+        if let Some(level) = member.key_level {
+            ctx.text(
+                (panel.right() - px(290.0), y + px(3.0)),
+                &format!("Key {level}"),
+                GOLD,
+                UiFont::SemiBold,
+                14.0,
+                TextAlign::Right,
+            );
+        }
+        ctx.text(
+            (panel.right() - px(160.0), y + px(3.0)),
+            &format!("Lv {} \u{b7} GS {}", member.level, member.gear_score),
+            DIM,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Right,
+        );
+        let (label, color) = ready_label(member.ready);
+        let label = if member.present {
+            label
+        } else {
+            "Disconnected"
+        };
+        let color = if member.present { color } else { BAD };
+        ctx.text(
+            (right, y + px(1.0)),
+            label,
+            color,
+            UiFont::SemiBold,
+            17.0,
+            TextAlign::Right,
+        );
+        y += px(36.0);
+    }
+    // The clock: the seconds in words, and the bar draining under them.
+    let urgent = party.seconds_left <= READY_URGENT_SECONDS;
+    let clock_color = if urgent { BAD } else { GOLD };
+    let bar = UiRect::new(left, panel.bottom() - px(112.0), right - left, px(8.0));
+    ctx.text(
+        (w * 0.5, bar.y - px(28.0)),
+        &format!("{} s to answer", party.seconds_left),
+        if urgent { BAD } else { DIM },
+        UiFont::SemiBold,
+        15.0,
+        TextAlign::Center,
+    );
+    ctx.list.panel(
+        bar,
+        px(4.0),
+        [0.05, 0.05, 0.07, 1.0],
+        [0.05, 0.05, 0.07, 1.0],
+    );
+    ctx.list.panel(
+        bar.fraction_of_width(party.fraction_left.clamp(0.0, 1.0)),
+        px(4.0),
+        clock_color,
+        [
+            clock_color[0] * 0.7,
+            clock_color[1] * 0.7,
+            clock_color[2] * 0.7,
+            1.0,
+        ],
+    );
+    if party.i_answered {
+        ctx.text(
+            (w * 0.5, panel.bottom() - px(62.0)),
+            "Waiting for players...",
+            DIM,
+            UiFont::Medium,
+            17.0,
+            TextAlign::Center,
+        );
+    } else {
+        let (accept, decline) = ready_buttons(panel, scale);
+        ctx.button(
+            accept,
+            "Accept (Enter)",
+            ButtonKind::Primary,
+            &Hit::Accept,
+            true,
+        );
+        ctx.button(decline, "Decline", ButtonKind::Danger, &Hit::Decline, true);
+    }
+}
+
+/// One party member's row: role, name, class, level, gear score and their key.
+fn draw_member_row(ctx: &mut Painter<'_>, row: UiRect, member: &MemberRow, right_pad: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let fill = if member.me {
+        [0.15, 0.14, 0.11, 1.0]
+    } else {
+        [0.09, 0.10, 0.13, 1.0]
+    };
+    ctx.list.panel(row, px(10.0), fill, fill);
+    ctx.list.panel_stroke(
+        row,
+        px(10.0),
+        px(1.0),
+        if member.leader || member.owner {
+            SELECTED
+        } else {
+            [0.25, 0.26, 0.31, 1.0]
+        },
+    );
+    ctx.list.disc(
+        (row.x + px(22.0), row.y + row.height * 0.5),
+        px(6.0),
+        if member.present { GOOD } else { BAD },
+    );
+    ctx.role_chip(member.role, row.x + px(40.0), row.y + px(10.0));
+    let mut name = member.character.clone();
+    if member.me {
+        name.push_str("  (you)");
+    }
+    ctx.text(
+        (row.x + px(140.0), row.y + px(9.0)),
+        &name,
+        TEXT,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    let tag = match (member.leader, member.owner) {
+        (true, true) => Some("LEADER \u{b7} KEY OWNER"),
+        (true, false) => Some("LEADER"),
+        (false, true) => Some("KEY OWNER"),
+        (false, false) => None,
+    };
+    if let Some(tag) = tag {
+        let x = row.x + px(150.0) + UiFont::SemiBold.width(&name, px(18.0)) + px(14.0);
+        ctx.text(
+            (x, row.y + px(12.0)),
+            tag,
+            GOLD,
+            UiFont::SemiBold,
+            13.0,
+            TextAlign::Left,
+        );
+    }
+    ctx.text(
+        (row.x + px(40.0), row.y + px(36.0)),
+        &format!(
+            "{} \u{b7} Lv {} \u{b7} GS {} \u{b7} {}",
+            member.class, member.level, member.gear_score, member.player
+        ),
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    let right = row.right() - right_pad;
+    match member.key_level {
+        Some(level) => ctx.text(
+            (right, row.y + px(10.0)),
+            &format!("Key level {level}"),
+            GOLD,
+            UiFont::SemiBold,
+            15.0,
+            TextAlign::Right,
+        ),
+        None => ctx.text(
+            (right, row.y + px(11.0)),
+            "No key for this dungeon",
+            FAINT,
+            UiFont::Medium,
+            14.0,
+            TextAlign::Right,
+        ),
+    }
+    if !member.present {
+        ctx.text(
+            (right, row.y + px(36.0)),
+            "Disconnected",
+            BAD,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Right,
+        );
+    }
+}
+
+fn draw_key_select(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let panel = key_panel(w, h, scale);
+    ctx.panel(panel);
+    let Some(party) = &view.party else { return };
+    ctx.text_styled(
+        (panel.x + px(size::PANEL_PAD), panel.y + px(24.0)),
+        "Available Keys",
+        GOLD,
+        UiFont::Display,
+        30.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (panel.right() - px(size::PANEL_PAD), panel.y + px(34.0)),
+        &party.dungeon,
+        TEXT,
+        UiFont::SemiBold,
+        17.0,
+        TextAlign::Right,
+    );
+    ctx.text(
+        (panel.x + px(size::PANEL_PAD), panel.y + px(74.0)),
+        "Insert your own key. Its owner leads the party and sets the difficulty.",
+        DIM,
+        UiFont::Regular,
+        14.0,
+        TextAlign::Left,
+    );
+    let busy = view.busy.is_some();
+    for (index, member) in party.members.iter().enumerate() {
+        let row = key_row(panel, index, scale);
+        let fill = if member.me {
+            [0.15, 0.14, 0.11, 1.0]
+        } else {
+            [0.09, 0.10, 0.13, 1.0]
+        };
+        ctx.list.panel(row, px(10.0), fill, fill);
+        ctx.list.panel_stroke(
+            row,
+            px(10.0),
+            px(1.0),
+            if member.owner {
+                SELECTED
+            } else {
+                [0.25, 0.26, 0.31, 1.0]
+            },
+        );
+        // Whose key it is: the character, with the role they bring.
+        ctx.role_chip(member.role, row.x + px(14.0), row.y + px(10.0));
+        let mut name = member.character.clone();
+        if member.me {
+            name.push_str("  (you)");
+        }
+        ctx.text(
+            (row.x + px(96.0), row.y + px(8.0)),
+            &name,
+            TEXT,
+            UiFont::SemiBold,
+            18.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (row.x + px(14.0), row.y + px(36.0)),
+            &format!(
+                "{} \u{b7} Lv {} \u{b7} GS {} \u{b7} {}",
+                member.class, member.level, member.gear_score, member.player
+            ),
+            DIM,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
+        );
+        // The key itself: its level where the eye lands first, its modifiers under it.
+        let right = row.right() - px(16.0);
+        match member.key_level {
+            Some(level) => ctx.text(
+                (right, row.y + px(8.0)),
+                &format!("Key level {level}"),
+                GOLD,
+                UiFont::SemiBold,
+                19.0,
+                TextAlign::Right,
+            ),
+            None => ctx.text(
+                (right, row.y + px(10.0)),
+                &format!("No key for {}", party.dungeon),
+                FAINT,
+                UiFont::Medium,
+                14.0,
+                TextAlign::Right,
+            ),
+        }
+        if !member.present {
+            ctx.text(
+                (right, row.y + px(36.0)),
+                "Disconnected",
+                BAD,
+                UiFont::SemiBold,
+                14.0,
+                TextAlign::Right,
+            );
+        }
+        if member.key_level.is_some() {
+            let limit = if member.me {
+                key_insert_button(row, scale).x - px(8.0)
+            } else {
+                right
+            };
+            let chips_y = row.y + px(KEY_ROW_PITCH - 8.0) - px(26.0);
+            if member.key_modifiers.is_empty() {
+                ctx.text(
+                    (row.x + px(14.0), chips_y + px(2.0)),
+                    "No modifiers",
+                    FAINT,
+                    UiFont::Medium,
+                    13.0,
+                    TextAlign::Left,
+                );
+            } else {
+                ctx.modifier_chips(row.x + px(14.0), chips_y, &member.key_modifiers, limit);
+            }
+        }
+        if member.me {
+            ctx.button(
+                key_insert_button(row, scale),
+                "Insert Key",
+                ButtonKind::Primary,
+                &Hit::InsertKey,
+                member.key_level.is_some() && !busy,
+            );
+        }
+    }
+    let (leave, _) = key_buttons(panel, scale);
+    ctx.button(
+        leave,
+        "Leave Party",
+        ButtonKind::Secondary,
+        &Hit::LeaveParty,
+        !busy,
+    );
+    let note = if let Some(busy) = &view.busy {
+        Some((busy.clone(), BUSY))
+    } else if party.my_key().is_none() {
+        Some((format!("You have no key for {}.", party.dungeon), BAD))
+    } else {
+        None
+    };
+    if let Some((text, color)) = note {
+        ctx.text(
+            (panel.right() - px(40.0), leave.y + px(10.0)),
+            &text,
+            color,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Right,
+        );
+    }
+}
+
+fn draw_party(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let panel = party_panel(w, h, scale);
+    ctx.panel(panel);
+    let Some(party) = &view.party else { return };
+    ctx.text_styled(
+        (panel.x + px(30.0), panel.y + px(24.0)),
+        "Your Party",
+        GOLD,
+        UiFont::Display,
+        30.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (panel.right() - px(30.0), panel.y + px(34.0)),
+        &party.dungeon,
+        TEXT,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Right,
+    );
+    for (i, line) in UiFont::Regular
+        .wrap(&party.description, px(14.0), panel.width - px(60.0))
+        .iter()
+        .take(2)
+        .enumerate()
+    {
+        ctx.text(
+            (panel.x + px(30.0), panel.y + px(72.0) + px(20.0) * i as f32),
+            line,
+            DIM,
+            UiFont::Regular,
+            14.0,
+            TextAlign::Left,
+        );
+    }
+    ctx.text(
+        (panel.x + px(30.0), panel.y + px(122.0)),
+        &format!("Key level {}", party.key_level),
+        GOLD,
+        UiFont::SemiBold,
+        18.0,
+        TextAlign::Left,
+    );
+    if let Some(owner) = &party.key_owner {
+        ctx.text(
+            (panel.right() - px(30.0), panel.y + px(124.0)),
+            &format!("{owner}'s key"),
+            TEXT,
+            UiFont::SemiBold,
+            16.0,
+            TextAlign::Right,
+        );
+    }
+    let roles: Vec<&str> = party.members.iter().map(|m| m.role.name()).collect();
+    ctx.text(
+        (panel.x + px(30.0), panel.y + px(152.0)),
+        &format!("Roles: {}", roles.join(", ")),
+        DIM,
+        UiFont::Medium,
+        14.0,
+        TextAlign::Left,
+    );
+    if party.key_modifiers.is_empty() {
+        ctx.text(
+            (panel.x + px(30.0), panel.y + px(172.0)),
+            "The key has no modifiers.",
+            FAINT,
+            UiFont::Medium,
+            13.0,
+            TextAlign::Left,
+        );
+    } else {
+        ctx.modifier_chips(
+            panel.x + px(30.0),
+            panel.y + px(172.0),
+            &party.key_modifiers,
+            panel.right() - px(30.0),
+        );
+    }
+    for (index, member) in party.members.iter().enumerate() {
+        let row = member_row(panel, index, PARTY_ROWS_TOP, scale);
+        let kickable = party.i_lead && !member.me;
+        draw_member_row(
+            ctx,
+            row,
+            member,
+            if kickable { px(120.0) } else { px(20.0) },
+        );
+        if kickable {
+            ctx.button(
+                kick_button(row, scale),
+                "Kick",
+                ButtonKind::Danger,
+                &Hit::Kick(member.account_id.clone()),
+                view.busy.is_none(),
+            );
+        }
+    }
+    let buttons = party_buttons(panel, scale);
+    let idle = view.busy.is_none();
+    if party.i_own_key {
+        ctx.button(
+            buttons.withdraw,
+            "Withdraw Key",
+            ButtonKind::Secondary,
+            &Hit::WithdrawKey,
+            idle,
+        );
+    }
+    if party.i_lead && party.i_own_key {
+        ctx.button(
+            buttons.start,
+            if idle { "Start Dungeon" } else { "Starting..." },
+            ButtonKind::Primary,
+            &Hit::Start,
+            start_enabled(view, party),
+        );
+    } else {
+        ctx.text(
+            (panel.right() - px(40.0), panel.bottom() - px(60.0)),
+            "Waiting for the key's owner to start...",
+            DIM,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Right,
+        );
+    }
+    ctx.button(
+        buttons.leave,
+        "Leave Party",
+        ButtonKind::Secondary,
+        &Hit::LeaveParty,
+        idle,
+    );
+    if let Some(busy) = &view.busy {
+        ctx.text(
+            (w * 0.5, panel.bottom() - px(98.0)),
+            busy,
+            BUSY,
+            UiFont::Medium,
+            16.0,
+            TextAlign::Center,
+        );
+    } else if party.i_lead && !party.members.iter().all(|m| m.present) {
+        ctx.text(
+            (w * 0.5, panel.bottom() - px(98.0)),
+            "Waiting for everyone to be connected.",
+            BUSY,
+            UiFont::Medium,
+            15.0,
+            TextAlign::Center,
+        );
+    }
+}
+
+/// The drops the disconnect prompt still asks about: not yet answered with "Wait".
+fn pending_away<'v>(view: &'v FrontEndView, waited: &[String]) -> Vec<&'v AwayMember> {
+    view.away
+        .iter()
+        .filter(|away| !waited.contains(&away.key))
+        .take(AWAY_ROWS)
+        .collect()
+}
+
+/// The most members the disconnect prompt lists.
+const AWAY_ROWS: usize = 3;
+
+/// Where the disconnect prompt and its two buttons sit.
+struct AwayRects {
+    panel: UiRect,
+    wait: UiRect,
+    leave: UiRect,
+}
+
+fn away_panel(rows: usize, w: f32, h: f32, scale: UiScale) -> AwayRects {
+    let px = |v: f32| scale.px(v);
+    #[allow(clippy::cast_precision_loss, reason = "a handful of rows")]
+    let height = px(150.0) + px(30.0) * rows as f32;
+    let panel = UiRect::new(
+        (w - px(480.0)) * 0.5,
+        (h * 0.16).max(px(150.0)),
+        px(480.0),
+        height,
+    );
+    let y = panel.y + panel.height - px(56.0);
+    let width = (panel.width - px(72.0)) * 0.5;
+    AwayRects {
+        panel,
+        wait: UiRect::new(panel.x + px(28.0), y, width, px(38.0)),
+        leave: UiRect::new(panel.x + px(44.0) + width, y, width, px(38.0)),
+    }
+}
+
+fn draw_away(ctx: &mut Painter<'_>, away: &[&AwayMember], w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    let rects = away_panel(away.len(), w, h, scale);
+    ctx.panel(rects.panel);
+    let mut y = rects.panel.y + px(22.0);
+    for member in away {
+        ctx.text(
+            (rects.panel.x + px(28.0), y),
+            &format!("{} has disconnected.", member.name),
+            BAD,
+            UiFont::SemiBold,
+            19.0,
+            TextAlign::Left,
+        );
+        ctx.text(
+            (rects.panel.x + rects.panel.width - px(28.0), y),
+            &clock_text(member.seconds_left),
+            GOLD,
+            UiFont::SemiBold,
+            19.0,
+            TextAlign::Right,
+        );
+        y += px(30.0);
+    }
+    ctx.text(
+        (rects.panel.x + px(28.0), y + px(6.0)),
+        "Their place is held until the timer ends.",
+        DIM,
+        UiFont::Regular,
+        15.0,
+        TextAlign::Left,
+    );
+    ctx.text(
+        (rects.panel.x + px(28.0), y + px(30.0)),
+        "Wait for them, or leave and return to the hub.",
+        DIM,
+        UiFont::Regular,
+        15.0,
+        TextAlign::Left,
+    );
+    ctx.button(
+        rects.wait,
+        "Wait",
+        ButtonKind::Primary,
+        &Hit::AwayWait,
+        true,
+    );
+    ctx.button(
+        rects.leave,
+        "Leave Party",
+        ButtonKind::Secondary,
+        &Hit::LeaveParty,
+        true,
+    );
+}
+
+fn draw_in_world(ctx: &mut Painter<'_>, view: &FrontEndView, waited: &[String], w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    match view.countdown {
+        Some(CountdownDisplay::Seconds(n)) => {
+            ctx.text_styled(
+                (w * 0.5, h * 0.28),
+                &n.to_string(),
+                GOLD,
+                UiFont::Display,
+                120.0,
+                TextAlign::Center,
+            );
+            ctx.text_styled(
+                (w * 0.5, h * 0.28 + px(150.0)),
+                "The barrier lifts soon",
+                TEXT,
+                UiFont::SemiBold,
+                22.0,
+                TextAlign::Center,
+            );
+        }
+        Some(CountdownDisplay::Go) => {
+            ctx.text_styled(
+                (w * 0.5, h * 0.28),
+                "GO!",
+                GOLD,
+                UiFont::Display,
+                120.0,
+                TextAlign::Center,
+            );
+        }
+        _ => {}
+    }
+    if let Some(card) = &view.completion {
+        draw_completion(ctx, card, w, h);
+    } else {
+        if let Some(busy) = &view.busy {
+            ctx.banner(busy, StatusLevel::Busy, w, px(14.0));
+        }
+        ctx.button(
+            in_world_leave(w, ctx.scale),
+            "Leave Party",
+            ButtonKind::Secondary,
+            &Hit::LeaveParty,
+            true,
+        );
+        let away = pending_away(view, waited);
+        if !away.is_empty() {
+            draw_away(ctx, &away, w, h);
+        }
+    }
+    if let Some((level, text)) = &view.connection
+        && *level != StatusLevel::Good
+    {
+        ctx.text(
+            (w - px(180.0), px(366.0)),
+            text,
+            status_color(*level),
+            UiFont::Medium,
+            14.0,
+            TextAlign::Right,
+        );
+    }
+}
+
+/// One line of the completion panel: label, value, colour.
+type CompletionRow = (String, String, UiColor);
+
+/// The completion panel's blocks, in reading order: how the run went, then the rewards grouped
+/// as items, currencies, experience and the bonus.
+fn completion_sections(card: &CompletionCard) -> Vec<(&'static str, Vec<CompletionRow>)> {
+    let mut sections = Vec::with_capacity(5);
+    let mut run = vec![("Key level".to_owned(), card.key_level.to_string(), TEXT)];
+    if card.key_owner {
+        run.push(if card.success {
+            (
+                "Key upgraded".to_owned(),
+                format!("{} -> {}", card.key_level, card.key_level_after),
+                GOOD,
+            )
+        } else {
+            ("Key".to_owned(), "Your key is unchanged".to_owned(), DIM)
+        });
+    } else if card.success && card.key_level_after > 0 {
+        // A member whose own key was lower than the one used rises with the run.
+        run.push((
+            "Your key".to_owned(),
+            format!("rose to level {}", card.key_level_after),
+            GOOD,
+        ));
+    }
+    run.push(("Time".to_owned(), clock_text(card.duration_seconds), TEXT));
+    sections.push(("RUN", run));
+
+    let mut items = Vec::new();
+    if card.success {
+        for item in card.items.iter().take(COMPLETION_ITEMS) {
+            items.push((
+                "Chest".to_owned(),
+                format!("{} ({}%)", item.name, item.percent),
+                super::character_menu::quality_color(item.quality),
+            ));
+        }
+        if card.items.len() > COMPLETION_ITEMS {
+            items.push((
+                "Chest".to_owned(),
+                format!("+{} more", card.items.len() - COMPLETION_ITEMS),
+                DIM,
+            ));
+        }
+        if card.items.is_empty()
+            && let Some(loot) = &card.loot
+        {
+            items.push(("Loot".to_owned(), loot.clone(), GOLD));
+        }
+    }
+    if card.mob_drops > 0 {
+        items.push((
+            "Monster drops".to_owned(),
+            format!("{} (sent to your mail)", card.mob_drops),
+            GOLD,
+        ));
+    }
+    if !items.is_empty() {
+        sections.push(("ITEMS", items));
+    }
+
+    // Currency is gold wherever it is counted: the chest's and the monsters' alike.
+    let mut currency = Vec::new();
+    if card.success {
+        for (name, amount) in &card.resources {
+            currency.push((name.clone(), format!("+{amount}"), GOLD));
+        }
+    }
+    for (name, amount) in &card.looted {
+        currency.push((name.clone(), format!("+{amount}"), GOLD));
+    }
+    if !currency.is_empty() {
+        sections.push(("CURRENCY", currency));
+    }
+
+    if card.success {
+        sections.push((
+            "EXPERIENCE",
+            vec![(
+                "Experience".to_owned(),
+                format!("+{}", card.experience),
+                TEXT,
+            )],
+        ));
+        if card.bonus_pct > 0 {
+            sections.push((
+                "BONUS",
+                vec![(
+                    "Loot bonus".to_owned(),
+                    format!("+{}% (key rerolled)", card.bonus_pct),
+                    GOOD,
+                )],
+            ));
+        }
+    }
+    sections
+}
+
+/// The lines of the completion panel, all sections in order.
+#[cfg(test)]
+fn completion_rows(card: &CompletionCard) -> Vec<CompletionRow> {
+    completion_sections(card)
+        .into_iter()
+        .flat_map(|(_, rows)| rows)
+        .collect()
+}
+
+/// The chest items the completion panel lists before it says "+N more".
+const COMPLETION_ITEMS: usize = 6;
+/// The completion panel's design width.
+const COMPLETION_WIDTH: f32 = 520.0;
+/// A completion row, a section heading and the gap after a section, logical pixels.
+const COMPLETION_ROW: f32 = 24.0;
+const COMPLETION_HEADING: f32 = 24.0;
+const COMPLETION_GAP: f32 = 6.0;
+/// Above the first section (title and dungeon), and under the last (the button).
+const COMPLETION_TOP: f32 = 104.0;
+const COMPLETION_BOTTOM: f32 = 80.0;
+
+/// The panel's height at design size.
+fn completion_height(card: &CompletionCard) -> f32 {
+    let sections = completion_sections(card);
+    let body: f32 = sections
+        .iter()
+        .map(|(_, rows)| COMPLETION_HEADING + COMPLETION_ROW * rows.len() as f32 + COMPLETION_GAP)
+        .sum();
+    COMPLETION_TOP + body + COMPLETION_BOTTOM
+}
+
+/// The scale the completion panel is drawn at: reduced until it fits the window, so a long
+/// list of rewards never pushes the button off the bottom.
+fn completion_scale(card: &CompletionCard, w: f32, h: f32, scale: UiScale) -> UiScale {
+    let viewport = (w.max(0.0) as u32, h.max(0.0) as u32);
+    kit::fit_scale(
+        scale,
+        (COMPLETION_WIDTH + 32.0, completion_height(card) + 32.0),
+        viewport,
+    )
+}
+
+/// The completion panel and its button.
+fn completion_rects(card: &CompletionCard, w: f32, h: f32, scale: UiScale) -> (UiRect, UiRect) {
+    let scale = completion_scale(card, w, h, scale);
+    let px = |v: f32| scale.px(v);
+    let height = px(completion_height(card));
+    let panel = UiRect::new(
+        (w - px(COMPLETION_WIDTH)) * 0.5,
+        ((h - height) * 0.3).max(px(16.0)),
+        px(COMPLETION_WIDTH),
+        height,
+    );
+    let button = UiRect::new(
+        panel.x + px(110.0),
+        panel.bottom() - px(COMPLETION_BOTTOM - 18.0),
+        panel.width - px(220.0),
+        px(size::PRIMARY_HEIGHT - 4.0),
+    );
+    (panel, button)
+}
+
+fn draw_completion(ctx: &mut Painter<'_>, card: &CompletionCard, w: f32, h: f32) {
+    let scale = completion_scale(card, w, h, ctx.scale);
+    let (panel, button) = completion_rects(card, w, h, ctx.scale);
+    // The panel draws at its own fitted scale; the buttons and tooltips that follow at the page's.
+    let page_scale = std::mem::replace(&mut ctx.scale, scale);
+    let px = move |v: f32| scale.px(v);
+    if card.success {
+        ctx.list
+            .glow(panel, px(16.0), px(40.0), [0.96, 0.78, 0.40, 0.22]);
+    }
+    ctx.panel(panel);
+    ctx.text_styled(
+        (panel.x + panel.width * 0.5, panel.y + px(20.0)),
+        if card.success {
+            "Dungeon Complete"
+        } else {
+            "Run Failed"
+        },
+        if card.success { GOLD } else { BAD },
+        UiFont::Display,
+        34.0,
+        TextAlign::Center,
+    );
+    ctx.text(
+        (panel.x + panel.width * 0.5, panel.y + px(68.0)),
+        &card.dungeon,
+        TEXT,
+        UiFont::SemiBold,
+        19.0,
+        TextAlign::Center,
+    );
+    let kit = Kit::new(scale);
+    let left = panel.x + px(40.0);
+    let width = panel.width - px(80.0);
+    let mut y = panel.y + px(COMPLETION_TOP);
+    for (title, rows) in completion_sections(card) {
+        y += kit::section(ctx.list, &kit, left, y, width, title);
+        y += px(COMPLETION_HEADING - 22.0);
+        for (label, value, color) in rows {
+            let centre = y + px(COMPLETION_ROW) * 0.5;
+            kit.text(
+                ctx.list,
+                left,
+                centre,
+                &label,
+                crate::ui::map_style::type_scale::HEADING,
+                DIM,
+                TextAlign::Left,
+            );
+            kit.text(
+                ctx.list,
+                left + width,
+                centre,
+                &value,
+                crate::ui::map_style::type_scale::HEADING,
+                color,
+                TextAlign::Right,
+            );
+            y += px(COMPLETION_ROW);
+        }
+        y += px(COMPLETION_GAP);
+    }
+    ctx.button(
+        button,
+        if card.returning {
+            "Saving rewards..."
+        } else {
+            "Return to Hub"
+        },
+        ButtonKind::Primary,
+        &Hit::ReturnToHub,
+        !card.returning,
+    );
+    ctx.scale = page_scale;
+}
+
+fn draw_toasts(ctx: &mut Painter<'_>, view: &FrontEndView, w: f32, h: f32) {
+    let scale = ctx.scale;
+    let px = move |v: f32| scale.px(v);
+    // Under the completion panel, which owns the middle of the screen; otherwise, in the
+    // world, above the action bars and clear of the unit frames at the top.
+    if let Some(card) = &view.completion {
+        let mut y = completion_rects(card, w, h, scale).0.bottom() + px(12.0);
+        for toast in view.toasts.iter().rev().take(4) {
+            // A tall panel leaves little room under it: the toast stays on screen regardless.
+            ctx.banner(&toast.message, toast.level, w, y.min(h - px(48.0)));
+            y += px(48.0);
+        }
+        return;
+    }
+    let mut y = if view.screen.is_overlay() {
+        h - px(250.0)
+    } else {
+        h - px(180.0)
+    };
+    for toast in view.toasts.iter().rev().take(4) {
+        ctx.banner(&toast.message, toast.level, w, y);
+        y -= px(48.0);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "test code asserts on known-good values")]
+mod tests {
+    use super::*;
+
+    fn input<'a>(
+        pointer: (f32, f32),
+        pressed: bool,
+        typed: &'a [char],
+        clipboard: &'a dyn Fn() -> Option<String>,
+    ) -> FrontInput<'a> {
+        FrontInput {
+            pointer,
+            pressed,
+            typed,
+            keys: FieldKeys::default(),
+            escape: false,
+            clipboard,
+        }
+    }
+
+    fn center(rect: UiRect) -> (f32, f32) {
+        (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
+    }
+
+    const VIEWPORT: (u32, u32) = (1920, 1080);
+
+    fn scale() -> UiScale {
+        UiScale::new(1.0)
+    }
+
+    /// Where `hit` is laid out in `view`, if it is clickable at all.
+    fn rect_of(ui: &FrontEndUi, view: &FrontEndView, hit: &Hit) -> Option<UiRect> {
+        ui.layout(view, VIEWPORT, scale())
+            .hits
+            .iter()
+            .find(|(candidate, _)| candidate == hit)
+            .map(|(_, rect)| *rect)
+    }
+
+    /// Clicks the middle of `hit` and returns what the front-end asked for.
+    fn click(ui: &mut FrontEndUi, view: &FrontEndView, hit: &Hit) -> Vec<FrontEndAction> {
+        let rect = rect_of(ui, view, hit).expect("the control is laid out");
+        let none = || None;
+        ui.update(
+            &input(center(rect), true, &[], &none),
+            view,
+            VIEWPORT,
+            scale(),
+            0.016,
+        )
+    }
+
+    fn member(me: bool, leader: bool, owner: bool, key: Option<u32>) -> MemberRow {
+        MemberRow {
+            account_id: if me { "me".into() } else { "other".into() },
+            character: "C".into(),
+            player: "P".into(),
+            class: "Mage".into(),
+            role: Role::Tank,
+            level: 1,
+            gear_score: 40,
+            key_level: key,
+            key_modifiers: Vec::new(),
+            ready: ReadyState::Ready,
+            present: true,
+            leader,
+            owner,
+            me,
+        }
+    }
+
+    fn party(members: Vec<MemberRow>, i_lead: bool, i_own_key: bool) -> PartyCard {
+        PartyCard {
+            dungeon: "Crypt".into(),
+            description: "A crypt.".into(),
+            key_level: 3,
+            key_owner: Some("C".into()),
+            i_own_key,
+            members,
+            i_lead,
+            i_answered: true,
+            ..PartyCard::default()
+        }
+    }
+
+    fn view_of(screen: Screen, party: Option<PartyCard>) -> FrontEndView {
+        FrontEndView {
+            screen,
+            party,
+            ..FrontEndView::default()
+        }
+    }
+
+    fn hub_view() -> FrontEndView {
+        FrontEndView {
+            screen: Screen::Hub,
+            account: Some("Sonit".into()),
+            hub: Some(HubCard {
+                name: "Ember".into(),
+                class: "Mage".into(),
+                level: 4,
+                experience: 120,
+                next_level: 400,
+                key: Some(KeyCard {
+                    dungeon: "Graveyard Crypt".into(),
+                    level: 2,
+                    modifiers: vec![beams(0)],
+                    can_downgrade: true,
+                    cleanse_cost: 100,
+                    gold: 250,
+                }),
+                resources: vec![("Crypt Dust".into(), 12)],
+                can_find_dungeon: true,
+                can_change_character: true,
+            }),
+            ..FrontEndView::default()
+        }
+    }
+
+    fn queue_card(matched: bool) -> QueueCard {
+        QueueCard {
+            dungeon: "Graveyard Crypt".into(),
+            role: Role::Dps,
+            character: "Ember".into(),
+            waited_seconds: 75,
+            tolerance_percent: 10,
+            matched,
+        }
+    }
+
+    fn completion(success: bool, owner: bool, returning: bool) -> CompletionCard {
+        CompletionCard {
+            success,
+            dungeon: "Graveyard Crypt".into(),
+            key_level: 3,
+            key_owner: owner,
+            key_level_after: if success { 4 } else { 3 },
+            bonus_pct: 0,
+            duration_seconds: 754,
+            experience: if success { 350 } else { 0 },
+            resources: if success {
+                vec![("Crypt Dust".into(), 11)]
+            } else {
+                Vec::new()
+            },
+            items: Vec::new(),
+            loot: success.then(|| "Open the chest to claim your loot".to_owned()),
+            mob_drops: 0,
+            looted: Vec::new(),
+            returning,
+        }
+    }
+
+    #[test]
+    fn typing_and_enter_signs_in() {
+        let mut ui = FrontEndUi::new();
+        let view = view_of(Screen::Login, None);
+        let none = || None;
+        let typed: Vec<char> = "me@x.y\tsecret\r".chars().collect();
+        // One character at a time, as frames would deliver them.
+        let mut actions = Vec::new();
+        for c in typed {
+            actions.extend(ui.update(
+                &input((0.0, 0.0), false, &[c], &none),
+                &view,
+                VIEWPORT,
+                scale(),
+                0.016,
+            ));
+        }
+        assert_eq!(
+            actions,
+            vec![FrontEndAction::Login {
+                email: "me@x.y".into(),
+                password: "secret".into(),
+                remember: true
+            }]
+        );
+    }
+
+    #[test]
+    fn the_title_continues_on_click_enter_and_space() {
+        let mut ui = FrontEndUi::new();
+        let view = view_of(Screen::Title, None);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Continue),
+            vec![FrontEndAction::ContinueFromTitle]
+        );
+        let none = || None;
+        for key in ['\r', ' '] {
+            let actions = ui.update(
+                &input((0.0, 0.0), false, &[key], &none),
+                &view,
+                VIEWPORT,
+                scale(),
+                0.016,
+            );
+            assert_eq!(actions, vec![FrontEndAction::ContinueFromTitle]);
+        }
+        // Typing on the sign-in form is not a way past the title, and Enter there signs in.
+        let login = view_of(Screen::Login, None);
+        let actions = ui.update(
+            &input((0.0, 0.0), false, &[' '], &none),
+            &login,
+            VIEWPORT,
+            scale(),
+            0.016,
+        );
+        assert!(!actions.contains(&FrontEndAction::ContinueFromTitle));
+    }
+
+    #[test]
+    fn clicking_the_drawn_button_is_the_action() {
+        let mut ui = FrontEndUi::new();
+        let mut card = party(vec![], false, false);
+        card.i_answered = false;
+        card.seconds_left = 20;
+        card.fraction_left = 0.5;
+        let view = view_of(Screen::ReadyCheck, Some(card));
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Accept),
+            vec![FrontEndAction::Accept]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Decline),
+            vec![FrontEndAction::Decline]
+        );
+        // Drawing the same view produces commands and does not panic.
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn an_answered_ready_check_has_nothing_to_press() {
+        let ui = FrontEndUi::new();
+        let view = view_of(Screen::ReadyCheck, Some(party(vec![], false, false)));
+        assert!(rect_of(&ui, &view, &Hit::Accept).is_none());
+        assert!(rect_of(&ui, &view, &Hit::Decline).is_none());
+    }
+
+    #[test]
+    fn only_the_leader_gets_leader_controls() {
+        let ui = FrontEndUi::new();
+        let members = vec![
+            member(true, false, false, Some(2)),
+            member(false, true, true, Some(3)),
+        ];
+        let hits = ui
+            .layout(
+                &view_of(Screen::Party, Some(party(members.clone(), false, false))),
+                VIEWPORT,
+                scale(),
+            )
+            .hits;
+        assert!(
+            !hits
+                .iter()
+                .any(|(hit, _)| matches!(hit, Hit::Start | Hit::Kick(_) | Hit::WithdrawKey))
+        );
+        let mut members = members;
+        members[0].leader = true;
+        members[0].owner = true;
+        let hits = ui
+            .layout(
+                &view_of(Screen::Party, Some(party(members, true, true))),
+                VIEWPORT,
+                scale(),
+            )
+            .hits;
+        assert!(hits.iter().any(|(hit, _)| *hit == Hit::Start));
+        assert!(
+            hits.iter()
+                .any(|(hit, _)| *hit == Hit::Kick("other".into()))
+        );
+        assert!(!hits.iter().any(|(hit, _)| *hit == Hit::Kick("me".into())));
+    }
+
+    #[test]
+    fn start_needs_the_key_owner_and_withdraw_is_the_owners_alone() {
+        let ui = FrontEndUi::new();
+        let members = vec![
+            member(true, true, false, Some(2)),
+            member(false, false, true, Some(3)),
+        ];
+        // A leader who does not own the key (the server never says so, but the screen must
+        // not offer what the server would refuse).
+        let view = view_of(Screen::Party, Some(party(members.clone(), true, false)));
+        assert!(rect_of(&ui, &view, &Hit::Start).is_none());
+        assert!(rect_of(&ui, &view, &Hit::WithdrawKey).is_none());
+        // The owner who leads gets both.
+        let view = view_of(Screen::Party, Some(party(members.clone(), true, true)));
+        assert!(rect_of(&ui, &view, &Hit::Start).is_some());
+        assert!(rect_of(&ui, &view, &Hit::WithdrawKey).is_some());
+        // Everyone can leave.
+        assert!(rect_of(&ui, &view, &Hit::LeaveParty).is_some());
+        // Nobody is offered Make Leader: the server refuses it before the start.
+        let mut ui = FrontEndUi::new();
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Start),
+            vec![FrontEndAction::StartDungeon]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::WithdrawKey),
+            vec![FrontEndAction::WithdrawKey]
+        );
+        // Once started, the screen is busy and offers neither.
+        let mut busy = view;
+        busy.busy = Some("Starting dungeon...".into());
+        assert!(rect_of(&ui, &busy, &Hit::Start).is_none());
+        assert!(rect_of(&ui, &busy, &Hit::WithdrawKey).is_none());
+        // A member who is not connected holds the start back.
+        let mut away = view_of(Screen::Party, Some(party(members, true, true)));
+        if let Some(card) = away.party.as_mut() {
+            card.members[1].present = false;
+        }
+        assert!(rect_of(&ui, &away, &Hit::Start).is_none());
+    }
+
+    #[test]
+    fn insert_key_is_clickable_only_with_a_valid_key() {
+        let mut ui = FrontEndUi::new();
+        let with_key = view_of(
+            Screen::KeySelect,
+            Some(party(
+                vec![
+                    member(true, false, false, Some(2)),
+                    member(false, false, false, None),
+                ],
+                false,
+                false,
+            )),
+        );
+        assert_eq!(
+            click(&mut ui, &with_key, &Hit::InsertKey),
+            vec![FrontEndAction::InsertKey]
+        );
+        let without = view_of(
+            Screen::KeySelect,
+            Some(party(
+                vec![
+                    member(true, false, false, None),
+                    member(false, false, false, Some(3)),
+                ],
+                false,
+                false,
+            )),
+        );
+        assert!(rect_of(&ui, &without, &Hit::InsertKey).is_none());
+        assert_eq!(
+            click(&mut ui, &without, &Hit::LeaveParty),
+            vec![FrontEndAction::LeaveParty]
+        );
+        // The disabled button still draws, with its reason.
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &without, VIEWPORT, scale());
+        assert!(!list.is_empty());
+        // After pressing it the screen waits for the server rather than inviting a second try.
+        let mut waiting = with_key;
+        waiting.busy = Some("Inserting your key...".into());
+        assert!(rect_of(&ui, &waiting, &Hit::InsertKey).is_none());
+    }
+
+    #[test]
+    fn the_hub_buttons_are_their_actions() {
+        let mut ui = FrontEndUi::new();
+        let view = hub_view();
+        for (hit, action) in [
+            (Hit::DungeonFinder, FrontEndAction::OpenDungeonFinder),
+            (Hit::Equipment, FrontEndAction::OpenEquipment),
+            (Hit::Workshop, FrontEndAction::OpenWorkshop),
+            (Hit::CommunityButton, FrontEndAction::OpenCommunity),
+            (Hit::ChangeCharacter, FrontEndAction::ChangeCharacter),
+            (Hit::Logout, FrontEndAction::Logout),
+        ] {
+            assert_eq!(click(&mut ui, &view, &hit), vec![action]);
+        }
+    }
+
+    #[test]
+    fn the_hub_has_a_community_maps_entry_that_stays_reachable_while_queued() {
+        let mut ui = FrontEndUi::new();
+        let mut view = hub_view();
+        let entry = rect_of(&ui, &view, &Hit::CommunityButton).expect("a hub entry");
+        // Its own row: clear of the finder it used to hide behind, and of its neighbours.
+        for other in [
+            Hit::DungeonFinder,
+            Hit::Workshop,
+            Hit::BoardsButton,
+            Hit::ChangeCharacter,
+        ] {
+            let rect = rect_of(&ui, &view, &other).expect("laid out");
+            assert!(!crate::ui::layout_audit::overlap(entry, rect), "{other:?}");
+        }
+        // Browsing needs no free character: the entry is there with the finder shut.
+        view.queue = Some(queue_card(false));
+        if let Some(hub) = view.hub.as_mut() {
+            hub.can_find_dungeon = false;
+            hub.can_change_character = false;
+        }
+        assert!(rect_of(&ui, &view, &Hit::DungeonFinder).is_none());
+        assert!(rect_of(&ui, &view, &Hit::CommunityButton).is_some());
+        assert_eq!(
+            click(&mut ui, &view, &Hit::CommunityButton),
+            vec![FrontEndAction::OpenCommunity]
+        );
+        // And it is drawn with its name, in the hub's button style.
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(words(&list).iter().any(|text| text == "Community Maps"));
+    }
+
+    #[test]
+    fn a_queued_hub_offers_leave_queue_and_no_second_search_or_character_change() {
+        let mut ui = FrontEndUi::new();
+        let mut view = hub_view();
+        view.queue = Some(queue_card(false));
+        if let Some(hub) = view.hub.as_mut() {
+            hub.can_find_dungeon = false;
+            hub.can_change_character = false;
+        }
+        assert!(rect_of(&ui, &view, &Hit::DungeonFinder).is_none());
+        assert!(rect_of(&ui, &view, &Hit::ChangeCharacter).is_none());
+        assert_eq!(
+            click(&mut ui, &view, &Hit::LeaveQueue),
+            vec![FrontEndAction::LeaveQueue]
+        );
+        // Once a group is found the ticket can no longer be withdrawn from here.
+        view.queue = Some(queue_card(true));
+        assert!(rect_of(&ui, &view, &Hit::LeaveQueue).is_none());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn the_hub_takes_the_pointer_only_over_its_own_panels() {
+        let mut ui = FrontEndUi::new();
+        let mut view = hub_view();
+        view.queue = Some(queue_card(false));
+        let none = || None;
+        let over = |ui: &mut FrontEndUi, at: (f32, f32)| {
+            ui.update(
+                &input(at, false, &[], &none),
+                &view,
+                VIEWPORT,
+                scale(),
+                0.016,
+            );
+            ui.wants_pointer(&view, VIEWPORT, scale())
+        };
+        let panel = rect_of(&ui, &view, &Hit::Panel).expect("a panel blocks the pointer");
+        assert!(over(&mut ui, center(panel)));
+        // The middle of the screen is the world's: mouse-look must keep working there.
+        assert!(!over(&mut ui, (960.0, 540.0)));
+        // A full-screen page takes it everywhere.
+        let page = view_of(Screen::Party, None);
+        ui.update(
+            &input((960.0, 540.0), false, &[], &none),
+            &page,
+            VIEWPORT,
+            scale(),
+            0.016,
+        );
+        assert!(ui.wants_pointer(&page, VIEWPORT, scale()));
+    }
+
+    #[test]
+    fn return_to_hub_is_clickable_until_it_is_pressed() {
+        let mut ui = FrontEndUi::new();
+        let mut view = view_of(Screen::InWorld, None);
+        view.completion = Some(completion(true, true, false));
+        assert_eq!(
+            click(&mut ui, &view, &Hit::ReturnToHub),
+            vec![FrontEndAction::ReturnToHub]
+        );
+        // The in-world Leave is the early exit; the panel replaces it once the run is over.
+        assert!(rect_of(&ui, &view, &Hit::LeaveParty).is_none());
+        view.completion = Some(completion(true, true, true));
+        assert!(rect_of(&ui, &view, &Hit::ReturnToHub).is_none());
+        view.completion = None;
+        assert_eq!(
+            click(&mut ui, &view, &Hit::LeaveParty),
+            vec![FrontEndAction::LeaveParty]
+        );
+    }
+
+    #[test]
+    fn the_completion_panel_says_what_the_run_gave() {
+        let rows = |card: &CompletionCard| -> Vec<String> {
+            completion_rows(card)
+                .into_iter()
+                .map(|(label, value, _)| format!("{label}: {value}"))
+                .collect()
+        };
+        let won = rows(&completion(true, true, false));
+        assert!(won.contains(&"Key upgraded: 3 -> 4".to_owned()));
+        assert!(won.contains(&"Time: 12:34".to_owned()));
+        assert!(won.contains(&"Experience: +350".to_owned()));
+        assert!(won.contains(&"Crypt Dust: +11".to_owned()));
+        assert!(won.contains(&"Loot: Open the chest to claim your loot".to_owned()));
+        let lost = rows(&completion(false, true, false));
+        assert!(lost.contains(&"Key: Your key is unchanged".to_owned()));
+        assert!(!lost.iter().any(|row| row.starts_with("Experience")));
+        // Only the key's owner hears about the key.
+        let guest = rows(&completion(true, false, false));
+        assert!(!guest.iter().any(|row| row.starts_with("Key upgraded")));
+    }
+
+    #[test]
+    fn the_completion_panel_lists_items_drops_currencies_and_the_bonus() {
+        let mut card = completion(true, true, false);
+        card.items = vec![
+            CompletionItem {
+                name: "Ashgrave's Seal".into(),
+                quality: ItemQuality::Epic,
+                percent: 106,
+            },
+            CompletionItem {
+                name: "Warden's Helm".into(),
+                quality: ItemQuality::Rare,
+                percent: 71,
+            },
+        ];
+        card.mob_drops = 2;
+        card.looted = vec![("Gold".into(), 135), ("Aether Shard".into(), 1)];
+        card.bonus_pct = 25;
+        let rows = completion_rows(&card);
+        let text: Vec<String> = rows.iter().map(|(l, v, _)| format!("{l}: {v}")).collect();
+        assert!(
+            text.contains(&"Chest: Ashgrave's Seal (106%)".to_owned()),
+            "{text:?}"
+        );
+        assert!(text.contains(&"Chest: Warden's Helm (71%)".to_owned()));
+        assert!(text.contains(&"Monster drops: 2 (sent to your mail)".to_owned()));
+        assert!(text.contains(&"Gold: +135".to_owned()));
+        assert!(text.contains(&"Aether Shard: +1".to_owned()));
+        assert!(text.contains(&"Loot bonus: +25% (key rerolled)".to_owned()));
+        let epic = rows
+            .iter()
+            .find(|(_, v, _)| v.starts_with("Ashgrave"))
+            .expect("row");
+        assert_eq!(
+            epic.2,
+            super::super::character_menu::quality_color(ItemQuality::Epic)
+        );
+        // A failed run still shows what was picked up.
+        let mut lost = completion(false, true, false);
+        lost.looted = vec![("Gold".into(), 20)];
+        let lost: Vec<String> = completion_rows(&lost)
+            .iter()
+            .map(|(l, v, _)| format!("{l}: {v}"))
+            .collect();
+        assert!(lost.contains(&"Gold: +20".to_owned()));
+    }
+
+    fn sharpen_view(selected: bool, affordable: bool, blocked: Option<&str>) -> FrontEndView {
+        let mut view = workshop_view(vec![]);
+        if let Some(workshop) = view.workshop.as_mut() {
+            workshop.sharpen = Some(SharpenCard {
+                worn: vec![SharpenWorn {
+                    slot: "ring1".into(),
+                    icon: ItemIcon::Helm,
+                    quality: ItemQuality::Epic,
+                    level: 4,
+                    broken: false,
+                }],
+                selected: selected.then(|| SharpenTarget::Worn("ring1".into())),
+                detail: selected.then(|| SharpenDetail {
+                    name: "Ashgrave's Seal".into(),
+                    quality: ItemQuality::Epic,
+                    current: "Sharpening +4%  Effective Quality 110%".into(),
+                    blocked: blocked.map(str::to_owned),
+                    next: "Next: +5  ->  Effective Quality 111%".into(),
+                    cost: vec![SharpenCost {
+                        name: "Crypt Dust".into(),
+                        needed: 75,
+                        owned: if affordable { 100 } else { 10 },
+                    }],
+                    break_chance: Some("95%".into()),
+                }),
+            });
+        }
+        view
+    }
+
+    #[test]
+    fn the_sharpen_panel_selects_an_item_and_emits_the_sharpen_action() {
+        let mut ui = FrontEndUi::new();
+        let view = sharpen_view(true, true, None);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SharpenWorn(0)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                "ring1".into()
+            ))]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Bag(4))],
+            "in sharpen mode a bag click selects, it does not stage salvage"
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SharpenGo),
+            vec![FrontEndAction::Sharpen]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SharpenMode(false)),
+            vec![FrontEndAction::WorkshopMode(false)]
+        );
+        // Not affordable or blocked: no button to press.
+        for view in [
+            sharpen_view(true, false, None),
+            sharpen_view(true, true, Some("A broken item cannot be sharpened.")),
+        ] {
+            assert!(rect_of(&ui, &view, &Hit::SharpenGo).is_none());
+        }
+        // And the salvage side offers the way in.
+        let salvage = workshop_view(vec![]);
+        assert_eq!(
+            click(&mut ui, &salvage, &Hit::SharpenMode(true)),
+            vec![FrontEndAction::WorkshopMode(true)]
+        );
+    }
+
+    #[test]
+    fn the_sharpen_panel_draws_the_cost_and_a_red_break_chance() {
+        let view = sharpen_view(true, true, None);
+        let mut list = UiDrawList::new();
+        let mut ctx = Painter {
+            list: &mut list,
+            scale: scale(),
+            hovered: None,
+            pointer: (0.0, 0.0),
+            hint: None,
+        };
+        draw_workshop(&mut ctx, &view, 1280.0, 720.0);
+        let drawn: Vec<(String, UiColor)> = list
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Label { range, color, .. } => {
+                    Some((list.text_of(*range).to_owned(), *color))
+                }
+                _ => None,
+            })
+            .collect();
+        let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
+        assert!(has("SHARPEN").is_some());
+        assert!(has("Next: +5  ->  Effective Quality 111%").is_some());
+        assert_eq!(has("Crypt Dust: 100 / 75").map(|(_, c)| *c), Some(TEXT));
+        assert_eq!(has("Break chance: 95%").map(|(_, c)| *c), Some(BAD));
+        assert!(has("Sharpen").is_some());
+    }
+
+    fn reforge_view(confirming: bool, affordable: bool, blocked: Option<&str>) -> FrontEndView {
+        let mut view = workshop_view(vec![]);
+        if let Some(workshop) = view.workshop.as_mut() {
+            let odds = [
+                ("50-59%", "25.0%"),
+                ("60-69%", "25.0%"),
+                ("70-79%", "22.0%"),
+                ("80-89%", "15.0%"),
+                ("90-99%", "8.0%"),
+                ("100-104%", "4.0%"),
+                ("105-109%", "0.9%"),
+                ("110%", "0.1%"),
+            ];
+            workshop.reforge = Some(ReforgeCard {
+                worn: vec![SharpenWorn {
+                    slot: "ring1".into(),
+                    icon: ItemIcon::Helm,
+                    quality: ItemQuality::Epic,
+                    level: 4,
+                    broken: false,
+                }],
+                selected: Some(SharpenTarget::Worn("ring1".into())),
+                detail: Some(ReforgeDetail {
+                    name: "Ashgrave's Seal".into(),
+                    quality: ItemQuality::Epic,
+                    current: "Base Quality 87%   Sharpening +4%   Effective Quality 91%".into(),
+                    blocked: blocked.map(str::to_owned),
+                    odds: odds
+                        .iter()
+                        .map(|(range, chance)| ReforgeOdds {
+                            range: (*range).into(),
+                            chance: (*chance).into(),
+                        })
+                        .collect(),
+                    expected: "Expected new base: 71.5%".into(),
+                    cost: vec![SharpenCost {
+                        name: "Gold".into(),
+                        needed: 140,
+                        owned: if affordable { 500 } else { 10 },
+                    }],
+                }),
+                confirming,
+                result: Some(ReforgeReveal {
+                    text: "Ashgrave's Seal: 87% -> 62%".into(),
+                    improved: Some(false),
+                }),
+            });
+        }
+        view
+    }
+
+    #[test]
+    fn the_reforge_panel_asks_to_confirm_before_it_reforges() {
+        let mut ui = FrontEndUi::new();
+        let view = reforge_view(false, true, None);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::ReforgeWorn(0)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                "ring1".into()
+            ))]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Bag(4))]
+        );
+        // The first press only asks; there is no confirm button yet.
+        assert_eq!(
+            click(&mut ui, &view, &Hit::ReforgeGo),
+            vec![FrontEndAction::ReforgeAsk]
+        );
+        assert!(rect_of(&ui, &view, &Hit::ReforgeConfirm).is_none());
+        let asking = reforge_view(true, true, None);
+        assert!(rect_of(&ui, &asking, &Hit::ReforgeGo).is_none());
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::ReforgeConfirm),
+            vec![FrontEndAction::Reforge]
+        );
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::ReforgeCancel),
+            vec![FrontEndAction::ReforgeCancel]
+        );
+        // Not affordable or blocked: nothing to press.
+        for view in [
+            reforge_view(false, false, None),
+            reforge_view(false, true, Some("A broken item cannot be reforged.")),
+        ] {
+            assert!(rect_of(&ui, &view, &Hit::ReforgeGo).is_none());
+        }
+        // The other two modes offer the way in, and the way out.
+        assert_eq!(
+            click(&mut ui, &workshop_view(vec![]), &Hit::ReforgeMode),
+            vec![FrontEndAction::ReforgeMode]
+        );
+        assert_eq!(
+            click(&mut ui, &sharpen_view(true, true, None), &Hit::ReforgeMode),
+            vec![FrontEndAction::ReforgeMode]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SharpenMode(true)),
+            vec![FrontEndAction::WorkshopMode(true)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SharpenMode(false)),
+            vec![FrontEndAction::WorkshopMode(false)]
+        );
+    }
+
+    #[test]
+    fn the_reforge_panel_draws_every_odds_row_the_price_and_a_red_warning() {
+        let view = reforge_view(true, true, None);
+        let mut list = UiDrawList::new();
+        let mut ctx = Painter {
+            list: &mut list,
+            scale: scale(),
+            hovered: None,
+            pointer: (0.0, 0.0),
+            hint: None,
+        };
+        draw_workshop(&mut ctx, &view, 1280.0, 720.0);
+        let drawn: Vec<(String, UiColor)> = list
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Label { range, color, .. } => {
+                    Some((list.text_of(*range).to_owned(), *color))
+                }
+                _ => None,
+            })
+            .collect();
+        let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
+        assert!(has("REFORGE").is_some());
+        for row in ["50-59%   25.0%", "100-104%   4.0%", "110%   0.1%"] {
+            assert!(has(row).is_some(), "{row}");
+        }
+        assert!(has("Expected new base: 71.5%").is_some());
+        assert_eq!(has("Gold: 500 / 140").map(|(_, c)| *c), Some(TEXT));
+        assert_eq!(
+            has("The new roll REPLACES the old one. It can be worse.").map(|(_, c)| *c),
+            Some(BAD)
+        );
+        assert_eq!(
+            has("Ashgrave's Seal: 87% -> 62%").map(|(_, c)| *c),
+            Some(BAD)
+        );
+        assert!(has("Confirm (140 gold)").is_some());
+        assert!(has("Cancel").is_some());
+    }
+
+    fn gems_view(confirming: bool, gold: u64, gems_in_stack: u16) -> FrontEndView {
+        let mut view = workshop_view(vec![]);
+        if let Some(workshop) = view.workshop.as_mut() {
+            let cost = |needed| SharpenCost {
+                name: "Gold".into(),
+                needed,
+                owned: gold,
+            };
+            workshop.gems = Some(GemsCard {
+                worn: vec![SharpenWorn {
+                    slot: "ring1".into(),
+                    icon: ItemIcon::Helm,
+                    quality: ItemQuality::Epic,
+                    level: 0,
+                    broken: false,
+                }],
+                selected: Some(SharpenTarget::Worn("ring1".into())),
+                item: Some(GemItemDetail {
+                    name: "Ashgrave's Seal".into(),
+                    quality: ItemQuality::Epic,
+                    sockets: vec![
+                        GemSocketRow {
+                            filled: Some("Perfect Ruby  +6 Main Stat".into()),
+                            quality: ItemQuality::Legendary,
+                            unsocket: Some(cost(150)),
+                            can_socket: false,
+                        },
+                        GemSocketRow {
+                            filled: None,
+                            quality: ItemQuality::Common,
+                            unsocket: None,
+                            can_socket: true,
+                        },
+                    ],
+                    blocked: None,
+                }),
+                pick: Some(GemPickDetail {
+                    name: "Chipped Emerald  +1 Haste".into(),
+                    quality: ItemQuality::Common,
+                    quantity: gems_in_stack,
+                    upgrade: Some(GemUpgradeView {
+                        consume: 2,
+                        result: "Flawed Emerald".into(),
+                        chance: "90%".into(),
+                        on_fail: "On failure one gem is returned and the rest are lost.".into(),
+                        cost: cost(10),
+                        enough_gems: gems_in_stack >= 2,
+                    }),
+                }),
+                confirming,
+                result: None,
+            });
+        }
+        view
+    }
+
+    #[test]
+    fn the_gems_panel_routes_socket_unsocket_and_asks_before_it_upgrades() {
+        let mut ui = FrontEndUi::new();
+        let view = gems_view(false, 500, 5);
+        assert_eq!(
+            click(&mut ui, &workshop_view(vec![]), &Hit::GemsMode),
+            vec![FrontEndAction::GemsMode]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::GemsPick(4)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemsWorn(0)),
+            vec![FrontEndAction::SelectSharpen(SharpenTarget::Worn(
+                "ring1".into()
+            ))]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemSocket(1)),
+            vec![FrontEndAction::SocketGem(1)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemUnsocket(0)),
+            vec![FrontEndAction::UnsocketGem(0)]
+        );
+        // The first press only asks; there is no confirm button yet.
+        assert_eq!(
+            click(&mut ui, &view, &Hit::GemUpgradeGo),
+            vec![FrontEndAction::GemUpgradeAsk]
+        );
+        assert!(rect_of(&ui, &view, &Hit::GemUpgradeConfirm).is_none());
+        let asking = gems_view(true, 500, 5);
+        assert!(rect_of(&ui, &asking, &Hit::GemUpgradeGo).is_none());
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::GemUpgradeConfirm),
+            vec![FrontEndAction::GemUpgrade]
+        );
+        assert_eq!(
+            click(&mut ui, &asking, &Hit::GemUpgradeCancel),
+            vec![FrontEndAction::GemUpgradeCancel]
+        );
+        // Too few gems or too little gold: nothing to press. A filled socket's Unsocket needs gold.
+        for view in [gems_view(false, 500, 1), gems_view(false, 5, 5)] {
+            assert!(rect_of(&ui, &view, &Hit::GemUpgradeGo).is_none());
+        }
+        assert!(rect_of(&ui, &gems_view(false, 100, 5), &Hit::GemUnsocket(0)).is_none());
+    }
+
+    #[test]
+    fn the_gems_panel_draws_hollow_and_filled_sockets_and_the_upgrade_terms() {
+        let view = gems_view(true, 500, 5);
+        let mut list = UiDrawList::new();
+        let mut ctx = Painter {
+            list: &mut list,
+            scale: scale(),
+            hovered: None,
+            pointer: (0.0, 0.0),
+            hint: None,
+        };
+        draw_workshop(&mut ctx, &view, 1280.0, 720.0);
+        let drawn: Vec<(String, UiColor)> = list
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Label { range, color, .. } => {
+                    Some((list.text_of(*range).to_owned(), *color))
+                }
+                _ => None,
+            })
+            .collect();
+        let has = |text: &str| drawn.iter().find(|(t, _)| t == text);
+        assert!(has("GEMS").is_some());
+        assert!(has("( )").is_some() && has("Empty socket").is_some());
+        assert!(has("(*)").is_some() && has("Perfect Ruby  +6 Main Stat").is_some());
+        assert!(has("Unsocket (150 Gold)").is_some());
+        assert!(has("Upgrade: consume 2 for 1 Flawed Emerald").is_some());
+        assert!(has("Success chance: 90%").is_some());
+        assert_eq!(
+            has("On failure one gem is returned and the rest are lost.").map(|(_, c)| *c),
+            Some(BAD)
+        );
+        assert!(has("Confirm (10 gold)").is_some());
+    }
+
+    fn rusty_sword(index: u32) -> BagRow {
+        BagRow {
+            index,
+            name: "RUSTY SWORD".into(),
+            quantity: 1,
+            item_level: 6,
+            icon: ItemIcon::Helm,
+            quality: ItemQuality::Common,
+            yields: "+8 Crypt Dust".into(),
+        }
+    }
+
+    fn workshop_view(tray: Vec<u32>) -> FrontEndView {
+        let mut view = view_of(Screen::Workshop, None);
+        view.workshop = Some(WorkshopCard {
+            bag: vec![rusty_sword(4), rusty_sword(11)],
+            tray_yield: if tray.is_empty() {
+                String::new()
+            } else {
+                "+16 Crypt Dust".into()
+            },
+            tray,
+            tray_slots: 16,
+            resources: vec![("Crypt Dust".into(), 12)],
+            exchanges: vec![
+                ExchangeRow {
+                    id: "dust_to_shard".into(),
+                    label: "10 Crypt Dust for 1 Ember Shard".into(),
+                    affordable: true,
+                },
+                ExchangeRow {
+                    id: "shard_to_dust".into(),
+                    label: "1 Ember Shard for 5 Crypt Dust".into(),
+                    affordable: false,
+                },
+            ],
+            sharpen: None,
+            reforge: None,
+            gems: None,
+        });
+        view
+    }
+
+    #[test]
+    fn the_workshop_stages_and_unstages_before_it_salvages() {
+        let mut ui = FrontEndUi::new();
+        let view = workshop_view(vec![]);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::BagCell(4)),
+            vec![FrontEndAction::StageSalvage(4)]
+        );
+        // An empty tray has nothing to salvage.
+        assert!(rect_of(&ui, &view, &Hit::SalvageTray).is_none());
+        assert!(rect_of(&ui, &view, &Hit::TrayCell(0)).is_none());
+
+        let mut view = workshop_view(vec![11, 4]);
+        assert_eq!(
+            click(&mut ui, &view, &Hit::TrayCell(0)),
+            vec![FrontEndAction::UnstageSalvage(11)]
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::SalvageTray),
+            vec![FrontEndAction::SalvageTray]
+        );
+        // What is in the tray cannot be put there twice.
+        assert!(rect_of(&ui, &view, &Hit::BagCell(4)).is_none());
+        assert!(rect_of(&ui, &view, &Hit::BagCell(11)).is_none());
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Exchange("dust_to_shard".into())),
+            vec![FrontEndAction::Exchange("dust_to_shard".into())]
+        );
+        assert!(rect_of(&ui, &view, &Hit::Exchange("shard_to_dust".into())).is_none());
+        assert_eq!(
+            click(&mut ui, &view, &Hit::Back),
+            vec![FrontEndAction::Back]
+        );
+        // While a request is in flight nothing else can be sent.
+        view.busy = Some("Salvaging...".into());
+        for hit in [Hit::SalvageTray, Hit::TrayCell(0), Hit::BagCell(4)] {
+            assert!(rect_of(&ui, &view, &hit).is_none());
+        }
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn the_tray_is_two_rows_of_bag_sized_cells_inside_the_smallest_window() {
+        use super::super::character_menu::BAG_CELL;
+        let small = (1280, 720);
+        let ui = FrontEndUi::new();
+        let view = workshop_view((0..16).map(|i| i + 100).collect());
+        let panels = workshop_panels(1280.0, 720.0, scale());
+        let tray: Vec<UiRect> = (0..16)
+            .map(|position| tray_cell_rect(panels.salvage, position, scale()))
+            .collect();
+        assert_eq!(tray.len(), 16);
+        for cell in &tray {
+            assert!((cell.width - BAG_CELL).abs() < 1e-3);
+            assert!((cell.height - BAG_CELL).abs() < 1e-3);
+        }
+        // Eight to a row, two rows, aligned like the bag grid.
+        assert_eq!(tray.iter().filter(|c| c.y == tray[0].y).count(), 8);
+        assert_eq!(tray.iter().filter(|c| c.y == tray[8].y).count(), 8);
+        assert!(tray[8].y > tray[0].y);
+        let bag_cell = bag_cell_rect(panels.bag, 0, scale());
+        assert_eq!((bag_cell.width, bag_cell.height), (BAG_CELL, BAG_CELL));
+        assert_eq!(
+            tray[1].x - tray[0].x,
+            bag_cell_rect(panels.bag, 1, scale()).x - bag_cell.x
+        );
+        // Everything laid out and every panel stays on screen and does not overlap.
+        let layout = ui.layout(&view, small, scale());
+        for (_, rect) in &layout.hits {
+            assert!(rect.x >= 0.0 && rect.y >= 0.0, "{rect:?}");
+            assert!(rect.right() <= 1280.0 && rect.bottom() <= 720.0, "{rect:?}");
+        }
+        for panel in [panels.bag, panels.salvage, panels.exchange] {
+            assert!(panel.right() <= 1280.0 && panel.bottom() <= 720.0);
+        }
+        assert!(panels.salvage.bottom() <= panels.exchange.y);
+        let last_bag = bag_cell_rect(panels.bag, INVENTORY_SLOTS - 1, scale());
+        assert!(last_bag.bottom() <= panels.bag.bottom());
+        let last_tray = tray[15];
+        assert!(last_tray.bottom() <= salvage_button(panels.salvage, scale()).y);
+        let (back, _) = footer_buttons(1280.0, 720.0, scale());
+        assert!(panels.exchange.bottom() <= back.y);
+        let mut list = UiDrawList::new();
+        FrontEndUi::new().draw(&mut list, &view, small, scale());
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn roles_the_character_cannot_play_are_not_clickable() {
+        let ui = FrontEndUi::new();
+        let view = FrontEndView {
+            screen: Screen::Roles,
+            characters: vec![CharacterCard {
+                name: "W".into(),
+                class: "Warrior".into(),
+                roles: vec![Role::Tank],
+                level: 1,
+                experience: 0,
+                next_level: 400,
+                gear_score: 40,
+                equipped: 4,
+                key: None,
+                resources: 0,
+            }],
+            selected_character: Some(0),
+            ..FrontEndView::default()
+        };
+        let hits = ui.layout(&view, VIEWPORT, scale()).hits;
+        assert!(hits.iter().any(|(hit, _)| *hit == Hit::Role(Role::Tank)));
+        assert!(!hits.iter().any(|(hit, _)| *hit == Hit::Role(Role::Healer)));
+    }
+
+    fn crowded_history() -> HistoryCard {
+        let row = |outcome| HistoryRow {
+            dungeon: "The Very Long Name Of A Dungeon".into(),
+            key_level: 12,
+            outcome,
+            duration: "24:59".into(),
+            when: "2026-10-20 18:04".into(),
+        };
+        HistoryCard {
+            rows: [
+                OutcomeTag::Timed,
+                OutcomeTag::Overtime,
+                OutcomeTag::Failed,
+                OutcomeTag::Abandoned,
+                OutcomeTag::Timed,
+                OutcomeTag::Timed,
+            ]
+            .into_iter()
+            .map(row)
+            .collect(),
+            selected: Some(1),
+            detail: Some(HistoryDetail {
+                title: "The Very Long Name Of A Dungeon +12".into(),
+                outcome: OutcomeTag::Overtime,
+                stats: ["Time", "Deaths", "Damage taken", "Healing", "DPS"]
+                    .into_iter()
+                    .map(|label| (label.to_owned(), "123,456".to_owned()))
+                    .collect(),
+                party: (0..5)
+                    .map(|i| format!("Hero number {i} (Fire Mage)"))
+                    .collect(),
+                modifiers: vec!["Rotating Beams +17%".into(); 8],
+                loot: vec!["Ashgraves Seal 104% +3".into(); 9],
+            }),
+            loading: false,
+            can_older: true,
+            can_newer: true,
+        }
+    }
+
+    fn crowded_board() -> BoardCard {
+        BoardCard {
+            dungeon: "The Very Long Name Of A Dungeon".into(),
+            key_level: 20,
+            fastest: true,
+            season: "All time".into(),
+            rows: (1..=BOARD_ROWS as u32)
+                .map(|rank| BoardRow {
+                    rank,
+                    key_level: 20,
+                    outcome: OutcomeTag::Timed,
+                    time: "24:59".into(),
+                    party: "Ember, Mirelle the Long-Named, Thorn the Stout".into(),
+                })
+                .collect(),
+            loading: false,
+            page: 2,
+            can_prev: true,
+            can_next: true,
+        }
+    }
+
+    #[test]
+    fn the_record_pages_report_their_presses() {
+        let mut ui = FrontEndUi::new();
+        let none = || None;
+        let press = |ui: &mut FrontEndUi, view: &FrontEndView, hit: Hit| {
+            let rect = ui
+                .layout(view, VIEWPORT, scale())
+                .hits
+                .iter()
+                .find(|(h, _)| *h == hit)
+                .map(|(_, rect)| *rect);
+            rect.map(|rect| {
+                ui.update(
+                    &input((rect.x + 2.0, rect.y + 2.0), true, &[], &none),
+                    view,
+                    VIEWPORT,
+                    scale(),
+                    0.016,
+                )
+            })
+        };
+        let hub = hub_view();
+        assert_eq!(
+            press(&mut ui, &hub, Hit::HistoryButton),
+            Some(vec![FrontEndAction::OpenHistory])
+        );
+        assert_eq!(
+            press(&mut ui, &hub, Hit::BoardsButton),
+            Some(vec![FrontEndAction::OpenLeaderboards])
+        );
+        let mut history = crowded_view(Screen::History);
+        assert_eq!(
+            press(&mut ui, &history, Hit::HistoryRow(2)),
+            Some(vec![FrontEndAction::HistorySelect(2)])
+        );
+        assert_eq!(
+            press(&mut ui, &history, Hit::HistoryOlder),
+            Some(vec![FrontEndAction::HistoryOlder])
+        );
+        assert_eq!(
+            press(&mut ui, &history, Hit::HistoryNewest),
+            Some(vec![FrontEndAction::HistoryNewest])
+        );
+        // No older page: there is no button to press.
+        if let Some(card) = history.history.as_mut() {
+            card.can_older = false;
+        }
+        assert_eq!(press(&mut ui, &history, Hit::HistoryOlder), None);
+        let board = crowded_view(Screen::Leaderboards);
+        for (hit, action) in [
+            (Hit::BoardKey(-1), FrontEndAction::BoardKey(-1)),
+            (Hit::BoardKey(1), FrontEndAction::BoardKey(1)),
+            (Hit::BoardDungeon(1), FrontEndAction::BoardDungeon(1)),
+            (Hit::BoardKind(false), FrontEndAction::BoardKind(false)),
+            (Hit::BoardPage(1), FrontEndAction::BoardPage(1)),
+        ] {
+            assert_eq!(
+                press(&mut ui, &board, hit.clone()),
+                Some(vec![action]),
+                "{hit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_screen_draws() {
+        let ui = FrontEndUi::new();
+        for screen in [
+            Screen::Title,
+            Screen::Login,
+            Screen::Characters,
+            Screen::Hub,
+            Screen::Dungeons,
+            Screen::Roles,
+            Screen::Workshop,
+            Screen::History,
+            Screen::Leaderboards,
+            Screen::ReadyCheck,
+            Screen::KeySelect,
+            Screen::Party,
+            Screen::InWorld,
+        ] {
+            // Empty, and again with everything a screen can show.
+            let full = FrontEndView {
+                screen,
+                account: Some("Sonit".into()),
+                busy: Some("Working...".into()),
+                error: Some("Something was refused.".into()),
+                characters: vec![CharacterCard {
+                    name: "Ember".into(),
+                    class: "Mage".into(),
+                    roles: vec![Role::Dps],
+                    level: 4,
+                    experience: 10,
+                    next_level: 400,
+                    gear_score: 40,
+                    equipped: 4,
+                    key: Some(KeyCard {
+                        dungeon: "Graveyard Crypt".into(),
+                        level: 2,
+                        modifiers: Vec::new(),
+                        can_downgrade: true,
+                        cleanse_cost: 100,
+                        gold: 0,
+                    }),
+                    resources: 12,
+                }],
+                selected_character: Some(0),
+                hub: hub_view().hub,
+                queue: Some(queue_card(false)),
+                workshop: Some(WorkshopCard::default()),
+                history: Some(crowded_history()),
+                board: Some(crowded_board()),
+                party: Some(party(
+                    vec![
+                        member(true, true, true, Some(2)),
+                        member(false, false, false, None),
+                    ],
+                    true,
+                    true,
+                )),
+                completion: Some(completion(true, true, false)),
+                ..FrontEndView::default()
+            };
+            for view in [
+                FrontEndView {
+                    screen,
+                    reconnecting: Some("Reconnecting".into()),
+                    countdown: Some(CountdownDisplay::Seconds(3)),
+                    ..FrontEndView::default()
+                },
+                full,
+            ] {
+                let mut list = UiDrawList::new();
+                ui.draw(&mut list, &view, VIEWPORT, scale());
+                assert!(!list.is_empty(), "{screen:?} drew nothing");
+            }
+        }
+    }
+
+    fn beams(magnitude_pct: i16) -> ModifierLine {
+        ModifierLine {
+            icon: engine_render_data::ui::UiIcon::ModifierRotatingBeams,
+            name: "Rotating Beams".into(),
+            description: "Beams.".into(),
+            magnitude_pct,
+        }
+    }
+
+    fn plague(magnitude_pct: i16) -> ModifierLine {
+        ModifierLine {
+            icon: engine_render_data::ui::UiIcon::ModifierPlagueExplosion,
+            name: "Plague Explosion".into(),
+            description: "Plague.".into(),
+            magnitude_pct,
+        }
+    }
+
+    fn words(list: &UiDrawList) -> Vec<String> {
+        list.commands()
+            .iter()
+            .filter_map(|command| match command {
+                engine_render_data::ui::UiCommand::Text { range, .. }
+                | engine_render_data::ui::UiCommand::Label { range, .. } => {
+                    Some(list.text_of(*range).to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn key_selection_lists_every_members_key_with_its_modifiers() {
+        let mut mine = member(true, false, false, Some(5));
+        mine.player = "Ash".into();
+        mine.key_modifiers = vec![beams(0), plague(0)];
+        let mut theirs = member(false, false, false, Some(3));
+        theirs.player = "Bo".into();
+        theirs.key_modifiers = vec![plague(17)];
+        let mut none = member(false, false, false, None);
+        none.player = "Cy".into();
+        let view = view_of(
+            Screen::KeySelect,
+            Some(party(vec![mine, theirs, none], false, false)),
+        );
+        let mut ui = FrontEndUi::new();
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        let words = words(&list);
+        // Whose key, and its level where the eye lands first.
+        assert!(words.contains(&"Key level 5".to_owned()), "{words:?}");
+        assert!(words.contains(&"Key level 3".to_owned()));
+        assert!(words.contains(&"No key for Crypt".to_owned()));
+        assert!(words.iter().any(|w| w.ends_with("Ash")), "{words:?}");
+        assert!(words.contains(&"Rotating Beams +0%".to_owned()));
+        assert!(words.contains(&"Plague Explosion +0%".to_owned()));
+        assert!(words.contains(&"Plague Explosion +17%".to_owned()));
+        // Only the local player's own key can be inserted, from their own row.
+        assert_eq!(
+            click(&mut ui, &view, &Hit::InsertKey),
+            vec![FrontEndAction::InsertKey]
+        );
+    }
+
+    #[test]
+    fn the_party_panel_shows_the_inserted_keys_modifiers() {
+        let mut card = party(
+            vec![
+                member(true, true, true, Some(3)),
+                member(false, false, false, Some(1)),
+            ],
+            true,
+            true,
+        );
+        card.key_modifiers = vec![beams(-12)];
+        let view = view_of(Screen::Party, Some(card));
+        let mut list = UiDrawList::new();
+        FrontEndUi::new().draw(&mut list, &view, VIEWPORT, scale());
+        assert!(words(&list).contains(&"Rotating Beams -12%".to_owned()));
+    }
+
+    #[test]
+    fn downgrade_and_cleanse_ask_before_they_act() {
+        let mut ui = FrontEndUi::new();
+        let view = hub_view();
+        // Nothing happens on the first press, only the question.
+        assert!(click(&mut ui, &view, &Hit::KeyDowngrade).is_empty());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(
+            words(&list)
+                .iter()
+                .any(|t| t.starts_with("Lower the key to level 1"))
+        );
+        assert!(
+            rect_of(&ui, &view, &Hit::KeyDowngrade).is_none(),
+            "buttons swap to confirm"
+        );
+        assert_eq!(
+            click(&mut ui, &view, &Hit::KeyConfirm),
+            vec![FrontEndAction::DowngradeKey]
+        );
+        // Cancel withdraws it.
+        click(&mut ui, &view, &Hit::KeyCleanse);
+        assert!(click(&mut ui, &view, &Hit::KeyCancel).is_empty());
+        assert!(rect_of(&ui, &view, &Hit::KeyConfirm).is_none());
+        // Cleanse names its price and then acts.
+        click(&mut ui, &view, &Hit::KeyCleanse);
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(words(&list).contains(&"Confirm Cleanse (100 gold)".to_owned()));
+        assert_eq!(
+            click(&mut ui, &view, &Hit::KeyConfirm),
+            vec![FrontEndAction::CleanseKey]
+        );
+    }
+
+    #[test]
+    fn a_cleanse_needs_gold_and_a_modifier_and_a_downgrade_needs_a_level_to_lose() {
+        let ui = FrontEndUi::new();
+        let mut poor = hub_view();
+        if let Some(key) = poor.hub.as_mut().and_then(|hub| hub.key.as_mut()) {
+            key.gold = 99;
+        }
+        assert!(rect_of(&ui, &poor, &Hit::KeyCleanse).is_none());
+        assert!(rect_of(&ui, &poor, &Hit::KeyDowngrade).is_some());
+        let mut clean = hub_view();
+        if let Some(key) = clean.hub.as_mut().and_then(|hub| hub.key.as_mut()) {
+            key.modifiers.clear();
+            key.can_downgrade = false;
+        }
+        assert!(rect_of(&ui, &clean, &Hit::KeyCleanse).is_none());
+        assert!(rect_of(&ui, &clean, &Hit::KeyDowngrade).is_none());
+        // Engaged (queued or in a party): both are locked.
+        let mut engaged = hub_view();
+        if let Some(hub) = engaged.hub.as_mut() {
+            hub.can_change_character = false;
+        }
+        assert!(rect_of(&ui, &engaged, &Hit::KeyDowngrade).is_none());
+        assert!(rect_of(&ui, &engaged, &Hit::KeyCleanse).is_none());
+    }
+
+    #[test]
+    fn completion_tells_a_participant_their_key_rose_and_the_loot_bonus() {
+        let rows = |card: &CompletionCard| -> Vec<String> {
+            completion_rows(card)
+                .into_iter()
+                .map(|(label, value, _)| format!("{label}: {value}"))
+                .collect()
+        };
+        let mut guest = completion(true, false, false);
+        guest.bonus_pct = 25;
+        let lines = rows(&guest);
+        assert!(
+            lines.contains(&"Your key: rose to level 4".to_owned()),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"Loot bonus: +25% (key rerolled)".to_owned()));
+        let mut unchanged = completion(true, false, false);
+        unchanged.key_level_after = 0;
+        assert!(!rows(&unchanged).iter().any(|r| r.starts_with("Your key")));
+    }
+
+    fn away(key: &str, name: &str, seconds_left: u64) -> AwayMember {
+        AwayMember {
+            key: key.into(),
+            name: name.into(),
+            seconds_left,
+        }
+    }
+
+    fn world_with_away(away: Vec<AwayMember>) -> FrontEndView {
+        FrontEndView {
+            screen: Screen::InWorld,
+            away,
+            ..FrontEndView::default()
+        }
+    }
+
+    /// Clicks the middle of `rect` and returns what the front-end asked for.
+    fn click_rect(ui: &mut FrontEndUi, view: &FrontEndView, rect: UiRect) -> Vec<FrontEndAction> {
+        let none = || None;
+        ui.update(
+            &input(center(rect), true, &[], &none),
+            view,
+            VIEWPORT,
+            scale(),
+            0.016,
+        )
+    }
+
+    fn away_rects(rows: usize) -> AwayRects {
+        away_panel(rows, VIEWPORT.0 as f32, VIEWPORT.1 as f32, scale())
+    }
+
+    #[test]
+    fn the_disconnect_prompt_names_the_member_and_counts_down() {
+        let ui = FrontEndUi::new();
+        let mut list = UiDrawList::new();
+        ui.draw(
+            &mut list,
+            &world_with_away(vec![away("a@1", "Mirelle", 125)]),
+            VIEWPORT,
+            scale(),
+        );
+        let text = words(&list);
+        assert!(
+            text.contains(&"Mirelle has disconnected.".to_owned()),
+            "{text:?}"
+        );
+        assert!(text.contains(&"2:05".to_owned()), "{text:?}");
+        assert!(text.contains(&"Wait".to_owned()));
+        // Nobody away: no prompt.
+        let mut quiet = UiDrawList::new();
+        ui.draw(&mut quiet, &world_with_away(Vec::new()), VIEWPORT, scale());
+        assert!(!words(&quiet).iter().any(|t| t.contains("disconnected")));
+    }
+
+    #[test]
+    fn wait_hides_the_prompt_for_that_drop_and_a_new_drop_brings_it_back() {
+        let mut ui = FrontEndUi::new();
+        let view = world_with_away(vec![away("a@1", "Mirelle", 200)]);
+        assert!(rect_of(&ui, &view, &Hit::AwayWait).is_some());
+        let wait = away_rects(1).wait;
+        assert!(
+            click_rect(&mut ui, &view, wait).is_empty(),
+            "Wait asks for nothing"
+        );
+        assert!(rect_of(&ui, &view, &Hit::AwayWait).is_none());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(!words(&list).iter().any(|t| t.contains("disconnected")));
+        // The countdown ticking does not bring it back.
+        let later = world_with_away(vec![away("a@1", "Mirelle", 150)]);
+        assert!(rect_of(&ui, &later, &Hit::AwayWait).is_none());
+        // Another member dropping does.
+        let two = world_with_away(vec![away("a@1", "Mirelle", 140), away("b@2", "Gorm", 300)]);
+        assert!(rect_of(&ui, &two, &Hit::AwayWait).is_some());
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &two, VIEWPORT, scale());
+        let text = words(&list);
+        assert!(text.contains(&"Gorm has disconnected.".to_owned()));
+        assert!(!text.contains(&"Mirelle has disconnected.".to_owned()));
+        // The same member returning and dropping again is a new key, so it asks again.
+        let back = world_with_away(Vec::new());
+        ui.update(
+            &input((0.0, 0.0), false, &[], &|| None),
+            &back,
+            VIEWPORT,
+            scale(),
+            0.016,
+        );
+        let again = world_with_away(vec![away("a@9", "Mirelle", 300)]);
+        assert!(rect_of(&ui, &again, &Hit::AwayWait).is_some());
+    }
+
+    #[test]
+    fn leave_on_the_prompt_leaves_the_party() {
+        let mut ui = FrontEndUi::new();
+        let view = world_with_away(vec![away("a@1", "Mirelle", 200)]);
+        let leave = away_rects(1).leave;
+        assert_eq!(
+            click_rect(&mut ui, &view, leave),
+            vec![FrontEndAction::LeaveParty]
+        );
+    }
+
+    #[test]
+    fn the_prompt_takes_the_pointer_and_never_covers_a_finished_run() {
+        let ui = FrontEndUi::new();
+        let view = world_with_away(vec![away("a@1", "Mirelle", 200)]);
+        let hits = ui.layout(&view, VIEWPORT, scale()).hits;
+        assert!(hits.iter().any(|(hit, _)| *hit == Hit::Panel));
+        let mut done = view;
+        done.completion = Some(completion(true, true, false));
+        assert!(rect_of(&ui, &done, &Hit::AwayWait).is_none());
+    }
+
+    // --- layout and keyboard ----------------------------------------------------------
+
+    /// A full party with long names and three modifiers each: the worst a page has to hold.
+    fn crowded_party() -> PartyCard {
+        let roles = [Role::Tank, Role::Healer, Role::Dps, Role::Dps, Role::Dps];
+        let members = roles
+            .into_iter()
+            .enumerate()
+            .map(|(index, role)| {
+                let mut row = member(index == 0, index == 0, index == 0, Some(7 + index as u32));
+                row.role = role;
+                row.character = "Mirelle the Unbroken".into();
+                row.player = "SomeLongPlayerName".into();
+                row.class = "Fire Mage".into();
+                row.gear_score = 1234;
+                row.key_modifiers = vec![beams(25), plague(-10), beams(0)];
+                row.ready = ReadyState::Waiting;
+                row
+            })
+            .collect();
+        let mut card = party(members, true, true);
+        card.dungeon = "The Graveyard Crypt".into();
+        card.description = "A long description of the dungeon that needs two whole lines to be \
+                            told properly, and then a bit more so that it has to be cut."
+            .into();
+        card.key_modifiers = vec![beams(25), plague(-10), beams(0)];
+        card.i_answered = false;
+        card.seconds_left = 30;
+        card.fraction_left = 0.7;
+        card
+    }
+
+    /// Everything a page can show at once.
+    fn crowded_view(screen: Screen) -> FrontEndView {
+        let card = |name: &str| CharacterCard {
+            name: name.into(),
+            class: "Fire Mage".into(),
+            roles: vec![Role::Tank, Role::Healer, Role::Dps],
+            level: 60,
+            experience: 100,
+            next_level: 400,
+            gear_score: 1234,
+            equipped: 13,
+            key: Some(KeyCard {
+                dungeon: "Graveyard Crypt".into(),
+                level: 12,
+                modifiers: vec![beams(25), plague(-10), beams(0)],
+                can_downgrade: true,
+                cleanse_cost: 100,
+                gold: 250,
+            }),
+            resources: 1234,
+        };
+        let mut hub = hub_view().hub.expect("hub");
+        hub.resources = (0..5)
+            .map(|i| (format!("Resource number {i}"), 1000 + i))
+            .collect();
+        if let Some(key) = hub.key.as_mut() {
+            key.modifiers = vec![beams(25), plague(-10), beams(0)];
+        }
+        let mut done = completion(true, true, false);
+        done.items = (0..8)
+            .map(|i| CompletionItem {
+                name: format!("Item of power number {i}"),
+                quality: ItemQuality::Epic,
+                percent: 100 + i,
+            })
+            .collect();
+        done.mob_drops = 3;
+        done.looted = vec![("Gold".into(), 135), ("Aether Shard".into(), 1)];
+        done.bonus_pct = 25;
+        FrontEndView {
+            screen,
+            account: Some("SomeLongAccountName".into()),
+            characters: vec![card("Ember"), card("Mirelle"), card("Thorn")],
+            selected_character: Some(1),
+            hub: Some(hub),
+            queue: Some(queue_card(false)),
+            party: Some(crowded_party()),
+            completion: (screen == Screen::InWorld).then_some(done),
+            history: Some(crowded_history()),
+            board: Some(crowded_board()),
+            toasts: (0..4)
+                .map(|i| Toast {
+                    level: StatusLevel::Warning,
+                    message: format!("Something worth a toast happened, number {i}"),
+                })
+                .collect(),
+            ..FrontEndView::default()
+        }
+    }
+
+    #[test]
+    fn no_page_overlaps_itself_or_leaves_the_window_at_any_size() {
+        use crate::ui::layout_audit;
+        let ui = FrontEndUi::new();
+        for (viewport, scale) in layout_audit::sizes() {
+            let mut views: Vec<(String, FrontEndView)> = [
+                Screen::Title,
+                Screen::Login,
+                Screen::Characters,
+                Screen::Hub,
+                Screen::Workshop,
+                Screen::History,
+                Screen::Leaderboards,
+                Screen::ReadyCheck,
+                Screen::KeySelect,
+                Screen::Party,
+                Screen::InWorld,
+            ]
+            .into_iter()
+            .map(|screen| (format!("{screen:?}"), crowded_view(screen)))
+            .collect();
+            // The disconnect prompt shares InWorld with the completion panel, never at once.
+            let mut prompt = crowded_view(Screen::InWorld);
+            prompt.completion = None;
+            prompt.away = vec![
+                away("a", "Mirelle", 120),
+                away("b", "Thorn", 90),
+                away("c", "Ember", 60),
+            ];
+            views.push(("InWorld prompt".into(), prompt));
+            for (name, view) in views {
+                let what = format!("{name} at {viewport:?} x{}", scale.factor());
+                let mut list = UiDrawList::new();
+                ui.draw(&mut list, &view, viewport, scale);
+                layout_audit::assert_sound(&list, viewport, &what);
+                // What can be clicked is on screen too, and no two controls share a spot.
+                let hits = ui.layout(&view, viewport, scale).hits;
+                let controls: Vec<&(Hit, UiRect)> =
+                    hits.iter().filter(|(hit, _)| *hit != Hit::Panel).collect();
+                for (index, (hit, rect)) in controls.iter().enumerate() {
+                    assert!(
+                        layout_audit::on_screen(*rect, viewport),
+                        "{what}: {hit:?} {rect:?} is off screen"
+                    );
+                    for (other, other_rect) in controls.iter().skip(index + 1) {
+                        assert!(
+                            !layout_audit::overlap(*rect, *other_rect) || hit == other,
+                            "{what}: {hit:?} {rect:?} overlaps {other:?} {other_rect:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The P2 pages in their busiest state: the workshop's three modes with the longest
+    /// reasons, the Community Maps page with a full row and a long description.
+    fn p2_views() -> Vec<(String, FrontEndView)> {
+        let engaged = "Your talents and equipment are locked while you are in a dungeon or queue.";
+        let mut views = vec![
+            ("sharpen".to_owned(), sharpen_view(true, true, None)),
+            (
+                "sharpen locked".to_owned(),
+                sharpen_view(true, true, Some(engaged)),
+            ),
+            ("sharpen poor".to_owned(), sharpen_view(true, false, None)),
+            ("reforge".to_owned(), reforge_view(false, true, None)),
+            ("reforge confirm".to_owned(), reforge_view(true, true, None)),
+            (
+                "reforge locked".to_owned(),
+                reforge_view(false, true, Some(engaged)),
+            ),
+            ("gems".to_owned(), gems_view(false, 5_000, 3)),
+            ("gems confirm".to_owned(), gems_view(true, 5_000, 3)),
+        ];
+        let card = CommunityCard {
+            sort: "Most played".into(),
+            filter: "Any difficulty".into(),
+            rows: (0..MAP_ROWS)
+                .map(|i| MapRowCard {
+                    title: format!("A map with a rather long title number {i}"),
+                    author: "SomeLongAuthorName".into(),
+                    difficulty: 5,
+                    plays: 123_456,
+                    status: "Published".into(),
+                    valid: true,
+                })
+                .collect(),
+            selected: Some(0),
+            detail: Some(MapDetailCard {
+                title: "A map with a rather long title number 0".into(),
+                author: "SomeLongAuthorName".into(),
+                description: "A long description of rooms and corridors and a boss. ".repeat(6),
+                facts: "Difficulty 5 of 5 | v12 | Published".into(),
+                stats: "123,456 plays | 31,000 clears | fastest 04:12".into(),
+                tags: vec!["crypt".into(), "short".into(), "boss rush".into()],
+                issues: (0..8)
+                    .map(|i| IssueLine {
+                        code: "unknown_monster".into(),
+                        text: format!("scene.monsters[{i}].monster is not an approved monster"),
+                        error: i % 2 == 0,
+                    })
+                    .collect(),
+                best_times: vec!["1. Ash 04:12".into(); 5],
+                can_play: true,
+                ..MapDetailCard::default()
+            }),
+            play_difficulty: 10,
+            page: 12,
+            can_prev: true,
+            can_next: true,
+            message: Some("Not uploaded: the file is not a level the realm can read.".into()),
+            can_queue: false,
+            ..CommunityCard::default()
+        };
+        let mut community = crowded_view(Screen::Community);
+        community.community = Some(card);
+        views.push(("community".to_owned(), community));
+        views.push(("hub".to_owned(), crowded_view(Screen::Hub)));
+        views.push(("history".to_owned(), crowded_view(Screen::History)));
+        views.push(("boards".to_owned(), crowded_view(Screen::Leaderboards)));
+        views
+    }
+
+    #[test]
+    fn the_p2_pages_stay_inside_the_window_and_apart_at_any_size() {
+        use crate::ui::layout_audit;
+        let ui = FrontEndUi::new();
+        for (viewport, scale) in layout_audit::sizes() {
+            for (name, view) in p2_views() {
+                let what = format!("{name} at {viewport:?} x{}", scale.factor());
+                let mut list = UiDrawList::new();
+                ui.draw(&mut list, &view, viewport, scale);
+                layout_audit::assert_sound(&list, viewport, &what);
+                for (hit, rect) in &ui.layout(&view, viewport, scale).hits {
+                    assert!(
+                        layout_audit::on_screen(*rect, viewport),
+                        "{what}: {hit:?} is off screen"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_locked_or_unaffordable_p2_control_says_why_and_offers_no_button() {
+        // Locked while engaged: the reason is on the page and there is nothing to press.
+        let ui = FrontEndUi::new();
+        for (view, go) in [
+            (
+                sharpen_view(true, true, Some("Locked while in a dungeon.")),
+                Hit::SharpenGo,
+            ),
+            (
+                reforge_view(false, true, Some("Locked while in a dungeon.")),
+                Hit::ReforgeGo,
+            ),
+        ] {
+            let mut list = UiDrawList::new();
+            ui.draw(&mut list, &view, VIEWPORT, scale());
+            assert!(
+                words(&list)
+                    .iter()
+                    .any(|text| text.contains("Locked while in a dungeon.")),
+                "the reason is not shown"
+            );
+            assert!(
+                rect_of(&ui, &view, &go).is_none(),
+                "{go:?} is offered while locked"
+            );
+        }
+        // Community Play while queued: greyed out, with the reason beside it.
+        let (_, view) = p2_views()
+            .into_iter()
+            .find(|(name, _)| name == "community")
+            .expect("the community view");
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(
+            words(&list)
+                .iter()
+                .any(|text| text.contains("Finish your queue or party first"))
+        );
+        assert!(rect_of(&ui, &view, &Hit::Community(community::CommunityHit::Play)).is_none());
+    }
+
+    /// Words the player must never read: the P1 name for sharpening, a bare "Total", and the
+    /// retired C/B/A/S item tiers.
+    fn forbidden_wording(text: &str) -> Option<&'static str> {
+        let lower = text.to_lowercase();
+        // Enhancement books are a real thing; "enhancement" as the name of sharpening is not.
+        let without_books = lower.replace("enhancement book", "");
+        if without_books.contains("enhance") {
+            return Some("enhancement");
+        }
+        if lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word == "total")
+        {
+            return Some("total");
+        }
+        for tier in [
+            "c-tier",
+            "b-tier",
+            "a-tier",
+            "s-tier",
+            "tier c",
+            "tier b",
+            "tier a",
+            "tier s",
+            "tier fusion",
+        ] {
+            if lower.contains(tier) {
+                return Some("item tier");
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn no_p2_page_uses_retired_wording() {
+        let ui = FrontEndUi::new();
+        for (name, view) in p2_views() {
+            let mut list = UiDrawList::new();
+            ui.draw(&mut list, &view, VIEWPORT, scale());
+            for text in words(&list) {
+                assert_eq!(forbidden_wording(&text), None, "{name}: {text:?}");
+            }
+        }
+        // The check itself catches what it should.
+        assert_eq!(forbidden_wording("Enhancement +3"), Some("enhancement"));
+        assert_eq!(forbidden_wording("Total: 5"), Some("total"));
+        assert_eq!(forbidden_wording("S-Tier"), Some("item tier"));
+        assert_eq!(forbidden_wording("An enhancement book for Wrath"), None);
+        assert_eq!(forbidden_wording("Sharpening +3"), None);
+    }
+
+    #[test]
+    fn enter_enters_the_world_and_accepts_the_ready_check_and_nothing_else_risky() {
+        let mut ui = FrontEndUi::new();
+        let none = || None;
+        let enter = ['\r'];
+        let press = |ui: &mut FrontEndUi, view: &FrontEndView| {
+            ui.update(
+                &input((0.0, 0.0), false, &enter, &none),
+                view,
+                VIEWPORT,
+                scale(),
+                0.016,
+            )
+        };
+        let characters = crowded_view(Screen::Characters);
+        assert_eq!(
+            press(&mut ui, &characters),
+            vec![FrontEndAction::ConfirmCharacter]
+        );
+        let mut unselected = characters;
+        unselected.selected_character = None;
+        assert!(press(&mut ui, &unselected).is_empty());
+        let ready = crowded_view(Screen::ReadyCheck);
+        assert_eq!(press(&mut ui, &ready), vec![FrontEndAction::Accept]);
+        let mut answered = ready;
+        if let Some(party) = answered.party.as_mut() {
+            party.i_answered = true;
+        }
+        assert!(press(&mut ui, &answered).is_empty());
+        // Pages where Enter opens the chat line, or the action throws something away, ignore it.
+        for screen in [
+            Screen::KeySelect,
+            Screen::Party,
+            Screen::Hub,
+            Screen::InWorld,
+        ] {
+            assert!(
+                press(&mut ui, &crowded_view(screen)).is_empty(),
+                "{screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_cancels_a_pending_key_change_and_answers_the_disconnect_prompt() {
+        let mut ui = FrontEndUi::new();
+        let none = || None;
+        let escape = |ui: &mut FrontEndUi, view: &FrontEndView| {
+            let mut frame = input((0.0, 0.0), false, &[], &none);
+            frame.escape = true;
+            ui.update(&frame, view, VIEWPORT, scale(), 0.016)
+        };
+        // Ask to downgrade: the confirmation is up, and Escape takes it back down.
+        let hub = hub_view();
+        click(&mut ui, &hub, &Hit::KeyDowngrade);
+        assert!(rect_of(&ui, &hub, &Hit::KeyConfirm).is_some());
+        assert!(escape(&mut ui, &hub).is_empty());
+        assert!(rect_of(&ui, &hub, &Hit::KeyConfirm).is_none());
+        // On the prompt, Escape is "Wait": the harmless answer.
+        let prompt = world_with_away(vec![away("a@1", "Mirelle", 200)]);
+        assert!(rect_of(&ui, &prompt, &Hit::AwayWait).is_some());
+        assert!(escape(&mut ui, &prompt).is_empty());
+        assert!(rect_of(&ui, &prompt, &Hit::AwayWait).is_none());
+    }
+
+    #[test]
+    fn the_ready_check_leads_with_the_dungeon_the_players_key_and_the_clock() {
+        let ui = FrontEndUi::new();
+        let view = crowded_view(Screen::ReadyCheck);
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        let words = words(&list);
+        for expected in [
+            "The Graveyard Crypt",
+            "Your role",
+            "Your key: level 7",
+            "30 s to answer",
+            "Accept (Enter)",
+        ] {
+            assert!(
+                words.contains(&expected.to_owned()),
+                "{expected}: {words:?}"
+            );
+        }
+        // The dungeon is named before the roster, and the roster before the buttons.
+        let at = |text: &str| words.iter().position(|w| w == text).expect("drawn");
+        assert!(at("The Graveyard Crypt") < at("Your role"));
+        assert!(at("Your role") < at("30 s to answer"));
+        assert!(at("30 s to answer") < at("Accept (Enter)"));
+    }
+
+    #[test]
+    fn the_completion_panel_groups_rewards_under_headings() {
+        let ui = FrontEndUi::new();
+        let view = crowded_view(Screen::InWorld);
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        let words = words(&list);
+        let at = |text: &str| {
+            words
+                .iter()
+                .position(|w| w == text)
+                .unwrap_or_else(|| panic!("{text} is missing: {words:?}"))
+        };
+        assert!(at("RUN") < at("ITEMS"));
+        assert!(at("ITEMS") < at("CURRENCY"));
+        assert!(at("CURRENCY") < at("EXPERIENCE"));
+        assert!(at("EXPERIENCE") < at("BONUS"));
+        // Eight epics are six rows and a "+2 more", not a panel taller than the window.
+        assert!(words.contains(&"+2 more".to_owned()));
+    }
+
+    #[test]
+    fn a_modifier_that_does_not_fit_is_counted_and_the_pointer_on_one_explains_it() {
+        let mut ui = FrontEndUi::new();
+        let mut view = crowded_view(Screen::KeySelect);
+        if let Some(party) = view.party.as_mut() {
+            party.members[1].key_modifiers =
+                vec![beams(25), plague(-10), beams(0), plague(0), beams(5)];
+        }
+        let mut list = UiDrawList::new();
+        ui.draw(&mut list, &view, VIEWPORT, scale());
+        assert!(
+            words(&list)
+                .iter()
+                .any(|w| w.starts_with('+') && w.len() == 2),
+            "the modifiers that did not fit should be counted: {:?}",
+            words(&list)
+        );
+        // Rest the pointer on the first chip of the second row.
+        let panel = key_panel(1920.0, 1080.0, scale());
+        let row = key_row(panel, 1, scale());
+        let none = || None;
+        ui.update(
+            &input((row.x + 40.0, row.bottom() - 16.0), false, &[], &none),
+            &view,
+            VIEWPORT,
+            scale(),
+            0.016,
+        );
+        let mut hovered = UiDrawList::new();
+        ui.draw(&mut hovered, &view, VIEWPORT, scale());
+        assert!(
+            words(&hovered).iter().any(|w| w == "Beams."),
+            "the modifier's description should open: {:?}",
+            words(&hovered)
+        );
+    }
+}

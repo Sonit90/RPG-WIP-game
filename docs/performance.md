@@ -13,6 +13,16 @@ Reference hardware: Ryzen 7 5800X, Radeon RX 6700 XT, 1920x1080.
 **No frame-rate claim appears in this document unless it was measured.** Phase 0's goal
 is not to reach 480 FPS; it is to build a measurement system that can be trusted.
 
+**Startup time has its own file**: `docs/startup-performance.md` records what a launch spends
+its time on, what was done about it (1.4 s to 0.35 s on the reference machine) and what is
+left. This file is about the frame.
+
+**The 2026-10 performance audit is `docs/PERFORMANCE_AUDIT.md`**: a fresh baseline on a
+different machine (Ryzen 9 5900X), the instrumentation it added (run-wide p99.9 and 0.1% lows,
+a hitch log, run-wide stage means, a seven-pass GPU split, RAM/VRAM, `alloc-count`), the
+drivers in `tools/bench/`, and what it changed: launch ~1.0 s to ~0.24 s, the heavy fight
+0.67 to 0.50 ms a frame, and steady-state allocations to ~0.02 a frame.
+
 ## Methodology
 
 * **CPU frame time** — implemented (M3). `engine_core::time::FrameClock` takes `Instant`
@@ -77,6 +87,20 @@ must list every allocation that occurs once per frame, with its justification.
 | Overlay vertex upload | none, and skipped entirely unless the text changed | One persistently mapped upload buffer per frame slot |
 | Overlay text formatting | allocates, 4x per second | Rebuilt in place into reused `String`s, off the per-frame path |
 | Stress scene geometry | none per frame | Built into a reused scratch `Vec` and uploaded to a default heap only when the level changes |
+
+**Measured in the whole game (2026-10 audit, `--features alloc-count`)** — this table had only
+ever been checked by the headless benches. The full game allocated 1 time a frame in an empty
+scene, 3 in every level and 13 in a big fight; after the audit it is 0.021-0.059 a frame
+everywhere (`docs/PERFORMANCE_AUDIT.md`, section 6). What remains, all of it bounded:
+
+| Site | Allocation | Justification |
+| --- | --- | --- |
+| `FrameStatsWindow::stats` | was one sort buffer per refresh (stable sort) | Fixed: unstable sort into the scratch, which is identical for `f64::total_cmp` |
+| `shadow::cascade::build_cascades` | was one `Vec` every frame | Fixed: a fixed array of `MAX_CASCADES` |
+| `DungeonMap::push_minimap` | was two `String`s every frame | Fixed: the banner title is cached by `advance` |
+| `JobSystem::map_chunks` | a `Vec` of boxed jobs per call | Only when a pass actually splits, which no scene does at the audit's thresholds |
+| VFX entity pools, render-list chunks, UI chunk buffers | regrowth when a frame exceeds the previous peak | High-water marks, a few times in a run's first seconds |
+| Logging, the periodic report | a few per report interval | Off the per-frame path by design |
 
 Logging allocates while formatting its message, which is why it is banned from the frame
 path. `Renderer::resize` allocates (it rebuilds the back-buffer vector), but it runs only
@@ -797,3 +821,532 @@ would remove it, and that is a renderer change rather than a nameplate one.
 The plates are a **second overlay layer**, rebuilt every frame and uploaded unconditionally,
 while the developer HUD keeps its per-slot cache. Merging them would re-upload the HUD's tens
 of thousands of quads every frame to move a plate by a pixel.
+
+
+## Phase 2 (environment) — the combat arena
+
+Release, 1920x1080 windowed, no vsync, Ryzen 5800X / RX 6700 XT. Figures from the game's own
+periodic report over 12,000-40,000 frame runs.
+
+| Scenario | CPU mean | CPU p99 | GPU mean | FPS | Draws | Triangles | Visible |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Arena, no dummies | 0.172 ms | 0.31 ms | 0.076 ms | 5,808 | 31 | 2,596 | 85 |
+| + 10 dummies | 0.203 ms | 0.42 ms | 0.092 ms | 4,936 | 33 | 3,316 | 105 |
+| + 50 dummies | 0.299 ms | 0.46 ms | 0.149 ms | 3,341 | 33 | 5,548 | 185 |
+| + 100 dummies | 0.318 ms | 0.71 ms | 0.156 ms | 3,147 | 33 | 7,948 | 272 |
+| Stress x4 (571 objects) | 0.385 ms | 1.24 ms | 0.187 ms | 2,599 | 34 | 10,084 | 400 |
+| Stress x8 (1,071 objects) | 0.416 ms | 1.22 ms | 0.203 ms | 2,402 | 34 | 13,240 | 582 |
+
+The 240 FPS floor is 4.167 ms and the 480 FPS aspiration is 2.083 ms. The worst shipping case
+is 0.318 ms of CPU at a 0.71 ms p99, which meets both with over six times the headroom.
+
+**Draw calls do not scale with object count.** 5.5x the objects costs one extra draw, because
+every placement of an asset shares the mesh and material handles of a single upload and the
+render list's counting sort collapses them into one instanced draw.
+
+### Per-pass cost, headless (`env_bench`, 3,000 frames)
+
+| Scenario | LOD us | Extract us | Cull us | Group us | Total us | Allocs/frame |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Empty arena | 2.39 | 0.03 | 1.17 | 1.56 | 5.15 | 0.0003 |
+| + 100 dummies | 2.43 | 7.09 | 3.19 | 2.07 | 14.77 | 0.229 |
+| Worst view | 2.29 | 5.68 | 3.58 | 2.12 | 13.67 | 0 |
+| Stress x4 | 7.41 | 0.67 | 5.23 | 2.51 | 15.82 | 0 |
+
+The environment's own per-frame cost is **3.6 us** — 2.4 us of level selection plus 1.2 us of
+culling — which is 0.09% of a 240 FPS frame. The residual allocations in the dummy-heavy rows
+are the Phase 3 damage-meter residue documented above, not environment work.
+
+### Memory
+
+| | |
+| --- | --- |
+| Environment textures | 932 KiB (18 uploads of 9 distinct 128^2 and 64^2 images) |
+| Environment geometry | 922 triangles at LOD0 across 16 models |
+| Render entities added | 240 for the combat arena, 1,353 at stress x8 |
+
+### One allocation removed
+
+`RenderList::group_by_material_and_mesh` copied its bucket cursors with `to_vec()` every
+frame. With nine materials and four meshes nobody noticed; with the environment's forty of
+each, `env_bench` measured **1.18 allocations per frame**. The cursors now live in a reused
+field, and the empty-arena scenario allocates 0.0003 per frame.
+
+
+# Phase 3 (VFX) — combat feedback
+
+`cargo run --release --bin vfx_bench` measures the CPU side with no device; the shipped
+binary with `--vfx-stress <rate>` measures the whole frame including the GPU. The stress
+driver plays catalogue effects around the player **without touching gameplay**, so the
+difference between two runs is the cost of drawing effects rather than the throughput of the
+ability system.
+
+## What effects cost the CPU
+
+Microseconds per frame, mean over 600 measured frames after 300 of warm-up.
+
+| Fight | without effects | with effects | delta |
+| --- | ---: | ---: | ---: |
+| 1 target | 0.8 | 2.2 | **+1.4** |
+| 50 targets, area rotation | 5.6 | 7.3 | **+1.7** |
+| 100 targets | — | 11.9 | — |
+| Ultimate on 50 (2,100 particles) | — | 19.6 | — |
+
+Event observation does not appear: it is 0.0 us to one decimal in every scenario, being a
+pass over a slice of a few dozen events. The VFX update itself — instances, emitters,
+particle integration, mesh-draw rebuild, render-entity sync — is 1.3-1.6 us in ordinary
+combat and 13.6 us while the ultimate's 2,100 particles are alive.
+
+## The whole frame, on the GPU
+
+1920x1080, vsync off, 6,000 frames per configuration.
+
+| Scenario | CPU mean | GPU mean | FPS | Draw calls | Particles |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Combat, 100 dummies, no effects | 0.350 | 0.173 | 2,861 | 33 | 0 |
+| Combat, 100 dummies, 30 effects/s | 0.230 | 0.155 | 4,349 | 41 | 1,412 |
+| Combat, 100 dummies, 120 effects/s | 0.755 | 0.413 | 1,325 | 41 | 12,047 |
+| VFX scene, 240 effects/s | 0.830 | 0.498 | 1,205 | 19 | 10,756 |
+
+Against a 240 FPS budget of 4.17 ms, the worst case measured uses 18 % of it on the CPU and
+10 % on the GPU. At combat-realistic effect rates the cost is inside the run-to-run noise of
+a sub-millisecond frame; only the deliberate stress moves it measurably.
+
+## Why the particle pass costs so little
+
+The whole pass is **two draw calls**, whatever the particle count: one per blend mode. A
+particle is 36 bytes of per-instance data and the quad's four corners come from
+`SV_VertexID`, so 12,000 particles is 432 KiB of upload and two `DrawInstanced` calls rather
+than 72,000 vertices and a draw per effect.
+
+## Allocation
+
+`vfx_bench` counts every allocation the process makes during the measured frames: **6 to 12
+per 600 frames** in every scenario, effects on or off. The VFX system allocates nothing per
+frame — instances use a free list, particles a fixed-capacity structure-of-arrays pool,
+render entities are pooled per shape and hidden rather than despawned, and every per-frame
+buffer is cleared rather than freed.
+
+## The one bound that is reached
+
+Under artificial stress (120+ effects a second) the system sits at its 128-instance ceiling
+and refuses effects, while the particle pool never drops one (peak 12,112 of 16,384). Real
+combat peaks at 24 instances. The caps are left as they are: raising one to make a synthetic
+scenario look better is how a budget stops describing the game.
+
+# Phase 4 — audio
+
+Ryzen 5800X, 1920x1080, vsync off. Audio measurements come from `audio_bench` (1,200 measured
+frames per scenario, 300 warm-up, 48 kHz, no device) and from the game's own report line.
+
+## What audio costs the game thread
+
+The game thread's share is observing the frame's events, resolving anchors and updating the
+listener. The mix is **not** on it: it happens on the device's callback thread.
+
+| Scenario | sim us | observe us | director us | game thread total | p99 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| idle, no audio | 0.8 | — | — | 0.8 | 1.2 |
+| idle | 0.7 | 0.0 | 0.1 | 0.8 | 1.2 |
+| 1 target, no audio | 0.5 | — | — | 0.6 | 0.8 |
+| 1 target | 0.6 | 0.0 | 0.3 | 0.9 | 2.3 |
+| 10 targets | 0.7 | 0.0 | 0.3 | 1.1 | 1.9 |
+| 50 targets | 1.5 | 0.0 | 0.3 | 1.8 | 3.0 |
+| 100 targets | 2.5 | 0.0 | 0.3 | 2.8 | 4.5 |
+| aoe-heavy, 50, no audio | 1.4 | — | — | 1.5 | 2.0 |
+| aoe-heavy, 50 | 1.5 | 0.0 | 0.3 | 1.9 | 3.3 |
+| worst case, 100 | 2.5 | 0.0 | 0.3 | 2.8 | 4.7 |
+
+**Audio costs the game thread 0.3-0.4 us a frame**, measured as the difference between paired
+runs of the same fight in the same binary. Against a 240 FPS budget of 4,170 us that is under
+0.01 %. Event observation does not appear at all above the timer's resolution: it is one pass
+over a slice of a few dozen events.
+
+## What the mix costs the audio thread
+
+One callback is 512 frames at 48 kHz — 10.7 ms of sound, asked for roughly every 2.5 game
+frames at 240 FPS.
+
+| Scenario | voices (mean) | voices (peak) | mix per callback | share of the callback's own budget |
+| --- | ---: | ---: | ---: | ---: |
+| idle (wind only) | 1.0 | 1 | 2.7 us | 0.03 % |
+| 1-100 targets, single-target rotation | 6.4-6.7 | 12 | 14.6-16.1 us | 0.15 % |
+| aoe-heavy, 50 | 6.6 | 13 | 15.2 us | 0.14 % |
+| worst case, 100 | 6.6 | 13 | 15.3 us | 0.14 % |
+
+The mix is flat in the number of *targets* and linear in the number of *voices*, which is the
+whole point of the limiter: a hundred targets and one target produce the same handful of
+voices. The pool is 64 and combat peaks at 13.
+
+## In the game
+
+`mygame --scene combat --dummies 50 --frames 20000 --report 1`, with and without `--no-audio`:
+
+| Configuration | CPU mean | FPS | GPU mean | audio stage |
+| --- | ---: | ---: | ---: | ---: |
+| Audio on | 0.432 ms | 2,315 | 0.070 ms | 0.000 ms |
+| `--no-audio` | 0.426 ms | 2,347 | 0.070 ms | 0.000 ms |
+
+The difference is inside the run-to-run noise of a sub-millisecond frame; the reported audio
+stage is below the 1 us the line prints to.
+
+## Memory and allocation
+
+* **Bank**: 8.5 MiB, 39 sounds and 64 variations, synthesised at load in ~100 ms at 48 kHz.
+  Mono `f32` PCM, shared between voices behind an `Arc` — a voice holds a cursor, not a copy.
+* **Voices**: 64, allocated once at construction and never again.
+* **Allocation**: `audio_bench` counts **zero** allocations across the measured frames in
+  every scenario, audio on or off. The device callback allocates nothing either: its scratch
+  buffer is grown once to the largest block the device asks for.
+
+## The bounds that are reached, and by design
+
+The area rotation on 50-100 targets refuses 79-115 cues over 1,200 frames — all of them to
+the per-sound minimum interval and the per-sound cap, none of them to the voice pool
+(`dropped` is 0 in every scenario). That is the limiter working: fifty simultaneous hits are
+one hit sound, and fifty burning targets are four burning beds.
+
+# Phase 6 — enemy AI
+
+Ryzen 5800X, 1920x1080, vsync off. Figures from `ai_bench` (1,200 measured frames per
+scenario, 300 warm-up, no device) and from the game's own report line.
+
+## What a fight costs
+
+The player is teleported into the middle of the pack and kept alive by the harness, so every
+scenario measures a fight *in progress* rather than the moment before everything is dead.
+
+| Scenario | AI us | sim us | extract us | cull us | total us | p99 | fighting | allocs/1200 frames |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 enemy | 0.1 | 0.7 | 0.2 | 0.1 | 1.2 | 1.9 | 1 | 7 |
+| 10 enemies | 0.9 | 1.9 | 0.9 | 0.4 | 4.1 | 6.8 | 4 | 43 |
+| 50 enemies | 8.4 | 8.2 | 4.2 | 1.5 | 22.4 | 37.2 | 33 | 161 |
+| 100 enemies | 25.1 | 15.9 | 7.7 | 2.6 | 51.5 | 77.9 | 46 | 236 |
+| 10, full frame | 0.9 | 1.9 | 0.9 | 0.5 | 11.5 | 29.2 | 4 | 53 |
+| 50, full frame | 8.6 | 8.4 | 4.2 | 2.0 | 53.0 | 103.9 | 33 | 163 |
+| 100, full frame | 25.4 | 16.2 | 7.6 | 3.3 | 94.1 | 167.4 | 46 | 235 |
+
+"Full frame" adds the VFX director, the audio director and a mix on the device's own
+schedule — the whole presentation stack observing the same fight.
+
+**Against the 240 FPS budget of 4,170 us**, the worst case measured — a hundred enemies,
+forty-six of them actively fighting, with effects and audio — uses **2.3 % of the frame**.
+A ten-enemy fight, which is what the game will actually contain, uses 0.3 %.
+
+## Where the time goes, and how it scales
+
+* **AI is 0.09 us per enemy at 10, 0.17 at 50, 0.25 at 100.** It is superlinear because
+  perception asks the targeting query for the nearest hostile, which is a scan: at 100
+  enemies each of them walks a 101-entity world. That is a known cost with a known fix
+  (a spatial index, or a shared per-tick nearest-hostile pass), deliberately not taken yet —
+  25 us at a hundred enemies is not the frame's problem, and optimising before measuring is
+  how a budget stops describing the game.
+* **Presentation adds 7.4 / 30.6 / 42.6 us** at 10 / 50 / 100 enemies, almost all of it the
+  VFX director: telegraphs are effects, and a hundred enemies produce a lot of them.
+* **Allocation is ~0.2 per frame at 100 enemies** — threat rows appearing for a new attacker
+  and the world's own restore path. Everything per-tick reuses its buffers.
+
+## In the game
+
+`mygame --scene encounter --frames 8000 --report 2`, two enemies, idle:
+
+| Configuration | CPU mean | FPS | GPU mean | sim |
+| --- | ---: | ---: | ---: | ---: |
+| Encounter scene, 2 enemies | 0.353 ms | 2,835 | 0.045 ms | 0.003 ms |
+| Combat scene, 4 dummies (control) | 0.410 ms | 2,436 | 0.064 ms | 0.004 ms |
+| Character scene (control) | 0.458 ms | 2,182 | 0.056 ms | 0.005 ms |
+
+No regression: the encounter scene is *faster* than the scenes it sits beside, because it
+draws fewer objects. Nothing in this phase changed the cost of a frame that has no enemies in
+it — the AI stage costs nothing when `enemies` is empty, which is the case in every existing
+scene.
+
+
+# Phase 7 — shadows
+
+## What shadows cost
+
+`mygame --scene shadows --frames 900 --report 0 --shadows <level>`, release, 152 objects and
+230–390 casters, mean over the run:
+
+| Preset | Frame GPU | Shadow stage CPU | Shadow stage GPU | Shadow draws | Casters |
+| --- | --- | --- | --- | --- | --- |
+| off | 0.125 ms | – | – | – | – |
+| low | 0.177 ms | 0.014 ms | 0.016 ms | 31 | 49 |
+| medium | 0.213 ms | 0.030 ms | 0.032 ms | 82 | 215 |
+| high | 0.342 ms | 0.037 ms | 0.065 ms | 82 | 215 |
+| ultra | 0.422 ms | 0.045 ms | 0.071 ms | 117 | 371 |
+
+The dungeon at high, the heaviest shipping scene: 0.062 ms CPU, 0.079 ms GPU, 252 draws,
+151 026 triangles, 393 casters, 6 local shadow views granted and 19 refused.
+
+The draw and caster counts are about 12% lower than the first measurement of the same scene
+because floors, ridges and the sky dome stopped being drawn into cascades: a flat plane's
+shadow is the plane, and the ground plain is one 640 m quad that was being drawn into every
+cascade to change no pixel.
+
+Two readings. The **shadow stage itself is under a tenth of a millisecond** at every preset —
+it is a depth-only pass with a null pixel shader over a culled, LOD-reduced caster list.
+Most of the difference between off and high is elsewhere: the depth prepass contact shadows
+need, and the extra sampling the mesh pass does per pixel. That is why High enables contact
+shadows and Medium does not, rather than the other way round.
+
+The stage's CPU cost scales with casters and not with preset, which is what the caster
+culling and the four-level shadow LOD are for.
+
+## Memory
+
+The atlas is the whole footprint: 8 MB at low, 16 MB at medium, 64 MB at high, 80 MB at
+ultra. Local shadow views cost nothing extra at high — eight 512² tiles fit inside the
+quarter of a 4096² atlas that three 2048² cascades leave empty.
+
+## Allocation
+
+The shadow stage allocates nothing per frame. Caster lists, batch scratch and instance
+scratch are owned buffers that grow to the scene once and are cleared rather than freed;
+constants go through the frame's existing upload ring. Changing the quality **does** allocate
+and stall: the atlas is recreated, behind a `wait_for_idle()`, which is why it belongs on a
+settings screen rather than on a slider.
+
+# Phase 7b — the shadow optimisation
+
+Eight milestones against the combat arena, each measured with the same script against a
+reference binary run in the same session. `docs/performance/shadows/` carries one document per
+milestone with the numbers, the quality measurements and the regressions; `00-baseline.md`
+states the methodology and `06-final-comparison.md` is the summary.
+
+GPU p50, `--scene combat`, RX 6700 XT:
+
+| Resolution | Before, Ultra | After, Ultra | Before, High | After, High |
+| --- | ---: | ---: | ---: | ---: |
+| 1280×720 | 0.307 | 0.216 | 0.231 | 0.190 |
+| 1920×1080 | 0.606 | 0.396 | 0.454 | 0.358 |
+| 2560×1440 | 1.008 | 0.633 | 0.758 | 0.583 |
+| 3840×2160 | 2.754 | **1.327** | 1.598 | **1.201** |
+
+The two changes that did most of it: contact shadows became a half-resolution pass with a
+depth-weighted reconstruction (1.31 ms to 0.42 at 4K), and the 5×5 PCF grid became a six-tap
+rotated disc at the same penumbra width (0.22 ms at 4K). Clustered light culling took the
+per-light cost from 0.070 ms to 0.008 and lifted `MAX_LOCAL_LIGHTS` from 8 to 32, which the
+dungeon needed — it has twenty local lights and twelve of them were being dropped every frame.
+
+Three measurement controls were added to the game binary and are worth knowing about:
+`--warmup <n>`, `--shadow-tweak <k=v,…>` and `--lights <n> --shadow-lights <n>`. The driver is
+`tools/bench/shadow_matrix.ps1`, which interleaves its repetitions because the machine drifts
+enough over a few minutes to move a 4K number by 20 %.
+
+# Phase 8 — where the frame actually goes, and the passes that were parallelized
+
+## The question that started it
+
+GPU utilization sat at 67 % with the CPU at 4 % of 24 logical processors — one core saturated
+and the rest idle, which is what a single-threaded frame loop looks like from Task Manager.
+
+## Milestone 25 — attribution
+
+Two thirds of the frame had never been attributed to anything. `mygame` now reports the stage
+split every report interval, and the shadow stage reports its preparation separately from its
+recording (`ShadowStats::prepare_ms`). Recording is derived as
+`render − cull − group − shadow prep`; wrapping it in a second `Instant` pair would time the
+same span twice.
+
+`--scene combat`, 1920×1080 windowed, release, vsync off, 4000 frames after 500 warm-up:
+
+| Stage | Mean |
+| --- | ---: |
+| events | 0.001 ms |
+| update | 0.017 ms |
+| render | 0.117 ms |
+| — of which cull | 0.002 ms |
+| — of which group | 0.004 ms |
+| — of which shadow prep | 0.009 ms |
+| — of which recording | 0.103 ms |
+| present | 0.163 ms |
+| **CPU frame** | **0.403 ms** |
+| GPU frame | 0.317 ms |
+
+**`Present` is the largest single item in the frame and recording is the second.** Everything
+the gameplay pipeline does — simulation, extraction, VFX, audio, culling, UI — is 0.037 ms
+together, or 9 % of the frame. That is the number every parallelization decision below is
+measured against.
+
+It also settles what GPU utilization can be: it is `gpu_ms / frame_ms`, and the GPU cannot
+saturate until GPU time is the longest stage. With `Present` alone imposing 0.5 ms fullscreen
+(Milestone 17), no amount of CPU threading saturates a 0.27 ms GPU frame at this workload.
+Saturating it needs more GPU work, not less CPU work.
+
+## Milestone 25 — the job system reaches the game
+
+`engine-app` had no `JobSystem` at all: `Culler::cull_parallel` and `Renderer::render_world_parallel`
+had been built and tested in Milestone 17 and only the showcase ever called them. The game now
+owns a pool of `recommended_worker_count() - 1` workers and takes the parallel path, with
+`--serial-jobs` forcing the serial one for A/B and determinism.
+
+Interleaved, 3 runs each, `--hidden`, 3000 frames after 500 warm-up:
+
+| Path | CPU p50 |
+| --- | ---: |
+| parallel | 0.304, 0.305, 0.312 ms |
+| `--serial-jobs` | 0.305, 0.303, 0.304 ms |
+
+**No change, which is the pass criterion.** At ~1000 objects `cull_parallel` falls through to
+serial at its own chunk threshold, exactly as designed. This is infrastructure for a scene ten
+times larger, not an optimization of this one.
+
+## Milestone 25 — passes made parallel, and the thresholds that keep them serial
+
+`docs/threading.md` measures the job break-even between 0.1 µs and 12 µs of work per job, so a
+fan-out needs ~12 µs *per chunk* — roughly 50 µs of total pass before a 4-way split wins. Each
+pass below therefore carries a size threshold and stays on the calling thread beneath it.
+
+| Pass | Measured today | Threshold | Runs parallel today? |
+| --- | ---: | --- | --- |
+| UI batching (`UiBatcher::build_with`) | 13–42 µs | 2048 work units (~95 µs) | no |
+| Particle integration (`ParticlePool::update_with`) | part of 17 µs | 8192 particles | no |
+| Particle write (`ParticlePool::write_with`) | part of 17 µs | 8192 particles | no |
+| Frustum culling (Milestone 17) | 2–4 µs | 4096 slots per chunk | no |
+
+Every one is written so the serial and parallel paths share the same body — `build_range`,
+`integrate_chunk`, `write_range`, `cull_range` — and each has a determinism test asserting
+byte-identical output at 0, 1, 2, 4, 8 and 16 workers
+(`crates/engine-renderer/tests/ui_batch_parallel.rs`,
+`crates/engine-vfx/tests/particle_parallel.rs`).
+
+Two things the split cost and had to be paid back:
+
+* The UI merge copied the whole vertex buffer even for one chunk, which put ~4 µs on the serial
+  path. A single chunk now swaps its buffer out instead of copying it: 13.9 / 24.0 / 26.4 /
+  34.7 µs against the 13.7 / 23.4 / 26.7 / 35.4 µs baseline, 3 runs.
+* Splitting particle integration from compaction means two passes over the arrays where there
+  was one. Measured neutral at combat sizes, 3 interleaved runs.
+
+**Not built**: parallel extraction and parallel AI perception. Both are real splits and both
+are provably zero at any scene this game can currently produce — extraction is 8 µs in the game
+and 57 µs at 1,000 dummies, AI perception is sub-microsecond inside a 7 µs tick — and both
+would restructure code whose correctness rests on ordering (`RenderWorld`'s free list, the AI
+think/execute sequence). The triggers to revisit: 5,000 extracted entities, and 500 enemies —
+where a spatial grid is the better answer anyway, because it changes the complexity class.
+
+## Milestone 25 — a 4× VFX regression, found by measuring
+
+`cd3fe69` laid every ground footprint on the terrain as a band of quad pieces instead of one
+flat plate. It cost far more than intended, and nothing had measured it.
+
+`vfx_bench`, interleaved against a build of `cd3fe69~1`, 3 runs each, median:
+
+| Scenario | vfx, before | vfx, after the commit | cull | total frame |
+| --- | ---: | ---: | ---: | ---: |
+| ultimate, 50 | 16.2 µs | 78.7 µs | 1.5 → 10.1 µs | 22.8 → 96 µs |
+| worst case, 100 | 17.2 µs | 79.0 µs | 2.7 → 11.1 µs | 29.3 → 100 µs |
+
+Instrumenting `sync_entities` found 52 µs of the 77: **`build_band` 41.5 µs, placement 9.9 µs,
+for 5.8 footprints cut into 565 pieces every frame** — about 73 ns of `atan2`, `tan` and
+quaternion construction per piece. Every static burning zone was recomputing an identical band
+each frame.
+
+**The fix is a cache, not a thread.** A band is keyed on `(shape, anchor, yaw, band)` and
+rebuilt only when one of them changes; the ground is the one input the key cannot see, so the
+level says when it has moved (`VfxDirector::invalidate_ground`, called from `rebuild_terrain`).
+
+| Scenario | vfx before fix | vfx after fix | total frame |
+| --- | ---: | ---: | ---: |
+| ultimate, 50 | 78.7 µs | **46.1 µs** | 96 → 61.8 µs |
+| worst case, 100 | 79.0 µs | **46.9 µs** | 100 → 67.6 µs |
+
+Median of 3 interleaved runs. The residual against the parent build is inherent to the design
+rather than to the cache: ~565 render entities per frame instead of one plate, which is 10 µs
+of placement and 8 µs of extra culling, plus the rebuilds of footprints that genuinely move.
+The next lever, if it is ever wanted, is `place`'s two `atan2`s and `Quat::from_yaw_pitch_roll`
+per piece — worth a few microseconds and not worth the risk of getting a rotation subtly wrong
+without a test that would catch it.
+
+## Milestone 26 — presenting on another thread, and why it was reverted
+
+`Present` is the largest single item in the frame (Milestone 25), and it is a wait rather
+than work, so the obvious move is to take it off the thread that records frames: a worker
+calls `Present` and signals the frame's fence, and the game thread carries on. The renderer
+was made `Send` for it and the worker was built. **It does not work, and the reason is worth
+keeping.**
+
+### What happened
+
+The device was removed at **exactly the third frame**, every run, windowed and fullscreen:
+
+```
+IDXGISwapChain3::Present failed: 0x887a0005 (DXGI_ERROR_DEVICE_REMOVED)
+```
+
+Three is the back-buffer count. Frame 3 is the first one that comes back around to buffer
+zero, and it was recording into a buffer DXGI had not released.
+
+### Why the fence is not enough
+
+The frame ring's fence proves **GPU execution order**: slot `i` is not reused until the work
+recorded from it has completed. It says nothing about **DXGI buffer ownership**. What
+enforced that was `Present` itself — a synchronous `Present` blocks once every back buffer is
+spoken for, and *that block is the back-pressure*. Moving `Present` to another thread removes
+it, and nothing in the fence takes its place.
+
+This is worth stating plainly because the design looked sound: the ordering argument (present
+then signal, in queue order, waited on before the slot is reused) is correct as far as it
+goes, and it is not far enough.
+
+### The supported replacement, and why it did not hold either
+
+DXGI's answer is a frame-latency waitable object:
+`DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`, `SetMaximumFrameLatency(2)`, and a wait
+at the top of each frame. Implemented, the game **hung** instead — the waitable object stopped
+being signalled after the first two frames and never recovered. Waiting with a 200 ms timeout
+instead of `INFINITE` produced `WAIT_TIMEOUT` and then, on the very next present, the same
+`DEVICE_REMOVED`.
+
+So the waitable object was not delivering the back-pressure in this configuration — windowed,
+composited, `Present(0, ALLOW_TEARING)`, and a window that is not the foreground one — and
+proceeding without it corrupts the chain immediately. Whether that is the tearing flag, DWM
+composition, or occlusion was not chased further, because of what the payoff turned out to be.
+
+### The payoff, weighed
+
+The most a present thread can buy is overlapping the frame's CPU work with the display's
+wait: `max(0.14 ms of update and recording, 0.163 ms of present)` instead of their sum. That
+is a real change — 0.40 ms to roughly 0.20 ms — but the frame is already at 2,500–3,000 FPS
+against a 480 FPS stretch target, and the cost of buying it is a swap-chain flag that can hang
+the game when its window is covered. That is not a trade worth making for headroom nothing is
+currently asking for.
+
+**Reverted**, except for the part that stands on its own: the renderer is `Send`
+(Milestone 25's `refactor(renderer)`), asserted by a `const` block, so whoever picks this up
+does not have to do that half again.
+
+### What a future attempt has to answer first
+
+1. Why the waitable object stops signalling. Reproduce it in the showcase with tearing off,
+   with the window focused, and fullscreen, and find which of the three it is.
+2. What happens when the window is occluded. An engine that stops producing frames because
+   its window is covered is worse than one that presents on the frame's own thread.
+3. Whether the same overlap is reachable without touching presentation at all — the render
+   thread of the original Phase 5 plan moves recording off the game thread instead, and its
+   back-pressure is the fence it already has.
+
+# Performance audit (2026-10)
+
+The whole audit — baseline, profiles, findings, every change with its interleaved before/after,
+what is left — is `docs/PERFORMANCE_AUDIT.md`, with its data in `docs/performance/audit/`.
+The numbers below are the frame-time summary, 1920x1080 `--hidden`, Ryzen 9 5900X +
+RX 6700 XT, the unoptimized and the final build interleaved in one session, 3 runs each:
+
+| Scenario | CPU p50 before | after | avg FPS before | after | 1% low before | after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Monster playground fight (21 monsters, autocast) | 0.672 ms | 0.505 ms | 1483 | 2013 | 1087 | 1199 |
+| Dungeon (24 animated monsters) | 0.385 ms | 0.381 ms | 2550 | 2577 | 1633 | 1794 |
+| Graveyard | 0.525 ms | 0.509 ms | 1852 | 1881 | 1215 | 1238 |
+| VFX stress (100 dummies, 120 effects/s) | 1.134 ms | 1.059 ms | 717 | 719 | 316 | 332 |
+| Arena, empty scene, encounter, environment stress | unchanged | | | | | |
+
+Two methodology additions this file's rules should carry forward:
+
+* **A parallel path is measured in the game, against `--serial-jobs`.** The UI and particle
+  thresholds were set from `cpu_bench`'s break-even, where the workers are awake; in the game
+  they are asleep and the split lost by 2x. See `docs/threading.md`.
+* **The periodic report's stage split is one frame.** Read the run-wide means the game now
+  prints at exit (`run stages`, `run render`) instead; `tools/bench/frame_matrix.ps1` does.

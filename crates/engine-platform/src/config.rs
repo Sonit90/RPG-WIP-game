@@ -1,6 +1,6 @@
 //! Window configuration and its validation rules.
 //!
-//! This module is pure data: it contains no Win32 calls and is fully unit-testable.
+//! This module is pure data: it contains no OS calls and is fully unit-testable.
 
 use crate::error::PlatformError;
 
@@ -12,6 +12,50 @@ pub const MIN_DIMENSION: u32 = 64;
 /// Well above any current display, but low enough that `width * height * 16` bytes
 /// cannot overflow a `u32` render-target size calculation downstream.
 pub const MAX_DIMENSION: u32 = 16384;
+
+/// How a window covers the screen.
+///
+/// The platform's own word for it: the settings crate has the player's, and the application
+/// translates, so neither depends on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowMode {
+    /// A framed window, sized by its client area.
+    #[default]
+    Windowed,
+    /// A borderless popup covering its monitor at the monitor's current mode.
+    Borderless,
+    /// A borderless popup covering its monitor, the monitor switched to a chosen mode.
+    Fullscreen,
+}
+
+/// Where the cursor may go.
+///
+/// Mouse-look holds the cursor still: with raw input the cursor never needs to move for the
+/// camera to turn, so it is pinned where the button went down and the pointer is exactly where
+/// the player left it, ready to target. Without raw input the camera reads cursor positions,
+/// so the cursor has to move and is only kept inside the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorClip {
+    /// Anywhere on the desktop.
+    #[default]
+    Free,
+    /// Inside the client area.
+    Client,
+    /// Held at one client-area point, in client pixels.
+    Pinned(i32, i32),
+}
+
+/// What [`crate::Window::apply_display`] actually did: the mode and client size in force,
+/// which a fallback can make different from what was asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedDisplay {
+    /// The mode in force.
+    pub mode: WindowMode,
+    /// Client width in pixels.
+    pub width: u32,
+    /// Client height in pixels.
+    pub height: u32,
+}
 
 /// Initial state of a platform window.
 ///
@@ -29,9 +73,20 @@ pub struct WindowConfig {
     pub resizable: bool,
     /// Whether the window is shown on creation.
     ///
-    /// Hidden windows are used by offscreen benchmarks and by tests that need a real
-    /// `HWND` without stealing focus. This is a normal runtime option, not a test hook.
+    /// Hidden windows are used by offscreen benchmarks, by tests that need a real `HWND`,
+    /// and by an application that wants to draw its first frame before anything appears on
+    /// screen. This is a normal runtime option, not a test hook.
+    ///
+    /// A hidden window still renders: the swap chain presents, the GPU does the frame's
+    /// work, and `Present` returns `DXGI_STATUS_OCCLUDED`, which is a success code. That is
+    /// what makes "headless, but really rendering" a configuration rather than a mode.
     pub visible: bool,
+    /// Whether showing the window also gives it the keyboard focus.
+    ///
+    /// True is what a game does. False shows the window without activating it, so starting
+    /// the game does not take the keyboard away from the editor it was started from — which
+    /// is a development convenience and nothing else. The window can still be clicked into.
+    pub activate: bool,
     /// Whether to create a borderless window covering the primary monitor.
     ///
     /// When set, `width` and `height` are ignored: the window takes the monitor's size.
@@ -48,6 +103,7 @@ impl Default for WindowConfig {
             height: 1080,
             resizable: true,
             visible: true,
+            activate: true,
             fullscreen: false,
         }
     }
@@ -69,6 +125,15 @@ impl WindowConfig {
     #[must_use]
     pub fn with_visible(mut self, visible: bool) -> Self {
         self.visible = visible;
+        self
+    }
+
+    /// Returns the configuration with activation-on-show overridden.
+    ///
+    /// `false` shows the window without taking the keyboard focus.
+    #[must_use]
+    pub fn with_activate(mut self, activate: bool) -> Self {
+        self.activate = activate;
         self
     }
 
@@ -159,8 +224,14 @@ mod tests {
     fn builders_override_defaults() {
         let config = WindowConfig::new("t", 800, 600)
             .with_visible(false)
-            .with_resizable(false);
+            .with_resizable(false)
+            .with_activate(false);
         assert!(!config.visible);
         assert!(!config.resizable);
+        assert!(!config.activate);
+        // And the default is a window a player would want: shown, and in front.
+        let default = WindowConfig::default();
+        assert!(default.visible);
+        assert!(default.activate);
     }
 }

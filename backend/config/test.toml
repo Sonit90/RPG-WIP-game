@@ -1,0 +1,15 @@
+# Test overrides. Used by `APP_ENV=test` (e.g., integration tests).
+
+[http]
+bind = "127.0.0.1:0"
+
+[db]
+url = "postgres://auth_user:auth_password@localhost:5432/auth_db_test"
+max_connections = 5
+min_connections = 1
+run_migrations_on_start = true
+
+[auth]
+jwt_secret = "test-only-secret"
+jwt_access_ttl_min = 5
+jwt_refresh_ttl_days = 1

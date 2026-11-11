@@ -19,3 +19,5 @@ pub mod profiling;
 pub mod threading;
 pub mod time;
 pub mod transform;
+/// Every default the game is tuned with, in one editable file.
+pub mod tuning;

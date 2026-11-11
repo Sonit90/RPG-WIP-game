@@ -1,10 +1,13 @@
 <#
 .SYNOPSIS
     Builds a clean release distribution of the game and verifies it contains no test or
-    benchmark infrastructure.
+    benchmark infrastructure and no developer tools.
 
 .DESCRIPTION
     Produces dist/mygame/ containing only what the game needs to run.
+
+    The build never enables the `dev-tools` feature (the developer "kill the boss" button);
+    the verification greps the binary for its marker and fails the package if it is there.
 
     The verification is the point of the script, not a formality: it fails if any test or
     benchmark binary appears in the package, so "no test code ships" is checked rather
@@ -68,9 +71,13 @@ Write-Host 'Building release binary...' -ForegroundColor Cyan
 
 # --bin mygame, not --workspace: the benchmark and showcase crates have their own binaries
 # and must not be built, let alone copied.
-$buildArguments = @('build', '--release', '--bin', 'mygame')
-if (-not $Overlay) {
-    $buildArguments += @('--no-default-features')
+#
+# --no-default-features always: the default features include `dev-tools` (the developer
+# "kill the boss" button), which must never be in a shipped build. The debug overlay is the
+# only default feature a package may keep, so it is asked for by name.
+$buildArguments = @('build', '--release', '--bin', 'mygame', '--no-default-features')
+if ($Overlay) {
+    $buildArguments += @('--features', 'debug-overlay')
 }
 
 $buildExit = Invoke-Native 'cargo' $buildArguments
@@ -91,6 +98,22 @@ New-Item -ItemType Directory -Force -Path $OutputPath | Out-Null
 Copy-Item $binary -Destination $OutputPath
 Copy-Item (Join-Path $repositoryRoot 'README.md') -Destination $OutputPath -ErrorAction SilentlyContinue
 
+# Content, beside the executable. The loader searches the executable's own directory before
+# the working directory, so a player who double-clicks the .exe from anywhere finds it; a
+# checkout with an empty assets/ still packages, because every model has a procedural
+# fallback and a build with no content directory must still run.
+$assetSource = Join-Path $repositoryRoot 'assets'
+$assetFiles = @(Get-ChildItem -Recurse -File $assetSource -Exclude 'README.md' -ErrorAction SilentlyContinue)
+if ($assetFiles.Count -gt 0) {
+    $assetTarget = Join-Path $OutputPath 'assets'
+    New-Item -ItemType Directory -Force -Path $assetTarget | Out-Null
+    Copy-Item (Join-Path $assetSource '*') -Destination $assetTarget -Recurse -Exclude 'README.md'
+    $assetBytes = ($assetFiles | Measure-Object -Property Length -Sum).Sum
+    Write-Host ("Content: {0} file(s), {1:N1} MB" -f $assetFiles.Count, ($assetBytes / 1MB))
+} else {
+    Write-Host 'Content: none in assets/ - the package uses procedural models only.' -ForegroundColor Yellow
+}
+
 Write-Host "Package written to $OutputPath" -ForegroundColor Cyan
 Write-Host ''
 Write-Host 'Verifying the package...' -ForegroundColor Cyan
@@ -106,7 +129,10 @@ $forbiddenNames = @(
     'performance_test', 'cpu_bench', 'cull_bench', 'showcase',
     'test', 'bench', 'deps', 'incremental'
 )
-foreach ($file in $packaged) {
+# Content is exempt: an artist's file may legitimately be called anything, and it is the
+# build output, not the art, that this check is about.
+$buildOutput = $packaged | Where-Object { $_.FullName -notlike (Join-Path $OutputPath 'assets\*') }
+foreach ($file in $buildOutput) {
     foreach ($pattern in $forbiddenNames) {
         if ($file.Name -like "*$pattern*") {
             $failures += "test/benchmark artefact in package: $($file.Name)"
@@ -133,6 +159,15 @@ $symbolQuery = ($symbolPatterns | ForEach-Object { "/C:`"$_`"" }) -join ' '
 $symbolExit = Invoke-Native 'cmd' @('/c', "findstr $symbolQuery `"$($executables[0].FullName)`" >nul")
 if ($symbolExit -eq 0) {
     $failures += 'the binary contains test, benchmark or showcase symbols'
+}
+
+# 3b. No developer tools. The `dev-tools` feature compiles a fingerprint into the binary (see the
+#     startup log line in crates/engine-app/src/main.rs); finding it means the feature leaked
+#     into the shipped build.
+$devToolsMarker = 'mygame-dev-tools-marker'
+$devExit = Invoke-Native 'cmd' @('/c', "findstr /C:`"$devToolsMarker`" `"$($executables[0].FullName)`" >nul")
+if ($devExit -eq 0) {
+    $failures += 'the binary contains developer tools (the dev-tools feature was enabled)'
 }
 
 # 4. The package actually starts and exits cleanly. Two frames is enough to prove the

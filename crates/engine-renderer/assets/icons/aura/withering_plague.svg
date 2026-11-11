@@ -1,0 +1,24 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="withering_plague_panel" gradientUnits="userSpaceOnUse" x1="16" y1="496" x2="496" y2="16">
+<stop offset="0" stop-color="rgb(30, 26, 6)"></stop>
+<stop offset="1" stop-color="rgb(96, 84, 20)"></stop>
+</linearGradient>
+<radialGradient id="withering_plague_glow" gradientUnits="userSpaceOnUse" cx="256" cy="256" r="250">
+<stop offset="0" stop-color="rgb(220, 200, 80)" stop-opacity="0.55"></stop>
+<stop offset="0.6" stop-color="rgb(220, 200, 80)" stop-opacity="0.16"></stop>
+<stop offset="1" stop-color="rgb(220, 200, 80)" stop-opacity="0"></stop>
+</radialGradient>
+<clipPath id="withering_plague_tile"><path d="M 16 92 C 16 50 50 16 92 16 L 420 16 C 462 16 496 50 496 92 L 496 420 C 496 462 462 496 420 496 L 92 496 C 50 496 16 462 16 420 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#withering_plague_tile)">
+<path fill="url(#withering_plague_panel)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="url(#withering_plague_glow)" d="M 0 0 L 512 0 L 512 512 L 0 512 Z"></path>
+<path fill="rgb(176,160,52)" d="M 240.0 138.0 L 266.9 187.5 L 315.0 158.1 L 313.5 214.5 L 369.9 213.0 L 340.5 261.1 L 390.0 288.0 L 340.5 314.9 L 369.9 363.0 L 313.5 361.5 L 315.0 417.9 L 266.9 388.5 L 240.0 438.0 L 213.1 388.5 L 165.0 417.9 L 166.5 361.5 L 110.1 363.0 L 139.5 314.9 L 90.0 288.0 L 139.5 261.1 L 110.1 213.0 L 166.5 214.5 L 165.0 158.1 L 213.1 187.5 Z"></path>
+<circle cx="240" cy="288" r="96" fill="rgb(120,108,30)"></circle>
+<circle cx="208" cy="262" r="22" fill="rgb(70,62,14)"></circle>
+<circle cx="268" cy="318" r="16" fill="rgb(70,62,14)"></circle>
+<circle cx="380" cy="132" r="26" fill="none" stroke="rgb(220,200,90)" stroke-width="12"></circle>
+<circle cx="420" cy="214" r="14" fill="rgb(220,200,90)"></circle>
+</g>
+</svg>

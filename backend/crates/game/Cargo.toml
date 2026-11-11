@@ -1,0 +1,28 @@
+[package]
+name = "realm-game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+description = "Persistent game data (characters, settings, results) and the bridge to the SpacetimeDB realm."
+
+[dependencies]
+generic-auth-core = { path = "../core" }
+# The realm's shared rules: catalog, loadouts, gear score, progression, API bodies. The same
+# code the game client and the SpacetimeDB module compile.
+engine-realm = { path = "../../../crates/engine-realm" }
+engine-game = { path = "../../../crates/engine-game" }
+
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

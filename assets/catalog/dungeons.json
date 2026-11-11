@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "dungeons": [
+    {
+      "id": "graveyard_crypt",
+      "name": "Graveyard Crypt",
+      "description": "A walled churchyard over a crypt that will not stay shut. Fight through the gate wardens and the ossuary to the Hollow Steward.",
+      "scene": "scenes/graveyard_crypt.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 40,
+      "rewards": ["Experience", "Crypt-forged gear", "Steward's Reliquary"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 200,
+        "experience_per_level": 50,
+        "resources": [{ "id": "crypt_dust", "amount": 5, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 1500,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -32.0],
+        "half_extents": [8.0, 2.5, 0.6]
+      }
+    },
+    {
+      "id": "ashen_reliquary",
+      "name": "Ashen Reliquary",
+      "description": "Five halls of cold braziers under a burnt chapel. Each room asks one more question of the party than the last, and the Warden of the Ashen Gate asks them all at once.",
+      "scene": "scenes/ashen_reliquary.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 40,
+      "rewards": ["Experience", "Ash-forged gear", "Warden's Cinders"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 220,
+        "experience_per_level": 55,
+        "resources": [{ "id": "crypt_dust", "amount": 6, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 1200,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -30.0],
+        "half_extents": [8.0, 2.5, 0.6]
+      }
+    },
+    {
+      "id": "drowned_catacombs",
+      "name": "Drowned Catacombs",
+      "description": "A flooded catacomb where the tide never went out. Choose a wing - the Sunken Cloister's casters or the Bilge Cisterns' archers - cross the sluice, and face the Drowned Abbess before her hymn finishes.",
+      "scene": "scenes/drowned_catacombs.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 45,
+      "rewards": ["Experience", "Tide-worn gear", "Abbess's Vestments"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 240,
+        "experience_per_level": 60,
+        "resources": [{ "id": "crypt_dust", "amount": 6, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 1500,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -24.0],
+        "half_extents": [4.0, 2.5, 0.6]
+      }
+    },
+    {
+      "id": "bone_foundry",
+      "name": "Bone Foundry",
+      "description": "A furnace ring where the dead are smelted into soldiers. Work round the slag channels, answer the foremen's rallies and the bombers' fuses, and stand in the right place when the Foundry Overseer pours the ladle.",
+      "scene": "scenes/bone_foundry.json",
+      "difficulty": "normal",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 50,
+      "rewards": ["Experience", "Slag-forged gear", "Overseer's Cinders"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 260,
+        "experience_per_level": 65,
+        "resources": [{ "id": "crypt_dust", "amount": 7, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 1800,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -24.0],
+        "half_extents": [4.0, 2.5, 0.6]
+      }
+    },
+    {
+      "id": "sanctum_of_ash",
+      "name": "Sanctum of Ash",
+      "description": "A burnt-out temple of the ash cult, built round a rotunda with three shrines. Kick the mirror wards, cleanse the curses, keep the weakest of you on your feet, burn the pylons down, and find a pillar when the Ashen Pontiff sings his rite.",
+      "scene": "scenes/sanctum_of_ash.json",
+      "difficulty": "heroic",
+      "min_level": 1,
+      "max_level": 10,
+      "min_gear_score": 0,
+      "recommended_gear_score": 58,
+      "rewards": ["Experience", "Ashplate gear", "Pontiff's Cinders"],
+      "keys": {
+        "min_level": 1,
+        "max_level": 99,
+        "health_per_level": 0.10,
+        "damage_per_level": 0.05
+      },
+      "reward_table": {
+        "experience": 300,
+        "experience_per_level": 75,
+        "resources": [{ "id": "crypt_dust", "amount": 8, "per_level": 2 }]
+      },
+      "countdown_seconds": 5,
+      "timer_seconds": 2400,
+      "spawn_points": [
+        { "position": [0.0, 0.0, -8.0], "yaw": 0.0 },
+        { "position": [-2.5, 0.0, -6.5], "yaw": 0.0 },
+        { "position": [2.5, 0.0, -6.5], "yaw": 0.0 }
+      ],
+      "start_barrier": {
+        "center": [0.0, 2.5, -24.0],
+        "half_extents": [4.0, 2.5, 0.6]
+      }
+    }
+  ]
+}

@@ -51,6 +51,14 @@ pub fn key_from_virtual_code(code: u16) -> KeyCode {
     const VK_RCONTROL: u16 = 0xA3;
     const VK_LMENU: u16 = 0xA4;
     const VK_RMENU: u16 = 0xA5;
+    const VK_HOME: u16 = 0x24;
+    const VK_DELETE: u16 = 0x2E;
+    const VK_NUMPAD0: u16 = 0x60;
+    const VK_NUMPAD9: u16 = 0x69;
+    const VK_SUBTRACT: u16 = 0x6D;
+    const VK_DECIMAL: u16 = 0x6E;
+    const VK_OEM_MINUS: u16 = 0xBD;
+    const VK_OEM_PERIOD: u16 = 0xBE;
 
     match code {
         VK_BACK => KeyCode::Backspace,
@@ -62,6 +70,10 @@ pub fn key_from_virtual_code(code: u16) -> KeyCode {
         VK_UP => KeyCode::ArrowUp,
         VK_RIGHT => KeyCode::ArrowRight,
         VK_DOWN => KeyCode::ArrowDown,
+        VK_HOME => KeyCode::Home,
+        VK_DELETE => KeyCode::Delete,
+        VK_OEM_MINUS | VK_SUBTRACT => KeyCode::Minus,
+        VK_OEM_PERIOD | VK_DECIMAL => KeyCode::Period,
         // The unsided modifier codes arrive when the side cannot be determined; they are
         // reported as the left-hand key rather than dropped.
         VK_SHIFT | VK_LSHIFT => KeyCode::LeftShift,
@@ -71,6 +83,11 @@ pub fn key_from_virtual_code(code: u16) -> KeyCode {
         VK_MENU | VK_LMENU => KeyCode::LeftAlt,
         VK_RMENU => KeyCode::RightAlt,
         VK_0..=VK_9 => KeyCode::digit_key((code - VK_0) as u8).unwrap_or(KeyCode::Unknown),
+        // The number pad's digits are the same digits, as its `-` and `.` already are: typing
+        // `12.5` into a field must not depend on which block of keys the hand is on.
+        VK_NUMPAD0..=VK_NUMPAD9 => {
+            KeyCode::digit_key((code - VK_NUMPAD0) as u8).unwrap_or(KeyCode::Unknown)
+        }
         VK_A..=VK_Z => KeyCode::ALL[KeyCode::A.index() + (code - VK_A) as usize],
         VK_F1..=VK_F12 => {
             KeyCode::function_key((code - VK_F1 + 1) as u8).unwrap_or(KeyCode::Unknown)
@@ -100,6 +117,9 @@ pub enum WindowEvent {
     Restored,
     /// The user asked to close the window. The application decides whether to obey.
     CloseRequested,
+    /// The display configuration changed: a monitor was added, removed or rearranged, or
+    /// one changed mode. A borderless window may need to be fitted to its monitor again.
+    DisplayChanged,
 }
 
 impl WindowEvent {
@@ -156,7 +176,19 @@ impl EventQueue {
     /// several `WM_MOUSEMOVE` messages per frame and only the latest position matters;
     /// the accumulated delta is preserved because [`engine_core::input::InputState`]
     /// computes it from the previous position, not from the number of events.
+    ///
+    /// Consecutive raw `MouseDelta` events are *summed*, never dropped: each one is motion
+    /// that happened, and losing any would make the camera under-turn.
     pub fn push(&mut self, event: WindowEvent) {
+        if let (
+            Some(WindowEvent::Input(InputEvent::MouseDelta { dx, dy })),
+            WindowEvent::Input(InputEvent::MouseDelta { dx: ndx, dy: ndy }),
+        ) = (self.events.back_mut(), &event)
+        {
+            *dx = dx.saturating_add(*ndx);
+            *dy = dy.saturating_add(*ndy);
+            return;
+        }
         let coalesces = matches!(
             (self.events.back(), &event),
             (
@@ -242,6 +274,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn number_pad_digits_are_digits() {
+        for digit in 0..=9_u16 {
+            assert_eq!(
+                key_from_virtual_code(0x60 + digit),
+                key_from_virtual_code(0x30 + digit),
+                "numpad {digit}"
+            );
+        }
+        assert_eq!(key_from_virtual_code(0x6E), KeyCode::Period);
+        assert_eq!(key_from_virtual_code(0x6D), KeyCode::Minus);
+    }
+
+    #[test]
     fn pops_in_fifo_order() {
         let mut queue = EventQueue::new();
         queue.push(WindowEvent::Input(InputEvent::FocusChanged {
@@ -304,6 +349,31 @@ mod tests {
             queue.pop(),
             Some(WindowEvent::Input(InputEvent::MouseMoved { x: 30, y: 5 }))
         );
+    }
+
+    #[test]
+    fn consecutive_mouse_deltas_sum() {
+        let mut queue = EventQueue::new();
+        queue.push(WindowEvent::Input(InputEvent::MouseDelta { dx: 3, dy: -1 }));
+        queue.push(WindowEvent::Input(InputEvent::MouseDelta { dx: 4, dy: 5 }));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(
+            queue.pop(),
+            Some(WindowEvent::Input(InputEvent::MouseDelta { dx: 7, dy: 4 }))
+        );
+    }
+
+    #[test]
+    fn a_delta_between_mouse_moves_breaks_neither_semantics() {
+        let mut queue = EventQueue::new();
+        queue.push(WindowEvent::Input(InputEvent::MouseMoved { x: 1, y: 1 }));
+        queue.push(WindowEvent::Input(InputEvent::MouseDelta { dx: 2, dy: 2 }));
+        queue.push(WindowEvent::Input(InputEvent::MouseMoved { x: 3, y: 3 }));
+        assert_eq!(queue.len(), 3);
+        queue.push(WindowEvent::Input(InputEvent::MouseDelta { dx: 1, dy: 1 }));
+        queue.push(WindowEvent::Input(InputEvent::MouseMoved { x: 4, y: 4 }));
+        queue.push(WindowEvent::Input(InputEvent::MouseMoved { x: 5, y: 5 }));
+        assert_eq!(queue.len(), 5);
     }
 
     #[test]

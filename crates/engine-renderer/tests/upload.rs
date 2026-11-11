@@ -5,6 +5,7 @@
 //! correspond to the bytes written, and that a batched staging copy actually lands in
 //! device-local memory — which is only observable by reading it back.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

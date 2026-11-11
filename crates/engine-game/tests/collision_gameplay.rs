@@ -23,6 +23,7 @@ fn walk(simulation: &mut Simulation, direction: Vec3, ticks: u32) {
             forward: -direction.z,
             right: direction.x,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_once();
     }
@@ -338,6 +339,7 @@ fn a_scene_with_extra_static_geometry_still_moves_the_player_deterministically()
                 forward,
                 right,
                 yaw: 0.4,
+                face_camera: false,
             });
             if tick % 47 == 0 {
                 simulation.push_command(PlayerCommand::Jump);

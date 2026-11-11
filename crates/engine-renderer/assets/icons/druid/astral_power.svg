@@ -1,0 +1,69 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="astral_power_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="astral_power_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(170,130,230)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="astral_power_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="astral_power_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="astral_power_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="astral_power_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="astral_power_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="astral_power_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="astral_power_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="astral_power_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#astral_power_tile)">
+	<path fill="url(#astral_power_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#astral_power_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The gauge: full, and holding. Nothing has been spent. -->
+	<path fill="url(#astral_power_astral)" fill-opacity="0.28" d="M 338 240 C 448 240 538 330 538 440 C 538 550 448 640 338 640 C 228 640 138 550 138 440 C 138 330 228 240 338 240 z M 338 288 C 254 288 186 356 186 440 C 186 524 254 592 338 592 C 422 592 490 524 490 440 C 490 356 422 288 338 288 z"></path>
+	<path fill="url(#astral_power_astral)" d="M 338 254 C 440 254 524 338 524 440 C 524 542 440 626 338 626 C 236 626 152 542 152 440 C 152 338 236 254 338 254 z M 338 292 C 256 292 190 358 190 440 C 190 522 256 588 338 588 C 420 588 486 522 486 440 C 486 358 420 292 338 292 z"></path>
+	<path fill="rgb(226,196,255)" fill-opacity="0.7" d="M 338 254 C 388 254 434 274 468 306 L 442 332 C 414 306 378 292 338 292 z"></path>
+
+	<!-- The star inside it, armed and waiting for the next spell. -->
+	<path fill="url(#astral_power_astral)" fill-opacity="0.35" d="M 338 302 L 366 400 L 464 428 L 366 456 L 338 578 L 310 456 L 212 428 L 310 400 z"></path>
+	<path fill="rgb(226,196,255)" d="M 338 330 L 360 406 L 436 428 L 360 450 L 338 546 L 316 450 L 240 428 L 316 406 z"></path>
+	<path fill="rgb(255,255,255)" fill-opacity="0.9" d="M 338 392 C 358 392 374 408 374 428 C 374 448 358 464 338 464 C 318 464 302 448 302 428 C 302 408 318 392 338 392 z"></path>
+
+	<!-- The press: the button under it, lit. -->
+	<path fill="rgb(18,20,26)" d="M 194 700 C 194 682 208 668 226 668 L 450 668 C 468 668 482 682 482 700 L 482 776 C 482 794 468 808 450 808 L 226 808 C 208 808 194 794 194 776 z"></path>
+	<path fill="url(#astral_power_astral)" fill-opacity="0.85" d="M 210 706 C 210 694 220 684 232 684 L 444 684 C 456 684 466 694 466 706 L 466 770 C 466 782 456 792 444 792 L 232 792 C 220 792 210 782 210 770 z"></path>
+	<path fill="rgb(226,196,255)" fill-opacity="0.5" d="M 226 700 L 450 700 L 450 720 L 226 720 z"></path>
+	<path fill="rgb(255,255,255)" fill-opacity="0.9" d="M 300 812 C 310 818 314 828 312 840 C 300 832 294 822 294 812 z"></path>
+</g>
+</svg>

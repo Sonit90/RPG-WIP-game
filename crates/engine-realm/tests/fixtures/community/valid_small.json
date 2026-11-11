@@ -1,0 +1,214 @@
+{
+  "format": 1,
+  "meta": {
+    "title": "Small Test Crypt",
+    "description": "A tiny fixture map.",
+    "difficulty": 2,
+    "tags": [
+      "test",
+      "small"
+    ]
+  },
+  "scene": {
+    "version": 1,
+    "name": "valid_small",
+    "half_extent": 60.0,
+    "ground_height": 0.0,
+    "objects": [
+      {
+        "asset": "crypt_floor",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "collision": {
+          "kind": "none"
+        }
+      },
+      {
+        "asset": "crypt_floor",
+        "position": [
+          0,
+          0,
+          -36
+        ],
+        "collision": {
+          "kind": "none"
+        }
+      },
+      {
+        "asset": "crypt_floor",
+        "position": [
+          0,
+          0,
+          36
+        ],
+        "collision": {
+          "kind": "none"
+        }
+      },
+      {
+        "asset": "crypt_wall",
+        "position": [
+          30,
+          0,
+          0
+        ],
+        "yaw": 0.0,
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "asset": "brazier",
+        "position": [
+          5,
+          0,
+          -10
+        ]
+      }
+    ],
+    "spawn_points": [
+      {
+        "position": [
+          0,
+          0,
+          -50
+        ],
+        "yaw": 0
+      },
+      {
+        "position": [
+          -2,
+          0,
+          -50
+        ],
+        "yaw": 0
+      },
+      {
+        "position": [
+          2,
+          0,
+          -50
+        ],
+        "yaw": 0
+      }
+    ],
+    "lights": [
+      {
+        "position": [
+          5,
+          2,
+          -10
+        ],
+        "color": [
+          1,
+          0.6,
+          0.3
+        ],
+        "intensity": 4.0,
+        "range": 12.0
+      }
+    ],
+    "monsters": [
+      {
+        "monster": "skeleton_warrior",
+        "position": [
+          -4,
+          0,
+          -20
+        ],
+        "pack": "A"
+      },
+      {
+        "monster": "skeleton_warrior",
+        "position": [
+          4,
+          0,
+          -20
+        ],
+        "pack": "A"
+      },
+      {
+        "monster": "skeleton_warrior",
+        "position": [
+          -4,
+          0,
+          0
+        ],
+        "pack": "A"
+      },
+      {
+        "monster": "skeleton_warrior",
+        "position": [
+          4,
+          0,
+          0
+        ],
+        "pack": "B"
+      },
+      {
+        "monster": "skeleton_warrior",
+        "position": [
+          -4,
+          0,
+          10
+        ],
+        "pack": "B"
+      },
+      {
+        "monster": "skeleton_warrior",
+        "position": [
+          4,
+          0,
+          10
+        ],
+        "pack": "B"
+      },
+      {
+        "monster": "lord_ashgrave",
+        "position": [
+          0,
+          0,
+          45
+        ],
+        "pack": "BOSS",
+        "level": 5
+      }
+    ],
+    "dungeon": {
+      "name": "SMALL",
+      "required_completion": 20.0,
+      "boss_pack": "BOSS",
+      "boss_gate": {
+        "center": [
+          0,
+          0,
+          30
+        ],
+        "half_extents": [
+          8,
+          3,
+          0.6
+        ]
+      },
+      "add_spawns": [
+        {
+          "position": [
+            -6,
+            0,
+            48
+          ],
+          "yaw": 3.14
+        }
+      ],
+      "add_count": 1,
+      "add_pool": [
+        "skeleton_warrior"
+      ]
+    }
+  }
+}

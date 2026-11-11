@@ -3,6 +3,7 @@
 //! Only compiled when the `debug-overlay` feature is on; a shipping build has no overlay
 //! to test. Takes the same process-wide GPU lock as the other GPU tests.
 
+#![cfg(windows)]
 #![cfg(feature = "debug-overlay")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

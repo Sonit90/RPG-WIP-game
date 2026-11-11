@@ -24,11 +24,17 @@
 use engine_core::math::{Quat, Sphere, Vec3};
 use engine_core::transform::Transform;
 use engine_game::entity::EntityId;
+use engine_game::event::CombatEvent;
+use engine_game::movement::MovementState;
 use engine_game::sim::Simulation;
 use engine_game::world::EntityKind;
 use engine_render_data::{
-    InstanceStyle, MaterialHandle, MeshHandle, RenderEntity, RenderEntityDesc, RenderWorld,
+    InstanceStyle, MaterialHandle, MeshHandle, ModelBinding, ModelLodBinding, ModelPart,
+    PartGeometry, RenderEntity, RenderEntityDesc, RenderWorld, ShadowCasting,
 };
+
+use crate::character::{CastVisual, CharacterState, CharacterVisual, Heading, slot_for_motion};
+use crate::monster_visual::{MonsterFrame, MonsterModel, MonsterVisuals};
 
 /// Which mesh and material each kind of thing is drawn with.
 ///
@@ -36,26 +42,17 @@ use engine_render_data::{
 /// not have one. Everything here is a handle the renderer issued plus the local bounds it
 /// reported, so extraction can place the bounds in world space without asking the renderer
 /// anything.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VisualBindings {
-    /// Mesh for the player character.
-    pub player_mesh: MeshHandle,
-    /// Local bounds of [`VisualBindings::player_mesh`].
-    pub player_bounds: Sphere,
-    /// Material for the player character.
-    pub player_material: MaterialHandle,
-    /// Mesh for a training dummy.
-    pub dummy_mesh: MeshHandle,
-    /// Local bounds of [`VisualBindings::dummy_mesh`].
-    pub dummy_bounds: Sphere,
-    /// Material for a living dummy.
-    pub dummy_material: MaterialHandle,
-    /// Material for a dummy that has been killed.
+    /// The single-target training dummy.
     ///
-    /// A second material rather than a colour on the entity: `RenderWorld` carries a
-    /// material handle per entity, so "it died" is a different handle, and changing it is
-    /// what a respawn of the render entity does.
-    pub dead_material: MaterialHandle,
+    /// A whole model — levels of detail, submeshes, materials — rather than one mesh and
+    /// one material. That is the change this phase makes to the seam: extraction places a
+    /// *model*, and how many draws that model costs is the model's business.
+    pub dummy: ModelBinding,
+    /// The dummies in the group. May be the same model; it is not, so the two roles are
+    /// distinguishable at a glance.
+    pub dummy_group: ModelBinding,
     /// Mesh for the arena floor.
     pub ground_mesh: MeshHandle,
     /// Local bounds of [`VisualBindings::ground_mesh`].
@@ -68,6 +65,66 @@ pub struct VisualBindings {
     pub marker_bounds: Sphere,
     /// Material for the target marker.
     pub marker_material: MaterialHandle,
+}
+
+impl VisualBindings {
+    /// Bindings over handles nothing uploaded.
+    ///
+    /// For a benchmark or a test that measures *extraction* — how many render entities a
+    /// scene produces, which level of detail it picks, how much it churns — rather than
+    /// rendering. The extractor never dereferences a handle, which is exactly what makes
+    /// this legitimate rather than a fake.
+    ///
+    /// A caller with a device uses `Renderer::create_model` instead and gets the same type.
+    #[must_use]
+    pub fn unbound(dummy: &engine_assets::ModelAsset, group: &engine_assets::ModelAsset) -> Self {
+        let unit = Sphere::new(Vec3::ZERO, 0.87);
+        Self {
+            dummy: unbound_binding(dummy, 0),
+            dummy_group: unbound_binding(group, 100),
+            ground_mesh: MeshHandle::new(900, 1),
+            ground_bounds: Sphere::new(Vec3::ZERO, 1.0),
+            ground_material: MaterialHandle::new(900, 1),
+            marker_mesh: MeshHandle::new(901, 1),
+            marker_bounds: unit,
+            marker_material: MaterialHandle::new(901, 1),
+        }
+    }
+}
+
+/// One model's worth of [`VisualBindings::unbound`].
+///
+/// `base` keeps two models' handles distinguishable, so a test can tell which one a render
+/// entity came from.
+fn unbound_binding(model: &engine_assets::ModelAsset, base: u32) -> ModelBinding {
+    ModelBinding {
+        lods: model
+            .lods
+            .iter()
+            .enumerate()
+            .map(|(level, lod)| ModelLodBinding {
+                parts: lod
+                    .submeshes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, submesh)| ModelPart {
+                        geometry: PartGeometry::Rigid(MeshHandle::new(
+                            base + (level * 8 + index) as u32,
+                            1,
+                        )),
+                        material: MaterialHandle::new(base + submesh.material as u32, 1),
+                        bounds: submesh.bounds,
+                    })
+                    .collect(),
+                min_distance: lod.min_distance,
+                bounds: lod.bounds(),
+            })
+            .collect(),
+        skinned: false,
+        model_height: model
+            .lod0()
+            .map_or(1.0, |lod| lod.bounds().radius.max(0.5) * 2.0),
+    }
 }
 
 /// What the last extraction did.
@@ -84,18 +141,76 @@ pub struct VisualStats {
 }
 
 /// One gameplay slot's rendering counterpart.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// A *list* of render entities now, one per submesh of the model's selected level of
+/// detail. A dummy is a post, a straw body and a wrap; each is a different material, and one
+/// draw can bind one material.
+#[derive(Debug, Clone, PartialEq)]
 struct Mapped {
-    entity: RenderEntity,
+    /// One render entity per part of the current level of detail.
+    parts: Vec<RenderEntity>,
     /// The gameplay generation this mapping was made for. A different one means the slot
     /// has been reused by another entity.
     generation: u32,
     /// Whether the mapping was made for a living entity.
     alive: bool,
+    /// Which level of detail the parts were spawned for.
+    ///
+    /// A level change means different meshes, so the parts are despawned and respawned. That
+    /// is the one thing that still churns slots, and it happens when an entity crosses a
+    /// distance threshold rather than every frame.
+    lod: usize,
 }
 
+/// Where the camera is and how aggressively to drop detail.
+///
+/// Set once per frame by the application. Carried on the extractor rather than passed to
+/// `extract` so the signature every existing caller uses stays what it was.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewParams {
+    /// Where the camera is, for level-of-detail selection.
+    pub camera_position: Vec3,
+    /// Real seconds since the last frame, for animation.
+    ///
+    /// Real, not simulated: an animation is a visual and should run at the frame rate, while
+    /// the simulation runs at its own fixed tick. Feeding it the tick would make a character
+    /// animate in 60 Hz steps while moving smoothly.
+    pub delta_seconds: f32,
+    /// Scales distance before a level of detail is chosen. 1 is the authored thresholds; 0
+    /// pins the finest level.
+    pub lod_bias: f32,
+}
+
+impl Default for ViewParams {
+    fn default() -> Self {
+        Self {
+            camera_position: Vec3::ZERO,
+            delta_seconds: 0.0,
+            lod_bias: 1.0,
+        }
+    }
+}
+
+/// How dead a dead dummy looks: a dark, desaturated multiply on whatever it was.
+///
+/// A tint rather than the second material this used to be. `InstanceStyle` already carries a
+/// per-entity multiply, so "it died" costs a store instead of a material handle that has to
+/// exist for every model in the game.
+const DEAD_TINT: [f32; 4] = [0.34, 0.31, 0.28, 1.0];
+
+/// What a monster's corpse is drawn at: dimmed, not greyed, because its own model still says
+/// what it was.
+const CORPSE_TINT: [f32; 4] = [0.62, 0.60, 0.58, 1.0];
+
+/// How far a monster model is washed towards its table colour. The stand-in took the whole
+/// colour from the tint; a model with its own textures takes a hint of it.
+const MONSTER_TINT_WASH: f32 = 0.2;
+
+/// How dark a nearly dead monster model gets. Lighter than the stand-in's floor: a model's
+/// textures are already darker than a flat dummy.
+const MONSTER_HEALTH_FLOOR: f32 = 0.7;
+
 /// Builds and maintains a `RenderWorld` from a [`Simulation`].
-#[derive(Debug)]
 pub struct RenderExtractor {
     world: RenderWorld,
     bindings: VisualBindings,
@@ -110,6 +225,57 @@ pub struct RenderExtractor {
     marker_height: f32,
     /// When each gameplay slot was last damaged. Grows with the world; never freed.
     hits: Vec<Option<Hit>>,
+    /// The player's visual controller, if the scene set one up.
+    ///
+    /// `Option` because a scene may not want a character — a culling benchmark builds an
+    /// extractor to measure visibility and has no interest in a skeleton. A scene with no
+    /// visual simply does not draw its player, which is loud rather than subtle.
+    player_visual: Option<CharacterVisual>,
+    /// How much of the player's character is drawn. See
+    /// [`RenderExtractor::set_player_opacity`].
+    player_opacity: f32,
+    /// Which dummy is the single-target one.
+    ///
+    /// Gameplay does not distinguish them — `EntityKind` is `Player` or `Dummy`, and the doc
+    /// on it says branching on an enum is how a list grows a new case for every entity kind.
+    /// So the *scene* says which one is featured, because the scene is what placed it.
+    featured_dummy: Option<EntityId>,
+    /// This frame's camera and detail settings.
+    view: ViewParams,
+    /// Monsters drawn as animated characters, where their table row names a model there is
+    /// one of. The rest are drawn with the rigid stand-in.
+    monsters: MonsterVisuals,
+    /// Milliseconds the player character's animation update took this frame.
+    player_animate_ms: f64,
+    /// Other players' characters, drawn from what the realm last said about them.
+    remote_characters: Vec<RemoteCharacter>,
+}
+
+/// Where another player's character is this frame, as the network layer interpolated it.
+///
+/// Presentation does not know it came over a network: it is a pose, like the one the local
+/// player's body produces, handed in by whoever owns the entity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RemoteFrame {
+    /// Feet position.
+    pub position: Vec3,
+    /// Facing, radians.
+    pub facing_yaw: f32,
+    /// Velocity, for the walk cycle.
+    pub velocity: Vec3,
+    /// On the ground.
+    pub grounded: bool,
+    /// Dead.
+    pub dead: bool,
+    /// How opaque: a disconnected player is drawn faded.
+    pub opacity: f32,
+}
+
+/// One other player's character.
+struct RemoteCharacter {
+    entity: EntityId,
+    visual: CharacterVisual,
+    frame: Option<RemoteFrame>,
 }
 
 /// Height above the floor the target marker floats at, in metres.
@@ -127,6 +293,9 @@ const HEALTH_TINT_FLOOR: f32 = 0.45;
 /// Emissive added to the current target, so selection is visible on the enemy itself.
 const TARGET_GLOW: f32 = 0.22;
 
+/// Emissive a monster with a full glow in its look carries: an empowered add, lit from inside.
+const EMPOWERED_GLOW: f32 = 0.35;
+
 /// How long a hit flash lasts, in simulated seconds.
 ///
 /// Short enough to read as an impact rather than a state, long enough to survive a frame at
@@ -139,6 +308,13 @@ const HIT_FLASH_STRENGTH: f32 = 0.9;
 /// How much a hit flash lifts the tint towards white at its peak.
 const HIT_FLASH_LIFT: f32 = 0.6;
 
+/// How much longer and brighter a critical strike's flash is.
+///
+/// A crit already has its own colour and size on the damage number. This is the same fact
+/// said on the *target*, because that is where the player is looking when a big hit lands,
+/// and reading it there costs no draw call — it is the emissive term the flash already uses.
+const CRITICAL_FLASH_SCALE: f32 = 1.7;
+
 /// Blends two positions by `alpha`.
 ///
 /// A plain lerp. Positions are metres and a tick is 16.67 ms, so nothing an entity can do in
@@ -147,6 +323,54 @@ const HIT_FLASH_LIFT: f32 = 0.6;
 pub fn lerp_position(previous: Vec3, current: Vec3, alpha: f32) -> Vec3 {
     let alpha = alpha.clamp(0.0, 1.0);
     previous + (current - previous) * alpha
+}
+
+/// How much of its speed a body must spend moving against its facing to count as
+/// backpedalling. Below this — a strafe, or a strafe drifting slightly back — the forward
+/// or sideways cycle still reads better than a backwards one.
+const BACKPEDAL_SHARE: f32 = 0.3;
+
+/// How much of its speed a body must spend moving sideways to count as strafing. A diagonal
+/// forwards (about 0.71 each way) stays a forward run, which is what it looks like.
+const STRAFE_SHARE: f32 = 0.8;
+
+/// Which way `velocity` goes relative to a body facing `yaw`.
+///
+/// Yaw zero faces -Z with +X on the right. Backwards wins over sideways, so a diagonal
+/// backwards backpedals rather than sidestepping.
+fn heading(velocity: Vec3, yaw: f32) -> Heading {
+    let speed = velocity.x.hypot(velocity.z);
+    if speed <= 1e-4 {
+        return Heading::Forward;
+    }
+    let (sin, cos) = yaw.sin_cos();
+    let forward = -velocity.x * sin - velocity.z * cos;
+    let right = velocity.x * cos - velocity.z * sin;
+    if forward < -BACKPEDAL_SHARE * speed {
+        Heading::Backward
+    } else if right >= STRAFE_SHARE * speed {
+        Heading::Right
+    } else if right <= -STRAFE_SHARE * speed {
+        Heading::Left
+    } else {
+        Heading::Forward
+    }
+}
+
+/// The direction `velocity` goes relative to a body facing `yaw`, in radians: zero ahead,
+/// positive to its right, `±pi` behind. Zero for a body standing still.
+///
+/// Same axes as [`heading`]; the angle rather than the bucket, for the stride turn a diagonal
+/// run gets (see `CharacterVisual::stride_yaw`).
+fn move_angle(velocity: Vec3, yaw: f32) -> f32 {
+    let speed = velocity.x.hypot(velocity.z);
+    if speed <= 1e-4 {
+        return 0.0;
+    }
+    let (sin, cos) = yaw.sin_cos();
+    let forward = -velocity.x * sin - velocity.z * cos;
+    let right = velocity.x * cos - velocity.z * sin;
+    right.atan2(forward)
 }
 
 /// Blends two yaw angles by `alpha`, taking the short way round.
@@ -187,6 +411,55 @@ pub fn interpolated_player_position(simulation: &Simulation) -> Vec3 {
     )
 }
 
+/// Whether the player was teleported during the frame just simulated.
+///
+/// The camera smooths its way to the character, which is what makes running read as
+/// momentum and is exactly wrong for Blink: at the follow rate the camera spends a quarter
+/// of a second travelling ground the mage never crossed. A frame this returns `true` for is
+/// one the camera snaps on instead.
+///
+/// Answered from the event stream rather than by measuring how far the player moved: a
+/// large step between two ticks is also what a fast run, a knockback or a dropped frame
+/// look like, and only the simulation knows which of them happened.
+#[must_use]
+pub fn player_teleported(simulation: &Simulation) -> bool {
+    let player = simulation.player().entity;
+    simulation
+        .events()
+        .iter()
+        .any(|event| matches!(event, CombatEvent::Teleported { entity, .. } if *entity == player))
+}
+
+/// The tick of the latest event this frame that `pick` recognises.
+///
+/// Ticks rather than booleans: the stream is per advance, and a frame that draws without
+/// advancing sees the same events again. A tick lets the reader act on each one once.
+fn last_tick(simulation: &Simulation, pick: impl Fn(&CombatEvent) -> Option<u64>) -> Option<u64> {
+    simulation.events().iter().rev().find_map(pick)
+}
+
+/// Which model an entity is drawn with.
+///
+/// The entire replacement for `if entity == fire_mage { load fire_mage.glb }`: one lookup
+/// that returns a *binding*, with no mesh, material or file name anywhere in it. Adding a
+/// third kind of dummy is a third binding and a line here; adding a second playable
+/// character does not touch this function at all, because characters go through
+/// [`CharacterVisual`].
+///
+/// A free function rather than a method so it can be called while another field of the
+/// extractor is mutably borrowed, which is what the spawn loop does.
+fn binding_for(
+    bindings: &VisualBindings,
+    featured: Option<EntityId>,
+    id: EntityId,
+) -> &ModelBinding {
+    if featured == Some(id) {
+        &bindings.dummy
+    } else {
+        &bindings.dummy_group
+    }
+}
+
 /// When an entity was last damaged, for the hit flash.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Hit {
@@ -194,6 +467,8 @@ struct Hit {
     generation: u32,
     /// Simulation time of the hit.
     at: f32,
+    /// Whether it critically struck, which flashes harder and for longer.
+    critical: bool,
 }
 
 impl RenderExtractor {
@@ -212,6 +487,10 @@ impl RenderExtractor {
             bounds: bindings.ground_bounds,
             visible: true,
             style: InstanceStyle::NEUTRAL,
+            // The floor receives every shadow in the scene and casts none: it is a flat
+            // plane, so its own shadow is either nothing or — seen from a low sun — a
+            // horizon-wide slab of darkness over everything behind it.
+            shadow: ShadowCasting::RECEIVES_ONLY,
         });
         let marker = world.spawn(RenderEntityDesc {
             transform: Transform::IDENTITY,
@@ -220,6 +499,11 @@ impl RenderExtractor {
             bounds: bindings.marker_bounds,
             visible: false,
             style: InstanceStyle::NEUTRAL,
+            // A ring drawn on the floor under the selected target. It is an interface
+            // element that happens to be geometry: it must not cast a shadow, and it must
+            // not be darkened by one either, or the selection it marks becomes unreadable
+            // exactly when the target steps into shade.
+            shadow: ShadowCasting::NONE,
         });
 
         Self {
@@ -232,7 +516,127 @@ impl RenderExtractor {
             stats: VisualStats::default(),
             marker_height: MARKER_HEIGHT,
             hits: Vec::with_capacity(64),
+            player_visual: None,
+            player_opacity: 1.0,
+            featured_dummy: None,
+            view: ViewParams::default(),
+            monsters: MonsterVisuals::new(),
+            player_animate_ms: 0.0,
+            remote_characters: Vec::new(),
         }
+    }
+
+    /// Draws `entity` as a character with `visual` instead of a stand-in. Replaces any visual
+    /// the entity already had.
+    pub fn add_remote_character(&mut self, entity: EntityId, visual: CharacterVisual) {
+        self.remove_remote_character(entity);
+        self.remote_characters.push(RemoteCharacter {
+            entity,
+            visual,
+            frame: None,
+        });
+    }
+
+    /// Stops drawing `entity` as a character.
+    pub fn remove_remote_character(&mut self, entity: EntityId) {
+        self.remote_characters
+            .retain(|remote| remote.entity != entity);
+    }
+
+    /// Whether `entity` is drawn as a remote character.
+    #[must_use]
+    pub fn is_remote_character(&self, entity: EntityId) -> bool {
+        self.remote_characters
+            .iter()
+            .any(|remote| remote.entity == entity)
+    }
+
+    /// Sets the pose a remote character is drawn in this frame.
+    pub fn set_remote_frame(&mut self, entity: EntityId, frame: RemoteFrame) {
+        if let Some(remote) = self
+            .remote_characters
+            .iter_mut()
+            .find(|r| r.entity == entity)
+        {
+            remote.frame = Some(frame);
+        }
+    }
+
+    /// Milliseconds this frame's skeletal animation took — the player and every animated
+    /// monster — and how many characters were animated.
+    ///
+    /// Part of the extraction time, not in addition to it: the split exists so a frame with
+    /// a dungeon's worth of monsters can say how much of its extraction is posing them.
+    #[must_use]
+    pub fn animation_stats(&self) -> (f64, u32) {
+        let (monsters_ms, monsters) = self.monsters.animation_stats();
+        let player = u32::from(self.player_visual.is_some());
+        (monsters_ms + self.player_animate_ms, monsters + player)
+    }
+
+    /// Gives the monsters their models: every enemy whose table row names one of these is
+    /// drawn with it, animated, from the next frame.
+    pub fn set_monster_models(&mut self, models: Vec<MonsterModel>) {
+        self.monsters.set_models(models);
+    }
+
+    /// The monsters' animated visuals, for the developer overlay and the test scene.
+    #[must_use]
+    pub fn monsters(&self) -> &MonsterVisuals {
+        &self.monsters
+    }
+
+    /// Gives the player a character visual.
+    ///
+    /// Until this is called the player is not drawn. That is deliberate: a character is a
+    /// model, a skeleton and a set of clips, and inventing a fallback for a scene that
+    /// forgot to supply one would hide the omission behind a cube.
+    pub fn set_player_visual(&mut self, visual: CharacterVisual) {
+        self.player_visual = Some(visual);
+    }
+
+    /// How much of the player's character to draw, from 1 (all of it) to 0, from the next
+    /// extraction on.
+    ///
+    /// The camera's decision, handed in: it fades the character when it has been pushed in
+    /// close to it. See [`crate::camera::ThirdPersonCamera::character_opacity`].
+    pub fn set_player_opacity(&mut self, opacity: f32) {
+        self.player_opacity = if opacity.is_nan() {
+            1.0
+        } else {
+            opacity.clamp(0.0, 1.0)
+        };
+    }
+
+    /// The opacity the player's character is drawn at.
+    #[must_use]
+    pub fn player_opacity(&self) -> f32 {
+        self.player_opacity
+    }
+
+    /// The player's visual controller, for the developer overlay.
+    #[must_use]
+    pub fn player_visual(&self) -> Option<&CharacterVisual> {
+        self.player_visual.as_ref()
+    }
+
+    /// The player's visual controller, for the character test scene's animation override.
+    pub fn player_visual_mut(&mut self) -> Option<&mut CharacterVisual> {
+        self.player_visual.as_mut()
+    }
+
+    /// Names the single-target dummy, so it is drawn with its own model.
+    pub fn set_featured_dummy(&mut self, id: EntityId) {
+        self.featured_dummy = Some(id);
+    }
+
+    /// Sets this frame's camera position, frame delta and level-of-detail bias.
+    ///
+    /// Called before [`RenderExtractor::extract`]. A scene that never calls it gets the
+    /// finest level of detail everywhere and a character that does not animate, which is
+    /// the correct behaviour for a benchmark that only cares about visibility.
+    pub fn set_view(&mut self, view: ViewParams) {
+        self.view = view;
     }
 
     /// The world the renderer draws.
@@ -281,12 +685,20 @@ impl RenderExtractor {
     /// The render entity standing in for a gameplay entity, if it has one.
     #[must_use]
     pub fn render_entity(&self, id: EntityId) -> Option<RenderEntity> {
+        self.render_parts(id)
+            .and_then(|parts| parts.first().copied())
+    }
+
+    /// Every render entity standing in for a gameplay entity.
+    ///
+    /// One per submesh of the model's current level of detail.
+    #[must_use]
+    pub fn render_parts(&self, id: EntityId) -> Option<&[RenderEntity]> {
         self.mapped
-            .get(id.index())
-            .copied()
-            .flatten()
+            .get(id.index())?
+            .as_ref()
             .filter(|mapped| mapped.generation == id.generation())
-            .map(|mapped| mapped.entity)
+            .map(|mapped| mapped.parts.as_slice())
     }
 
     /// Rebuilds the `RenderWorld` from the simulation's current state.
@@ -302,93 +714,347 @@ impl RenderExtractor {
             self.mapped.resize(game.slot_count(), None);
         }
 
+        // The skinned list is transient: it holds this frame's characters and is rebuilt
+        // from scratch, so it is cleared before anything submits into it.
+        self.world.skinned_mut().clear();
+        self.monsters.observe(simulation);
+
         for slot in 0..self.mapped.len() {
             let id = game.id_at(slot);
             match id {
                 Some(id) => {
-                    let alive = game.is_alive(id);
-                    // Only a *different entity* in this slot justifies a respawn. Dying no
-                    // longer does: Milestone 7 gave `RenderWorld` a mutable material and a
-                    // per-entity style, so a visual change is two stores rather than a slot
-                    // churn. The generation is the only thing a handle cannot survive.
-                    let reused = self.mapped[slot]
-                        .is_some_and(|mapped| mapped.generation != id.generation());
-                    if reused && let Some(mapped) = self.mapped[slot].take() {
-                        self.world.despawn(mapped.entity);
-                        stats.despawned += 1;
+                    // The player is not a `RenderWorld` slot. It is a skinned character, and
+                    // its controller submits it below.
+                    if game.kind(id) == Some(EntityKind::Player) || self.is_remote_character(id) {
+                        self.despawn_parts(slot, &mut stats);
+                        stats.extracted += 1;
+                        continue;
                     }
 
-                    let (mesh, bounds, material) = self.appearance(simulation, id, alive);
+                    let alive = game.is_alive(id);
+                    // A monster with a model is a skinned character, like the player, and
+                    // holds no `RenderWorld` slot.
+                    if let Some(model) = self.monster_model(simulation, id) {
+                        self.despawn_parts(slot, &mut stats);
+                        self.drive_monster(simulation, id, model, alive);
+                        stats.extracted += 1;
+                        continue;
+                    }
+                    self.monsters.forget(slot);
                     let transform = self.transform_for(simulation, id, alive);
                     let style = self.style_for(simulation, id, alive);
+                    let lod = self.select_lod(simulation, id);
 
-                    match self.mapped[slot] {
+                    // A *different entity* in this slot, or a different level of detail,
+                    // means different render entities. Dying does not: `InstanceStyle`
+                    // carries "it died" as a tint, so it costs a store rather than a churn.
+                    let stale = self.mapped[slot].as_ref().is_some_and(|mapped| {
+                        mapped.generation != id.generation() || mapped.lod != lod
+                    });
+                    if stale {
+                        self.despawn_parts(slot, &mut stats);
+                    }
+
+                    match self.mapped[slot].as_mut() {
                         Some(mapped) => {
-                            self.world.set_transform(mapped.entity, transform, bounds);
-                            self.world.set_style(mapped.entity, style);
-                            // Cheap and unconditional: comparing first would cost a load and
-                            // a branch to avoid a store of the same width.
-                            self.world.set_material(mapped.entity, material);
+                            let binding = binding_for(&self.bindings, self.featured_dummy, id);
+                            let Some(level) = binding.lod(mapped.lod) else {
+                                continue;
+                            };
+                            for (entity, part) in mapped.parts.iter().zip(&level.parts) {
+                                self.world.set_transform(*entity, transform, part.bounds);
+                                self.world.set_style(*entity, style);
+                            }
                             if mapped.alive != alive {
+                                mapped.alive = alive;
                                 stats.restyled += 1;
-                                self.mapped[slot] = Some(Mapped { alive, ..mapped });
                             }
                         }
                         None => {
-                            let entity = self.world.spawn(RenderEntityDesc {
-                                transform,
-                                mesh,
-                                material,
-                                bounds,
-                                visible: true,
-                                style,
-                            });
+                            let binding = binding_for(&self.bindings, self.featured_dummy, id);
+                            let Some(level) = binding.lod(lod) else {
+                                continue;
+                            };
+                            let mut parts = Vec::with_capacity(level.parts.len());
+                            for part in &level.parts {
+                                let PartGeometry::Rigid(mesh) = part.geometry else {
+                                    // A skinned part on a non-character. Nothing authors one,
+                                    // and the rigid path has no palette to give it.
+                                    continue;
+                                };
+                                parts.push(self.world.spawn(RenderEntityDesc {
+                                    transform,
+                                    mesh,
+                                    material: part.material,
+                                    bounds: part.bounds,
+                                    visible: true,
+                                    style,
+                                    // A dummy, an enemy or anything else the simulation
+                                    // owns. Its shadow on the ground is what tells the
+                                    // player where it is standing.
+                                    shadow: ShadowCasting::CASTS_AND_RECEIVES,
+                                }));
+                                stats.spawned += 1;
+                            }
                             self.mapped[slot] = Some(Mapped {
-                                entity,
+                                parts,
                                 generation: id.generation(),
                                 alive,
+                                lod,
                             });
-                            stats.spawned += 1;
                         }
                     }
                     stats.extracted += 1;
                 }
                 None => {
-                    if let Some(mapped) = self.mapped[slot].take() {
-                        self.world.despawn(mapped.entity);
-                        stats.despawned += 1;
-                    }
+                    self.despawn_parts(slot, &mut stats);
+                    self.monsters.forget(slot);
                 }
             }
         }
 
+        self.update_player_visual(simulation);
+        self.update_remote_characters(simulation);
         self.update_marker(simulation);
         self.stats = stats;
         &self.world
     }
 
-    /// Which mesh, bounds and material an entity is drawn with.
-    fn appearance(
-        &self,
-        simulation: &Simulation,
-        id: EntityId,
-        alive: bool,
-    ) -> (MeshHandle, Sphere, MaterialHandle) {
-        match simulation.world().kind(id) {
-            Some(EntityKind::Player) => (
-                self.bindings.player_mesh,
-                self.bindings.player_bounds,
-                self.bindings.player_material,
-            ),
-            _ => (
-                self.bindings.dummy_mesh,
-                self.bindings.dummy_bounds,
-                if alive {
-                    self.bindings.dummy_material
-                } else {
-                    self.bindings.dead_material
-                },
-            ),
+    /// The monster model enemy `id` is drawn with, if its table row names one there is.
+    fn monster_model(&self, simulation: &Simulation, id: EntityId) -> Option<usize> {
+        if simulation.world().kind(id) != Some(EntityKind::Enemy) {
+            return None;
+        }
+        let look = simulation.brain(id)?.archetype().look;
+        self.monsters.model_index(look.model)
+    }
+
+    /// Animates and draws one monster from its body, its brain and this frame's events.
+    fn drive_monster(&mut self, simulation: &Simulation, id: EntityId, model: usize, alive: bool) {
+        let game = simulation.world();
+        let Some(body) = game.body(id) else {
+            return;
+        };
+        let alpha = simulation.timestep().alpha();
+        let previous = game.previous_body(id).unwrap_or(body);
+        let cast = simulation
+            .brain(id)
+            .and_then(|brain| brain.cast())
+            .filter(|_| alive);
+        let frame = MonsterFrame {
+            position: lerp_position(previous.position, body.position, alpha),
+            facing_yaw: lerp_angle(previous.facing_yaw, body.facing_yaw, alpha),
+            speed: if alive { body.horizontal_speed() } else { 0.0 },
+            heading: heading(body.velocity, body.facing_yaw),
+            grounded: body.grounded || !alive,
+            rising: body.state == MovementState::Jumping,
+            height: game.height(id),
+            cast: cast.map(|cast| (cast.duration, cast.fraction())),
+            dead: !alive,
+        };
+        let style = self.monster_style(simulation, id, alive);
+        self.monsters.drive(
+            id,
+            model,
+            frame,
+            self.view.delta_seconds,
+            style,
+            &mut self.world,
+            self.view.camera_position,
+            self.view.lod_bias,
+        );
+    }
+
+    /// [`RenderExtractor::style_for`] for a monster drawn with its own model.
+    ///
+    /// The model carries its own colours, so the table's tint is only a wash over them — a
+    /// fifth of the way — where on the shared stand-in it *was* the colour. A corpse dims
+    /// rather than greys: it is still that monster, lying there.
+    fn monster_style(&self, simulation: &Simulation, id: EntityId, alive: bool) -> InstanceStyle {
+        if !alive {
+            return InstanceStyle {
+                tint: CORPSE_TINT,
+                ..InstanceStyle::NEUTRAL
+            }
+            .see_through();
+        }
+        let look = simulation.brain(id).map(|brain| brain.archetype().look);
+        let fraction = simulation
+            .world()
+            .health(id)
+            .map_or(1.0, |health| health.fraction().clamp(0.0, 1.0));
+        let shade = MONSTER_HEALTH_FLOOR + (1.0 - MONSTER_HEALTH_FLOOR) * fraction;
+        let tint = look.map_or([1.0; 3], |look| look.tint);
+        let wash = |channel: f32| shade * (1.0 + (channel - 1.0) * MONSTER_TINT_WASH);
+        // See-through: a monster has no static collision, so the camera can end up behind
+        // or inside one, and it is then exactly the thing hiding the player's character.
+        let mut style = InstanceStyle {
+            tint: [wash(tint[0]), wash(tint[1]), wash(tint[2]), 1.0],
+            emissive: look.map_or(0.0, |look| look.glow * EMPOWERED_GLOW),
+            ..InstanceStyle::NEUTRAL
+        }
+        .see_through();
+        if simulation.player().target == Some(id) {
+            style.emissive += TARGET_GLOW;
+        }
+        self.apply_hit_flash(simulation, id, &mut style);
+        style
+    }
+
+    /// Removes every render entity standing in for gameplay slot `slot`.
+    fn despawn_parts(&mut self, slot: usize, stats: &mut VisualStats) {
+        let Some(mapped) = self.mapped[slot].take() else {
+            return;
+        };
+        for entity in mapped.parts {
+            self.world.despawn(entity);
+            stats.despawned += 1;
+        }
+    }
+
+    /// Which level of detail an entity's model should be drawn at.
+    fn select_lod(&self, simulation: &Simulation, id: EntityId) -> usize {
+        let binding = binding_for(&self.bindings, self.featured_dummy, id);
+        let Some(body) = simulation.world().body(id) else {
+            return 0;
+        };
+        // From the middle of the entity rather than its feet, for the same reason a
+        // character's level is: a tall model whose feet are close and whose head is far
+        // should not swap while its head is still in frame.
+        let centre = body.position + Vec3::new(0.0, simulation.world().height(id) * 0.5, 0.0);
+        let distance = (centre - self.view.camera_position).length();
+        binding.select_lod(distance, self.view.lod_bias)
+    }
+
+    /// Drives the player's character visual from the simulation and submits it.
+    ///
+    /// This is the whole of the gameplay-to-animation seam:
+    ///
+    /// ```text
+    /// Body { position, facing_yaw, velocity, grounded, state }   Simulation::casting()
+    ///                              │                                      │
+    ///                              └──────────────┬───────────────────────┘
+    ///                                             ▼
+    ///                                     CharacterState
+    /// ```
+    ///
+    /// Every field is read. None is written. The simulation does not know this ran.
+    fn update_player_visual(&mut self, simulation: &Simulation) {
+        let Some(visual) = self.player_visual.as_mut() else {
+            return;
+        };
+        let game = simulation.world();
+        let player = simulation.player().entity;
+        let Some(body) = game.body(player) else {
+            return;
+        };
+
+        // Interpolated between the last two ticks, exactly like every other drawable, so the
+        // character and the camera that follows it agree about where it is.
+        let alpha = simulation.timestep().alpha();
+        let previous = game.previous_body(player).unwrap_or(body);
+        let position = lerp_position(previous.position, body.position, alpha);
+        let facing_yaw = lerp_angle(previous.facing_yaw, body.facing_yaw, alpha);
+
+        let speed = body.horizontal_speed();
+        let heading = heading(body.velocity, body.facing_yaw);
+        let cast = simulation.casting();
+        // The latest ability the player used, from the same event the release tick comes
+        // from, so the motion and the tick it plays on can never describe two different uses.
+        let used = simulation
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                CombatEvent::AbilityUsed {
+                    source,
+                    ability,
+                    tick,
+                    ..
+                } if *source == player => Some((*tick, ability.fire())),
+                _ => None,
+            });
+        let state = CharacterState {
+            position,
+            facing_yaw,
+            speed,
+            heading,
+            move_angle: move_angle(body.velocity, body.facing_yaw),
+            grounded: body.grounded,
+            // From the movement state the simulation already derives, rather than from a
+            // second look at the velocity: two sources for "am I falling" is exactly what
+            // `MovementState`'s own documentation says not to have.
+            rising: body.state == MovementState::Jumping,
+            height: game.height(player),
+            cast: cast
+                .map(|cast| CastVisual::for_cast(cast.duration, cast.ability.definition().motion)),
+            cast_progress: cast.map_or(0.0, |cast| cast.fraction()),
+            cast_started: last_tick(simulation, |event| match event {
+                CombatEvent::CastStarted { source, tick, .. } if *source == player => Some(*tick),
+                _ => None,
+            }),
+            released: used.map(|(tick, _)| tick),
+            // Read off the ability's own row, so the visual layer never learns which ability
+            // it was: only which kind of motion its row asks the body for.
+            released_motion: used
+                .and_then(|(_, ability)| ability)
+                .and_then(|ability| slot_for_motion(ability.definition().motion)),
+            // A model with a death clip plays it and holds the last frame; one without keeps
+            // standing. Respawning clears it and the character stands straight back up.
+            dead: !simulation.player_alive(),
+        };
+
+        let started = std::time::Instant::now();
+        let result = visual.update(self.view.delta_seconds, state);
+        self.player_animate_ms = started.elapsed().as_secs_f64() * 1e3;
+        if let Err(error) = result {
+            // A clip bound to the wrong skeleton. Validation rejects it at load, so reaching
+            // here means an asset changed underneath a loaded model — worth a line, not a
+            // crash, and the character holds its last pose.
+            log::error!("character animation failed: {error}");
+        }
+        // Not see-through: the camera's tube is aimed *at* the character, and the character
+        // has its own fade.
+        visual.submit_styled(
+            &mut self.world,
+            self.view.camera_position,
+            self.view.lod_bias,
+            InstanceStyle::NEUTRAL.with_opacity(self.player_opacity),
+        );
+    }
+
+    /// Animates and submits every remote character that has a pose this frame.
+    fn update_remote_characters(&mut self, simulation: &Simulation) {
+        let game = simulation.world();
+        for remote in &mut self.remote_characters {
+            let Some(frame) = remote.frame else {
+                continue;
+            };
+            let state = CharacterState {
+                position: frame.position,
+                facing_yaw: frame.facing_yaw,
+                speed: frame.velocity.x.hypot(frame.velocity.z),
+                heading: heading(frame.velocity, frame.facing_yaw),
+                move_angle: move_angle(frame.velocity, frame.facing_yaw),
+                grounded: frame.grounded,
+                rising: !frame.grounded && frame.velocity.y > 0.0,
+                height: game.height(remote.entity),
+                cast: None,
+                cast_progress: 0.0,
+                cast_started: None,
+                released: None,
+                released_motion: None,
+                dead: frame.dead,
+            };
+            if let Err(error) = remote.visual.update(self.view.delta_seconds, state) {
+                log::error!("remote character animation failed: {error}");
+            }
+            remote.visual.submit_styled(
+                &mut self.world,
+                self.view.camera_position,
+                self.view.lod_bias,
+                InstanceStyle::NEUTRAL.with_opacity(frame.opacity),
+            );
         }
     }
 
@@ -402,18 +1068,49 @@ impl RenderExtractor {
     /// Gameplay is not consulted about any of it. `engine-game` has no idea a tint exists.
     fn style_for(&self, simulation: &Simulation, id: EntityId, alive: bool) -> InstanceStyle {
         if !alive {
-            return InstanceStyle::NEUTRAL;
+            // What used to be a second material handle. A dead dummy darkens towards a
+            // lifeless grey; it does not need a `dead_material` for every model in the game.
+            return InstanceStyle {
+                tint: DEAD_TINT,
+                ..InstanceStyle::NEUTRAL
+            }
+            .see_through();
         }
 
-        let mut style = InstanceStyle::NEUTRAL;
+        // See-through for the same reason a monster is: the camera does not collide with
+        // dummies, so one can stand between the eye and the character.
+        let mut style = InstanceStyle::NEUTRAL.see_through();
+
+        // An enemy is tinted towards its own colour so a fight is legible at a glance: the
+        // things that hit back do not look like the things that stand there. It is a tint
+        // on the shared dummy material rather than a second model, which costs no upload,
+        // no binding and no draw call - the same trick the health shade uses.
+        let hostile = simulation.world().kind(id) == Some(EntityKind::Enemy);
 
         // Wounded enemies darken towards their material's own colour rather than towards
         // black: a health tint that reached zero would make a nearly-dead dummy invisible
         // against the arena floor.
+        // Each monster's own colour, from its table row: a Bonecaster reads as bone and an
+        // Acolyte as violet from across the room, and an empowered add glows. Numbers the
+        // gameplay table carries and presentation reads — nothing here knows which monster
+        // is which.
+        let look = simulation.brain(id).map(|brain| brain.archetype().look);
         if let Some(health) = simulation.world().health(id) {
             let fraction = health.fraction().clamp(0.0, 1.0);
             let shade = HEALTH_TINT_FLOOR + (1.0 - HEALTH_TINT_FLOOR) * fraction;
-            style.tint = [shade, shade * 0.94, shade * 0.90, 1.0];
+            style.tint = match look {
+                Some(look) if hostile => [
+                    shade * look.tint[0],
+                    shade * look.tint[1],
+                    shade * look.tint[2],
+                    1.0,
+                ],
+                _ if hostile => [shade, shade * 0.45, shade * 0.38, 1.0],
+                _ => [shade, shade * 0.94, shade * 0.90, 1.0],
+            };
+        }
+        if let Some(look) = look {
+            style.emissive += look.glow * EMPOWERED_GLOW;
         }
 
         // The current target glows. This is what replaces "the marker is the only thing that
@@ -422,15 +1119,28 @@ impl RenderExtractor {
             style.emissive += TARGET_GLOW;
         }
 
+        self.apply_hit_flash(simulation, id, &mut style);
+
+        style
+    }
+
+    /// Lifts `style` towards white while `id`'s last hit is still flashing.
+    fn apply_hit_flash(&self, simulation: &Simulation, id: EntityId, style: &mut InstanceStyle) {
         // A recent hit flashes white. Driven from simulation time, so the flash lasts the
         // same wall-clock duration at 60 FPS and at 1,400.
         if let Some(hit) = self.hits.get(id.index()).copied().flatten()
             && hit.generation == id.generation()
         {
             let age = (simulation.time() as f32 - hit.at).max(0.0);
-            if age < HIT_FLASH_SECONDS {
-                let strength = 1.0 - age / HIT_FLASH_SECONDS;
-                style.emissive += HIT_FLASH_STRENGTH * strength;
+            let emphasis = if hit.critical {
+                CRITICAL_FLASH_SCALE
+            } else {
+                1.0
+            };
+            let duration = HIT_FLASH_SECONDS * emphasis;
+            if age < duration {
+                let strength = 1.0 - age / duration;
+                style.emissive += HIT_FLASH_STRENGTH * emphasis * strength;
                 let lift = 1.0 + HIT_FLASH_LIFT * strength;
                 style.tint = [
                     (style.tint[0] * lift).min(1.0),
@@ -440,8 +1150,6 @@ impl RenderExtractor {
                 ];
             }
         }
-
-        style
     }
 
     /// Records that an entity was damaged at a simulation time, for the hit flash.
@@ -450,28 +1158,55 @@ impl RenderExtractor {
     /// announces damage as an event and presentation observes it, which is the same
     /// arrangement the damage meter uses.
     pub fn note_hit(&mut self, id: EntityId, at: f32) {
+        self.note_damage(id, at, false);
+    }
+
+    /// Records that an entity was damaged, and whether the hit critically struck.
+    ///
+    /// A later ordinary hit does **not** downgrade a critical flash that is still running:
+    /// during a burn every target takes a tick every second, and letting one overwrite the
+    /// flash of the Pyroblast that landed a frame earlier would hide exactly the hit worth
+    /// seeing.
+    pub fn note_damage(&mut self, id: EntityId, at: f32, critical: bool) {
         if self.hits.len() <= id.index() {
             self.hits.resize(id.index() + 1, None);
         }
-        self.hits[id.index()] = Some(Hit {
+        let slot = &mut self.hits[id.index()];
+        let keep_critical = slot.is_some_and(|hit| {
+            hit.critical
+                && hit.generation == id.generation()
+                && at - hit.at < HIT_FLASH_SECONDS * CRITICAL_FLASH_SCALE
+        });
+        *slot = Some(Hit {
             generation: id.generation(),
             at,
+            critical: critical || keep_critical,
         });
     }
 
     /// Where and how an entity is drawn.
     ///
-    /// Gameplay stores the position of an entity's **feet**; a mesh is centred on its own
-    /// origin. Lifting by half the height is the entire difference between the two spaces,
-    /// and it lives here rather than in the simulation because it is a property of the
-    /// model, not of the character.
+    /// Gameplay stores the position of an entity's **feet**, and every model in this project
+    /// is authored standing on its own origin — so the two spaces agree and there is no lift.
+    /// That is a change from the placeholder era, where a mesh was a cube centred on itself
+    /// and had to be raised by half its height.
+    ///
+    /// The scale is **uniform**, from gameplay's height and the model's authored height.
+    /// Stretching a model to the capsule's radius as well, which is what the cube did, would
+    /// squash a dummy sideways to fit a collision volume that was never meant to describe its
+    /// shape.
     fn transform_for(&self, simulation: &Simulation, id: EntityId, alive: bool) -> Transform {
         let game = simulation.world();
         let Some(body) = game.body(id) else {
             return Transform::IDENTITY;
         };
         let height = game.height(id);
-        let width = game.radius(id) * 2.0;
+        let binding = binding_for(&self.bindings, self.featured_dummy, id);
+        let scale = if binding.model_height > 1e-3 {
+            height / binding.model_height
+        } else {
+            1.0
+        };
 
         // Where the entity is *now*, for a value of "now" between the last two ticks.
         let alpha = simulation.timestep().alpha();
@@ -480,27 +1215,32 @@ impl RenderExtractor {
         let yaw = lerp_angle(previous.facing_yaw, body.facing_yaw, alpha);
 
         if alive {
-            Transform::from_translation(position + Vec3::new(0.0, height * 0.5, 0.0))
+            Transform::from_translation(position)
                 .with_rotation(Quat::from_yaw_pitch_roll(yaw, 0.0, 0.0))
-                .with_scale(Vec3::new(width, height, width))
+                .with_scale(Vec3::splat(scale))
         } else {
-            // A dead dummy lies down. A material change alone reads as a recolour; falling
-            // over is what makes a kill legible from across the arena.
-            Transform::from_translation(position + Vec3::new(0.0, width * 0.5, 0.0))
+            // A dead dummy lies down. A tint alone reads as a recolour; falling over is what
+            // makes a kill legible from across the arena. Tipping about its own base means
+            // the model ends up lying on the floor rather than half inside it.
+            Transform::from_translation(position + Vec3::new(0.0, game.radius(id), 0.0))
                 .with_rotation(
                     Quat::from_axis_angle(Vec3::X, std::f32::consts::FRAC_PI_2)
                         * Quat::from_yaw_pitch_roll(yaw, 0.0, 0.0),
                 )
-                .with_scale(Vec3::new(width, height, width))
+                .with_scale(Vec3::splat(scale))
         }
     }
 
     /// Moves the target marker over the selected target, or hides it.
     fn update_marker(&mut self, simulation: &Simulation) {
+        // Never over the player's own head: selecting yourself (to heal, to read your own
+        // frame) is a selection, and a cube floating above your character says nothing the
+        // unit frame does not already say better.
+        let player = simulation.player().entity;
         let target = simulation
             .player()
             .target
-            .filter(|id| simulation.world().is_alive(*id));
+            .filter(|id| *id != player && simulation.world().is_alive(*id));
 
         let Some(target) = target else {
             self.world.set_visible(self.marker, false);
@@ -539,29 +1279,124 @@ mod tests {
     use super::*;
     use engine_game::arena::{self, ArenaConfig};
     use engine_game::command::PlayerCommand;
-    use engine_game::sim::Simulation;
+
+    /// A binding over a real procedural model, with handles nothing uploaded.
+    ///
+    /// The extractor never dereferences a handle — that is the renderer's job — so a model
+    /// can be placed, levelled and styled with no device present. `base` keeps the two
+    /// dummy variants' handles distinguishable.
+    fn rigid_binding(model: &engine_assets::ModelAsset, base: u32) -> ModelBinding {
+        ModelBinding {
+            lods: model
+                .lods
+                .iter()
+                .enumerate()
+                .map(|(level, lod)| ModelLodBinding {
+                    parts: lod
+                        .submeshes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, submesh)| ModelPart {
+                            geometry: PartGeometry::Rigid(MeshHandle::new(
+                                base + (level * 8 + index) as u32,
+                                1,
+                            )),
+                            material: MaterialHandle::new(base + submesh.material as u32, 1),
+                            bounds: submesh.bounds,
+                        })
+                        .collect(),
+                    min_distance: lod.min_distance,
+                    bounds: lod.bounds(),
+                })
+                .collect(),
+            skinned: false,
+            model_height: 1.9,
+        }
+    }
 
     fn bindings() -> VisualBindings {
         let unit = Sphere::new(Vec3::ZERO, 0.87);
+        let single = engine_assets::procedural::training_dummy(
+            engine_assets::procedural::DummyVariant::Single,
+        );
+        let group = engine_assets::procedural::training_dummy(
+            engine_assets::procedural::DummyVariant::Group,
+        );
         VisualBindings {
-            player_mesh: MeshHandle::new(0, 1),
-            player_bounds: unit,
-            player_material: MaterialHandle::new(0, 1),
-            dummy_mesh: MeshHandle::new(1, 1),
-            dummy_bounds: unit,
-            dummy_material: MaterialHandle::new(1, 1),
-            dead_material: MaterialHandle::new(2, 1),
-            ground_mesh: MeshHandle::new(2, 1),
+            dummy: rigid_binding(&single, 0),
+            dummy_group: rigid_binding(&group, 100),
+            ground_mesh: MeshHandle::new(900, 1),
             ground_bounds: Sphere::new(Vec3::ZERO, 1.0),
-            ground_material: MaterialHandle::new(3, 1),
-            marker_mesh: MeshHandle::new(3, 1),
+            ground_material: MaterialHandle::new(900, 1),
+            marker_mesh: MeshHandle::new(901, 1),
             marker_bounds: unit,
-            marker_material: MaterialHandle::new(4, 1),
+            marker_material: MaterialHandle::new(901, 1),
+        }
+    }
+
+    /// How many render entities one dummy costs at its finest level of detail.
+    fn parts_per_dummy() -> usize {
+        let Some(lod) = bindings().dummy.lods.first().cloned() else {
+            panic!("LOD0 exists");
+        };
+        lod.parts.len()
+    }
+
+    /// A FireMage visual over handles nothing uploaded, for the same reason as above.
+    fn player_visual() -> CharacterVisual {
+        let Ok(model) = engine_assets::procedural::fire_mage() else {
+            panic!("the FireMage must build");
+        };
+        let model = std::sync::Arc::new(model);
+        let binding = ModelBinding {
+            lods: model
+                .lods
+                .iter()
+                .enumerate()
+                .map(|(level, lod)| ModelLodBinding {
+                    parts: lod
+                        .submeshes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, submesh)| ModelPart {
+                            geometry: PartGeometry::Skinned(
+                                engine_render_data::SkinnedMeshHandle::new(
+                                    (500 + level * 8 + index) as u32,
+                                    1,
+                                ),
+                            ),
+                            material: MaterialHandle::new(500 + submesh.material as u32, 1),
+                            bounds: submesh.bounds,
+                        })
+                        .collect(),
+                    min_distance: lod.min_distance,
+                    bounds: lod.bounds(),
+                })
+                .collect(),
+            skinned: true,
+            model_height: 1.8,
+        };
+        match CharacterVisual::new(
+            engine_assets::procedural::fire_mage_character(),
+            model,
+            binding,
+        ) {
+            Ok(visual) => visual,
+            Err(error) => panic!("the FireMage must resolve: {error}"),
         }
     }
 
     fn extractor() -> RenderExtractor {
-        RenderExtractor::new(bindings(), 200.0)
+        let mut extractor = RenderExtractor::new(bindings(), 200.0);
+        extractor.set_player_visual(player_visual());
+        // The finest level everywhere, so a test that counts render entities is measuring
+        // extraction rather than where the default camera happens to be. Level selection
+        // has its own tests, which set a view on purpose.
+        extractor.set_view(ViewParams {
+            lod_bias: 0.0,
+            ..ViewParams::default()
+        });
+        extractor
     }
 
     fn arena_sim() -> Simulation {
@@ -571,15 +1406,116 @@ mod tests {
     }
 
     #[test]
+    fn the_cameras_opacity_reaches_every_part_of_the_player_and_nothing_else() {
+        let simulation = arena_sim();
+        let mut extractor = extractor();
+        extractor.extract(&simulation);
+        let skinned = extractor.render_world().skinned().instances().to_vec();
+        assert!(!skinned.is_empty(), "the player was drawn");
+        assert!(skinned.iter().all(|instance| instance.style.opacity == 1.0));
+        assert!(
+            skinned.iter().all(|instance| !instance.style.see_through),
+            "the camera's own target is never see-through"
+        );
+
+        extractor.set_player_opacity(0.4);
+        extractor.extract(&simulation);
+        let skinned = extractor.render_world().skinned().instances();
+        assert!(
+            skinned
+                .iter()
+                .all(|instance| (instance.style.opacity - 0.4).abs() < 1e-6),
+            "a part of the player was not faded"
+        );
+        // The dummies the camera does not collide with are see-through, and whole.
+        let world = extractor.render_world();
+        let dummies = (0..world.slot_count())
+            .filter(|&slot| world.is_drawable(slot) && world.styles()[slot].see_through)
+            .count();
+        assert!(dummies > 0, "no dummy is see-through");
+        assert!(
+            world.styles().iter().all(|style| style.opacity == 1.0),
+            "something other than the player was faded"
+        );
+
+        extractor.set_player_opacity(f32::NAN);
+        assert_eq!(
+            extractor.player_opacity(),
+            1.0,
+            "a meaningless opacity is whole"
+        );
+    }
+
+    #[test]
+    fn a_dead_player_is_drawn_dead_and_stands_up_when_revived() {
+        let mut simulation = arena_sim();
+        let mut extractor = extractor();
+        extractor.extract(&simulation);
+        let dead = |extractor: &RenderExtractor| {
+            extractor
+                .player_visual()
+                .expect("the scene set one up")
+                .state()
+                .dead
+        };
+        assert!(!dead(&extractor));
+
+        simulation.kill_player();
+        extractor.extract(&simulation);
+        assert!(
+            dead(&extractor),
+            "the player died and the model was not told"
+        );
+
+        simulation.revive_player();
+        extractor.extract(&simulation);
+        assert!(!dead(&extractor), "a revived player is still drawn dead");
+    }
+
+    #[test]
+    fn a_blink_is_reported_as_a_teleport_and_running_is_not() {
+        // The distinction the camera turns on: both move the mage several metres between two
+        // ticks, and only one of them is somewhere they never travelled.
+        let mut simulation = arena_sim();
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+            face_camera: false,
+        });
+        simulation.step_many(30);
+        assert!(!player_teleported(&simulation), "running is not a teleport");
+
+        simulation
+            .cast(engine_game::firemage::FireAbility::Blink)
+            .expect("blink is ready");
+        assert!(player_teleported(&simulation));
+
+        // And it is over once the frame it happened on is: the stream is cleared per
+        // advance, so the camera snaps once rather than for as long as it keeps looking.
+        simulation.step_once();
+        assert!(!player_teleported(&simulation));
+    }
+
+    #[test]
     fn every_gameplay_entity_becomes_something_drawable() {
         let simulation = arena_sim();
         let mut extractor = extractor();
-        let world = extractor.extract(&simulation);
+        extractor.extract(&simulation);
+        let world = extractor.render_world();
 
-        // Every entity, plus the floor and the target marker.
-        assert_eq!(world.len(), simulation.world().len() + 2);
+        // Every dummy costs one render entity per submesh of its model; the player costs
+        // none, because it is a skinned character rather than a `RenderWorld` slot. Plus the
+        // floor and the target marker.
+        let dummies = simulation.world().len() - 1;
+        let parts = dummies * parts_per_dummy();
+        assert_eq!(world.len(), parts + 2);
+        // The player is drawn, and it is drawn through the skinned path.
+        assert_eq!(world.skinned().len(), 4, "the FireMage's four submeshes");
+        assert!(!world.skinned().palette().is_empty());
+
         assert_eq!(extractor.stats().extracted, simulation.world().len());
-        assert_eq!(extractor.stats().spawned, simulation.world().len());
+        assert_eq!(extractor.stats().spawned, parts);
     }
 
     #[test]
@@ -589,6 +1525,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(30);
 
@@ -596,21 +1533,21 @@ mod tests {
         extractor.extract(&simulation);
 
         let player = simulation.player().entity;
-        let entity = extractor
-            .render_entity(player)
-            .expect("the player was extracted");
-        let transform = extractor.render_world().transforms()[entity.index()];
+        let visual = extractor.player_visual().expect("the scene set one up");
+        let transform = visual.transform();
         let body = simulation.player_body().expect("the player exists");
         let height = simulation.world().height(player);
 
         // Within the controller's skin width of standing on the floor. Collision keeps the
-        // capsule a few millimetres clear of every surface it rests on, and the mesh is
-        // drawn where the capsule is rather than where the floor is.
+        // capsule a few millimetres clear of every surface it rests on, and the model is
+        // authored standing on its own origin — so the drawn position *is* the feet, with
+        // none of the half-height lift a centred cube needed.
         assert!(
-            (transform.translation.y - height * 0.5).abs() < 0.02,
-            "the mesh is not standing on the floor: {transform:?}"
+            transform.translation.y.abs() < 0.02,
+            "the model is not standing on the floor: {transform:?}"
         );
-        assert!((transform.scale.y - height).abs() < 1e-4);
+        let expected_scale = height / visual.def().model_height;
+        assert!((transform.scale.y - expected_scale).abs() < 1e-4);
 
         // Since Milestone 9 the drawn position is *interpolated*, so it is the blend of the
         // last two ticks rather than the latest one. At alpha 0 — which is where
@@ -631,6 +1568,52 @@ mod tests {
             transform.translation.z < 0.0,
             "moving forward should still have carried it down -Z: {transform:?}"
         );
+    }
+
+    #[test]
+    fn moving_under_a_camera_pinned_facing_reports_which_way_it_goes() {
+        let run = |forward: f32, right: f32| {
+            let mut simulation = arena_sim();
+            simulation.push_command(PlayerCommand::Move {
+                forward,
+                right,
+                yaw: 0.0,
+                face_camera: true,
+            });
+            simulation.step_many(30);
+            let mut extractor = extractor();
+            extractor.extract(&simulation);
+            extractor
+                .player_visual()
+                .expect("the scene set one up")
+                .state()
+                .heading
+        };
+        assert_eq!(run(-1.0, 0.0), Heading::Backward);
+        assert_eq!(run(1.0, 0.0), Heading::Forward);
+        assert_eq!(run(0.0, 1.0), Heading::Right);
+        assert_eq!(run(0.0, -1.0), Heading::Left);
+        assert_eq!(
+            run(1.0, 1.0),
+            Heading::Forward,
+            "a diagonal forwards runs forwards"
+        );
+        assert_eq!(
+            run(-1.0, 1.0),
+            Heading::Backward,
+            "a diagonal backwards backpedals"
+        );
+    }
+
+    #[test]
+    fn heading_turns_with_the_facing() {
+        // Facing +X, which is what `face_movement` makes of moving +X: moving +X is then
+        // forwards, +Z is the character's right and -Z its left.
+        let yaw = -std::f32::consts::FRAC_PI_2;
+        assert_eq!(heading(Vec3::new(1.0, 0.0, 0.0), yaw), Heading::Forward);
+        assert_eq!(heading(Vec3::new(0.0, 0.0, -1.0), yaw), Heading::Left);
+        assert_eq!(heading(Vec3::new(0.0, 0.0, 1.0), yaw), Heading::Right);
+        assert_eq!(heading(Vec3::ZERO, yaw), Heading::Forward);
     }
 
     #[test]
@@ -668,9 +1651,10 @@ mod tests {
         let upright = extractor
             .render_entity(target)
             .expect("the dummy was extracted");
-        assert_eq!(
-            extractor.render_world().materials()[upright.index()],
-            bindings().dummy_material
+        assert_ne!(
+            extractor.render_world().styles()[upright.index()].tint,
+            DEAD_TINT,
+            "a living dummy is not tinted like a corpse"
         );
 
         simulation.world_mut().damage(target, 1_000_000.0);
@@ -681,8 +1665,8 @@ mod tests {
             .render_entity(target)
             .expect("the corpse is still drawn");
         assert_eq!(
-            extractor.render_world().materials()[fallen.index()],
-            bindings().dead_material
+            extractor.render_world().styles()[fallen.index()].tint,
+            DEAD_TINT
         );
         assert_eq!(extractor.stats().restyled, 1);
 
@@ -719,8 +1703,8 @@ mod tests {
             "the change was still noticed"
         );
         assert_eq!(
-            extractor.render_world().materials()[after.index()],
-            bindings().dead_material
+            extractor.render_world().styles()[after.index()].tint,
+            DEAD_TINT
         );
     }
 
@@ -914,6 +1898,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(30);
 
@@ -966,6 +1951,7 @@ mod tests {
             forward: 1.0,
             right: 0.0,
             yaw: 0.0,
+            face_camera: false,
         });
         simulation.step_many(30);
         // Advance a partial tick so alpha is non-zero without a tick running.
@@ -1018,6 +2004,7 @@ mod tests {
                     forward: 1.0,
                     right: 0.4,
                     yaw: 0.3,
+                    face_camera: false,
                 });
                 simulation.step_once();
             }
@@ -1068,8 +2055,12 @@ mod tests {
         simulation.world_mut().despawn(dummy);
         extractor.extract(&simulation);
 
-        assert_eq!(extractor.render_world().len(), before - 1);
-        assert_eq!(extractor.stats().despawned, 1);
+        assert_eq!(
+            extractor.render_world().len(),
+            before - parts_per_dummy(),
+            "every part of the dummy stopped being drawn"
+        );
+        assert_eq!(extractor.stats().despawned, parts_per_dummy());
         assert_eq!(extractor.render_entity(dummy), None);
     }
 
@@ -1130,6 +2121,19 @@ mod tests {
     }
 
     #[test]
+    fn selecting_yourself_puts_no_marker_over_your_head() {
+        let mut simulation = arena_sim();
+        let mut extractor = extractor();
+        simulation.player_mut().target = Some(simulation.player().entity);
+        extractor.extract(&simulation);
+        assert!(
+            !extractor
+                .render_world()
+                .is_drawable(extractor.marker.index())
+        );
+    }
+
+    #[test]
     fn a_steady_scene_stops_allocating() {
         // Milestone 25: extraction is a copy into storage that already exists.
         let mut simulation = arena_sim();
@@ -1145,6 +2149,7 @@ mod tests {
                 forward: 1.0,
                 right: 0.3,
                 yaw: 0.2,
+                face_camera: false,
             });
             simulation.step_once();
             extractor.extract(&simulation);
@@ -1160,7 +2165,107 @@ mod tests {
     fn a_thousand_dummies_extract_without_a_device() {
         let simulation = arena::training_arena(&ArenaConfig::with_group(1_000));
         let mut extractor = extractor();
-        let world = extractor.extract(&simulation);
-        assert_eq!(world.len(), 1_002 + 2);
+        extractor.extract(&simulation);
+        let world = extractor.render_world();
+        // A thousand group dummies, the featured one and the friendly one in the main hall,
+        // each at its finest level, plus the floor and the marker. The player is in the
+        // skinned list rather than here.
+        assert_eq!(world.len(), 1_002 * parts_per_dummy() + 2);
+        assert_eq!(world.skinned().len(), 4);
+    }
+
+    #[test]
+    fn a_distant_dummy_is_drawn_at_a_coarser_level_and_costs_fewer_draws() {
+        // The level-of-detail architecture, end to end through extraction: the same dummy
+        // costs three render entities up close and two far away, and crossing the threshold
+        // is what respawns them.
+        let simulation = arena_sim();
+        let mut extractor = RenderExtractor::new(bindings(), 200.0);
+        extractor.set_view(ViewParams {
+            camera_position: Vec3::new(0.0, 1.5, 0.0),
+            delta_seconds: 0.016,
+            lod_bias: 1.0,
+        });
+
+        let dummy = arena::dummies(simulation.world())
+            .next()
+            .expect("the arena has dummies");
+        extractor.extract(&simulation);
+        let near = extractor
+            .render_parts(dummy)
+            .expect("the dummy was extracted")
+            .len();
+
+        extractor.set_view(ViewParams {
+            camera_position: Vec3::new(0.0, 1.5, 400.0),
+            delta_seconds: 0.016,
+            lod_bias: 1.0,
+        });
+        extractor.extract(&simulation);
+        let far = extractor
+            .render_parts(dummy)
+            .expect("the dummy is still extracted")
+            .len();
+
+        assert!(near > far, "near {near} parts, far {far} parts");
+        assert!(far > 0, "a distant dummy is still drawn");
+    }
+
+    #[test]
+    fn a_character_animates_and_lands_in_the_skinned_list() {
+        // Milestones 10 to 12 through the seam that joins them: gameplay state becomes an
+        // animation state, a pose, a palette and a placed draw, with the simulation never
+        // consulted about any of it.
+        let mut simulation = arena_sim();
+        simulation.push_command(PlayerCommand::Move {
+            forward: 1.0,
+            right: 0.0,
+            yaw: 0.0,
+            face_camera: false,
+        });
+        simulation.step_many(30);
+
+        let mut extractor = extractor();
+        extractor.set_view(ViewParams {
+            camera_position: Vec3::new(0.0, 2.0, 6.0),
+            delta_seconds: 0.016,
+            lod_bias: 1.0,
+        });
+        extractor.extract(&simulation);
+
+        let visual = extractor.player_visual().expect("the scene set one up");
+        assert!(
+            matches!(
+                visual.slot(),
+                engine_assets::AnimationSlot::Walk | engine_assets::AnimationSlot::Run
+            ),
+            "a running character should not be idle: {:?}",
+            visual.slot()
+        );
+
+        let world = extractor.render_world();
+        assert_eq!(world.skinned().len(), 4);
+        assert_eq!(world.skinned().palette().len(), 21);
+
+        // The drawn orientation is gameplay's, not the animation's.
+        let body = simulation.player_body().expect("the player exists");
+        let drawn = visual.transform().rotation;
+        let expected = engine_core::math::Quat::from_yaw_pitch_roll(body.facing_yaw, 0.0, 0.0);
+        assert!(
+            (drawn.rotate(Vec3::Z) - expected.rotate(Vec3::Z)).length() < 1e-3,
+            "the model does not face where gameplay says"
+        );
+    }
+
+    #[test]
+    fn the_skinned_list_is_rebuilt_rather_than_accumulated() {
+        // It is transient data, like the UI draw list. Extracting twice must not draw the
+        // character twice.
+        let simulation = arena_sim();
+        let mut extractor = extractor();
+        extractor.extract(&simulation);
+        let first = extractor.render_world().skinned().len();
+        extractor.extract(&simulation);
+        assert_eq!(extractor.render_world().skinned().len(), first);
     }
 }

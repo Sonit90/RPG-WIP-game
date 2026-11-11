@@ -1,0 +1,17 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="phys_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+<stop offset="0" stop-color="rgb(36,34,32)"></stop>
+<stop offset="1" stop-color="rgb(92,86,78)"></stop>
+</linearGradient>
+<clipPath id="phys_tile"><path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#phys_tile)">
+<path fill="url(#phys_panel)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+<path fill="rgb(226,230,236)" d="M 404 92 L 420 108 L 214 344 L 168 298 Z"></path>
+<path fill="rgb(150,154,160)" d="M 404 92 L 420 108 L 191 321 Z"></path>
+<path fill="rgb(200,150,60)" d="M 136 280 L 232 376 L 212 396 L 116 300 Z"></path>
+<path fill="rgb(120,80,40)" d="M 170 344 L 106 408 L 126 428 L 190 364 Z"></path>
+<circle cx="102" cy="432" r="22" fill="rgb(200,150,60)"></circle>
+</g>
+</svg>

@@ -34,10 +34,26 @@
 //! What is *not* free is a record that passes both filters: formatting allocates. Logging
 //! is therefore banned from the per-frame hot path; frame metrics accumulate in plain
 //! counters and are logged on an interval.
+//!
+//! ## Cost when enabled
+//!
+//! The write, not the formatting, is what costs: stderr is unbuffered, so every record is
+//! its own `WriteFile`, and against a Windows console that call is blocking
+//! inter-process communication. A burst of twenty records on the main thread is twenty
+//! blocking calls between two frames, which is a visible hitch.
+//!
+//! So the console write does not happen on the calling thread. A record is rendered into
+//! a pooled buffer and handed to a writer thread over a bounded queue; the writer takes
+//! everything queued at once and emits it as a single write. A full queue drops the
+//! record and counts it rather than block — a log line must never stall a frame — and the
+//! count is reported on the next record so the gap is visible. Call [`drain`] before a
+//! process exit or a panic, or the queue dies with the process.
 
 use std::io::Write;
-use std::sync::OnceLock;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 
@@ -48,6 +64,67 @@ pub const LOG_LEVEL_ENV: &str = "MYGAME_LOG";
 static START: OnceLock<Instant> = OnceLock::new();
 
 static LOGGER: ConsoleLogger = ConsoleLogger;
+
+/// Depth of the queue between the logging threads and the writer.
+///
+/// Deep enough to swallow a startup burst or a whole periodic report at once; shallow
+/// enough that a wedged console cannot grow it without bound.
+const QUEUE_DEPTH: usize = 4096;
+
+/// How many record buffers are kept for reuse.
+///
+/// The writer hands every buffer back as soon as it has been copied into the batch, so a
+/// steady stream of records reuses a handful and allocates nothing.
+const POOL_DEPTH: usize = 64;
+
+/// How long [`drain`] waits for the writer thread to acknowledge.
+///
+/// A shutdown must not hang on a console that has stopped accepting writes, and the
+/// records lost by giving up are the ones nobody could have read anyway.
+const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Work item for the writer thread.
+enum Message {
+    /// One rendered record, newline included.
+    Record(Vec<u8>),
+    /// Write everything queued, flush stderr, then acknowledge on the channel.
+    Flush(SyncSender<()>),
+}
+
+/// Handle to the writer thread, published once the thread is running.
+struct Sink {
+    /// Queue of pending work.
+    records: SyncSender<Message>,
+    /// Records dropped because the queue was full, reported on the next record.
+    dropped: AtomicU64,
+    /// Buffers handed back by the writer, so a steady stream of records allocates
+    /// nothing after the first few.
+    pool: Mutex<Vec<Vec<u8>>>,
+}
+
+impl Sink {
+    /// Takes a buffer from the pool, or allocates one if the pool is empty.
+    fn take_buffer(&self) -> Vec<u8> {
+        self.pool
+            .lock()
+            .ok()
+            .and_then(|mut pool| pool.pop())
+            .unwrap_or_default()
+    }
+
+    /// Returns a buffer to the pool, dropping it if the pool is already full.
+    fn recycle(&self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        if let Ok(mut pool) = self.pool.lock() {
+            if pool.len() < POOL_DEPTH {
+                pool.push(buffer);
+            }
+        }
+    }
+}
+
+/// The writer thread's queue, or `None` while records must be written inline.
+static SINK: OnceLock<Sink> = OnceLock::new();
 
 /// Stderr logger with a `[seconds] LEVEL target: message` layout.
 struct ConsoleLogger;
@@ -62,15 +139,164 @@ impl Log for ConsoleLogger {
             return;
         }
         let elapsed = START.get_or_init(Instant::now).elapsed().as_secs_f64();
-        // Locking stderr keeps a single record on one line under concurrency.
-        let mut out = std::io::stderr().lock();
-        // A failed write to stderr is not actionable and must never abort the engine.
-        let _ = write_record(&mut out, elapsed, &thread_name(), record);
+        let Some(sink) = SINK.get() else {
+            // No writer thread: either the logger was installed without one, or spawning
+            // it failed. Writing inline is slow but never loses a record.
+            // Locking stderr keeps a single record on one line under concurrency.
+            let mut out = std::io::stderr().lock();
+            // A failed write to stderr is not actionable and must never abort the engine.
+            let _ = write_record(&mut out, elapsed, cached_thread_name(), record);
+            return;
+        };
+        let mut buffer = sink.take_buffer();
+        // Silent loss would be worse than the loss itself: whoever reads the log needs to
+        // know that a gap is there.
+        let dropped = sink.dropped.swap(0, Ordering::Relaxed);
+        if dropped > 0 {
+            let _ = writeln!(
+                buffer,
+                "[{elapsed:>9.3}] WARN  [log] Logging: {dropped} record(s) dropped, the log queue was full"
+            );
+        }
+        // Writing to a `Vec` cannot fail; the result is ignored for the same reason the
+        // inline path ignores its own.
+        let _ = write_record(&mut buffer, elapsed, cached_thread_name(), record);
+        if let Err(error) = sink.records.try_send(Message::Record(buffer)) {
+            // Dropping beats blocking. A full queue means the console is behind, and no
+            // log line is worth stalling the frame that produced it.
+            sink.dropped.fetch_add(dropped + 1, Ordering::Relaxed);
+            if let std::sync::mpsc::TrySendError::Full(Message::Record(buffer)) = error {
+                sink.recycle(buffer);
+            }
+        }
     }
 
     fn flush(&self) {
-        let _ = std::io::stderr().flush();
+        drain();
     }
+}
+
+/// Writes everything queued and waits for it to reach stderr.
+///
+/// Call before a process exit or a panic: records sit in the queue until the writer
+/// thread gets to them, and a dying process takes them with it. Gives up after
+/// [`DRAIN_TIMEOUT`] rather than hang on a console that is not draining.
+pub fn drain() {
+    let Some(sink) = SINK.get() else {
+        let _ = std::io::stderr().flush();
+        return;
+    };
+    let (acknowledge, drained) = sync_channel(1);
+    // A blocking send is correct here: draining is never on the frame path, and the
+    // caller is asking to wait.
+    if sink.records.send(Message::Flush(acknowledge)).is_err() {
+        return;
+    }
+    let _ = drained.recv_timeout(DRAIN_TIMEOUT);
+}
+
+/// Starts the writer thread and publishes its queue.
+///
+/// The console write is the expensive part of logging, not the formatting: on Windows a
+/// write to a console host is blocking inter-process communication, and a burst of
+/// records is a burst of them on whichever thread logged. Moving the writes here costs
+/// the caller one formatted line and a channel send, and lets a burst be coalesced into
+/// a single write.
+fn start_writer() {
+    if SINK.get().is_some() {
+        return;
+    }
+    let (records, queue) = sync_channel(QUEUE_DEPTH);
+    if std::thread::Builder::new()
+        .name("log".to_owned())
+        .spawn(move || writer_loop(&queue))
+        .is_err()
+    {
+        // Leaving `SINK` unset is the fallback: every record is then written inline.
+        return;
+    }
+    let _ = SINK.set(Sink {
+        records,
+        dropped: AtomicU64::new(0),
+        pool: Mutex::new(Vec::new()),
+    });
+}
+
+/// Drains the queue onto stderr until every sender is gone.
+fn writer_loop(queue: &Receiver<Message>) {
+    let mut writer = Writer::default();
+    while writer.pump(queue, &mut std::io::stderr()) {}
+}
+
+/// The writer thread's scratch space, kept across batches so it stops allocating.
+#[derive(Default)]
+struct Writer {
+    /// The current batch, ready to go out as one write.
+    batch: Vec<u8>,
+    /// Record buffers already copied into `batch`, waiting to go back to the pool.
+    spent: Vec<Vec<u8>>,
+    /// Who is waiting for this batch to reach the console.
+    acknowledgements: Vec<SyncSender<()>>,
+}
+
+impl Writer {
+    /// Takes everything already queued and emits it as a single write.
+    ///
+    /// One write per batch rather than one per record is the whole point: the periodic
+    /// report's twenty-odd lines cost one syscall instead of twenty.
+    ///
+    /// Returns `false` once every sender is gone and there is nothing left to write.
+    fn pump(&mut self, queue: &Receiver<Message>, out: &mut impl Write) -> bool {
+        let Ok(first) = queue.recv() else {
+            return false;
+        };
+        self.batch.clear();
+        let mut message = Some(first);
+        while let Some(next) = message {
+            match next {
+                Message::Record(record) => {
+                    self.batch.extend_from_slice(&record);
+                    self.spent.push(record);
+                }
+                Message::Flush(acknowledgement) => self.acknowledgements.push(acknowledgement),
+            }
+            // An empty queue and a disconnected one both end the batch.
+            message = queue.try_recv().ok();
+        }
+        // A failed write to stderr is not actionable and must never abort the engine.
+        let _ = out.write_all(&self.batch);
+        if !self.acknowledgements.is_empty() {
+            let _ = out.flush();
+        }
+        match SINK.get() {
+            Some(sink) => {
+                for buffer in self.spent.drain(..) {
+                    sink.recycle(buffer);
+                }
+            }
+            None => self.spent.clear(),
+        }
+        // After the write, so a caller waiting on the drain knows the bytes are out.
+        for acknowledgement in self.acknowledgements.drain(..) {
+            let _ = acknowledgement.send(());
+        }
+        true
+    }
+}
+
+/// This thread's identifier, computed once per thread.
+///
+/// A thread's name never changes and every record needs it, so computing one per record
+/// is an allocation per record for a string that is always the same. The name is leaked
+/// instead, which bounds the waste by the number of threads the process ever creates —
+/// a handful — and lets every record borrow it for free.
+fn cached_thread_name() -> &'static str {
+    thread_local! {
+        static NAME: &'static str = Box::leak(thread_name().into_boxed_str());
+    }
+    // `try_with` fails only while thread-local storage is being torn down. A record
+    // logged from a destructor is still worth printing, just without a name.
+    NAME.try_with(|name| *name).unwrap_or("?")
 }
 
 /// Identifier for the calling thread.
@@ -160,6 +386,7 @@ pub fn init_with(filter: LevelFilter) -> Result<(), SetLoggerError> {
     START.get_or_init(Instant::now);
     log::set_logger(&LOGGER)?;
     log::set_max_level(filter);
+    start_writer();
     Ok(())
 }
 
@@ -267,6 +494,36 @@ mod tests {
             .join()
             .expect("the thread must not panic");
         assert_eq!(named, "worker-0");
+    }
+
+    #[test]
+    fn a_burst_of_records_reaches_the_writer_in_order_as_one_write() {
+        let (sender, queue) = sync_channel(32);
+        for index in 0..8 {
+            let mut record = Vec::new();
+            writeln!(record, "record {index}").expect("writing to a Vec cannot fail");
+            sender
+                .send(Message::Record(record))
+                .expect("the queue has room");
+        }
+        let (acknowledge, drained) = sync_channel(1);
+        sender
+            .send(Message::Flush(acknowledge))
+            .expect("the queue has room");
+
+        // One pass: everything queued goes out together, which is what makes the report
+        // one syscall instead of twenty.
+        let mut out = Vec::new();
+        assert!(Writer::default().pump(&queue, &mut out));
+        drained
+            .recv_timeout(DRAIN_TIMEOUT)
+            .expect("the flush is acknowledged once the batch is written");
+
+        let expected: String = (0..8).map(|index| format!("record {index}\n")).collect();
+        assert_eq!(
+            String::from_utf8(out).expect("the records are ASCII"),
+            expected
+        );
     }
 
     #[test]

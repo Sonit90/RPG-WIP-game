@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH role_perms AS (\n            SELECT p.name\n            FROM users u\n            JOIN role_permissions rp ON rp.role_id = u.role_id\n            JOIN permissions p ON p.id = rp.permission_id\n            WHERE u.id = $1\n        ),\n        granted AS (\n            SELECT p.name\n            FROM user_permissions up\n            JOIN permissions p ON p.id = up.permission_id\n            WHERE up.user_id = $1 AND up.granted = TRUE\n        ),\n        revoked AS (\n            SELECT p.name\n            FROM user_permissions up\n            JOIN permissions p ON p.id = up.permission_id\n            WHERE up.user_id = $1 AND up.granted = FALSE\n        )\n        SELECT name FROM (SELECT * FROM role_perms UNION SELECT * FROM granted) u\n        WHERE name NOT IN (SELECT name FROM revoked)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5178852d78ee92883cebe91c66afb99b9881943860ed8be7c70246d864ab5b69"
+}

@@ -88,21 +88,17 @@ pub struct CharacterConfig {
 }
 
 impl Default for CharacterConfig {
+    /// Every number from [`engine_core::tuning::character`], which is where they are edited.
     fn default() -> Self {
+        use engine_core::tuning::character as tuning;
         Self {
-            // A 0.4 m radius and 1.8 m height is a person: wide enough not to slip through
-            // a door frame's collision, narrow enough to walk down a corridor.
-            radius: 0.4,
-            height: 1.8,
-            // A curb, a low platform edge and one stair tread. Above this a jump is the
-            // answer, which is what makes jumping worth having.
-            max_step_height: 0.45,
-            // 50 degrees: comfortably above the 45-degree ramp a level author will build and
-            // comfortably below a wall.
-            max_slope_angle: 50.0_f32.to_radians(),
-            skin_width: 0.005,
-            ground_snap_distance: 0.30,
-            max_resolution_iterations: 6,
+            radius: tuning::RADIUS,
+            height: tuning::HEIGHT,
+            max_step_height: tuning::MAX_STEP_HEIGHT,
+            max_slope_angle: tuning::MAX_SLOPE_DEGREES.to_radians(),
+            skin_width: tuning::SKIN_WIDTH,
+            ground_snap_distance: tuning::GROUND_SNAP_DISTANCE,
+            max_resolution_iterations: tuning::MAX_RESOLUTION_ITERATIONS,
             max_substep_distance: 0.0,
             mask: CollisionMask::WORLD,
             step_up_enabled: true,

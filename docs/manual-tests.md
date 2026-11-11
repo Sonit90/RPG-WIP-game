@@ -93,6 +93,31 @@ larger-than-client coordinates rather than wrapping to a huge positive number.
 
 ---
 
+## MT-004a — Camera: orbit and steer
+
+**Purpose** — both mouse buttons turn the camera, and they differ in what else they do.
+
+**Steps**
+
+1. `.	arget
+elease\mygame.exe`
+2. Hold the **left** button and drag left and right, then up and down. Watch the character.
+3. Release, then hold the **right** button and drag the same way. Watch the character.
+4. Hold the left button, and while still holding it press and release the right button.
+5. Press Escape to open the menu, then hold the left button over a menu button and drag.
+6. Press 4 to aim an area spell, then try holding each button.
+7. Alt-tab away while holding either button.
+
+**Expected** — the left button orbits the camera around the character while the character
+keeps facing wherever it was. The right button orbits *and* turns the character to face
+where the camera looks. In step 4 the cursor stays hidden throughout: adding and removing
+the right button changes what the character does without the cursor flickering back. In the
+menu the left button clicks buttons and does not take the cursor away; the right button
+still turns the camera. While aiming, the left button confirms the placement and the right
+cancels it — neither turns the camera. Alt-tab restores the cursor immediately.
+
+---
+
 ## MT-005 — Focus loss releases held input
 
 **Purpose** — a key held while alt-tabbing away does not stay stuck down.
@@ -135,7 +160,8 @@ is visible on screen rather than only in a test.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --overlay`
+1. `.	arget
+elease\mygame.exe --overlay`
 2. Left-click to capture the mouse, then move it: the camera orbits the character.
 3. Hold W, A, S and D; the character runs in the direction the camera faces.
 4. Press SPACE while running.
@@ -160,11 +186,12 @@ is visible on screen rather than only in a test.
 * R restores every dummy to full health and resets DAMAGE DONE and DPS to zero.
 * The wheel changes the camera distance between about 2.5 and 25 metres; ESC releases the
   cursor.
-* Every dummy carries a nameplate reading `DUMMY` with its health percentage on the right.
-  The targeted one — and only that one — has a white outline. After pressing 2 the burning
-  dummy's plate grows a second line reading `BURNING` and a countdown. Plates stay above the
-  heads as the camera turns, vanish when an enemy is behind the camera, and disappear once an
-  enemy is more than 40 metres away (run to the far side of the arena to check).
+* Every dummy carries a nameplate: `Dummy` in bold outlined type over a red health bar with
+  its percentage inside. The targeted one — and only that one — has a white border and a white
+  name. After pressing 2 the burning dummy's plate grows a status line above the name reading
+  `Ignite` and a countdown. Plates stay above the heads as the camera turns, vanish when an
+  enemy is behind the camera, and disappear once an enemy is more than 40 metres away (run to
+  the far side of the arena to check). See MT-030 for casting enemies.
 
 ---
 
@@ -299,7 +326,8 @@ line does not grow. Closing at the end is still clean.
 
 **Steps**
 
-1. `.	argetelease\mygame.exe --overlay`
+1. `.	arget
+elease\mygame.exe --overlay`
 2. Note DAMAGE DONE, then cast 1 once and note it again.
 3. Watch the SIM line while standing still, then while running.
 4. Watch a cooldown on the ability bar after casting.
@@ -311,3 +339,588 @@ non-zero. The SIM line shows a sub-millisecond figure, `TICKS 0` or `1` most fra
 the ability becomes usable again. R zeroes the meter and every cooldown.
 
 ---
+
+## MT-016 — Character test scene and animation
+
+**Purpose** — the FireMage looks right, is the right size, and every animation reads. Most
+of this is asserted in pixels by `crates/engine-renderer/tests/character_render.rs`; what a
+human is still needed for is whether the motion *reads*, which no assertion covers.
+
+**Steps**
+
+1. `.	arget
+elease\mygame.exe --scene character`
+2. Look at the character beside the training dummy.
+3. Walk forwards, then hold shift-free full speed; watch the feet.
+4. Jump, and watch the take-off, the fall and the landing.
+5. Press 1 through 7 in turn, then 0.
+6. Hold the right mouse button and orbit the character while an animation is held.
+7. Run 40 metres away from the dummy and back.
+
+**Expected** — a hooded figure with a staff, about the same height as the dummy beside it,
+standing on the floor rather than in or above it. Walking and running move the feet at the
+speed the character travels, with no sliding. A jump compresses, extends, falls with the
+legs trailing and compresses again on landing. Keys 1 to 7 hold the character in one
+animation regardless of what it is doing; 0 releases it and the character immediately
+reflects gameplay again. Orbiting shows no geometry inside out and no surface lit from the
+wrong side. At distance the dummy visibly loses its crossbar and wrap and keeps its
+silhouette — a level-of-detail switch, not a pop out of existence.
+
+---
+
+## MT-017 — Combat still works with models
+
+**Purpose** — replacing the placeholder cubes changed no combat behaviour.
+
+**Steps**
+
+1. `.	arget
+elease\mygame.exe --dummies 8`
+2. Tab to a target, cast 1, and watch the dummy.
+3. Cast an area ability into the group.
+4. Kill one dummy.
+5. Press BACKSPACE.
+
+**Expected** — the targeted dummy glows, flashes white on each hit, darkens as its health
+drops, and the target marker floats above it. Damage numbers rise from chest height. An
+area ability marks and hits the same set the indicator showed. A killed dummy tints to a
+lifeless grey and falls over on the floor rather than through it. BACKSPACE restores every
+dummy upright and undamaged.
+
+---
+
+## MT-018 — The combat arena reads as a place
+
+**Purpose** — the environment is visually coherent, and it does not get in the way of the
+fight.
+
+**Steps**
+
+1. `.\target\release\mygame.exe`
+2. Stand at the spawn and turn a full circle with the right mouse button.
+3. Walk to each of the four braziers and look back at the middle.
+4. Walk into the gate arch, the kerb, a pillar and a crate.
+5. Walk through a fern and a shrub.
+6. Look up.
+7. Look at the horizon in each direction.
+8. Place an area ability at the edge of the fighting space.
+
+**Expected** — a paved arena inside a chest-high stone kerb, punctuated by pillars, with a
+broken arch over a gap on one side. Four lit braziers mark the corners of the fighting
+space. Past the kerb, a treeline; behind that, distant ridges; above, a sky that grades from
+warm at the horizon to blue overhead, with no seam where the ground ends. The kerb, the
+pillars, the braziers and the crates stop the character; the ferns and shrubs do not, and
+the character walks through them without catching. Nothing stands inside the fighting space,
+so an area indicator lies flat on the paving with nothing clipping through it. The floor
+does not flicker anywhere.
+
+---
+
+## MT-019 — The environment demo scene
+
+**Purpose** — every asset can be inspected on its own, in the light the game runs.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene environment`
+2. Walk to the far side of the arena, where two rows of objects stand.
+3. Walk along each row, looking at each object from three sides.
+4. Back away from the rows to the middle of the arena and watch them.
+5. Press F3, then walk into the row again.
+6. `.\target\release\mygame.exe --scene environment --env-density 8`
+
+**Expected** — one of every environment asset, each standing on the floor at the size it is
+used at, each lit and shaded so its form reads. Backing away, the pines, pillars and larger
+rocks visibly simplify without vanishing. F3 draws the collision boxes: the wall, pillar,
+brazier and crate exhibits have one each, and the plants have none. At density 8 the treeline
+and the scatter are several times denser, the arena itself is unchanged, and the frame rate
+in the F5 overlay stays well above the target.
+
+---
+
+## MT-020 — The VFX test bed
+
+**Purpose** — every effect in the catalogue can be played on demand and judged on its own.
+
+**Steps**
+
+1. `.	arget
+elease\mygame.exe --scene vfx`
+2. Press 1 through 0, then Z, X and C, watching each effect from a few metres back.
+3. Press 9 (SHIELD) and 8 (IGNITED) and walk around while they play.
+4. Orbit the camera during an explosion (7) and during the ultimate (C).
+5. Press C and, while the pillar is up, walk behind it and look at the dummies.
+6. `.	arget
+elease\mygame.exe --scene vfx --vfx-stress 120` and watch the F5 overlay.
+
+**Expected** — thirteen distinct effects, each starting where the character is facing, each
+ending on its own without leaving anything behind. The shield and the burn ride the character
+as they walk, and neither hides them: the shield is a ring at the feet and sparks, not a
+bubble. Nothing is drawn as an opaque wall — during the ultimate the dummies behind the
+pillar stay visible. At a stress of 120 effects a second the frame rate in the overlay stays
+far above the target and the log line reports effects being refused rather than the frame
+degrading.
+
+---
+
+## MT-021 — Combat reads
+
+**Purpose** — the phase's actual goal: an ability press produces a readable chain of
+feedback, and gameplay stays authoritative.
+
+**Steps**
+
+1. `.	arget
+elease\mygame.exe`
+2. Select a dummy and cast Firebolt (1). Watch the character, the space between you and the
+   dummy, and the dummy.
+3. Cast Flame Lance (2) and Pyroblast (5) and compare the size of the bolts.
+4. Place a Meteor (4) on the group and watch the ring before it lands.
+5. Cast Flame Cone (3) and Firestorm (6) at the group; compare where the fire is with which
+   dummies take damage.
+6. Build a full burn on one dummy and press Detonate (7).
+7. Press Flame Shield (9), then Blink (0) while it is up.
+8. Watch the damage numbers during a rotation, looking for the orange ones.
+9. Press Escape mid-cast and watch the cast effect.
+
+**Expected** — casting shows a gather at the chest for exactly the cast time; a bolt leaves
+the caster and an impact plays where it lands; the dummy flashes and a number floats up.
+Heavier spells throw visibly bigger bolts. The Meteor's ring closes over its delay and the
+explosion lands inside it. The cone and the line of fire cover exactly the dummies that take
+damage. Detonate explodes on the target. The shield is visible for its whole duration and
+gone the instant it ends; blinking shows a departure and an arrival at both ends of the jump.
+Critical strikes are orange and larger, killing blows red and larger still. Cancelling a cast
+takes its effect with it on the same frame.
+
+---
+
+## MT-022 — The audio test bed
+
+**Purpose** — every sound in the catalogue can be played on demand, from a chosen distance,
+and judged on its own.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene audio`
+2. Step through the catalogue with Z and X, pressing C for each one. Read the log line to
+   see which sound is selected.
+3. Press C, then walk away from where you dropped it, then back towards it, then past it.
+4. Press C, then orbit the camera all the way around with the left mouse button held.
+5. Press V for the same sound and compare it with C.
+6. Press N (eight at once) on `hit_normal`, then on `ignite_loop`, and read the log line.
+7. Open the menu with Escape and drag each of the four volume sliders while a loop plays.
+8. Press F8 twice.
+
+**Expected** — 39 distinct sounds, none of them a click, none of them clipped. A dropped
+sound gets quieter with distance and is silent well before the far side of the arena;
+walking past it moves it from one speaker to the other; orbiting the camera swings it across
+the stereo field, and a sound directly behind is still audible. V plays the same sound dead
+centre at full level however far away you stand. Eight at once produces a handful of voices
+and a log line reporting the rest as refused — **not** eight copies, and never a wall.
+Dragging MASTER, EFFECTS, INTERFACE and AMBIENCE changes only what each names, live, with no
+step or click, and the values survive a restart. F8 silences everything and brings it back.
+
+---
+
+## MT-023 — Combat is heard
+
+**Purpose** — the phase's actual goal: an ability press produces a readable chain of sound
+that agrees with the picture, and gameplay stays authoritative.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --dummies 8`
+2. Select a dummy and cast Firebolt (1). Listen for the cast, the flight and the impact.
+3. Cast Flame Lance (2) and Pyroblast (5); listen through the cast and to where it ends.
+4. Place a Meteor (4) on the group; listen while it falls and when it lands.
+5. Cast Flame Cone (3) and Firestorm (6) at the group, then walk over the burning ground and
+   away from it.
+6. Build a full burn and press Detonate (7).
+7. Press Flame Shield (9), then Blink (0) while it is up. Jump, and jump off something high.
+8. Run in a straight line across the arena.
+9. Cast Pyroblast and press Escape mid-cast.
+10. Pull the whole group, let everything burn at once, and listen for a wall of noise.
+
+**Expected** — the cast, the bolt and the impact are three distinct moments, and the impact
+lands on the same frame as the flash. Heavier spells are lower and longer. The Meteor whistles
+from where it is going to land and stops the instant it lands. The line of fire is a bed you
+can hear yourself walk into and out of, and it stops when the fire does. Detonate is heard on
+the target, not on the caster. The shield hums for exactly its duration; Blink is two sounds
+at two places; jumping and landing are silent. Footsteps keep time with the
+legs and stop when you do. Cancelling a cast takes its gather away and replaces it with a
+fizzle on the same frame. With the whole pack burning, the fire is *one* fire and individual
+hits are still audible over it — critical strikes especially.
+
+---
+
+## MT-024 — The encounter test bed
+
+**Purpose** — enemies notice, fight, telegraph, die and reset; the player can die too.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene encounter`
+2. Stand still. Watch both enemies for ten seconds.
+3. Walk slowly towards the brute until it reacts. Watch it, not the ground.
+4. Let it reach you. Watch the cast bar under the target frame and the floor in front of it.
+5. Walk out of the cone while it is being cast.
+6. Pull the caster from a distance with Firebolt (1) and watch where its circle appears.
+7. Stand in the circle once. Then walk out of it once.
+8. Press G while it is casting (developer interrupt) and watch the bar and the floor.
+9. Kill both. Watch the encounter line in the log.
+10. Let them kill you: stand still and do nothing.
+11. Press BACKSPACE.
+12. Run 25 m away mid-fight and keep running.
+13. `.\target\release\mygame.exe --scene encounter --enemies 20` and pull the lot.
+
+**Expected** — idle enemies stand still and face the way they spawned. The brute notices at
+about 14 m, pauses visibly, then closes and stops at arm's length rather than walking through
+you. Its cleave draws a cone on the floor for its whole cast; walking out of it takes no
+damage, standing in it does. The caster keeps its distance and draws a circle *where you are
+standing*, not where you will be — walking out of it is always possible. G removes both the
+cast bar and the shape on the floor, and no damage lands. Killing them completes the
+encounter (in the log) and the corpses do nothing. Dying prints YOU DIED, stops your
+abilities, and leaves the world running. BACKSPACE puts everybody back: enemies home, idle
+and whole, you alive and at full health. Running away long enough sends them home; they walk,
+they do not teleport, and they forget you. Twenty enemies all fight, all telegraph, and the
+frame rate stays far above the target.
+
+---
+
+## MT-025 — A wall stops a targeted spell
+
+**Purpose** — a targeted ability that requires line of sight is refused when the level is
+between the caster and the target, the refusal says so, and the developer view shows why.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene dungeon`
+2. Pull a pack, then step back around a corner so a wall stands between you and an enemy
+   that is still selected and still well inside 35 m.
+3. Press 1 (Firebolt). Read the message.
+4. Press F3 and look at the line drawn between you and the target, and at the overlay text.
+5. Step back into the doorway so the enemy is visible again and press 1.
+6. Start a Pyroblast (5) with the enemy in the open, and while it casts let the enemy walk
+   behind a pillar.
+7. Repeat step 6, but let the enemy walk back into view before the cast bar fills.
+8. Press F3 again to turn the developer view off.
+
+**Expected** — behind the wall, the cast is refused with TARGET IS NOT IN LINE OF SIGHT and
+no damage is dealt; the cast bar never starts. With F3 on, a red bar runs from your chest to
+the point on the wall where it stopped, the blocking wall is lit red, and the overlay reads
+`LOS`, `RANGE OK / REQUIRED YES`, `RESULT BLOCKED` and the blocker's name. Stepping into the
+doorway makes the same cast work and turns the bar green all the way to the target. The
+Pyroblast that loses its target mid-cast ends early, deals nothing and prints the same
+refusal; the one whose target steps back into view lands normally. F3 removes the drawing
+and the extra overlay lines together, and the combat HUD never shows any of it.
+
+---
+
+## MT-026 — The shadow course
+
+**Purpose** — shadows are correct, stable and adjustable in the running game, not only in a
+pixel test: no acne, no floating objects, no seam where cascades meet, alpha-tested casters
+keep their silhouette, and the quality setting does what it says.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene shadows`
+2. Walk to the far-left bay (one pillar on empty ground). Circle it. Look at the base of
+   the pillar and at the small rock beside it.
+3. Walk to the middle bay and follow the line of rocks away from you, slowly, then back.
+   Watch the ground and the rocks' shadows as you move.
+4. Press F10 once (cascade tint) and walk the same line again. Press F10 again (shadow
+   factor), again (the atlas), again (caster bounds), then again to turn it off.
+5. Walk to the leaf screens on the near left. Look at their shadows on the ground.
+6. Walk into the colonnade on the near middle, under the spot lights.
+7. Walk into the ring of braziers on the near right and stand among the crates.
+8. Press F4 five times, pausing on each level, watching the same view.
+9. Press F5 and read the shadow block.
+10. Quit, restart with `--scene shadows`, and check the quality is the one you left on.
+
+**Expected** — the pillar's shadow starts *at* its base with no gap and no dark stripes on
+the pillar itself; the small rock has a shadow too, at its own scale. Down the line of rocks
+the shadows get softer and coarser with distance, which is correct, but nothing shimmers,
+crawls or snaps as you move, and there is no visible line drawn across the ground where one
+cascade hands over to the next. The cascade tint shows those handovers as a smooth colour
+blend rather than a hard edge; the shadow factor view shows clean grey shapes with no
+speckle; the atlas view shows the depth maps bottom-left with red tile outlines, and the
+tiles that should hold something do. The caster-bounds view puts a yellow sphere around every
+crate, rock and pillar and nothing around the ground, and turning it off leaves the scene
+exactly as it was. The leaf screens cast a scatter of leaf shapes, not
+rectangles. The colonnade's pillars cast under the spot lights; at Medium the far one loses
+its shadow and at High it has it back. Standing among the braziers, the crates cast in
+several directions at once. F4 changes the picture visibly at each step and Off removes
+shadows entirely without any other change to the scene. The overlay's shadow block reports a
+plausible atlas size and a sub-millisecond stage. The setting survives the restart.
+
+---
+
+## MT-027 — Shadows in the shipping scenes
+
+**Purpose** — the shadow system works in the scenes a player actually plays, not only in the
+bed built for it.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene combat` — watch your own character's shadow while
+   running, jumping and casting.
+2. `.\target\release\mygame.exe --scene dungeon` — walk from the entrance towards the first
+   braziers and look at the walls and floor around them.
+3. `.\target\release\mygame.exe --scene encounter --enemies 20` — pull the lot and watch the
+   frame time in the F5 overlay while twenty enemies move.
+4. In each, press F4 to Off and back to High.
+
+**Expected** — the character's shadow follows the animation rather than the bind pose, and
+stays attached to the feet. In the dungeon the braziers cast local shadows that move
+correctly around the crates and pillars near them, and the sun's cascades still work
+outdoors. With twenty enemies the shadow stage stays well under a millisecond and the frame
+time does not step up when they come into view. Off and back leaves the scene otherwise
+identical.
+
+---
+
+## MT-028 — The Druid: two resources, an armed button and a heal that lands
+
+**Purpose** — the class is playable end to end with a human at the keyboard: it can be
+selected, both resources are visible and move, the Astral Power button reads as armed, an
+empowered cast reads differently from a plain one, and the heals reach a friendly target.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene combat`
+2. ESC → swap hero → DRUID. Look at the bar and at the player frame.
+3. Cast WRATH (`3`) at the dummy in front of you half a dozen times, watching the second
+   resource bar.
+4. Fill it (keep casting), then press `G`.
+5. Press `1` (MOONFIRE) and watch the dummy's debuff and the floating numbers.
+6. Hover MOONFIRE, REGROWTH and NOURISH and read the tooltips.
+7. Click the friendly dummy standing to your left, then cast REJUVENATION (`4`), REGROWTH
+  (`5`), LIFEBLOOM (`6`), WILD GROWTH (`7`) and NOURISH (`9`) on it.
+8. With a heal over time still on it, press SWIFTMEND (`8`).
+9. Press `F` (WILD RUSH) and run.
+10. Press `R` (TRANQUILITY) and stand still, then press it again and walk out of it.
+11. Press BACKSPACE.
+
+**Expected** — the bar holds ten Druid spells with two more buttons beside the Ultimate; the
+player frame and the bars above the bar show MANA and ASTRAL POWER rather than HEAT and
+ENERGY. Wrath costs no Mana and fills the Astral bar; every other spell takes Mana out of it.
+At a hundred the Astral bar says READY; pressing `G` turns it pale, outlines it, and says
+ARMED, and every compatible button lights up in the empowered colour while NATURES CLEANSE
+and WILD RUSH do not. The empowered Moonfire hits visibly harder and its burn does not run
+out. Tooltips print the cost, what the cast puts into the bar, and one line saying exactly
+what Astral Power would do to that spell. Every heal lands on the friendly dummy — its health
+bar climbs, the party frame shows it, and nothing in the room attacks it. Swiftmend removes
+one heal over time and heals for a large amount. Wild Rush is visibly faster for six seconds.
+Tranquility roots the character and heals once a second while it runs; walking cancels it and
+the healing stops on the same frame. BACKSPACE puts the dummies back, the friendly one back
+to half health, and both resources back to their starting values.
+
+---
+
+## MT-029 — The bar comes back as the class you are playing
+
+**Purpose** — a restart after a hero swap used to hand the FireMage a bar of Druid spells,
+which draw as empty slots because the FireMage cannot cast them, and the setting that decides
+whose bars they are actually moves them.
+
+**Steps**
+
+1. `.	arget
+elease\mygame.exe --scene combat`
+2. ESC → swap hero → DRUID. Look at bar one, then quit with ESC → QUIT.
+3. Start the game again and look at bar one before touching anything.
+4. ESC → SETTINGS. Tick **KEYBINDS PER CHARACTER**, then close the menu.
+5. Put a spell you would not normally use into a free slot on bar two, and bind a key to it.
+6. ESC → swap hero → WARRIOR. Look at bar two, then put a different spell into that same
+   slot.
+7. Swap back to the FireMage, then quit and start again as the FireMage.
+8. ESC → SETTINGS and untick **KEYBINDS PER CHARACTER**, then tick it once more.
+
+**Expected** — step 3 shows ten FireMage spells with icons on bar one, not ten empty slots.
+Step 6 shows the Warrior's bar two empty of what the FireMage put there, and step 7 finds the
+FireMage's slot exactly as it was left, key and all. Unticking the setting in step 8 changes
+nothing on screen and loses nothing: ticking it again brings each character's own bars back.
+Nothing about where the bars sit changes at any point in this test.
+
+## MT-030 — Combat UI: nameplates, cast bars and combat text
+
+**Purpose** — the in-world combat interface reads at a glance in a real fight: plates are a name
+over a health bar with the cast underneath, and floating numbers are large, edged and do not
+pile up. Design and numbers: `combat_ui.md`.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene monsters --spawn skeleton_bonecaster,grave_acolyte,crypt_archer,skeleton_warrior,empowered_bonecaster --spawn-hostile`
+2. Stand still for a few seconds and watch the plates while the line-up casts.
+3. Select the Grave Acolyte and interrupt its Grave Drain (`H` in the monster lab).
+4. Cast Flame Cone (3) and Firestorm (6) into the group; then single-target Flame Lance (2)
+   for a while and look for orange numbers.
+5. Let the pack hit you for a few seconds.
+6. Kill everything (`K`).
+7. Repeat step 1 with `--width 3840 --height 2160` after setting `"ui_scale": 2.0` in
+   `settings.cfg`.
+8. Optional, no input: add `--autocast --screenshot shot.png --screenshot-frame 760 --frames 765 --hidden`.
+
+**Expected** — every monster's plate shows its own name (`Skeleton Bonecaster`, not `ENEMY`)
+over a bordered red bar with a percentage; the Empowered Bonecaster's name is gold with a crest
+and its bar a size larger. Each casting monster has a bar directly under its health bar, as
+wide, with the school icon, the spell's name and the seconds left counting down; Bone Spear and
+Multi-Shot are silver with a lock, the interruptible casts amber. The interrupted cast turns red,
+stops where it was and says `Interrupted` for under a second. Area damage puts a fan of gold
+numbers over each target, criticals bigger and orange and on top, Ignite ticks smaller and
+amber. Damage taken floats red with a minus over the player, a burst forming a staircase rather
+than a pile. A plate that loses health shows a pale trail that drains after a moment. A dead
+monster's plate empties and fades rather than vanishing. At 4K with scale 2.0 the layout is the
+1080p layout at twice the size, with crisp text.
+
+---
+
+## MT-031 — Buffs, debuffs and the diagonal run
+
+**Purpose** — every lasting effect shows as its own icon under nameplates, under the player
+frame, in the buff bar and on the party; dispellable debuffs are blue-bordered; hovering one
+explains it; running diagonally turns the legs, not the aim. Design: `auras.md`.
+
+**Steps**
+
+1. `.	argetelease\mygame.exe --scene monsters --spawn skeleton_bonecaster,grave_acolyte,crypt_archer,skeleton_warrior,empowered_bonecaster --spawn-hostile`
+2. Cast Flame Lance (2) and Flame Cone (3) at the pack; then Flame Shield.
+3. Let the Crypt Archer hit you with Crippling Arrow.
+4. Hover each icon: one under a plate, the player's debuff, the buff in the top-right, the icon
+   beside the party row and the one in the raid cell.
+5. SETTINGS → NAMEPLATES → untick SHOW BUFFS AND DEBUFFS; tick it again.
+6. Edit HUD: drag the BUFFS element somewhere else, make it BIGGER, close, restart the game.
+7. Hold the right mouse button and run W+D, W+A, S+D, S+A, then D alone.
+
+**Expected** — Ignite appears over each hit enemy's name with its stacks top-right and its
+seconds along the bottom, darkening as it runs down; the plate grows upward and its health bar
+does not move off the monster's head. Crippled appears under the player frame and beside the player's party row with a blue
+border; bleeds from ghouls have none. Flame Shield appears in the BUFFS block. Each tooltip names
+the effect, its school or Buff/Debuff, what it does and the time left. Unticking the setting
+removes the plate icons at once and it survives a restart. The BUFFS block stays where it was
+put and at its size. On W+D the legs run towards the front-right while chest and head face the
+camera; S+D backpedals along the back-right diagonal; D alone plays the strafe unturned; casting
+Firebolt mid-diagonal fires straight ahead.
+
+---
+
+## MT-032 — Monster Combat Playground: choose, spawn, fight, reset, again
+
+**Purpose** — any combination of monsters can be fought and cleared in seconds, with the real
+combat systems, and the workflow repeats without a restart. Design: `docs/monsters.md`.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene playground`
+2. Tick Crypt Archer, Skeleton Warrior and Grave Brute. Point at each and read the card.
+3. Press **SPAWN SELECTED**. Watch for ten seconds without acting.
+4. Click the Skeleton Warrior's row in CURRENT ENCOUNTER, then cast Flame Lance (2) a few times.
+5. Press **RESET ENCOUNTER** (or Delete).
+6. Untick all three, tick Grave Acolyte and Crypt Ghoul, press Enter.
+7. Click **Normal HP** and let the pack hit you; then **Reset player**.
+8. Ctrl+F, type `empow`, Enter; tick two empowered monsters and spawn them; press K.
+9. Press L twice. Repeat steps 2–5 three more times.
+
+**Expected** — the list shows every monster with a role; the counter reads `3 MONSTERS
+SELECTED`; the card lists each monster's own abilities with cast and cooldown. The three stand
+in front of you in two rows (melee nearer), none inside another, all facing you, and attack
+at once: plates, cast bars, telegraphs and damage numbers as anywhere else, the encounter rows
+saying what each is casting, your health dropping from 1,000,000. Clicking a row targets that
+monster (target frame) and your spells hit it. The reset leaves nothing: no monster, plate,
+telegraph, ground effect, debuff on you or target; `empty` under CURRENT ENCOUNTER; the
+selection still ticked. The second group replaces the first. Normal HP shows the sheet's
+maximum (500 for the FireMage) and real damage; Reset player fills it and clears bleeds and
+cooldowns. Typing does not move or cast. K plays every death and the rows read `DEAD`. L
+hides both panels and the HUD slides back to its usual place, then returns. Every repeat
+behaves the same.
+
+---
+
+## MT-033 — Buffs and debuffs: apply, expire, stack, dispel, reset
+
+**Purpose** — every effect in the registry can be put on the player or a monster for a chosen
+time, shows as its own line, changes the stats it says it changes, expires on the game clock,
+and is dispelled by the real healer. Design: `auras.md`, `docs/monsters.md`.
+
+**Steps**
+
+1. `.\target\release\mygame.exe --scene playground`, click **Effects**.
+2. Choose Fortitude, TIME 5 s, APPLY TO YOU. Watch Stamina and health for six seconds.
+3. Apply Fortitude three times (STACKS 1), then Bloodlust, Battle Shout and Regeneration.
+4. Apply Poisoned, Curse of Weakness, Withering Plague (STACKS 3) and Rended.
+5. Click **Druid**. Target the Healing Dummy in the list, apply Poisoned to it, and press
+   Nature's Cleanse (bar slot 0). Target yourself, wait out the cooldown, cleanse again.
+6. On the Monsters tab spawn a Skeleton Warrior (Passive); back on Effects, pick it, apply
+   Crippled and Magic Vulnerability ×3.
+7. **Add test effects** on yourself; scroll the list. **Reset player**. **RESET ENCOUNTER**.
+
+**Expected** — Stamina reads `70 (+20)` and maximum health rises, then both come back when
+the timer reaches zero and the line disappears by itself. Fortitude shows `×3` and refreshes;
+buffs and debuffs are separate lists, timers count down, the HUD's icons agree. The cleanse
+takes the dummy's poison off its party row, then your poison, curse and plague — the blue
+bordered ones — and leaves Rended; Stamina returns to 50, speed and damage dealt to ×1.00, and
+mana and cooldown are spent as normal. The skeleton's plate shows the two debuffs, movement
+×0.60, magic taken ×1.45. The test set lists twenty-six lines and a note about the HUD's limit
+of twenty. Reset player empties both lists; reset encounter removes the skeleton and the
+target falls back to you.
+
+---
+
+## MT-034 — Display settings: resolution, window mode, keep or revert
+
+**Purpose** — the resolution and window mode change at runtime without a restart, every change
+must be kept or it reverts, and the choice survives a restart. Design: `docs/display.md`.
+
+**Steps**
+
+1. `.\target\release\mygame.exe`; ESC (twice if the mouse is captured) → SETTINGS → GRAPHICS.
+2. Open RESOLUTION. Choose a smaller size; APPLY. Wait 15 seconds without touching anything.
+3. Choose WINDOW MODE: BORDERLESS FULLSCREEN; APPLY; KEEP CHANGES.
+4. Press Alt+Enter twice.
+5. Choose FULLSCREEN and 1600 x 900; APPLY; KEEP CHANGES. Alt+Tab to the desktop, then back.
+6. Quit and start the game again.
+7. Choose SHADOW QUALITY: LOW; look; APPLY. Choose HIGH; BACK; open GRAPHICS again.
+8. Set BORDERLESS FULLSCREEN and keep it. Press F6 (a `--features editor` build), press
+   Alt+Enter, then F6 again.
+9. Set WINDOWED 1920 x 1080 again and keep it.
+
+**Expected** — The list shows the monitor's sizes once each, largest first, the current one
+marked. APPLY resizes the window at once — HUD, menu and camera follow — and the dialog counts
+down from 15, reverting by itself at zero; nothing is saved. Borderless covers the monitor at
+its desktop resolution, the resolution box greyed and labelled DESKTOP. Alt+Enter goes to a
+window and back to borderless, and the GRAPHICS screen follows. Fullscreen switches the monitor
+to 1600 x 900; Alt+Tab shows the desktop at its own resolution with the game minimized, and
+returning switches again. The restart opens straight in the kept mode. Choosing LOW changes
+nothing until APPLY, which changes the shadows behind the open menu with no dialog; HIGH
+followed by BACK is forgotten and the screen shows LOW again.
+F6 opens the editor in a framed window that fits above the taskbar; Alt+Enter does nothing
+there; F6 back to the game returns to borderless, and `settings.cfg` still says
+`borderless_fullscreen`. No step leaves the desktop at a changed resolution after the game
+exits.
+
+---
+
+## Death, respawn and the twenty seconds
+
+`cargo run -p engine-app --features editor -- --scene-file assets/scenes/showcase.json`
+
+1. Look at where you are standing: the level's spawn point. Walk well away from it.
+2. Press **F7**. Watch the player frame.
+3. Wait. Count three seconds.
+4. Look at where you are standing, and at the bottom line of the player frame.
+5. Press **F7** again straight away, and wait ten seconds.
+6. Keep waiting until the countdown on the player frame reaches zero.
+7. Press **F7** once more and wait three seconds.
+8. Hold **F7** down for ten seconds, then let go and wait.
+
+**Expected** — F7 kills you: the frame says DEAD and the health bar empties. Three seconds
+later you are back **at the spawn point you walked away from**, at full health, facing the way
+the spawn point points, and the bottom of the player frame reads `CANNOT BE RESPAWNED` with a
+countdown from 20. The second F7 kills you again and you **stay dead** — no respawn — until the
+countdown reaches zero, at which point you come back and a fresh 20 seconds begins. After that
+expires, F7 and a three-second wait respawn you normally again. Holding the key down brings you
+back once per twenty seconds rather than once per press, and leaves the player whole.
+
+The editor's spawn markers (a plinth with an arrow) are only visible with F6 held open; you
+should never see one while playing.

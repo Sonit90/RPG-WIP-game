@@ -27,8 +27,34 @@ use crate::world::{EntityDesc, EntityKind, GameWorld};
 /// How the arena is laid out.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArenaConfig {
+    /// The y a solid plane holds everything up at, or `None` when the level's own ground is
+    /// the only ground.
+    ///
+    /// # Why a level with a terrain has none
+    ///
+    /// The plane is infinite and it sits under everything, the terrain included — so a pit
+    /// dug to −6 m is a pit whose floor is at 0, and an author who lowers the ground watches
+    /// the character walk across the hole they just dug. A level that brought a terrain
+    /// brought its ground with it; a level that did not still needs a floor, and that is what
+    /// this is.
+    ///
+    /// What used to make the plane load-bearing was catching somebody who walked off the
+    /// edge of the terrain. That is now [`ArenaConfig::void_height`]'s job, which answers it
+    /// without also filling in every hole in the level.
+    pub floor: Option<f32>,
+    /// Below this y, a body has fallen out of the world.
+    ///
+    /// Not a surface: nothing is held up by it. It is the height under which the simulation
+    /// stops believing the player is in the level at all — see
+    /// [`Simulation::set_void_height`](crate::sim::Simulation::set_void_height).
+    pub void_height: f32,
     /// Where the player starts.
     pub player_spawn: Vec3,
+    /// Which way the player faces when they start, in radians about +Y.
+    ///
+    /// Authored on the level's spawn point — see `engine_environment::spawn` — and zero for
+    /// every layout that does not say, which faces -Z, the way the camera looks.
+    pub player_spawn_yaw: f32,
     /// Where the lone dummy stands.
     pub single_dummy: Vec3,
     /// Centre of the dummy group.
@@ -42,6 +68,14 @@ pub struct ArenaConfig {
     /// High enough that a full rotation does not delete the target before its damage-over-
     /// time has run, which is what makes the meter's numbers legible.
     pub dummy_health: f32,
+    /// Where the friendly dummy the healing kit is practised on stands.
+    pub healing_dummy: Vec3,
+    /// The size of that dummy's health pool.
+    ///
+    /// Two million, and it stands at half of it: large enough that a whole healing rotation
+    /// — every heal over time, a Tranquility and a Swiftmend — never tops it up, which is
+    /// what makes the numbers on it legible.
+    pub healing_dummy_health: f32,
     /// Half-width of the square the player is confined to.
     pub arena_half_extent: f32,
 }
@@ -49,18 +83,67 @@ pub struct ArenaConfig {
 impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
+            // A layout with no level behind it — the training arena, the test beds, every
+            // benchmark — stands on a plane at zero, exactly as it always did.
+            floor: Some(0.0),
+            void_height: -VOID_MARGIN,
             player_spawn: Vec3::ZERO,
+            player_spawn_yaw: 0.0,
             single_dummy: Vec3::new(0.0, 0.0, -12.0),
             group_center: Vec3::new(14.0, 0.0, -18.0),
             group_count: 4,
             group_spacing: 3.0,
             dummy_health: 200_000.0,
+            // In the main hall, beside the player's spawn and well clear of both the lone
+            // dummy in front of them and the group off to the side: it is a target to stand
+            // next to, not one to fight.
+            healing_dummy: Vec3::new(-6.0, 0.0, -4.0),
+            healing_dummy_health: 2_000_000.0,
             arena_half_extent: 40.0,
         }
     }
 }
 
 impl ArenaConfig {
+    /// The configuration an environment scene implies, with `count` dummies in the group.
+    ///
+    /// The seam between the level and the fight. The scene owns the spawn points, because
+    /// the scene is what put a boulder somewhere and therefore what knows where there is
+    /// room; gameplay owns what stands on them. Nothing in this function names a mesh, and
+    /// nothing in the scene names a dummy.
+    ///
+    /// The arena's half-extent comes from the scene too, so the collision wall and the
+    /// drawn kerb cannot disagree about where the arena ends — which they would the first
+    /// time one of the two numbers was changed on its own.
+    #[must_use]
+    pub fn from_environment(scene: &engine_environment::EnvironmentScene, count: usize) -> Self {
+        let base = Self::with_group(count);
+        Self {
+            // The level's own spawn point if it has one, and the layout's `spawns.player` if
+            // it does not — one question with one answer, and it is the scene's, not this
+            // crate's. It arrives already lifted onto the terrain, because a spawn authored
+            // at y = 0 on a level whose ground was later raised would put the player inside
+            // a hill.
+            player_spawn: scene.player_spawn().position,
+            player_spawn_yaw: scene.player_spawn().yaw,
+            single_dummy: scene.spawns.featured_dummy,
+            group_center: scene.spawns.group_center,
+            group_spacing: scene.spawns.group_spacing,
+            // The scene's own bound, unless a benchmark asked for more dummies than fit in
+            // it — in which case the group would otherwise be clamped into a heap against
+            // the wall and an area ability would hit all of it.
+            arena_half_extent: base.arena_half_extent.max(scene.half_extent),
+            // A level whose terrain reaches its own walls has no plane under it: the
+            // terrain *is* the ground, and a plane beneath it is what turns a pit into a hole
+            // with a lid. A level with no terrain — or with one that covers only part of the
+            // playable square — keeps the plane, because the alternative is a ring of level
+            // with nothing under it at all.
+            floor: (!terrain_covers_the_arena(scene)).then_some(scene.ground_height),
+            void_height: void_height_of(scene),
+            ..base
+        }
+    }
+
     /// A configuration with `count` dummies in the group.
     ///
     /// The arena grows with the group so a benchmark's dummies are not clamped into a heap
@@ -109,6 +192,8 @@ pub struct Arena {
     pub single_dummy: EntityId,
     /// The dummies in the group, in spawn order.
     pub group: Vec<EntityId>,
+    /// The friendly dummy the healing kit is practised on, at half health.
+    pub healing_dummy: EntityId,
 }
 
 /// Builds a simulation holding the training arena.
@@ -120,7 +205,15 @@ pub fn training_arena(config: &ArenaConfig) -> Simulation {
     });
     let arena = populate(simulation.world_mut(), config);
     build_collision(simulation.collision_world_mut(), config);
+    // Where a respawn puts the player, from the level rather than from wherever they
+    // happened to be standing: the editor says where, and this is the one place that answer
+    // crosses into the runtime.
+    simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
     simulation.set_player_entity(arena.player);
+    // In the party, because that is what a party heal reaches and what the party frames
+    // draw: a friendly target standing in the room that no frame showed would be a target
+    // the player could only find by clicking on it.
+    simulation.party_mut().join(arena.healing_dummy);
     simulation.select_nearest_target();
     simulation
 }
@@ -133,6 +226,49 @@ const WALL_HEIGHT: f32 = 4.0;
 /// Thickness of the arena's boundary wall, in metres.
 const WALL_THICKNESS: f32 = 1.0;
 
+/// How far below the lowest ground a body has to be to have left the level, in metres.
+///
+/// Deep enough that no authored pit reaches it — a pit's floor is ground, and a character
+/// standing in one must never be counted as falling — and shallow enough that the fall is
+/// over in about a second rather than in ten.
+const VOID_MARGIN: f32 = 25.0;
+
+/// Whether the level's terrain reaches every corner of its playable square.
+///
+/// The question that decides whether the floor plane can be taken away. A terrain the editor
+/// created covers the square by construction — it is sized from `half_extent` — but a level
+/// authored by hand or written before that rule existed may not, and a ring of level with no
+/// ground under it is a worse bug than a pit with a lid on it.
+#[must_use]
+pub fn terrain_covers_the_arena(scene: &engine_environment::EnvironmentScene) -> bool {
+    let Some(terrain) = scene.terrain.as_ref() else {
+        return false;
+    };
+    let span = terrain.span();
+    let limit = scene.half_extent;
+    terrain.origin.x <= -limit
+        && terrain.origin.z <= -limit
+        && terrain.origin.x + span >= limit
+        && terrain.origin.z + span >= limit
+}
+
+/// The y under which a body has fallen out of `scene`.
+///
+/// The lowest ground the level has, less [`VOID_MARGIN`]: the terrain's deepest point where
+/// there is a terrain, and the floor plane's own height where there is not.
+#[must_use]
+pub fn void_height_of(scene: &engine_environment::EnvironmentScene) -> f32 {
+    let lowest = match scene.terrain.as_ref() {
+        Some(terrain) => terrain
+            .heights
+            .iter()
+            .copied()
+            .fold(scene.ground_height, f32::min),
+        None => scene.ground_height,
+    };
+    lowest - VOID_MARGIN
+}
+
 /// Gives the arena its floor and its four boundary walls.
 ///
 /// The floor was previously a number (`ground_height`) and the walls were a clamp on X and
@@ -144,7 +280,9 @@ const WALL_THICKNESS: f32 = 1.0;
 /// the arena it was measured in.
 pub fn build_collision(world: &mut engine_collision::world::CollisionWorld, config: &ArenaConfig) {
     world.clear();
-    world.add_ground(0.0, "ARENA FLOOR");
+    if let Some(floor) = config.floor {
+        world.add_ground(floor, "ARENA FLOOR");
+    }
 
     let limit = config.arena_half_extent;
     let outer = limit + WALL_THICKNESS;
@@ -174,6 +312,303 @@ pub fn build_collision(world: &mut engine_collision::world::CollisionWorld, conf
     world.rebuild_broad_phase();
 }
 
+/// Adds the level's terrain to a collision world, if it has one.
+///
+/// One shape for the whole surface: see `engine_collision::heightfield` for why that is a
+/// shape rather than a box per cell. The floor plane stays underneath it — the terrain covers
+/// part of the playable square and the plane holds up whatever is standing on the rest, and
+/// it is also what catches somebody who falls off the edge of the terrain rather than letting
+/// them drop forever.
+///
+/// Returns whether a surface was added. A terrain whose numbers do not describe one is
+/// reported and skipped: the level is playable on its floor plane, which is a great deal
+/// better than a panic on the first step somebody takes.
+pub fn add_terrain_collision(
+    world: &mut engine_collision::world::CollisionWorld,
+    scene: &engine_environment::EnvironmentScene,
+) -> bool {
+    use engine_collision::heightfield::Heightfield;
+    use engine_collision::shape::Shape;
+    use engine_collision::world::StaticDesc;
+
+    let Some(terrain) = scene.terrain.as_ref() else {
+        return false;
+    };
+    let Some(field) = Heightfield::new(
+        terrain.origin,
+        terrain.cell_size,
+        terrain.resolution,
+        terrain.heights.clone(),
+    ) else {
+        log::error!(
+            "terrain: {}x{} points at {} m is not a surface; the level keeps its floor plane",
+            terrain.resolution,
+            terrain.resolution,
+            terrain.cell_size
+        );
+        return false;
+    };
+    world.add_static(StaticDesc::new(Shape::heightfield(field)).labelled("TERRAIN"));
+    true
+}
+
+/// Adds every blocking environment object to a collision world.
+///
+/// ```text
+/// EnvironmentObject                        CollisionWorld
+///   collision: Box { centre, half }  ──►   Shape::Aabb   (unrotated placement)
+///   transform: position + yaw + scale ─►   Shape::Obb    (yawed placement)
+///   collision: None                  ──►   nothing at all
+/// ```
+///
+/// # Why the shape is chosen here rather than authored
+///
+/// An axis-aligned box is a cheaper narrow-phase test than an oriented one, and most of the
+/// arena is unrotated. Which of the two a placement needs is a consequence of its transform,
+/// not a decision an author should have to make — so it is made once, here, by comparing the
+/// placement's rotation against an epsilon. A quarter of a degree of yaw is not worth an
+/// oriented box.
+///
+/// # Why the broad phase is not rebuilt
+///
+/// It is left dirty, exactly as [`build_collision`] leaves it: rebuilding after every insert
+/// makes building a level quadratic. The caller rebuilds once when the whole world is
+/// assembled, and forgetting costs speed rather than correctness — a dirty world answers
+/// with a linear scan.
+///
+/// Returns how many shapes were added.
+pub fn add_environment_collision(
+    world: &mut engine_collision::world::CollisionWorld,
+    scene: &engine_environment::EnvironmentScene,
+) -> usize {
+    use engine_collision::shape::{Obb, Shape};
+    use engine_collision::world::StaticDesc;
+
+    /// Below this, a placement's rotation is not worth an oriented box.
+    ///
+    /// The magnitude of a quaternion's vector part is `sin(angle / 2)`, so this is about a
+    /// quarter of a degree of yaw.
+    const YAW_EPSILON: f32 = 2.0e-3;
+
+    let mut added = 0;
+    for object in &scene.objects {
+        // Every box this placement blocks: nothing, one, or the several a compound names.
+        // The loop below cannot tell which it was, which is the point — a cliff overhang and
+        // a rock arrive here the same way.
+        for placed in scene.world_boxes(object) {
+            // A degenerate box would be a shape every query has to test and no query can ever
+            // touch. It means an author wrote a zero extent, which is worth a line in the log.
+            if placed.half_extents.x <= 0.0
+                || placed.half_extents.y <= 0.0
+                || placed.half_extents.z <= 0.0
+            {
+                log::warn!(
+                    "environment object {} has a collision box with no volume: {:?}",
+                    object.asset,
+                    placed.half_extents
+                );
+                continue;
+            }
+
+            let shape = if placed.rotation_magnitude() < YAW_EPSILON {
+                let (min, max) = placed.min_max();
+                Shape::box_between(min, max)
+            } else {
+                Shape::Obb(Obb::new(
+                    placed.center,
+                    placed.half_extents,
+                    placed.rotation,
+                ))
+            };
+            // The asset's name, so the collision debug view and a contact report say *what*
+            // was hit rather than "a box". `&'static str` because an asset id already is one.
+            world.add_static(StaticDesc::new(shape).labelled(object.asset.name()));
+            added += 1;
+        }
+    }
+    added
+}
+
+/// Builds a simulation holding an environment scene and the fight that happens in it.
+///
+/// The whole of "load a level": the scene supplies the layout, the collision and the spawn
+/// points; [`ArenaConfig::from_environment`] turns its spawns into gameplay's; and the
+/// arena's own floor and boundary wall are added underneath. Adding a second arena is
+/// calling this with a different scene — see `phase_environment.md`.
+#[must_use]
+pub fn environment_arena(
+    scene: &engine_environment::EnvironmentScene,
+    group_count: usize,
+) -> Simulation {
+    environment_arena_for_party(
+        scene,
+        group_count,
+        crate::dungeon::DungeonScaling::default(),
+    )
+}
+
+/// [`environment_arena`], with the level's monsters scaled for a party of a given size.
+///
+/// A level with monsters placed in it is a fight: they are spawned in their packs, and a
+/// level that says it is a dungeon becomes a dungeon run — see
+/// [`crate::dungeon::populate_from_scene`]. A dungeon never gets the training dummies, however
+/// many were asked for — nor the featured and healing dummies: a dummy in a crypt is an arena
+/// with corridors.
+#[must_use]
+pub fn environment_arena_for_party(
+    scene: &engine_environment::EnvironmentScene,
+    group_count: usize,
+    scaling: crate::dungeon::DungeonScaling,
+) -> Simulation {
+    environment_arena_for_party_seeded(scene, group_count, scaling, SimConfig::default().rng_seed)
+}
+
+/// [`environment_arena_for_party`] with the seed every chance in the fight rolls from: crits,
+/// enemy decisions and loot. A server gives each instance a seed of its own.
+#[must_use]
+pub fn environment_arena_for_party_seeded(
+    scene: &engine_environment::EnvironmentScene,
+    group_count: usize,
+    scaling: crate::dungeon::DungeonScaling,
+    rng_seed: u64,
+) -> Simulation {
+    let group_count = if scene.dungeon.is_some() {
+        0
+    } else {
+        group_count
+    };
+    let config = ArenaConfig::from_environment(scene, group_count);
+    let mut simulation = Simulation::new(SimConfig {
+        movement: config.movement(),
+        rng_seed,
+        ..SimConfig::default()
+    });
+    let arena = populate(simulation.world_mut(), &config);
+    // The level's own floor, so a character who walks off the edge of the terrain — or
+    // through a hole an author left in it — is eventually counted as having left the level
+    // rather than falling for the rest of the session.
+    simulation.set_void_height(config.void_height);
+
+    let world = simulation.collision_world_mut();
+    // The floor and the four boundary walls first, then everything the scene brought. The
+    // wall is what confines the player; the scene's kerb stands just inside it and is what
+    // the player sees. Two descriptions of the boundary, and they agree because
+    // `ArenaConfig::from_environment` took its half-extent from the same scene.
+    build_collision(world, &config);
+    let terrain = add_terrain_collision(world, scene);
+    let statics = add_environment_collision(world, scene);
+    world.rebuild_broad_phase();
+    log::info!(
+        "environment '{}': {} objects, {statics} collision shapes{}",
+        scene.name,
+        scene.len(),
+        if terrain { ", and terrain" } else { "" }
+    );
+    // Said on its own line rather than folded into the one above, because water is not a
+    // collision shape and a count that included it would be a count that lies about what
+    // stops a character.
+    if !scene.water.is_empty() {
+        log::info!(
+            "environment '{}': {} water bodies",
+            scene.name,
+            scene.water.len()
+        );
+    }
+
+    // Where a respawn puts the player: the level's spawn point, through `ArenaConfig`. This
+    // is the one place the editor's answer crosses into the runtime.
+    simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
+    simulation.set_player_entity(arena.player);
+    if scene.dungeon.is_some() {
+        // A dungeon is a place, not a practice yard: the featured dummy and the healing
+        // dummy go the way the group did, and the party is the player's own.
+        simulation.world_mut().despawn(arena.single_dummy);
+        simulation.world_mut().despawn(arena.healing_dummy);
+    } else {
+        simulation.party_mut().join(arena.healing_dummy);
+    }
+    if !scene.monsters.is_empty() || scene.dungeon.is_some() {
+        crate::dungeon::populate_from_scene(&mut simulation, scene, scaling);
+    }
+    simulation.select_nearest_target();
+    simulation
+}
+
+/// Fills an existing world with the arena and returns what it spawned.
+///
+/// Separate from [`training_arena`] so a benchmark can rebuild the world of a simulation it
+/// already owns, and so a test can build a world with no simulation at all.
+/// An arena with an encounter in it instead of a group of dummies.
+///
+/// The same floor, the same player, the same collision - and a fight. Built here rather than
+/// in the application for the same reason `training_arena` is: a scene is gameplay data, and
+/// a headless test has to be able to build the identical one.
+#[must_use]
+pub fn encounter_arena(config: &ArenaConfig, encounter: crate::encounter::Encounter) -> Simulation {
+    let mut simulation = Simulation::new(SimConfig {
+        movement: config.movement(),
+        ..SimConfig::default()
+    });
+    let arena = populate(simulation.world_mut(), config);
+    simulation.set_player_spawn(config.player_spawn, config.player_spawn_yaw);
+    simulation.set_player_entity(arena.player);
+    simulation.party_mut().join(arena.healing_dummy);
+    build_collision(simulation.collision_world_mut(), config);
+    simulation.set_encounter(encounter);
+    simulation
+}
+
+/// The encounter the demo scene and the tests use: one melee enemy and one caster.
+///
+/// Placed so that walking forward pulls the brute first and the caster second, which is what
+/// makes the two behaviours legible side by side rather than at once — and both outside the
+/// eighteen metres every monster sees from, so neither is pulled by the player spawning.
+#[must_use]
+pub fn demo_encounter(config: &ArenaConfig) -> crate::encounter::Encounter {
+    use crate::encounter::{Encounter, EnemySpawn};
+    use crate::enemy::EnemyKind;
+
+    let origin = config.player_spawn;
+    Encounter::with_spawns(
+        "SKIRMISH",
+        vec![
+            EnemySpawn::new(EnemyKind::Melee, origin + Vec3::new(-3.0, 0.0, -21.0)),
+            EnemySpawn::new(EnemyKind::Caster, origin + Vec3::new(6.0, 0.0, -29.0)),
+        ],
+    )
+}
+
+/// A pack, for the stress scenarios: `count` enemies alternating melee and caster.
+///
+/// Laid out on a grid behind the same spacing the dummy group uses, so a hundred enemies
+/// stand in a block the player can see all of rather than a line to the horizon.
+#[must_use]
+pub fn pack_encounter(config: &ArenaConfig, count: usize) -> crate::encounter::Encounter {
+    use crate::encounter::{Encounter, EnemySpawn};
+    use crate::enemy::EnemyKind;
+
+    let columns = grid_columns(count);
+    let spacing = config.group_spacing.max(2.5);
+    let mut spawns = Vec::with_capacity(count);
+    for index in 0..count {
+        let column = index % columns;
+        let row = index / columns;
+        let offset = Vec3::new(
+            (column as f32 - (columns as f32 - 1.0) * 0.5) * spacing,
+            0.0,
+            // The front row just outside the aggro radius: nothing is pulled by a spawn.
+            -22.0 - row as f32 * spacing,
+        );
+        let kind = if index % 2 == 0 {
+            EnemyKind::Melee
+        } else {
+            EnemyKind::Caster
+        };
+        spawns.push(EnemySpawn::new(kind, config.player_spawn + offset));
+    }
+    Encounter::with_spawns("PACK", spawns)
+}
+
 /// Fills an existing world with the arena and returns what it spawned.
 ///
 /// Separate from [`training_arena`] so a benchmark can rebuild the world of a simulation it
@@ -182,7 +617,15 @@ pub fn populate(world: &mut GameWorld, config: &ArenaConfig) -> Arena {
     world.clear();
 
     let player = world.spawn(EntityDesc::player(config.player_spawn));
+    // Turned to face the way the level's spawn point points. Set on the body rather than
+    // passed to `spawn`, because facing is movement state and `EntityDesc` describes what an
+    // entity *is* rather than which way it happens to be looking.
+    if let Some(body) = world.body_mut(player) {
+        body.facing_yaw = config.player_spawn_yaw;
+    }
     let single_dummy = world.spawn(EntityDesc::dummy(config.single_dummy, config.dummy_health));
+    let healing_dummy =
+        spawn_healing_dummy(world, config.healing_dummy, config.healing_dummy_health);
     let mut group = Vec::with_capacity(config.group_count);
     spawn_group(world, config, &mut group);
 
@@ -190,7 +633,19 @@ pub fn populate(world: &mut GameWorld, config: &ArenaConfig) -> Arena {
         player,
         single_dummy,
         group,
+        healing_dummy,
     }
+}
+
+/// Spawns the friendly dummy and puts it at half health.
+///
+/// The health is set through [`GameWorld::restore`] rather than by writing a number here, so
+/// the state it starts in and the state a reset key puts it back to are the same rule in the
+/// same place.
+pub fn spawn_healing_dummy(world: &mut GameWorld, position: Vec3, max_health: f32) -> EntityId {
+    let dummy = world.spawn(EntityDesc::healing_dummy(position, max_health));
+    world.restore(dummy);
+    dummy
 }
 
 /// Spawns the dummy group into `out`.
@@ -240,8 +695,24 @@ mod tests {
         let simulation = training_arena(&config);
         let world = simulation.world();
 
-        assert_eq!(world.len(), 2 + config.group_count);
+        // The player, the lone dummy, the friendly one, and the group.
+        assert_eq!(world.len(), 3 + config.group_count);
         assert_eq!(dummies(world).count(), 1 + config.group_count);
+        // The friendly dummy is not a dummy for the purposes of the reset key: it is in the
+        // player's own faction, in the party, and standing at half health.
+        let healing = simulation
+            .world()
+            .entities()
+            .find(|id| world.kind(*id) == Some(EntityKind::HealingDummy))
+            .expect("the main hall has a healing dummy");
+        assert!(simulation.party().contains(healing));
+        let health = world.health(healing).expect("it has health");
+        assert!((health.max() - config.healing_dummy_health).abs() < 1.0);
+        assert!(
+            (health.fraction() - 0.5).abs() < 1e-3,
+            "{}",
+            health.fraction()
+        );
         assert_eq!(
             world.kind(simulation.player().entity),
             Some(EntityKind::Player)
@@ -267,7 +738,7 @@ mod tests {
         let config = ArenaConfig::default();
         let mut world = GameWorld::new();
         let arena = populate(&mut world, &config);
-        let radius = crate::firemage::FireAbility::FlameWave.definition().range;
+        let radius = crate::firemage::FireAbility::FlameCone.definition().range;
 
         let centre = world
             .position(arena.group[0])
@@ -345,6 +816,184 @@ mod tests {
         let total = points.len();
         points.dedup();
         assert_eq!(points.len(), total, "two dummies share a position");
+    }
+
+    #[test]
+    fn an_environment_scene_becomes_a_playable_arena() {
+        let scene = engine_environment::arena::combat_arena();
+        let simulation = environment_arena(&scene, 4);
+
+        assert_eq!(simulation.world().len(), 3 + 4);
+        assert_eq!(
+            simulation.world().position(simulation.player().entity),
+            Some(scene.spawns.player)
+        );
+        assert!(simulation.player().target.is_some());
+        assert!(
+            !simulation.collision_world().is_dirty(),
+            "a scene must not hand over a world that still has to be rebuilt"
+        );
+    }
+
+    #[test]
+    fn only_the_objects_that_block_become_collision_shapes() {
+        let scene = engine_environment::arena::combat_arena();
+        let mut world = engine_collision::world::CollisionWorld::new();
+        let added = add_environment_collision(&mut world, &scene);
+
+        assert_eq!(added, scene.blocking_count());
+        assert_eq!(world.len(), added);
+        assert!(
+            added < scene.len() / 2,
+            "{added} of {} objects block, which is most of them",
+            scene.len()
+        );
+        // Every shape is named after the asset that produced it, so a contact report says
+        // what was hit.
+        for id in world.statics() {
+            assert!(!world.label(id).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_yawed_placement_becomes_an_oriented_box_and_a_straight_one_does_not() {
+        use engine_collision::shape::Shape;
+        use engine_environment::object::{EnvironmentCollision, EnvironmentObject};
+
+        let mut scene = engine_environment::EnvironmentScene::with_capacity("test", 2);
+        let block = EnvironmentObject::decoration(
+            engine_environment::asset::WALL_SEGMENT,
+            Vec3::new(5.0, 0.0, 0.0),
+        )
+        .with_collision(EnvironmentCollision::standing(4.0, 1.2, 0.5));
+        scene.push(block);
+        scene.push(block.with_yaw(std::f32::consts::FRAC_PI_2));
+
+        let mut world = engine_collision::world::CollisionWorld::new();
+        assert_eq!(add_environment_collision(&mut world, &scene), 2);
+        let shapes: Vec<_> = world
+            .statics()
+            .filter_map(|id| world.shape(id).cloned())
+            .collect();
+        assert!(
+            matches!(shapes[0], Shape::Aabb(_)),
+            "an unrotated box should not pay for an oriented test: {:?}",
+            shapes[0]
+        );
+        assert!(
+            matches!(shapes[1], Shape::Obb(_)),
+            "a yawed box has to be oriented or it blocks the wrong ground: {:?}",
+            shapes[1]
+        );
+    }
+
+    #[test]
+    fn a_collision_box_with_no_volume_is_refused_rather_than_added() {
+        use engine_environment::object::{EnvironmentCollision, EnvironmentObject};
+
+        let mut scene = engine_environment::EnvironmentScene::with_capacity("test", 1);
+        scene.push(
+            EnvironmentObject::decoration(engine_environment::asset::PILLAR, Vec3::ZERO)
+                .with_collision(EnvironmentCollision::Box {
+                    center: Vec3::Y,
+                    half_extents: Vec3::new(0.5, 0.0, 0.5),
+                }),
+        );
+        let mut world = engine_collision::world::CollisionWorld::new();
+        assert_eq!(add_environment_collision(&mut world, &scene), 0);
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn the_player_spawns_somewhere_the_environment_left_room_for_it() {
+        // The layout rule and the gameplay spawn are in two crates, and this is where they
+        // meet: a spawn point inside a boulder is a character that pops sideways on its
+        // first tick.
+        use engine_collision::CollisionMask;
+        use engine_collision::controller::CharacterConfig;
+        use engine_collision::world::QueryBuffers;
+
+        let scene = engine_environment::arena::combat_arena();
+        let simulation = environment_arena(&scene, 16);
+        let config = CharacterConfig::default();
+        let mut buffers = QueryBuffers::new();
+
+        let mut points = vec![scene.spawns.player, scene.spawns.featured_dummy];
+        points.extend(
+            simulation
+                .world()
+                .entities()
+                .filter_map(|id| simulation.world().position(id)),
+        );
+        for point in points {
+            assert!(
+                !simulation.collision_world().capsule_overlaps(
+                    &config.capsule_at(point + Vec3::new(0.0, 0.05, 0.0)),
+                    CollisionMask::WORLD,
+                    &mut buffers,
+                ),
+                "{point:?} is inside the level"
+            );
+        }
+    }
+
+    #[test]
+    fn the_environments_kerb_stands_inside_the_wall_that_actually_confines_the_player() {
+        // Two descriptions of the boundary. They have to agree, and the way they agree is
+        // that the gameplay config takes its half-extent from the scene.
+        let scene = engine_environment::arena::combat_arena();
+        let config = ArenaConfig::from_environment(&scene, 4);
+        assert_eq!(config.arena_half_extent, scene.half_extent);
+
+        for object in &scene.objects {
+            let Some(placed) = object.world_collision() else {
+                continue;
+            };
+            // The box's eight corners, carried through its own rotation. `min_max` is the
+            // unrotated case only, and half the kerb is turned a quarter turn — using it
+            // here would measure a box that is not the box in the world.
+            let half = placed.half_extents;
+            let mut reach = 0.0_f32;
+            for sx in [-1.0_f32, 1.0] {
+                for sy in [-1.0_f32, 1.0] {
+                    for sz in [-1.0_f32, 1.0] {
+                        let corner = placed.center
+                            + placed.rotation.rotate(Vec3::new(
+                                sx * half.x,
+                                sy * half.y,
+                                sz * half.z,
+                            ));
+                        reach = reach.max(corner.x.abs()).max(corner.z.abs());
+                    }
+                }
+            }
+            assert!(
+                reach <= config.arena_half_extent + 0.01,
+                "{} reaches {reach:.2} m, past the wall at {}",
+                object.asset,
+                config.arena_half_extent
+            );
+        }
+    }
+
+    #[test]
+    fn an_environment_arena_is_built_identically_every_time() {
+        let scene = engine_environment::arena::combat_arena();
+        let describe = || {
+            let simulation = environment_arena(&scene, 8);
+            let world = simulation.collision_world();
+            let shapes: Vec<_> = world
+                .statics()
+                .map(|id| (world.label(id), world.bounds(id)))
+                .collect();
+            let positions: Vec<_> = simulation
+                .world()
+                .entities()
+                .filter_map(|id| simulation.world().position(id))
+                .collect();
+            (shapes, positions)
+        };
+        assert_eq!(describe(), describe());
     }
 
     #[test]

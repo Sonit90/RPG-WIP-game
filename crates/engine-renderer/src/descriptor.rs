@@ -54,14 +54,17 @@
 //! reset once the GPU has finished the frame that used it, which is exactly what the frame
 //! ring already establishes before `begin_frame` returns.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_TYPE,
     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_GPU_DESCRIPTOR_HANDLE, ID3D12DescriptorHeap,
 };
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
 use crate::error::RendererError;
 
+#[cfg(windows)]
 /// An index into a descriptor heap, plus the handles that address it.
 ///
 /// The index is what the owner returns to free the descriptor; the handles are what D3D12
@@ -159,6 +162,67 @@ impl FreeListAllocator {
         self.used += 1;
         self.peak = self.peak.max(self.used);
         Some(index)
+    }
+
+    /// Takes `count` **contiguous** slots, or `None` if no such run exists.
+    ///
+    /// A descriptor table has to be contiguous in the heap, so a material's four-SRV set is
+    /// one run rather than four independent slots. The free list is scanned for a run first
+    /// and the bump cursor is used only when none is available, which is what lets a
+    /// released material's range be reused by the next one instead of leaking a hole.
+    ///
+    /// Returns the index of the run's first slot.
+    pub fn allocate_range(&mut self, count: u32) -> Option<u32> {
+        if count == 0 {
+            return None;
+        }
+        if count == 1 {
+            return self.allocate();
+        }
+
+        // A run among the returned slots. `returned` is small — one entry per released
+        // material — so sorting it is cheaper than any index structure would be, and
+        // material release is not on the frame path at all.
+        let mut sorted = self.returned.clone();
+        sorted.sort_unstable();
+        let mut run_start = 0_usize;
+        for position in 0..sorted.len() {
+            if position > 0 && sorted[position] != sorted[position - 1] + 1 {
+                run_start = position;
+            }
+            if (position - run_start + 1) as u32 == count {
+                let base = sorted[run_start];
+                self.returned
+                    .retain(|slot| !(base..base + count).contains(slot));
+                self.used += count;
+                self.peak = self.peak.max(self.used);
+                return Some(base);
+            }
+        }
+
+        if self.capacity - self.next >= count {
+            let base = self.next;
+            self.next += count;
+            self.used += count;
+            self.peak = self.peak.max(self.used);
+            return Some(base);
+        }
+
+        self.failures = self.failures.saturating_add(1);
+        None
+    }
+
+    /// Returns a run taken by [`Self::allocate_range`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if any slot in the run was never allocated
+    /// or has already been freed — both of which would hand one descriptor to two owners.
+    pub fn free_range(&mut self, index: u32, count: u32) -> Result<(), RendererError> {
+        for slot in index..index.saturating_add(count) {
+            self.free(slot)?;
+        }
+        Ok(())
     }
 
     /// Returns a slot to the allocator.
@@ -261,6 +325,7 @@ impl BumpAllocator {
     }
 }
 
+#[cfg(windows)]
 /// A CPU-only descriptor heap: render-target and depth-stencil views.
 ///
 /// These are never bound as a table, so the heap is not shader-visible. Views are created
@@ -273,6 +338,7 @@ pub struct CpuDescriptorHeap {
     allocator: FreeListAllocator,
 }
 
+#[cfg(windows)]
 impl CpuDescriptorHeap {
     /// Creates a non-shader-visible heap of `capacity` descriptors.
     ///
@@ -360,6 +426,7 @@ impl CpuDescriptorHeap {
     }
 }
 
+#[cfg(windows)]
 /// The shader-visible CBV/SRV/UAV heap, split into a persistent region and one per-frame
 /// region per frame slot.
 ///
@@ -380,6 +447,7 @@ pub struct GpuDescriptorHeap {
     frames: Vec<BumpAllocator>,
 }
 
+#[cfg(windows)]
 impl GpuDescriptorHeap {
     /// Creates the heap with `persistent_capacity` long-lived slots and
     /// `per_frame_capacity` slots for each of `frames_in_flight` slices.
@@ -401,8 +469,16 @@ impl GpuDescriptorHeap {
         }
 
         let total = persistent_capacity + per_frame_capacity * frames_in_flight as u32;
-        let heap =
-            device.create_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, total, true)?;
+        // At least one descriptor underneath, whatever the regions ask for. An empty heap is
+        // legal to *ask for* - a renderer that binds nothing still starts - but a zero-sized
+        // shader-visible heap is not something every driver survives: creating one has been
+        // seen to fault inside the driver rather than return an error. The spare slot is
+        // never handed out; the allocators below are sized from the requested capacities.
+        let heap = device.create_descriptor_heap(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            total.max(1),
+            true,
+        )?;
 
         // SAFETY: FFI calls on the heap created immediately above. Both handles are
         // addresses into it and stay valid while it lives.
@@ -448,6 +524,46 @@ impl GpuDescriptorHeap {
                 ),
             })?;
         Ok(self.handle(index))
+    }
+
+    /// Takes `count` **contiguous** long-lived slots, for one material's texture set.
+    ///
+    /// The returned handle addresses the first descriptor of the table; the rest follow it
+    /// at one [`Self::increment`] each, which is what a root descriptor table requires.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if the persistent region has no run of
+    /// `count` free slots.
+    pub fn allocate_persistent_range(
+        &mut self,
+        count: u32,
+    ) -> Result<DescriptorHandle, RendererError> {
+        let index = self
+            .persistent
+            .allocate_range(count)
+            .ok_or_else(|| RendererError::InvalidConfig {
+                reason: format!(
+                    "the persistent descriptor region has no run of {count} free descriptors                      ({} of {} used)",
+                    self.persistent.stats().used,
+                    self.persistent.stats().capacity
+                ),
+            })?;
+        Ok(self.handle(index))
+    }
+
+    /// Returns a run taken by [`Self::allocate_persistent_range`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::InvalidConfig`] if any slot in the run was never allocated
+    /// or has already been freed.
+    pub fn free_persistent_range(
+        &mut self,
+        handle: DescriptorHandle,
+        count: u32,
+    ) -> Result<(), RendererError> {
+        self.persistent.free_range(handle.index, count)
     }
 
     /// Returns a long-lived slot.
@@ -555,6 +671,78 @@ impl GpuDescriptorHeap {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_range_is_contiguous_because_a_descriptor_table_has_to_be() {
+        // The whole reason `allocate_range` exists. A root descriptor table addresses
+        // `count` *consecutive* slots from its base, so a material's four maps scattered
+        // across the heap would have the shader read three unrelated resources for t1..t3 —
+        // with no validation error, because D3D12 does not check a table against the shader.
+        let mut allocator = FreeListAllocator::new(16);
+        let first = allocator.allocate_range(4).expect("the region has room");
+        let second = allocator.allocate_range(4).expect("the region has room");
+        assert_eq!(first, 0);
+        assert_eq!(second, 4, "two runs must not overlap");
+        assert_eq!(allocator.stats().used, 8);
+    }
+
+    #[test]
+    fn a_freed_range_is_reused_rather_than_leaked() {
+        // Descriptor lifetime follows material lifetime. A released material's run must come
+        // back, or a scene that swaps materials would exhaust the region without ever
+        // holding more than a handful at once.
+        let mut allocator = FreeListAllocator::new(8);
+        let first = allocator.allocate_range(4).expect("the region has room");
+        let second = allocator.allocate_range(4).expect("the region has room");
+        allocator.free_range(first, 4).expect("a run just taken");
+        assert_eq!(allocator.stats().used, 4);
+
+        let reused = allocator
+            .allocate_range(4)
+            .expect("the freed run is available again");
+        assert_eq!(
+            reused, first,
+            "the released run is what the next material takes"
+        );
+        assert_eq!(second, 4);
+    }
+
+    #[test]
+    fn a_run_is_refused_when_the_free_slots_are_not_adjacent() {
+        // Four free slots are not the same as a run of four. Refusing is correct: handing
+        // back a base that only has three consecutive slots behind it would produce a table
+        // whose last descriptor belongs to someone else.
+        let mut allocator = FreeListAllocator::new(4);
+        let slots: Vec<u32> = (0..4)
+            .map(|_| allocator.allocate().expect("the region has room"))
+            .collect();
+        // Free two that are not neighbours.
+        allocator.free(slots[0]).expect("a slot just taken");
+        allocator.free(slots[2]).expect("a slot just taken");
+        assert_eq!(allocator.stats().used, 2, "two slots are free");
+        assert!(
+            allocator.allocate_range(2).is_none(),
+            "two free but non-adjacent slots cannot satisfy a two-slot table"
+        );
+        assert_eq!(
+            allocator.stats().failures,
+            1,
+            "a refused run is counted, so a region that is fragmented rather than full is \
+             visible in the statistics"
+        );
+    }
+
+    #[test]
+    fn a_range_of_one_behaves_exactly_like_a_single_allocation() {
+        let mut allocator = FreeListAllocator::new(4);
+        assert_eq!(allocator.allocate_range(1), Some(0));
+        assert_eq!(allocator.allocate(), Some(1));
+        assert_eq!(
+            allocator.allocate_range(0),
+            None,
+            "a zero-slot table is not a table"
+        );
+    }
 
     #[test]
     fn a_free_list_hands_out_distinct_slots() {

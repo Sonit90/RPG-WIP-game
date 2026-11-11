@@ -1,0 +1,68 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="detonate_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(48,6,0)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(18,10,10)"></stop>
+	</linearGradient>
+	<radialGradient id="detonate_forge" gradientUnits="userSpaceOnUse" cx="338" cy="570" r="350">
+		<stop offset="0" stop-opacity="0.65" stop-color="rgb(171,20,2)"></stop>
+		<stop offset="0.5" stop-opacity="0.24" stop-color="rgb(117,15,9)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(48,6,0)"></stop>
+	</radialGradient>
+	<radialGradient id="detonate_core" gradientUnits="userSpaceOnUse" cx="338" cy="570" r="150">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,246,208)"></stop>
+		<stop offset="0.35" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+		<stop offset="0.7" stop-opacity="1" stop-color="rgb(252,149,6)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(225,57,2)"></stop>
+	</radialGradient>
+	<radialGradient id="detonate_ring" gradientUnits="userSpaceOnUse" cx="338" cy="570" r="300">
+		<stop offset="0.55" stop-opacity="0" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="0.82" stop-opacity="0.85" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(171,20,2)"></stop>
+	</radialGradient>
+	<linearGradient id="detonate_shard" gradientUnits="userSpaceOnUse" x1="338" y1="570" x2="338" y2="270">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(254,224,61)"></stop>
+		<stop offset="0.55" stop-opacity="1" stop-color="rgb(249,134,8)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(217,47,1)"></stop>
+	</linearGradient>
+	<radialGradient id="detonate_glow" gradientUnits="userSpaceOnUse" cx="338" cy="570" r="330">
+		<stop offset="0" stop-opacity="0.55" stop-color="rgb(252,191,12)"></stop>
+		<stop offset="0.45" stop-opacity="0.22" stop-color="rgb(241,87,3)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(171,20,2)"></stop>
+	</radialGradient>
+	<clipPath id="detonate_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#detonate_tile)">
+	<path fill="url(#detonate_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#detonate_forge)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="url(#detonate_glow)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The shock front, already past the edge of the tile. Detonate spends a burn that was
+	     banked, so the picture is the release, not the burn. -->
+	<path fill="url(#detonate_ring)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+	<path fill="none" stroke="rgb(252,149,6)" stroke-opacity="0.8" stroke-width="14" d="M 338 306 C 484 306 602 424 602 570 C 602 716 484 834 338 834 C 192 834 74 716 74 570 C 74 424 192 306 338 306 z"></path>
+	<path fill="none" stroke="rgb(254,224,61)" stroke-opacity="0.55" stroke-width="7" d="M 338 348 C 461 348 560 447 560 570 C 560 693 461 792 338 792 C 215 792 116 693 116 570 C 116 447 215 348 338 348 z"></path>
+
+	<!-- Fragments thrown outward, longest where the burn was deepest. -->
+	<path fill="url(#detonate_shard)" d="M 338 500 L 366 372 L 338 244 L 310 372 z"></path>
+	<path fill="url(#detonate_shard)" d="M 338 640 L 362 764 L 338 892 L 314 764 z"></path>
+	<path fill="url(#detonate_shard)" d="M 268 570 L 148 596 L 26 570 L 148 544 z"></path>
+	<path fill="url(#detonate_shard)" d="M 408 570 L 528 596 L 650 570 L 528 544 z"></path>
+	<path fill="rgb(249,134,8)" d="M 292 520 L 214 424 L 156 336 L 246 396 L 342 474 z"></path>
+	<path fill="rgb(249,134,8)" d="M 384 520 L 462 424 L 520 336 L 430 396 L 334 474 z"></path>
+	<path fill="rgb(225,57,2)" d="M 292 620 L 214 716 L 156 804 L 246 744 L 342 666 z"></path>
+	<path fill="rgb(225,57,2)" d="M 384 620 L 462 716 L 520 804 L 430 744 L 334 666 z"></path>
+
+	<!-- Core: everything the burn had, arriving at once. -->
+	<path fill="url(#detonate_core)" d="M 338 424 C 372 490 418 536 484 570 C 418 604 372 650 338 716 C 304 650 258 604 192 570 C 258 536 304 490 338 424 z"></path>
+	<path fill="rgb(255,246,208)" fill-opacity="0.9" d="M 338 496 C 356 534 380 558 418 570 C 380 582 356 606 338 644 C 320 606 296 582 258 570 C 296 558 320 534 338 496 z"></path>
+
+	<!-- Cinders still travelling out past the front. -->
+	<path fill="rgb(252,191,12)" d="M 600 344 C 608 350 612 360 610 370 C 600 364 594 354 594 344 z"></path>
+	<path fill="rgb(254,224,61)" d="M 96 766 C 104 772 108 780 106 790 C 96 784 90 776 90 766 z"></path>
+	<path fill="rgb(252,191,12)" d="M 566 800 C 574 804 578 812 576 820 C 568 816 562 808 562 800 z"></path>
+	<path fill="rgb(253,120,2)" d="M 108 336 C 116 340 120 348 118 356 C 110 352 104 344 104 336 z"></path>
+</g>
+</svg>

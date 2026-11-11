@@ -1,0 +1,69 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="lifebloom_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="lifebloom_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(190,160,200)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="lifebloom_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="lifebloom_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="lifebloom_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="lifebloom_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="lifebloom_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="lifebloom_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="lifebloom_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="lifebloom_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#lifebloom_tile)">
+	<path fill="url(#lifebloom_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#lifebloom_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The stem and the cradle it is counting down in. -->
+	<path fill="url(#lifebloom_bark)" d="M 322 862 L 354 862 L 358 606 L 318 606 z"></path>
+	<path fill="url(#lifebloom_leaf)" d="M 318 660 C 258 660 220 696 216 748 C 276 752 316 716 318 660 z"></path>
+	<path fill="url(#lifebloom_leaf)" d="M 358 690 C 418 690 456 726 460 778 C 400 782 360 746 358 690 z"></path>
+
+	<!-- Three rings: the stacks, tight at the bud and loosening outward. -->
+	<path fill="url(#lifebloom_bloom)" fill-opacity="0.30" d="M 338 232 C 434 232 512 310 512 406 C 512 502 434 580 338 580 C 242 580 164 502 164 406 C 164 310 242 232 338 232 z M 338 268 C 262 268 200 330 200 406 C 200 482 262 544 338 544 C 414 544 476 482 476 406 C 476 330 414 268 338 268 z"></path>
+	<path fill="url(#lifebloom_bloom)" fill-opacity="0.55" d="M 338 286 C 404 286 458 340 458 406 C 458 472 404 526 338 526 C 272 526 218 472 218 406 C 218 340 272 286 338 286 z M 338 318 C 290 318 250 358 250 406 C 250 454 290 494 338 494 C 386 494 426 454 426 406 C 426 358 386 318 338 318 z"></path>
+	<path fill="url(#lifebloom_bloom)" d="M 338 336 C 376 336 408 368 408 406 C 408 444 376 476 338 476 C 300 476 268 444 268 406 C 268 368 300 336 338 336 z M 338 362 C 314 362 294 382 294 406 C 294 430 314 450 338 450 C 362 450 382 430 382 406 C 382 382 362 362 338 362 z"></path>
+
+	<!-- The bud at the centre, and the bloom coming when it runs out. -->
+	<path fill="url(#lifebloom_leaf)" d="M 338 372 C 356 372 372 388 372 406 C 372 424 356 440 338 440 C 320 440 304 424 304 406 C 304 388 320 372 338 372 z"></path>
+	<path fill="rgb(255,214,230)" fill-opacity="0.9" d="M 338 250 C 348 262 354 274 352 286 C 340 280 332 266 330 250 z"></path>
+	<path fill="rgb(255,214,230)" fill-opacity="0.7" d="M 498 468 C 486 476 474 480 462 476 C 470 466 484 458 498 456 z"></path>
+	<path fill="rgb(255,214,230)" fill-opacity="0.7" d="M 178 468 C 190 476 202 480 214 476 C 206 466 192 458 178 456 z"></path>
+</g>
+</svg>

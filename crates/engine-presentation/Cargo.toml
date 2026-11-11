@@ -13,12 +13,35 @@ publish.workspace = true
 # against rather than a second description of it that can drift.
 engine-collision = { workspace = true }
 engine-core = { workspace = true }
+# Models, skeletons and animation clips. Presentation is where a character's gameplay state
+# becomes an animation state, so this is the crate that owns an `AnimationPlayer`.
+engine-assets = { workspace = true }
+# The level as data. Presentation is the crate that turns a placement into render entities,
+# which is exactly the pairing this crate exists for: it is the only one allowed to know
+# both what a scene says and what a `RenderWorld` is.
+engine-environment = { workspace = true }
 engine-game = { workspace = true }
+# The realm's rule types (roles, countdown display) for the online front-end screens. Plain
+# data and pure functions: presentation still knows nothing about the network.
+engine-realm = { workspace = true }
 engine-render-data = { workspace = true }
+# Effects as data and their runtime. Presentation is the only crate allowed to say that a
+# gameplay thing looks like a particular effect, so this dependency lives here and nowhere
+# else in the graph.
+engine-vfx = { workspace = true }
+# Sound as data and its runtime. Here for the same reason engine-vfx is: this crate is where
+# a gameplay event becomes a presentation decision, and "Detonate sounds like an explosion"
+# is exactly that kind of decision. engine-audio itself never learns what an ability is.
+engine-audio = { workspace = true }
 # The settings a menu shows: their bounds, their defaults and their type. The UI reads them;
 # it never loads or writes the file.
 engine-settings = { workspace = true }
 log = { workspace = true }
+
+[features]
+# The developer button on the HUD. Forwarded from engine-app's `dev-tools`; off in the
+# shipping build, where none of its code is compiled.
+dev-tools = []
 
 [lints]
 workspace = true

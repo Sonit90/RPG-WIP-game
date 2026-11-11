@@ -5,10 +5,11 @@
 //!  (commands)     (this file)     one buffer
 //! ```
 //!
-//! Every UI element — a panel, a health bar, an outline, a glyph — is a textured, tinted
-//! quad. Glyphs sample their cell in the font atlas; solid shapes sample the one opaque
-//! texel in the same atlas. Because they share a texture and a pipeline state, they share a
-//! **batch**, and the entire user interface is submitted as a single draw.
+//! Every UI element — a panel, a health bar, an outline, a glyph, an ability icon — is a
+//! textured, tinted quad. Glyphs sample their cell in the UI atlas; icons sample theirs;
+//! solid shapes sample the one opaque texel in the same atlas. Because they share a texture
+//! and a pipeline state, they share a **batch**, and the entire user interface is submitted
+//! as a single draw.
 //!
 //! ## What this replaces
 //!
@@ -24,47 +25,96 @@
 //! fails a depth test vanishes, and one that passes writes depth that occludes whatever
 //! should have blended over it. See `engine_render_data::ui` for the full reasoning.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE,
     D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_COLOR_WRITE_ENABLE_ALL,
     D3D12_COMPARISON_FUNC_ALWAYS, D3D12_CULL_MODE_NONE, D3D12_DEPTH_STENCIL_DESC,
     D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-    D3D12_FILL_MODE_SOLID, D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
-    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
-    D3D12_LOGIC_OP_NOOP, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
-    D3D12_RENDER_TARGET_BLEND_DESC, D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_DESCRIPTOR_TABLE,
-    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_CBV,
+    D3D12_FILL_MODE_SOLID, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MIN_MAG_MIP_POINT,
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+    D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC,
+    D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER,
+    D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_CBV,
     D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
     D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SHADER_VISIBILITY_ALL,
     D3D12_SHADER_VISIBILITY_PIXEL, D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
-    D3D12_STATIC_SAMPLER_DESC, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12SerializeRootSignature,
-    ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
+    D3D12_STATIC_SAMPLER_DESC, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+    D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12RootSignature,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC,
 };
+#[cfg(windows)]
 use windows::core::s;
 
-use engine_render_data::ui::{TextAlign, UiCommand, UiDrawList, UiRect};
+use engine_core::jobs::JobSystem;
+use engine_render_data::ui::{TextAlign, UiClip, UiCommand, UiDrawList, UiRect};
 
+#[cfg(windows)]
 use crate::error::RendererError;
 use crate::font::{GLYPH_ADVANCE, GLYPH_HEIGHT, GLYPH_WIDTH};
-use crate::font_atlas::{FontAtlas, GlyphUv};
+#[cfg(windows)]
 use crate::shader::{UI_PS, UI_VS, bytecode};
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
+use crate::ui_atlas::{AtlasUv, UiAtlas};
 
 /// Root parameter holding the pixels-to-clip constant buffer.
 pub const ROOT_UI_FRAME_CBV: u32 = 0;
 
-/// Root parameter holding the font-atlas descriptor table.
+/// Root parameter holding the UI-atlas descriptor table.
 pub const ROOT_UI_ATLAS_TABLE: u32 = 1;
 
-/// Segments in a full radial sweep.
+/// Root parameter holding the map picture's descriptor table.
 ///
-/// Sixteen is smooth enough for a 48-pixel button and cheap enough that a bar of ten cooling
-/// abilities costs a hundred and sixty triangles.
-const SECTOR_SEGMENTS: usize = 16;
+/// A table of its own rather than a second descriptor after the atlas's: the map is a
+/// texture uploaded when a level loads, anywhere in the heap, and a two-descriptor table would
+/// need the pair to be adjacent.
+pub const ROOT_UI_MAP_TABLE: u32 = 2;
+
+/// Root parameter holding the distance-field font atlas's descriptor table.
+pub const ROOT_UI_FONT_TABLE: u32 = 3;
+
+/// Register of the sampler the map picture is read through: linear, mipmapped, and
+/// transparent outside the picture.
+pub const SAMPLER_MAP: u32 = 2;
+
+/// Register of the point sampler the font band is read through.
+pub const SAMPLER_GLYPH: u32 = 0;
+
+/// Register of the linear sampler the icon band is read through.
+pub const SAMPLER_ICON: u32 = 1;
+
+/// Angles a single radial sweep can turn at: its two ends, plus the four corners.
+const MAX_SWEEP_ANGLES: usize = 6;
+
+/// The four corners of a rectangle, as angles clockwise from twelve o'clock, in `0..TAU`.
+///
+/// Where a radial sweep has to put a vertex, because they are the only places the border
+/// changes direction. Returned in no particular order — the caller sorts whichever of them
+/// land inside the sweep.
+fn corner_angles(half_width: f32, half_height: f32) -> [f32; 4] {
+    // `atan2(dx, -dy)` puts zero straight up and grows clockwise, matching the sweep.
+    let angle = |dx: f32, dy: f32| {
+        let raw = f32::atan2(dx, -dy);
+        if raw < 0.0 {
+            raw + std::f32::consts::TAU
+        } else {
+            raw
+        }
+    };
+    [
+        angle(half_width, -half_height),
+        angle(half_width, half_height),
+        angle(-half_width, half_height),
+        angle(-half_width, -half_height),
+    ]
+}
 
 /// Vertices per quad: two triangles, no index buffer.
 ///
@@ -73,33 +123,110 @@ const SECTOR_SEGMENTS: usize = 16;
 /// vertices — the copy is not what costs, so the simpler shape wins.
 pub const VERTICES_PER_QUAD: usize = 6;
 
-/// One UI vertex: a pixel position, a texture coordinate and a colour.
+/// One UI vertex: a pixel position, a texture coordinate, a colour and a clip.
 ///
 /// `repr(C)` is required — the input layout describes this exact memory layout to the GPU,
-/// so Rust must not be free to reorder the fields. 32 bytes, two per cache line.
+/// so Rust must not be free to reorder the fields. 48 bytes.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct UiVertex {
     /// Position in pixels, origin at the client area's top-left.
     pub position: [f32; 2],
-    /// Where to sample the font atlas.
+    /// Where to sample the UI atlas, or the map picture when `clip[3]` says so.
     pub uv: [f32; 2],
     /// Linear RGBA tint. Alpha is honoured.
     pub color: [f32; 4],
+    /// `[centre x, centre y, radius, picture]`.
+    ///
+    /// The first three are a circle, in pixels, outside which the fragment is discarded with
+    /// a one-pixel anti-aliased edge; a radius of zero is no circle. That is what makes a disc
+    /// round and the minimap circular — a circle is not a shape a quad can be trimmed to on
+    /// the CPU, so it is the one clip the shader does. The fourth is which picture to sample:
+    /// zero the atlas, one the map.
+    ///
+    /// Sixteen more bytes on every vertex, measured against the alternative: a second
+    /// pipeline and a second draw per clipped region, which would split the interface's one
+    /// draw call into as many as there are markers on a map.
+    pub clip: [f32; 4],
 }
 
-/// The constant buffer the UI vertex shader reads.
+/// What [`UiVertex::clip`]'s fourth component says for the atlas.
+pub const PICTURE_ATLAS: f32 = 0.0;
+
+/// What [`UiVertex::clip`]'s fourth component says for the map picture.
+pub const PICTURE_MAP: f32 = 1.0;
+
+/// What [`UiVertex::clip`]'s fourth component says for a glyph of the distance-field fonts.
+pub const PICTURE_FONT: f32 = 2.0;
+
+/// [`UiVertex::clip`]'s fourth component for a distance-field glyph whose edge is moved
+/// outward is this *minus* the distance in pixels: `-1.0` is the plain glyph, `-3.5` the glyph
+/// grown by two and a half pixels. Negative so it can never be mistaken for any other picture.
+pub const PICTURE_FONT_DILATED: f32 = -1.0;
+
+/// [`UiVertex::clip`]'s fourth component for a filled rounded panel is this plus its feather
+/// in pixels; the first three are its half-width, half-height and corner radius, and the
+/// texture coordinate is the pixel's offset from the panel's centre.
+pub const PICTURE_PANEL: f32 = 3.0;
+
+/// ... and for a stroked panel, this plus the stroke width.
+pub const PICTURE_STROKE: f32 = 1000.0;
+
+/// The clip a run of commands is drawn under, as the batcher applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct ClipState {
+    /// Cut on the CPU, exactly.
+    rect: Option<UiRect>,
+    /// `[x, y, radius, 0]`, or zeroes: cut per pixel by the shader.
+    circle: [f32; 4],
+}
+
+impl ClipState {
+    fn of(clip: UiClip) -> Self {
+        Self {
+            rect: clip.rect,
+            circle: clip.circle.map_or([0.0; 4], |circle| {
+                [
+                    circle.center.0,
+                    circle.center.1,
+                    circle.radius.max(0.0),
+                    0.0,
+                ]
+            }),
+        }
+    }
+
+    /// The clip attribute for a vertex sampling `picture`.
+    fn attribute(self, picture: f32) -> [f32; 4] {
+        [self.circle[0], self.circle[1], self.circle[2], picture]
+    }
+}
+
+/// The constant buffer the UI shaders read.
 ///
-/// Just the multiply that takes pixels to normalized device coordinates. Computing it once
-/// per frame on the CPU means the shader does no divide, and a resize changes two floats
-/// rather than every vertex.
+/// The multiply that takes pixels to normalized device coordinates, and where the atlas's
+/// icon band begins. Computing the first once per frame on the CPU means the shader does no
+/// divide, and a resize changes two floats rather than every vertex.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct UiFrameConstants {
     /// `2 / width` and `-2 / height`.
     pub pixel_to_clip: [f32; 2],
+    /// The `v` at or below which the atlas is the font band. See [`UiAtlas::icon_band_v`].
+    ///
+    /// The pixel shader picks its sampler by comparing against this rather than by reading a
+    /// per-vertex flag, which is what keeps [`UiVertex`] at 32 bytes. It travels in what was
+    /// It travels in what was
+    /// already padding, so it costs nothing at all.
+    pub icon_band_v: f32,
     /// Padding to the 16-byte constant-buffer row.
-    pub padding: [f32; 2],
+    pub padding: f32,
+    /// The font atlas's size in texels, for turning a distance into pixels.
+    pub font_atlas_size: [f32; 2],
+    /// How far the distance field reaches either side of an outline, in atlas texels.
+    pub font_range: f32,
+    /// Padding to the second 16-byte row.
+    pub padding2: f32,
 }
 
 impl UiFrameConstants {
@@ -117,7 +244,14 @@ impl UiFrameConstants {
         };
         Self {
             pixel_to_clip: [x, y],
-            padding: [0.0; 2],
+            icon_band_v: UiAtlas::icon_band_v(),
+            padding: 0.0,
+            font_atlas_size: [
+                crate::text::ATLAS_WIDTH as f32,
+                crate::text::ATLAS_HEIGHT as f32,
+            ],
+            font_range: crate::text::SDF_RANGE,
+            padding2: 0.0,
         }
     }
 }
@@ -133,6 +267,8 @@ pub struct UiBatchStats {
     pub vertices: usize,
     /// Glyphs emitted, of which spaces produce none.
     pub glyphs: usize,
+    /// Icons emitted.
+    pub icons: usize,
     /// Quads dropped because the vertex budget was reached.
     pub dropped: usize,
 }
@@ -146,6 +282,20 @@ pub struct UiBatcher {
     vertices: Vec<UiVertex>,
     max_quads: usize,
     stats: UiBatchStats,
+    /// One output slot per worker, kept across frames so a parallel build allocates
+    /// nothing once the peak has been seen — the same reason `vertices` is kept.
+    chunks: Vec<UiChunk>,
+}
+
+/// One worker's share of a build: the vertices it produced and what it produced them from.
+///
+/// Separate slots rather than one shared buffer because that is what makes the pass
+/// parallel at all; they are concatenated in command order afterwards, so the merged buffer
+/// is the one the serial path would have written.
+#[derive(Debug, Default)]
+struct UiChunk {
+    vertices: Vec<UiVertex>,
+    stats: UiBatchStats,
 }
 
 impl UiBatcher {
@@ -156,6 +306,7 @@ impl UiBatcher {
             vertices: Vec::with_capacity(max_quads * VERTICES_PER_QUAD),
             max_quads,
             stats: UiBatchStats::default(),
+            chunks: Vec::new(),
         }
     }
 
@@ -183,200 +334,988 @@ impl UiBatcher {
     /// [`UiBatchStats::dropped`] rather than growing the buffer, so a runaway UI degrades
     /// visibly instead of allocating without bound in the frame path.
     pub fn build(&mut self, list: &UiDrawList) -> &[UiVertex] {
-        self.vertices.clear();
-        let mut stats = UiBatchStats {
-            commands: list.len(),
-            ..UiBatchStats::default()
-        };
+        self.build_with(list, None)
+    }
 
-        for command in list.commands() {
-            match *command {
-                UiCommand::Rect { rect, color } => {
-                    self.push_solid(rect, color, &mut stats);
+    /// [`UiBatcher::build`], optionally expanded across `jobs`' workers.
+    ///
+    /// `None` expands on the calling thread. `Some` splits the command list into contiguous
+    /// runs, expands each into its own buffer and concatenates them **in command order**, so
+    /// the vertex buffer is byte-identical to the serial one — paint order is what a user
+    /// interface is, and a parallel build that reordered it would be a rendering change
+    /// dressed as an optimization.
+    ///
+    /// Stays serial below [`MIN_TOTAL_UNITS`] of work, or when the split would give a worker
+    /// less than [`MIN_CHUNK_UNITS`].
+    pub fn build_with(&mut self, list: &UiDrawList, jobs: Option<&JobSystem>) -> &[UiVertex] {
+        let chunk_count = jobs.map_or(1, |jobs| {
+            chunk_count_for(work_units(list), jobs.worker_count())
+        });
+        // Bound together: a chunk count above one is only ever produced from a job system,
+        // and taking both out of the same `if let` is what says so without an `expect`.
+        if let Some(jobs) = jobs.filter(|_| chunk_count > 1) {
+            let commands = list.commands();
+            let chunk_size = commands.len().div_ceil(chunk_count);
+            if self.chunks.len() < chunk_count {
+                self.chunks.resize_with(chunk_count, UiChunk::default);
+            }
+            let max_quads = self.max_quads;
+            let active = &mut self.chunks[..chunk_count];
+            let result = jobs.map_chunks(active, |index, out| {
+                let start = index * chunk_size;
+                let end = (start + chunk_size).min(commands.len());
+                // A chunk starts under whatever clip the commands before it left set, so a
+                // split in the middle of a clipped map draws the same as the serial build.
+                build_range(
+                    list,
+                    &commands[start..end],
+                    max_quads,
+                    clip_before(commands, start),
+                    out,
+                );
+            });
+            match result {
+                Ok(()) => {
+                    self.merge(chunk_count);
+                    return &self.vertices;
                 }
-                UiCommand::RadialFill {
-                    rect,
-                    start,
-                    fraction,
-                    color,
-                } => {
-                    self.push_radial(rect, start, fraction, color, &mut stats);
-                }
-                UiCommand::Outline {
-                    rect,
-                    thickness,
-                    color,
-                } => {
-                    // Four bars rather than a stroked rectangle: the top and bottom span the
-                    // full width and the sides fill what is left, so the corners are covered
-                    // exactly once. Overlapping them would double the alpha at each corner,
-                    // which is visible the moment the outline is translucent.
-                    let inner_height = (rect.height - thickness * 2.0).max(0.0);
-                    self.push_solid(
-                        UiRect::new(rect.x, rect.y, rect.width, thickness),
-                        color,
-                        &mut stats,
-                    );
-                    self.push_solid(
-                        UiRect::new(rect.x, rect.bottom() - thickness, rect.width, thickness),
-                        color,
-                        &mut stats,
-                    );
-                    self.push_solid(
-                        UiRect::new(rect.x, rect.y + thickness, thickness, inner_height),
-                        color,
-                        &mut stats,
-                    );
-                    self.push_solid(
-                        UiRect::new(
-                            rect.right() - thickness,
-                            rect.y + thickness,
-                            thickness,
-                            inner_height,
-                        ),
-                        color,
-                        &mut stats,
-                    );
-                }
-                UiCommand::Text {
-                    origin,
-                    range,
-                    color,
-                    scale,
-                    align,
-                } => {
-                    let text = list.text_of(range);
-                    let width = text_width(text, scale);
-                    let x = match align {
-                        TextAlign::Left => origin.0,
-                        TextAlign::Center => origin.0 - width * 0.5,
-                        TextAlign::Right => origin.0 - width,
-                    };
-                    let mut pen = x;
-                    for character in text.chars() {
-                        if !FontAtlas::is_blank(character) {
-                            let rect = UiRect::new(
-                                pen,
-                                origin.1,
-                                GLYPH_WIDTH as f32 * scale,
-                                GLYPH_HEIGHT as f32 * scale,
-                            );
-                            self.push_quad(rect, FontAtlas::glyph_uv(character), color, &mut stats);
-                            stats.glyphs += 1;
-                        }
-                        pen += GLYPH_ADVANCE as f32 * scale;
-                    }
+                // A half-expanded interface would draw half a HUD, so the frame is expanded
+                // again serially rather than submitted as it stands.
+                Err(error) => {
+                    log::error!("parallel UI build failed, falling back to serial: {error}");
                 }
             }
         }
 
-        stats.vertices = self.vertices.len();
-        self.stats = stats;
+        {
+            // One chunk is the serial path, and it is the *same* path: the whole list goes
+            // through `build_range` and then through the same merge, so "serial" and
+            // "parallel with one worker" cannot produce different pixels.
+            if self.chunks.is_empty() {
+                self.chunks.push(UiChunk::default());
+            }
+            let mut chunk = std::mem::take(&mut self.chunks[0]);
+            build_range(
+                list,
+                list.commands(),
+                self.max_quads,
+                UiClip::NONE,
+                &mut chunk,
+            );
+            self.chunks[0] = chunk;
+            self.merge(1);
+        }
         &self.vertices
     }
 
-    /// Appends an untextured rectangle, sampling the atlas's opaque texel.
-    fn push_solid(&mut self, rect: UiRect, color: [f32; 4], stats: &mut UiBatchStats) {
-        if !rect.is_visible() {
-            return;
-        }
-        self.push_quad(rect, FontAtlas::solid_uv(), color, stats);
-    }
-
-    /// Appends a radial sector as a triangle fan from the centre.
+    /// Concatenates the first `chunk_count` chunks in command order, enforcing the budget.
     ///
-    /// Swept clockwise from twelve o'clock, which is the direction every cooldown in the
-    /// genre runs. One triangle per segment, and each triangle is emitted as a degenerate
-    /// quad so the whole pass stays one buffer and one draw call.
-    fn push_radial(
-        &mut self,
-        rect: UiRect,
-        start: f32,
-        fraction: f32,
-        color: [f32; 4],
-        stats: &mut UiBatchStats,
-    ) {
-        if !rect.is_visible() || fraction <= 0.0 {
+    /// The budget is applied here rather than per chunk because "the frame's first
+    /// `max_quads` quads survive" is a statement about paint order, and only the merge knows
+    /// the order. A chunk that overflowed on its own already counted its own drops.
+    fn merge(&mut self, chunk_count: usize) {
+        // One chunk is the whole list, and its own budget is the frame's budget, so the
+        // merge is the identity: take its buffer rather than copying it. Copying 900 quads
+        // out of a scratch buffer and into another one costs several microseconds of a pass
+        // that measures tens, which would make the serial path pay for the parallel one.
+        if chunk_count == 1 {
+            std::mem::swap(&mut self.vertices, &mut self.chunks[0].vertices);
+            self.stats = self.chunks[0].stats;
+            self.stats.vertices = self.vertices.len();
             return;
         }
-        let fraction = fraction.min(1.0);
-        // Enough segments that the arc reads as round at a 48-pixel button, few enough that
-        // a full bar of cooling abilities is still a couple of hundred triangles.
-        let segments = (SECTOR_SEGMENTS as f32 * fraction).ceil().max(1.0) as usize;
-        let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
-        let radius = rect.width.max(rect.height) * 0.5;
-        let uv = FontAtlas::solid_uv();
-        let sweep = fraction * std::f32::consts::TAU;
-        let origin = start * std::f32::consts::TAU;
 
-        for segment in 0..segments {
-            if stats.quads >= self.max_quads {
-                stats.dropped += 1;
-                return;
-            }
-            let from = origin + sweep * (segment as f32 / segments as f32);
-            let to = origin + sweep * ((segment + 1) as f32 / segments as f32);
-            let point = |angle: f32| {
-                // Zero is straight up and the sweep runs clockwise.
-                (
-                    centre.0 + angle.sin() * radius,
-                    centre.1 - angle.cos() * radius,
-                )
-            };
-            let (ax, ay) = point(from);
-            let (bx, by) = point(to);
-            let vertex = |position: (f32, f32)| UiVertex {
-                position: [position.0, position.1],
-                uv: [uv.u0, uv.v0],
-                color,
-            };
-            let a = vertex(centre);
-            let b = vertex((ax, ay));
-            let c = vertex((bx, by));
-            // Six vertices per segment, like a quad, so the buffer stays uniform.
-            self.vertices.extend_from_slice(&[a, b, c, a, b, c]);
-            stats.quads += 1;
+        self.vertices.clear();
+        let mut stats = UiBatchStats::default();
+        for chunk in &self.chunks[..chunk_count] {
+            let room = self.max_quads - stats.quads;
+            let taken = chunk.stats.quads.min(room);
+            self.vertices
+                .extend_from_slice(&chunk.vertices[..taken * VERTICES_PER_QUAD]);
+            stats.commands += chunk.stats.commands;
+            stats.quads += taken;
+            // What this chunk itself refused, plus what the merge had no room for.
+            stats.dropped += chunk.stats.dropped + (chunk.stats.quads - taken);
+            stats.glyphs += chunk.stats.glyphs;
+            stats.icons += chunk.stats.icons;
+        }
+        stats.vertices = self.vertices.len();
+        self.stats = stats;
+    }
+}
+
+/// The clip in force at command `index`: the last one set before it.
+fn clip_before(commands: &[UiCommand], index: usize) -> UiClip {
+    commands[..index.min(commands.len())]
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            UiCommand::Clip(clip) => Some(*clip),
+            _ => None,
+        })
+        .unwrap_or(UiClip::NONE)
+}
+
+/// Appends an untextured rectangle, sampling the atlas's opaque texel.
+fn push_solid(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    color: [f32; 4],
+    clip: ClipState,
+    stats: &mut UiBatchStats,
+) {
+    if !rect.is_visible() {
+        return;
+    }
+    push_quad(
+        vertices,
+        max_quads,
+        rect,
+        UiAtlas::solid_uv(),
+        color,
+        clip,
+        stats,
+    );
+}
+
+/// Appends a radial sweep as a triangle fan from the centre, filling `rect`.
+///
+/// Swept clockwise from twelve o'clock, which is the direction every cooldown in the
+/// genre runs. Each triangle is emitted as a degenerate quad so the whole pass stays one
+/// buffer and one draw call.
+///
+/// ## The sweep reaches the edges, not a radius
+///
+/// This was a circle inscribed in `rect`, which on a square ability slot left the four
+/// corners uncovered: a cooling ability kept a bright triangle of art in each corner, and
+/// a full sweep never darkened the whole button. A radius large enough to reach the
+/// corners would instead bulge a tenth of the slot past every edge and spill into the
+/// neighbouring one, because this pass has no clipping.
+///
+/// So the sweep follows the **rectangle's own border**: every ray runs to wherever it
+/// leaves `rect`. A full sweep covers `rect` exactly, with nothing outside it.
+///
+/// That also makes it cheaper. The border is four straight lines, so the only vertices
+/// that matter are the two ends of the sweep and whichever corners fall between them —
+/// at most six, against the sixteen segments the arc used to be approximated with. There
+/// is no arc left to be smooth, so there is nothing to trade off.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one sweep's every property, passed flat"
+)]
+fn push_radial(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    start: f32,
+    fraction: f32,
+    color: [f32; 4],
+    clip: ClipState,
+    stats: &mut UiBatchStats,
+) {
+    if !rect.is_visible() || fraction <= 0.0 {
+        return;
+    }
+    // A sweep is a fan, not a rectangle, so a clip rectangle drops it whole when it misses
+    // and draws it whole otherwise. Sweeps sit on ability slots, which nothing scrolls.
+    if clip
+        .rect
+        .is_some_and(|area| intersect(rect, area).is_none())
+    {
+        return;
+    }
+    let fraction = fraction.min(1.0);
+    let centre = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+    let (half_width, half_height) = (rect.width * 0.5, rect.height * 0.5);
+    let sweep = fraction * std::f32::consts::TAU;
+    let origin = start * std::f32::consts::TAU;
+
+    // Where the ray at `angle` leaves the rectangle. Zero is straight up and the sweep
+    // runs clockwise, so the direction is `(sin, -cos)` — screen y grows downward.
+    let edge = |angle: f32| {
+        let (dx, dy) = (angle.sin(), -angle.cos());
+        // How far along the ray the left/right edges are, and how far the top/bottom
+        // ones are; the nearer is the edge actually crossed. A zero component never
+        // limits, and dividing by it would produce the infinity that says exactly that.
+        let to_side = half_width / dx.abs();
+        let to_cap = half_height / dy.abs();
+        let distance = to_side.min(to_cap);
+        (centre.0 + dx * distance, centre.1 + dy * distance)
+    };
+
+    // The sweep's two ends, plus every corner strictly between them. A fixed array
+    // rather than a `Vec`: four corners and two ends is the most there can ever be, and
+    // this runs once per cooling ability per frame.
+    let mut angles = [origin; MAX_SWEEP_ANGLES];
+    let mut count = 1;
+    for corner in corner_angles(half_width, half_height) {
+        // Lift the corner into the turn the sweep is in. A corner exactly at the start
+        // is skipped: it is already the first vertex.
+        let mut angle = corner + (origin / std::f32::consts::TAU).floor() * std::f32::consts::TAU;
+        while angle <= origin {
+            angle += std::f32::consts::TAU;
+        }
+        if angle < origin + sweep {
+            angles[count] = angle;
+            count += 1;
         }
     }
+    angles[1..count].sort_by(f32::total_cmp);
+    angles[count] = origin + sweep;
+    count += 1;
 
-    /// Appends one quad as two triangles.
-    fn push_quad(&mut self, rect: UiRect, uv: GlyphUv, color: [f32; 4], stats: &mut UiBatchStats) {
-        if stats.quads >= self.max_quads {
+    let uv = UiAtlas::solid_uv();
+    let vertex = |position: (f32, f32)| UiVertex {
+        position: [position.0, position.1],
+        uv: [uv.u0, uv.v0],
+        color,
+        clip: clip.attribute(PICTURE_ATLAS),
+    };
+    let hub = vertex(centre);
+
+    for pair in angles[..count].windows(2) {
+        // Counted per segment rather than once for the whole abandoned sweep. A sweep is a
+        // run of quads like any other, and a drop count that depends on *where* in the list
+        // the budget ran out is a count two builds of the same list can disagree on — which
+        // is exactly what the parallel merge, deciding the budget after the fact, would.
+        if stats.quads >= max_quads {
+            stats.dropped += 1;
+            continue;
+        }
+        let b = vertex(edge(pair[0]));
+        let c = vertex(edge(pair[1]));
+        // Six vertices per triangle, like a quad, so the buffer stays uniform.
+        vertices.extend_from_slice(&[hub, b, c, hub, b, c]);
+        stats.quads += 1;
+    }
+}
+
+/// The overlap of two rectangles, if they overlap.
+fn intersect(a: UiRect, b: UiRect) -> Option<UiRect> {
+    let left = a.x.max(b.x);
+    let top = a.y.max(b.y);
+    let right = a.right().min(b.right());
+    let bottom = a.bottom().min(b.bottom());
+    (right > left && bottom > top).then(|| UiRect::new(left, top, right - left, bottom - top))
+}
+
+/// Appends one atlas quad as two triangles.
+fn push_quad(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    uv: AtlasUv,
+    color: [f32; 4],
+    clip: ClipState,
+    stats: &mut UiBatchStats,
+) {
+    let (width, height) = (rect.width, rect.height);
+    let uv_at = |x: f32, y: f32| {
+        [
+            uv.u0 + (x - rect.x) / width * (uv.u1 - uv.u0),
+            uv.v0 + (y - rect.y) / height * (uv.v1 - uv.v0),
+        ]
+    };
+    push_mapped(
+        vertices,
+        max_quads,
+        rect,
+        uv_at,
+        color,
+        clip.attribute(PICTURE_ATLAS),
+        clip.rect,
+        stats,
+    );
+}
+
+/// Appends one axis-aligned quad whose texture coordinate is `uv_at(x, y)` at each corner.
+///
+/// Every rectangular quad in the pass comes through here. A clip rectangle trims the quad and
+/// its texture coordinates together — the mapping is affine, so evaluating it at the trimmed
+/// corners is exact — which is what lets a scrolled list cut a line of text in half cleanly.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one quad's every property, passed flat"
+)]
+fn push_mapped(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    uv_at: impl Fn(f32, f32) -> [f32; 2],
+    color: [f32; 4],
+    attribute: [f32; 4],
+    clip_rect: Option<UiRect>,
+    stats: &mut UiBatchStats,
+) {
+    let rect = match clip_rect {
+        Some(area) => match intersect(rect, area) {
+            Some(rect) => rect,
+            // Clipped away entirely: nothing was dropped, nothing was drawn.
+            None => return,
+        },
+        None => rect,
+    };
+    if stats.quads >= max_quads {
+        stats.dropped += 1;
+        return;
+    }
+
+    let (left, top) = (rect.x, rect.y);
+    let (right, bottom) = (rect.right(), rect.bottom());
+    let corner = |x: f32, y: f32| UiVertex {
+        position: [x, y],
+        uv: uv_at(x, y),
+        color,
+        clip: attribute,
+    };
+    let corners = [
+        corner(left, top),
+        corner(right, top),
+        corner(left, bottom),
+        corner(right, bottom),
+    ];
+    // Two triangles wound so they survive the rasterizer's front-face rule. Culling is
+    // off for this pass, so the winding is documentation rather than load-bearing.
+    vertices.extend_from_slice(&[
+        corners[0], corners[2], corners[1], corners[1], corners[2], corners[3],
+    ]);
+    stats.quads += 1;
+}
+
+/// Appends a rounded panel: quads grown by its feather, whose texture coordinate is the offset
+/// from its centre and whose colour runs from `colors.0` at the top edge to `colors.1` at the
+/// bottom. The shader evaluates the rounded shape.
+///
+/// A stroke, or a hollow shadow, is emitted as four strips around its solid middle rather than
+/// one quad over everything: the middle of an outline draws nothing and the middle of a drop
+/// shadow is hidden, and shading them anyway was most of what an open map cost the GPU — every
+/// window-sized outline and shadow a full window of blended fragments.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one panel's every property, passed flat"
+)]
+fn push_panel(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    rect: UiRect,
+    radius: f32,
+    colors: ([f32; 4], [f32; 4]),
+    feather: f32,
+    stroke: f32,
+    hollow: bool,
+    clip_rect: Option<UiRect>,
+    stats: &mut UiBatchStats,
+) {
+    let grow = feather + 1.0;
+    let outer = UiRect::new(
+        rect.x - grow,
+        rect.y - grow,
+        rect.width + grow * 2.0,
+        rect.height + grow * 2.0,
+    );
+    let center = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+    let picture = if stroke > 0.0 {
+        PICTURE_STROKE + stroke
+    } else {
+        PICTURE_PANEL + feather
+    };
+    let attribute = [rect.width * 0.5, rect.height * 0.5, radius, picture];
+    let color_at = |y: f32| {
+        let t = ((y - rect.y) / rect.height.max(1e-3)).clamp(0.0, 1.0);
+        let (a, b) = colors;
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+        ]
+    };
+
+    // The solid middle a stroke or a hollow shadow need not shade: inside the corners' reach
+    // and the band the edge is drawn in, with a pixel to spare.
+    let reach = if stroke > 0.0 {
+        radius.max(stroke) + 1.0
+    } else {
+        radius.max(feather * 0.5) + 1.0
+    };
+    let hole = UiRect::new(
+        rect.x + reach,
+        rect.y + reach,
+        rect.width - reach * 2.0,
+        rect.height - reach * 2.0,
+    );
+    let mut regions = [outer; 4];
+    let count = if (stroke > 0.0 || hollow) && hole.is_visible() {
+        regions[0] = UiRect::new(outer.x, outer.y, outer.width, hole.y - outer.y);
+        regions[1] = UiRect::new(
+            outer.x,
+            hole.bottom(),
+            outer.width,
+            outer.bottom() - hole.bottom(),
+        );
+        regions[2] = UiRect::new(outer.x, hole.y, hole.x - outer.x, hole.height);
+        regions[3] = UiRect::new(
+            hole.right(),
+            hole.y,
+            outer.right() - hole.right(),
+            hole.height,
+        );
+        4
+    } else {
+        1
+    };
+
+    for region in &regions[..count] {
+        let drawn = match clip_rect {
+            Some(area) => match intersect(*region, area) {
+                Some(drawn) => drawn,
+                None => continue,
+            },
+            None => *region,
+        };
+        if stats.quads >= max_quads {
             stats.dropped += 1;
             return;
         }
-
-        let (left, top) = (rect.x, rect.y);
-        let (right, bottom) = (rect.right(), rect.bottom());
+        let corner = |x: f32, y: f32| UiVertex {
+            position: [x, y],
+            uv: [x - center.0, y - center.1],
+            color: color_at(y),
+            clip: attribute,
+        };
         let corners = [
-            UiVertex {
-                position: [left, top],
-                uv: [uv.u0, uv.v0],
-                color,
-            },
-            UiVertex {
-                position: [right, top],
-                uv: [uv.u1, uv.v0],
-                color,
-            },
-            UiVertex {
-                position: [left, bottom],
-                uv: [uv.u0, uv.v1],
-                color,
-            },
-            UiVertex {
-                position: [right, bottom],
-                uv: [uv.u1, uv.v1],
-                color,
-            },
+            corner(drawn.x, drawn.y),
+            corner(drawn.right(), drawn.y),
+            corner(drawn.x, drawn.bottom()),
+            corner(drawn.right(), drawn.bottom()),
         ];
-        // Two triangles wound so they survive the rasterizer's front-face rule. Culling is
-        // off for this pass, so the winding is documentation rather than load-bearing.
-        self.vertices.extend_from_slice(&[
+        vertices.extend_from_slice(&[
             corners[0], corners[2], corners[1], corners[1], corners[2], corners[3],
         ]);
         stats.quads += 1;
     }
+}
+
+/// Appends an atlas quad turned `rotation` radians clockwise about `center`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one quad's every property, passed flat"
+)]
+fn push_rotated(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    center: (f32, f32),
+    size: f32,
+    uv: AtlasUv,
+    rotation: f32,
+    color: [f32; 4],
+    clip: ClipState,
+    stats: &mut UiBatchStats,
+) {
+    // A turned quad cannot be trimmed to a rectangle as a rectangle; it is kept whole or
+    // dropped whole by where its centre is. Markers are small, so the overhang is too.
+    if clip
+        .rect
+        .is_some_and(|area| !area.contains(center.0, center.1))
+    {
+        return;
+    }
+    if stats.quads >= max_quads {
+        stats.dropped += 1;
+        return;
+    }
+    let (sin, cos) = rotation.sin_cos();
+    let half = size * 0.5;
+    // Screen y grows downward, so a clockwise turn is the ordinary rotation matrix.
+    let corner = |dx: f32, dy: f32, u: f32, v: f32| UiVertex {
+        position: [
+            center.0 + dx * cos - dy * sin,
+            center.1 + dx * sin + dy * cos,
+        ],
+        uv: [u, v],
+        color,
+        clip: clip.attribute(PICTURE_ATLAS),
+    };
+    let corners = [
+        corner(-half, -half, uv.u0, uv.v0),
+        corner(half, -half, uv.u1, uv.v0),
+        corner(-half, half, uv.u0, uv.v1),
+        corner(half, half, uv.u1, uv.v1),
+    ];
+    vertices.extend_from_slice(&[
+        corners[0], corners[2], corners[1], corners[1], corners[2], corners[3],
+    ]);
+    stats.quads += 1;
+}
+
+/// One run of text, as [`push_glyph_run`] lays it out.
+struct GlyphRun<'a> {
+    text: &'a str,
+    origin: (f32, f32),
+    size: f32,
+    font: engine_render_data::font::UiFont,
+    align: TextAlign,
+}
+
+/// How far past its outline a glyph at `size` pixels per em can be thickened or edged.
+///
+/// The field reaches [`crate::text::SDF_RANGE`] texels either side of the outline, and a texel
+/// is `size / SDF_EM` pixels; past that the field is flat, and a glyph grown so far that its
+/// soft edge reaches the flat part lights its whole quad — a faint box behind the letter. So
+/// the growth, plus half of the edge's ramp (see [`dilation_ramp`]), plus half a pixel for the
+/// filter, must stay inside the range. Solved by a few fixed-point steps: the ramp grows with
+/// the dilation, and the answer settles in three.
+#[must_use]
+pub fn max_dilation(size: f32) -> f32 {
+    let range = crate::text::SDF_RANGE * size / crate::text::SDF_EM;
+    let mut dilation = (range - 1.0).max(0.0);
+    for _ in 0..4 {
+        dilation = (range - 0.5 - dilation_ramp(dilation) * 0.5).max(0.0);
+    }
+    dilation
+}
+
+/// The width, in pixels, of the anti-aliased edge of a glyph grown by `dilation` pixels.
+///
+/// One pixel for an ordinary letter; up to two for a wide outline, so the dark edge under a
+/// big number reads as a soft rim rather than a hard second letter. `ui.hlsl` computes the
+/// same thing per pixel and the two must agree.
+#[must_use]
+pub fn dilation_ramp(dilation: f32) -> f32 {
+    (dilation * 0.35).clamp(1.0, 2.0)
+}
+
+/// Emits one quad per inked glyph of `run`, its edge moved `dilation` pixels outward and the
+/// whole run moved `offset_y` pixels down.
+///
+/// Every face-set label goes through here, plain or styled, so a styled run and a plain one
+/// place each glyph identically — the edge sits exactly under its letter.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a glyph run's destination, budget, colour, edge, offset, clip and statistics"
+)]
+fn push_glyph_run(
+    vertices: &mut Vec<UiVertex>,
+    max_quads: usize,
+    run: &GlyphRun<'_>,
+    color: [f32; 4],
+    dilation: f32,
+    offset_y: f32,
+    clip: ClipState,
+    stats: &mut UiBatchStats,
+) {
+    let GlyphRun {
+        text,
+        origin,
+        size,
+        font,
+        align,
+    } = *run;
+    let width = font.width(text, size);
+    let mut pen = match align {
+        TextAlign::Left => origin.0,
+        TextAlign::Center => origin.0 - width * 0.5,
+        TextAlign::Right => origin.0 - width,
+    };
+    // The baseline on a whole pixel: the field is sampled with its outline where the face put
+    // it, and a half-pixel baseline softens every horizontal stroke.
+    let baseline = (origin.1 + font.ascent(size)).round() + offset_y;
+    let quads = &crate::text::QUADS[font.index()];
+    let attribute = if dilation > 0.0 {
+        clip.attribute(PICTURE_FONT_DILATED - dilation)
+    } else {
+        clip.attribute(PICTURE_FONT)
+    };
+    for character in text.chars() {
+        let index = engine_render_data::font::glyph_index(character);
+        let quad = quads[index];
+        if !quad.is_empty() {
+            let rect = UiRect::new(
+                pen + quad.plane[0] * size,
+                baseline + quad.plane[1] * size,
+                (quad.plane[2] - quad.plane[0]) * size,
+                (quad.plane[3] - quad.plane[1]) * size,
+            );
+            let uv = quad.uv;
+            let uv_at = |x: f32, y: f32| {
+                [
+                    uv[0] + (x - rect.x) / rect.width * (uv[2] - uv[0]),
+                    uv[1] + (y - rect.y) / rect.height * (uv[3] - uv[1]),
+                ]
+            };
+            push_mapped(
+                vertices, max_quads, rect, uv_at, color, attribute, clip.rect, stats,
+            );
+            stats.glyphs += 1;
+        }
+        pen += font.advance(character, size);
+    }
+}
+
+/// Expands one contiguous run of commands into `out`.
+///
+/// The body every path shares: the serial build calls it once over the whole list and a
+/// parallel build calls it once per chunk. Two expansions that could drift would be two
+/// interfaces, so there is only ever this one.
+///
+/// `max_quads` bounds this chunk alone. That is the same bound the merged buffer has, so a
+/// chunk large enough to hit it is a chunk that fills the frame's whole budget by itself —
+/// exactly what the serial path would have done at the same point in paint order.
+fn build_range(
+    list: &UiDrawList,
+    commands: &[UiCommand],
+    max_quads: usize,
+    initial_clip: UiClip,
+    out: &mut UiChunk,
+) {
+    out.vertices.clear();
+    out.stats = UiBatchStats {
+        commands: commands.len(),
+        ..UiBatchStats::default()
+    };
+    let mut clip = ClipState::of(initial_clip);
+    for command in commands {
+        match *command {
+            UiCommand::Clip(region) => clip = ClipState::of(region),
+            UiCommand::Panel {
+                rect,
+                radius,
+                top,
+                bottom,
+                feather,
+                stroke,
+                hollow,
+            } => {
+                push_panel(
+                    &mut out.vertices,
+                    max_quads,
+                    rect,
+                    radius,
+                    (top, bottom),
+                    feather,
+                    stroke,
+                    hollow,
+                    clip.rect,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::Label {
+                origin,
+                range,
+                color,
+                size,
+                font,
+                align,
+            } => {
+                let run = GlyphRun {
+                    text: list.text_of(range),
+                    origin,
+                    size,
+                    font,
+                    align,
+                };
+                push_glyph_run(
+                    &mut out.vertices,
+                    max_quads,
+                    &run,
+                    color,
+                    0.0,
+                    0.0,
+                    clip,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::StyledLabel {
+                origin,
+                range,
+                color,
+                size,
+                font,
+                align,
+                style,
+            } => {
+                let run = GlyphRun {
+                    text: list.text_of(range),
+                    origin,
+                    size,
+                    font,
+                    align,
+                };
+                // The field only reaches so far past an outline, and a glyph moved further than
+                // that has no edge left to find: the whole cell would go solid. Both widths are
+                // therefore held inside what this size can express.
+                let reach = max_dilation(size);
+                let embolden = style.embolden.min(reach * 0.5);
+                // The edge first, the whole run of it, then the letters over it: drawn glyph by
+                // glyph instead, each letter's edge would cut into the letter before it.
+                if style.has_outline() {
+                    push_glyph_run(
+                        &mut out.vertices,
+                        max_quads,
+                        &run,
+                        style.outline,
+                        (embolden + style.outline_width).min(reach),
+                        style.shadow_offset,
+                        clip,
+                        &mut out.stats,
+                    );
+                }
+                push_glyph_run(
+                    &mut out.vertices,
+                    max_quads,
+                    &run,
+                    color,
+                    embolden,
+                    0.0,
+                    clip,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::Rect { rect, color } => {
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    rect,
+                    color,
+                    clip,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::Disc {
+                center,
+                radius,
+                color,
+            } => {
+                // A pixel of margin so the anti-aliased rim is not cut by the quad's edge.
+                let reach = radius + 1.0;
+                let rect =
+                    UiRect::new(center.0 - reach, center.1 - reach, reach * 2.0, reach * 2.0);
+                let solid = UiAtlas::solid_uv();
+                push_mapped(
+                    &mut out.vertices,
+                    max_quads,
+                    rect,
+                    |_, _| [solid.u0, solid.v0],
+                    color,
+                    [center.0, center.1, radius, PICTURE_ATLAS],
+                    clip.rect,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::MapImage {
+                rect,
+                origin,
+                du,
+                dv,
+                tint,
+            } => {
+                let uv_at = |x: f32, y: f32| {
+                    let (px, py) = (x - rect.x, y - rect.y);
+                    [
+                        origin.0 + du.0 * px + dv.0 * py,
+                        origin.1 + du.1 * px + dv.1 * py,
+                    ]
+                };
+                push_mapped(
+                    &mut out.vertices,
+                    max_quads,
+                    rect,
+                    uv_at,
+                    tint,
+                    clip.attribute(PICTURE_MAP),
+                    clip.rect,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::RotatedIcon {
+                center,
+                size,
+                icon,
+                rotation,
+                tint,
+            } => {
+                push_rotated(
+                    &mut out.vertices,
+                    max_quads,
+                    center,
+                    size,
+                    UiAtlas::icon_uv(icon, size),
+                    rotation,
+                    tint,
+                    clip,
+                    &mut out.stats,
+                );
+                out.stats.icons += 1;
+            }
+            UiCommand::RadialFill {
+                rect,
+                start,
+                fraction,
+                color,
+            } => {
+                push_radial(
+                    &mut out.vertices,
+                    max_quads,
+                    rect,
+                    start,
+                    fraction,
+                    color,
+                    clip,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::Outline {
+                rect,
+                thickness,
+                color,
+            } => {
+                // Four bars rather than a stroked rectangle: the top and bottom span the
+                // full width and the sides fill what is left, so the corners are covered
+                // exactly once. Overlapping them would double the alpha at each corner,
+                // which is visible the moment the outline is translucent.
+                let inner_height = (rect.height - thickness * 2.0).max(0.0);
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(rect.x, rect.y, rect.width, thickness),
+                    color,
+                    clip,
+                    &mut out.stats,
+                );
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(rect.x, rect.bottom() - thickness, rect.width, thickness),
+                    color,
+                    clip,
+                    &mut out.stats,
+                );
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(rect.x, rect.y + thickness, thickness, inner_height),
+                    color,
+                    clip,
+                    &mut out.stats,
+                );
+                push_solid(
+                    &mut out.vertices,
+                    max_quads,
+                    UiRect::new(
+                        rect.right() - thickness,
+                        rect.y + thickness,
+                        thickness,
+                        inner_height,
+                    ),
+                    color,
+                    clip,
+                    &mut out.stats,
+                );
+            }
+            UiCommand::Icon { rect, icon, tint } => {
+                // One quad, like a glyph. What makes it an icon rather than a letter is
+                // only where in the atlas it reads from, which is also what tells the
+                // pixel shader to filter it smoothly.
+                //
+                // The rectangle's own width is the size the icon is about to occupy, so
+                // the atlas can pick the size variant nearest it. Nothing upstream has
+                // to know that variants exist — the layout asks for an icon in a box.
+                push_quad(
+                    &mut out.vertices,
+                    max_quads,
+                    rect,
+                    UiAtlas::icon_uv(icon, rect.width),
+                    tint,
+                    clip,
+                    &mut out.stats,
+                );
+                out.stats.icons += 1;
+            }
+            UiCommand::Text {
+                origin,
+                range,
+                color,
+                scale,
+                align,
+            } => {
+                let text = list.text_of(range);
+                let width = text_width(text, scale);
+                let x = match align {
+                    TextAlign::Left => origin.0,
+                    TextAlign::Center => origin.0 - width * 0.5,
+                    TextAlign::Right => origin.0 - width,
+                };
+                let mut pen = x;
+                for character in text.chars() {
+                    if !UiAtlas::is_blank(character) {
+                        let rect = UiRect::new(
+                            pen,
+                            origin.1,
+                            GLYPH_WIDTH as f32 * scale,
+                            GLYPH_HEIGHT as f32 * scale,
+                        );
+                        push_quad(
+                            &mut out.vertices,
+                            max_quads,
+                            rect,
+                            UiAtlas::glyph_uv(character),
+                            color,
+                            clip,
+                            &mut out.stats,
+                        );
+                        out.stats.glyphs += 1;
+                    }
+                    pen += GLYPH_ADVANCE as f32 * scale;
+                }
+            }
+        }
+    }
+
+    out.stats.vertices = out.vertices.len();
+}
+
+/// Smallest amount of work worth handing to a worker, in the units [`work_units`] counts.
+///
+/// Eight times what `docs/threading.md`'s 12 us break-even suggested, because that break-even
+/// was measured with the workers already awake. In the game they are asleep between passes,
+/// and waking them is most of what a split costs — see [`MIN_TOTAL_UNITS`].
+const MIN_CHUNK_UNITS: usize = 4096;
+
+/// Smallest whole build worth splitting at all.
+///
+/// Measured in the game, not in `ui_bench` (docs/PERFORMANCE_AUDIT.md): the monster
+/// playground's fight with twenty-one nameplates is 2,681 units and 3,171 quads. Serially that
+/// batches in 0.061 ms. Split across five workers it took 0.092 ms to expand - waking sleeping
+/// workers costs more than the expansion they share - and then 0.041 ms more to concatenate
+/// the five buffers, 0.133 ms in all: the parallel path was 2.2x the serial one, and the
+/// whole frame 0.11 ms slower for it. Expansion is ~23 ns a unit and the merge ~13 ns a quad
+/// on top of ~80 us of fixed cost, so splitting cannot win below roughly 27,000 units, and
+/// barely wins above. Thirty-two thousand is twelve times the heaviest interface the game
+/// draws today: the parallel path stays for an interface that size, and is tested, and does
+/// not run otherwise.
+const MIN_TOTAL_UNITS: usize = 32_768;
+
+/// How much work a draw list is, in units of roughly one quad.
+///
+/// One per command plus one per byte of text, because text is the term that dominates: a
+/// glyph is a quad and a nameplate is a few hundred of them, while a rectangle is one.
+/// Bytes rather than characters — the strings are ASCII and `len()` does not walk them.
+#[must_use]
+fn work_units(list: &UiDrawList) -> usize {
+    list.len() + list.text().len()
+}
+
+/// How many chunks `units` of work should be split into across `workers`.
+///
+/// Never more than one chunk per worker, never smaller than [`MIN_CHUNK_UNITS`], and one —
+/// the caller's signal to stay serial — below [`MIN_TOTAL_UNITS`].
+#[must_use]
+fn chunk_count_for(units: usize, workers: usize) -> usize {
+    if workers <= 1 || units < MIN_TOTAL_UNITS {
+        return 1;
+    }
+    (units / MIN_CHUNK_UNITS).min(workers).max(1)
 }
 
 /// How wide a run of text is, in pixels.
@@ -398,6 +1337,7 @@ pub fn text_height(scale: f32) -> f32 {
     GLYPH_HEIGHT as f32 * scale
 }
 
+#[cfg(windows)]
 /// Root signature and pipeline state for the UI pass.
 #[derive(Debug)]
 pub struct UiPipeline {
@@ -405,6 +1345,7 @@ pub struct UiPipeline {
     state: ID3D12PipelineState,
 }
 
+#[cfg(windows)]
 impl UiPipeline {
     /// Creates the UI pipeline.
     ///
@@ -445,8 +1386,15 @@ impl UiPipeline {
 
         // SAFETY: FFI call with a fully initialized descriptor whose borrowed root
         // signature, bytecode and input elements all outlive it.
-        let state: ID3D12PipelineState = unsafe { device.CreateGraphicsPipelineState(&desc) }
-            .map_err(|error| RendererError::api("CreateGraphicsPipelineState (ui)", error))?;
+        let state: ID3D12PipelineState = unsafe {
+            {
+                let probe = crate::upload_timing::Probe::start();
+                let state = device.CreateGraphicsPipelineState(&desc);
+                probe.pipeline();
+                state
+            }
+        }
+        .map_err(|error| RendererError::api("CreateGraphicsPipelineState (ui)", error))?;
 
         Ok(Self {
             root_signature,
@@ -467,9 +1415,10 @@ impl UiPipeline {
     }
 }
 
+#[cfg(windows)]
 /// The UI vertex layout, matching [`UiVertex`] exactly.
 #[must_use]
-pub fn input_elements() -> [D3D12_INPUT_ELEMENT_DESC; 3] {
+pub fn input_elements() -> [D3D12_INPUT_ELEMENT_DESC; 4] {
     [
         D3D12_INPUT_ELEMENT_DESC {
             SemanticName: s!("POSITION"),
@@ -498,9 +1447,19 @@ pub fn input_elements() -> [D3D12_INPUT_ELEMENT_DESC; 3] {
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
+        D3D12_INPUT_ELEMENT_DESC {
+            SemanticName: s!("TEXCOORD"),
+            SemanticIndex: 1,
+            Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: 32,
+            InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
     ]
 }
 
+#[cfg(windows)]
 /// Straight alpha blending: `src * a + dst * (1 - a)`.
 ///
 /// Alpha is written as `a + dst * (1 - a)` rather than replaced, so a translucent element
@@ -527,6 +1486,7 @@ pub fn alpha_blend_desc() -> D3D12_BLEND_DESC {
     }
 }
 
+#[cfg(windows)]
 /// Solid fill, no culling: a UI quad has no meaningful facing.
 fn ui_rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     D3D12_RASTERIZER_DESC {
@@ -538,6 +1498,7 @@ fn ui_rasterizer_desc() -> D3D12_RASTERIZER_DESC {
     }
 }
 
+#[cfg(windows)]
 /// No depth test, no depth write: the UI is painted in list order.
 fn ui_depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
     D3D12_DEPTH_STENCIL_DESC {
@@ -549,17 +1510,41 @@ fn ui_depth_stencil_desc() -> D3D12_DEPTH_STENCIL_DESC {
     }
 }
 
-/// Two root parameters and one static sampler.
+#[cfg(windows)]
+/// Three root parameters and three static samplers.
 ///
-/// The sampler is **static** rather than a descriptor: it never changes, and a static
-/// sampler costs no descriptor heap space and no bind. Point filtering, because the atlas is
-/// a crisp 1-bit bitmap and bilinear sampling of one would produce grey fringes around
-/// letters that were designed to have none.
+/// The third parameter and sampler are the map picture's; see [`ROOT_UI_MAP_TABLE`].
+///
+/// Both samplers are **static** rather than descriptors: neither ever changes, and a static
+/// sampler costs no descriptor heap space and no bind.
+///
+/// There are two because the atlas holds two kinds of picture. `s0` is **point** filtering
+/// for the font band: the glyphs are a crisp 1-bit bitmap magnified to integer scales, and
+/// bilinear sampling of one produces grey fringes around letters designed to have none.
+/// `s1` is **linear** for the icon band: an icon is rasterized at 88 texels and drawn at 44,
+/// and point sampling a minification like that drops every other texel into aliasing.
+///
+/// The shader chooses between them from the texture coordinate, so nothing on the vertex or
+/// in the pipeline has to say which is which.
 fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, RendererError> {
     let range = D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
         NumDescriptors: 1,
         BaseShaderRegister: 0,
+        RegisterSpace: 0,
+        OffsetInDescriptorsFromTableStart: 0,
+    };
+    let map_range = D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: 1,
+        BaseShaderRegister: 1,
+        RegisterSpace: 0,
+        OffsetInDescriptorsFromTableStart: 0,
+    };
+    let font_range = D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: 1,
+        BaseShaderRegister: 2,
         RegisterSpace: 0,
         OffsetInDescriptorsFromTableStart: 0,
     };
@@ -584,10 +1569,30 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
         },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: &map_range,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: &font_range,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        },
     ];
 
-    let sampler = D3D12_STATIC_SAMPLER_DESC {
-        Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+    let sampler = |filter, register| D3D12_STATIC_SAMPLER_DESC {
+        Filter: filter,
         AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
         AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
         AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
@@ -597,16 +1602,31 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
         BorderColor: D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
         MinLOD: 0.0,
         MaxLOD: 0.0,
-        ShaderRegister: 0,
+        ShaderRegister: register,
         RegisterSpace: 0,
         ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
     };
+    // The map is a real mipmapped picture, minified on the minimap and magnified on the
+    // full-screen map, so its sampler reads every mip and returns transparent past the edge:
+    // the ground beyond the level is whatever the panel under it is.
+    let map_sampler = D3D12_STATIC_SAMPLER_DESC {
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        MaxLOD: f32::MAX,
+        ..sampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, SAMPLER_MAP)
+    };
+    let samplers = [
+        sampler(D3D12_FILTER_MIN_MAG_MIP_POINT, SAMPLER_GLYPH),
+        sampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, SAMPLER_ICON),
+        map_sampler,
+    ];
 
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: parameters.len() as u32,
         pParameters: parameters.as_ptr(),
-        NumStaticSamplers: 1,
-        pStaticSamplers: &sampler,
+        NumStaticSamplers: samplers.len() as u32,
+        pStaticSamplers: samplers.as_ptr(),
         Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
     };
 
@@ -653,7 +1673,7 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature, R
 )]
 mod tests {
     use super::*;
-    use engine_render_data::ui::UiDrawList;
+    use engine_render_data::ui::{UiDrawList, UiIcon};
 
     const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
@@ -661,16 +1681,137 @@ mod tests {
         UiBatcher::new(4096)
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_vertex_layout_matches_the_input_elements() {
         // The GPU is told this exact memory layout; a reordered field renders garbage
         // rather than failing.
-        assert_eq!(size_of::<UiVertex>(), 32, "2 + 2 + 4 floats, packed");
+        assert_eq!(size_of::<UiVertex>(), 48, "2 + 2 + 4 + 4 floats, packed");
         assert_eq!(align_of::<UiVertex>(), 4);
         let elements = input_elements();
         assert_eq!(elements[0].AlignedByteOffset, 0);
         assert_eq!(elements[1].AlignedByteOffset, 8);
         assert_eq!(elements[2].AlignedByteOffset, 16);
+    }
+
+    #[test]
+    fn a_styled_label_draws_its_whole_edge_before_any_letter() {
+        use engine_render_data::font::UiFont;
+        use engine_render_data::ui::{TextAlign, TextStyle};
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let black = [0.0, 0.0, 0.0, 1.0];
+        list.styled_label(
+            (100.0, 50.0),
+            "1234",
+            WHITE,
+            UiFont::SemiBold,
+            28.0,
+            TextAlign::Center,
+            TextStyle::outlined(black, 2.0, 1.0, 0.75),
+        );
+        let vertices = batcher.build(&list).to_vec();
+        // Four letters, each drawn twice: once as the edge and once as the letter.
+        assert_eq!(batcher.stats().quads, 8);
+        let quads: Vec<&[UiVertex]> = vertices.chunks(VERTICES_PER_QUAD).collect();
+        let (edges, letters) = quads.split_at(4);
+        assert!(edges.iter().all(|quad| quad[0].color == black));
+        assert!(letters.iter().all(|quad| quad[0].color == WHITE));
+        // The edge reaches further than the thickened letter, and both are marked as grown.
+        let edge = -edges[0][0].clip[3] - 1.0;
+        let letter = -letters[0][0].clip[3] - 1.0;
+        assert!((letter - 0.75).abs() < 1e-5, "letter grown by {letter}");
+        let expected = 2.75_f32.min(max_dilation(28.0));
+        assert!(
+            (edge - expected).abs() < 1e-5,
+            "edge grown by {edge}, not {expected}"
+        );
+        // The edge is nudged down by the shadow offset and is otherwise under its letter.
+        assert!((edges[0][0].position[1] - letters[0][0].position[1] - 1.0).abs() < 1e-4);
+        assert_eq!(edges[0][0].position[0], letters[0][0].position[0]);
+    }
+
+    #[test]
+    fn a_styled_label_is_placed_exactly_where_a_plain_one_is() {
+        use engine_render_data::font::UiFont;
+        use engine_render_data::ui::{TextAlign, TextStyle};
+        let mut plain = UiDrawList::new();
+        plain.label(
+            (40.0, 10.0),
+            "Shadow Bolt",
+            WHITE,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+        );
+        let mut styled = UiDrawList::new();
+        styled.styled_label(
+            (40.0, 10.0),
+            "Shadow Bolt",
+            WHITE,
+            UiFont::SemiBold,
+            14.0,
+            TextAlign::Left,
+            TextStyle::PLAIN,
+        );
+        let mut batcher = batcher();
+        let plain_vertices = batcher.build(&plain).to_vec();
+        let styled_vertices = batcher.build(&styled).to_vec();
+        let positions = |vertices: &[UiVertex]| {
+            vertices
+                .iter()
+                .map(|vertex| vertex.position)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(positions(&plain_vertices), positions(&styled_vertices));
+        assert!(
+            styled_vertices
+                .iter()
+                .all(|vertex| vertex.clip[3] == PICTURE_FONT)
+        );
+    }
+
+    #[test]
+    fn the_widest_edge_leaves_its_quad_s_border_transparent() {
+        // What the shader computes where the field has run out — the quad's own border —
+        // for the widest growth each size allows: it must be nothing, or every large number
+        // wears a faint box.
+        for size in [10.0_f32, 12.0, 18.0, 27.0, 38.0, 57.0, 76.0, 120.0] {
+            let dilation = max_dilation(size);
+            let range = crate::text::SDF_RANGE * size / crate::text::SDF_EM;
+            let coverage = ((-range + dilation) / dilation_ramp(dilation) + 0.5).clamp(0.0, 1.0);
+            assert!(
+                coverage <= 0.0,
+                "{size} px: coverage {coverage} at the border"
+            );
+        }
+        // And there is still room for a real edge at every size the combat text uses.
+        assert!(max_dilation(21.0) >= 1.5);
+        assert!(max_dilation(38.0) >= 3.5);
+    }
+
+    #[test]
+    fn an_edge_is_never_wider_than_the_field_can_express() {
+        use engine_render_data::font::UiFont;
+        use engine_render_data::ui::{TextAlign, TextStyle};
+        let mut list = UiDrawList::new();
+        list.styled_label(
+            (0.0, 0.0),
+            "8",
+            WHITE,
+            UiFont::SemiBold,
+            12.0,
+            TextAlign::Left,
+            TextStyle::outlined([0.0, 0.0, 0.0, 1.0], 40.0, 0.0, 40.0),
+        );
+        let mut batcher = batcher();
+        let vertices = batcher.build(&list).to_vec();
+        let reach = max_dilation(12.0);
+        assert!(reach > 0.0);
+        for vertex in &vertices {
+            let grown = -vertex.clip[3] - 1.0;
+            assert!(grown <= reach + 1e-5, "grown {grown} past {reach}");
+        }
     }
 
     #[test]
@@ -761,10 +1902,173 @@ mod tests {
         assert_eq!(vertices.len(), 4 * VERTICES_PER_QUAD);
 
         // The solid quads sample a point; the glyphs sample a region. One texture, one draw.
-        let solid = FontAtlas::solid_uv();
+        let solid = UiAtlas::solid_uv();
         assert_eq!(vertices[0].uv, [solid.u0, solid.v0]);
-        let glyph = FontAtlas::glyph_uv('H');
+        let glyph = UiAtlas::glyph_uv('H');
         assert_eq!(vertices[2 * VERTICES_PER_QUAD].uv, [glyph.u0, glyph.v0]);
+    }
+
+    #[test]
+    fn a_full_radial_sweep_covers_its_whole_cell_including_the_corners() {
+        // The bug this replaced: the sweep was a circle inscribed in the slot, so a cooling
+        // ability kept a bright triangle of art in each corner and a full cooldown never
+        // dimmed the whole button.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let rect = UiRect::new(10.0, 20.0, 48.0, 48.0);
+        list.radial(rect, 1.0, WHITE);
+        let vertices = batcher.build(&list).to_vec();
+
+        // Every corner of the cell is a vertex of the fan, so the geometry reaches them
+        // rather than cutting across.
+        for corner in [
+            [rect.x, rect.y],
+            [rect.right(), rect.y],
+            [rect.x, rect.bottom()],
+            [rect.right(), rect.bottom()],
+        ] {
+            assert!(
+                vertices.iter().any(|vertex| {
+                    (vertex.position[0] - corner[0]).abs() < 0.01
+                        && (vertex.position[1] - corner[1]).abs() < 0.01
+                }),
+                "{corner:?} is not covered by the sweep"
+            );
+        }
+    }
+
+    #[test]
+    fn a_radial_sweep_never_reaches_outside_its_cell() {
+        // The other half of the same property. Reaching the corners with a circle would mean
+        // a radius that bulges a tenth of the slot past every edge, and this pass has no
+        // clipping — it would spill onto the neighbouring ability.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        // A non-square cell too: the sweep follows the border, not a radius.
+        for rect in [
+            UiRect::new(10.0, 20.0, 48.0, 48.0),
+            UiRect::new(0.0, 0.0, 200.0, 40.0),
+        ] {
+            for start in [0.0, 0.1, 0.375, 0.6, 0.9] {
+                list.clear();
+                list.radial_from(rect, start, 1.0 - start, WHITE);
+                for vertex in batcher.build(&list) {
+                    let [x, y] = vertex.position;
+                    assert!(
+                        x >= rect.x - 0.01 && x <= rect.right() + 0.01,
+                        "{x} escapes {rect:?} horizontally at start {start}"
+                    );
+                    assert!(
+                        y >= rect.y - 0.01 && y <= rect.bottom() + 0.01,
+                        "{y} escapes {rect:?} vertically at start {start}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_radial_sweep_costs_a_triangle_per_corner_it_crosses_and_no_more() {
+        // The border is four straight lines, so there is no arc to approximate and nothing
+        // to gain from more geometry. A full turn crosses all four corners: five triangles.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let rect = UiRect::new(0.0, 0.0, 48.0, 48.0);
+
+        list.radial(rect, 1.0, WHITE);
+        batcher.build(&list);
+        assert_eq!(batcher.stats().quads, 5, "a full sweep");
+
+        // An eighth of a turn from twelve o'clock reaches the first corner exactly, so it is
+        // a single triangle.
+        list.clear();
+        list.radial(rect, 0.125, WHITE);
+        batcher.build(&list);
+        assert_eq!(
+            batcher.stats().quads,
+            1,
+            "twelve o'clock to the first corner"
+        );
+
+        // And a sweep that stops short of any corner is still one triangle.
+        list.clear();
+        list.radial(rect, 0.05, WHITE);
+        batcher.build(&list);
+        assert_eq!(batcher.stats().quads, 1, "a sliver");
+    }
+
+    #[test]
+    fn an_icon_is_one_quad_that_shares_the_batch_with_text_and_rectangles() {
+        // The point of putting icons in the font's atlas: art on the ability bar does not
+        // cost a second texture, a second pipeline state or a second draw.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        let rect = UiRect::new(10.0, 20.0, 44.0, 44.0);
+        list.rect(rect, WHITE);
+        list.icon(rect, UiIcon::Meteor, WHITE);
+        list.text_at((0.0, 0.0), "M", WHITE, 1.0);
+
+        let vertices = batcher.build(&list).to_vec();
+        assert_eq!(batcher.stats().quads, 3);
+        assert_eq!(batcher.stats().icons, 1);
+        assert_eq!(vertices.len(), 3 * VERTICES_PER_QUAD);
+
+        // The icon quad spans the rectangle exactly and reads the cell for the size it is
+        // actually drawn at — the rectangle's own width, which is what selects the variant.
+        let icon = &vertices[VERTICES_PER_QUAD..VERTICES_PER_QUAD * 2];
+        assert_eq!(icon[0].position, [10.0, 20.0]);
+        let uv = UiAtlas::icon_uv(UiIcon::Meteor, rect.width);
+        assert_eq!(icon[0].uv, [uv.u0, uv.v0]);
+    }
+
+    #[test]
+    fn the_same_icon_drawn_larger_reads_a_different_cell() {
+        // Variant selection is invisible above the batcher: the layout asks for an icon in
+        // a box, and the size of the box is what decides which rasterization is sampled.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        list.icon(UiRect::new(0.0, 0.0, 40.0, 40.0), UiIcon::Firebolt, WHITE);
+        let small = batcher.build(&list)[0].uv;
+
+        list.clear();
+        list.icon(UiRect::new(0.0, 0.0, 130.0, 130.0), UiIcon::Firebolt, WHITE);
+        let large = batcher.build(&list)[0].uv;
+
+        assert_ne!(small, large, "both sizes read the same cell");
+    }
+
+    #[test]
+    fn an_icon_reads_below_the_band_boundary_and_a_glyph_reads_above_it() {
+        // The pixel shader picks its sampler by comparing `v` against the boundary in the
+        // frame constants. If a batched quad ever landed on the wrong side of it, an icon
+        // would be point-sampled or a glyph would be blurred, with nothing failing.
+        let mut batcher = batcher();
+        let mut list = UiDrawList::new();
+        list.text_at((0.0, 0.0), "AZ09", WHITE, 2.0);
+        list.rect(UiRect::new(0.0, 0.0, 10.0, 10.0), WHITE);
+        let glyphs_and_rects = batcher.build(&list).to_vec();
+
+        let boundary = UiFrameConstants::for_viewport(1280, 720).icon_band_v;
+        assert!(boundary > 0.0 && boundary < 1.0, "{boundary}");
+        for vertex in &glyphs_and_rects {
+            assert!(
+                vertex.uv[1] < boundary,
+                "a glyph or rectangle reads from the icon band: {:?}",
+                vertex.uv
+            );
+        }
+
+        list.clear();
+        for icon in UiIcon::ALL {
+            list.icon(UiRect::new(0.0, 0.0, 44.0, 44.0), icon, WHITE);
+        }
+        for vertex in batcher.build(&list) {
+            assert!(
+                vertex.uv[1] >= boundary,
+                "an icon reads from the font band: {:?}",
+                vertex.uv
+            );
+        }
     }
 
     #[test]
@@ -843,6 +2147,7 @@ mod tests {
         assert!((constants.pixel_to_clip[1] + 2.0 / 1080.0).abs() < 1e-9);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_ui_pass_neither_tests_nor_writes_depth() {
         // Painter's order is the ordering strategy; a depth test would make a blended
@@ -852,6 +2157,7 @@ mod tests {
         assert_eq!(depth.DepthWriteMask, D3D12_DEPTH_WRITE_MASK_ZERO);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_ui_blend_state_is_straight_alpha() {
         let blend = alpha_blend_desc();
@@ -867,5 +2173,178 @@ mod tests {
         let list = UiDrawList::new();
         assert!(batcher.build(&list).is_empty());
         assert_eq!(batcher.stats().quads, 0);
+    }
+
+    fn bounds(vertices: &[UiVertex]) -> (f32, f32, f32, f32) {
+        vertices.iter().fold(
+            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+            |(x0, y0, x1, y1), vertex| {
+                (
+                    x0.min(vertex.position[0]),
+                    y0.min(vertex.position[1]),
+                    x1.max(vertex.position[0]),
+                    y1.max(vertex.position[1]),
+                )
+            },
+        )
+    }
+
+    #[test]
+    fn a_clip_rectangle_trims_quads_and_their_texture_coordinates_together() {
+        let mut list = UiDrawList::new();
+        list.clip(engine_render_data::ui::UiClip::rect(UiRect::new(
+            0.0, 0.0, 50.0, 50.0,
+        )));
+        // Half inside: trimmed to the clip, and its texture coordinates with it.
+        list.map_image(
+            UiRect::new(25.0, 0.0, 50.0, 50.0),
+            (0.0, 0.0),
+            (0.02, 0.0),
+            (0.0, 0.02),
+            WHITE,
+        );
+        // Wholly outside: gone, and not counted as dropped.
+        list.rect(UiRect::new(60.0, 60.0, 10.0, 10.0), WHITE);
+        let mut batcher = batcher();
+        let vertices = batcher.build(&list).to_vec();
+        assert_eq!(batcher.stats().quads, 1);
+        assert_eq!(batcher.stats().dropped, 0);
+        assert_eq!(bounds(&vertices), (25.0, 0.0, 50.0, 50.0));
+        let right = vertices
+            .iter()
+            .find(|vertex| vertex.position[0] == 50.0)
+            .expect("a right edge");
+        assert!(
+            (right.uv[0] - 0.5).abs() < 1e-5,
+            "u at the cut is half way: {}",
+            right.uv[0]
+        );
+        assert!(vertices.iter().all(|vertex| vertex.clip[3] == PICTURE_MAP));
+    }
+
+    #[test]
+    fn a_circle_clip_travels_on_every_vertex_until_it_is_ended() {
+        let mut list = UiDrawList::new();
+        list.clip(engine_render_data::ui::UiClip::circle((100.0, 100.0), 80.0));
+        list.map_image(
+            UiRect::new(20.0, 20.0, 160.0, 160.0),
+            (0.0, 0.0),
+            (0.01, 0.0),
+            (0.0, 0.01),
+            WHITE,
+        );
+        list.clip(engine_render_data::ui::UiClip::NONE);
+        list.rect(UiRect::new(0.0, 0.0, 4.0, 4.0), WHITE);
+        let mut batcher = batcher();
+        let vertices = batcher.build(&list).to_vec();
+        assert!(
+            vertices[..6]
+                .iter()
+                .all(|v| v.clip == [100.0, 100.0, 80.0, PICTURE_MAP])
+        );
+        assert!(
+            vertices[6..]
+                .iter()
+                .all(|v| v.clip == [0.0, 0.0, 0.0, PICTURE_ATLAS])
+        );
+    }
+
+    #[test]
+    fn a_disc_is_one_quad_that_carries_its_own_circle() {
+        let mut list = UiDrawList::new();
+        list.disc((40.0, 30.0), 6.0, WHITE);
+        let mut batcher = batcher();
+        let vertices = batcher.build(&list).to_vec();
+        assert_eq!(vertices.len(), VERTICES_PER_QUAD);
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.clip == [40.0, 30.0, 6.0, PICTURE_ATLAS])
+        );
+        // A pixel of margin for the anti-aliased rim.
+        assert_eq!(bounds(&vertices), (33.0, 23.0, 47.0, 37.0));
+    }
+
+    #[test]
+    fn a_rotated_icon_turns_clockwise_about_its_centre() {
+        let mut list = UiDrawList::new();
+        list.icon_rotated(
+            (50.0, 50.0),
+            20.0,
+            UiIcon::MapPlayer,
+            std::f32::consts::FRAC_PI_2,
+            WHITE,
+        );
+        let mut batcher = batcher();
+        let vertices = batcher.build(&list).to_vec();
+        assert_eq!(vertices.len(), VERTICES_PER_QUAD);
+        // The icon's top-left corner, a quarter turn clockwise, lands top-right.
+        let top_left = vertices[0];
+        assert!(
+            (top_left.position[0] - 60.0).abs() < 1e-4,
+            "{:?}",
+            top_left.position
+        );
+        assert!(
+            (top_left.position[1] - 40.0).abs() < 1e-4,
+            "{:?}",
+            top_left.position
+        );
+        assert_eq!(batcher.stats().icons, 1);
+    }
+
+    fn covered_area(vertices: &[UiVertex]) -> f32 {
+        vertices
+            .chunks_exact(VERTICES_PER_QUAD)
+            .map(|quad| {
+                let (x0, y0) = (quad[0].position[0], quad[0].position[1]);
+                let (x1, y1) = (quad[5].position[0], quad[5].position[1]);
+                (x1 - x0).abs() * (y1 - y0).abs()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn an_outline_and_a_drop_shadow_shade_their_edge_not_their_area() {
+        let rect = UiRect::new(0.0, 0.0, 1000.0, 600.0);
+        let mut list = UiDrawList::new();
+        list.panel_stroke(rect, 12.0, 1.0, WHITE);
+        let mut batcher = batcher();
+        let outline = covered_area(batcher.build(&list));
+        assert_eq!(batcher.stats().quads, 4);
+        assert!(
+            outline < 1000.0 * 600.0 * 0.1,
+            "an outline shades a band: {outline}"
+        );
+
+        let mut list = UiDrawList::new();
+        list.shadow(rect, 12.0, 40.0, WHITE);
+        let shadow = covered_area(batcher.build(&list));
+        assert!(
+            shadow < 1000.0 * 600.0 * 0.5,
+            "a drop shadow skips its hidden middle: {shadow}"
+        );
+
+        let mut list = UiDrawList::new();
+        list.glow(rect, 12.0, 40.0, WHITE);
+        let glow = covered_area(batcher.build(&list));
+        assert!(glow > 1000.0 * 600.0, "a glow is seen whole: {glow}");
+        assert_eq!(batcher.stats().quads, 1);
+    }
+
+    #[test]
+    fn a_parallel_split_inherits_the_clip_set_before_its_chunk() {
+        let mut list = UiDrawList::new();
+        list.clip(engine_render_data::ui::UiClip::circle((10.0, 10.0), 5.0));
+        list.rect(UiRect::new(0.0, 0.0, 4.0, 4.0), WHITE);
+        list.rect(UiRect::new(0.0, 0.0, 4.0, 4.0), WHITE);
+        assert_eq!(
+            clip_before(list.commands(), 2),
+            engine_render_data::ui::UiClip::circle((10.0, 10.0), 5.0)
+        );
+        assert_eq!(
+            clip_before(list.commands(), 0),
+            engine_render_data::ui::UiClip::NONE
+        );
     }
 }

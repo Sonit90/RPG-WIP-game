@@ -1,0 +1,12 @@
+# Production overrides. Real secrets come from env vars (APP__*).
+
+[http]
+request_timeout_secs = 60
+
+[db]
+max_connections = 50
+min_connections = 5
+run_migrations_on_start = false  # run via `sqlx migrate run` in deploy step
+
+[cors]
+allowed_origins = []

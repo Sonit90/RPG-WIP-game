@@ -31,12 +31,18 @@
 //! buffer is a texture — so this module owns its own monotonic frame counter and derives
 //! the slot from it.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{ID3D12CommandAllocator, ID3D12CommandQueue};
 
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::sync::GpuFence;
 
 /// Default number of frames the CPU may run ahead of the GPU.
@@ -93,6 +99,7 @@ impl SyncStats {
     }
 }
 
+#[cfg(windows)]
 /// One frame slot's CPU-side state.
 struct Frame {
     allocator: ID3D12CommandAllocator,
@@ -101,6 +108,7 @@ struct Frame {
     fence_value: u64,
 }
 
+#[cfg(windows)]
 /// The ring of frame slots and the fence that paces them.
 pub struct FrameRing {
     frames: Vec<Frame>,
@@ -110,6 +118,7 @@ pub struct FrameRing {
     stats: SyncStats,
 }
 
+#[cfg(windows)]
 impl FrameRing {
     /// Creates `frames_in_flight` slots, each with its own command allocator.
     ///
@@ -266,6 +275,13 @@ impl FrameRing {
     #[must_use]
     pub fn completed_value(&self) -> u64 {
         self.fence.completed_value()
+    }
+
+    /// The fence value of the latest submission: once the GPU has passed it, nothing
+    /// submitted so far can still be reading a resource.
+    #[must_use]
+    pub fn last_signaled_value(&self) -> u64 {
+        self.fence.last_signaled_value()
     }
 }
 

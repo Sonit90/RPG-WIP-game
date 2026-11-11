@@ -1,0 +1,70 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="rejuvenation_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="rejuvenation_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(110,200,130)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="rejuvenation_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="rejuvenation_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="rejuvenation_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="rejuvenation_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="rejuvenation_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="rejuvenation_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="rejuvenation_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="rejuvenation_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#rejuvenation_tile)">
+	<path fill="url(#rejuvenation_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#rejuvenation_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- One shoot, put on one target and left to run. -->
+	<path fill="url(#rejuvenation_bark)" d="M 324 856 C 316 730 322 620 344 520 L 372 528 C 352 622 346 730 352 856 z"></path>
+	<path fill="url(#rejuvenation_leaf)" fill-opacity="0.25" d="M 348 452 C 236 466 172 552 186 662 C 292 650 358 566 348 452 z"></path>
+	<path fill="url(#rejuvenation_leaf)" d="M 348 486 C 262 496 214 560 224 642 C 306 632 356 570 348 486 z"></path>
+	<path fill="url(#rejuvenation_deep)" d="M 348 486 C 306 532 274 582 248 646 C 296 634 336 578 348 486 z"></path>
+	<path fill="url(#rejuvenation_leaf)" d="M 362 542 C 436 550 476 606 468 676 C 396 668 354 612 362 542 z"></path>
+	<path fill="url(#rejuvenation_deep)" d="M 362 542 C 398 582 426 626 448 680 C 406 670 372 622 362 542 z"></path>
+
+	<!-- The bud at the top, which is where the healing is coming from. -->
+	<path fill="url(#rejuvenation_leaf)" fill-opacity="0.35" d="M 358 356 C 400 356 434 390 434 432 C 434 474 400 508 358 508 C 316 508 282 474 282 432 C 282 390 316 356 358 356 z"></path>
+	<path fill="rgb(214,250,190)" d="M 358 392 C 380 392 398 410 398 432 C 398 454 380 472 358 472 C 336 472 318 454 318 432 C 318 410 336 392 358 392 z"></path>
+
+	<!-- The tick, lifting rather than falling: a heal over time. -->
+	<path fill="rgb(186,236,152)" fill-opacity="0.9" d="M 486 618 C 496 624 500 634 498 646 C 486 638 480 628 480 618 z"></path>
+	<path fill="rgb(186,236,152)" fill-opacity="0.7" d="M 202 722 C 212 728 216 738 214 748 C 202 742 196 732 196 722 z"></path>
+	<path fill="rgb(214,250,190)" fill-opacity="0.8" d="M 452 776 C 460 782 464 790 462 800 C 452 794 446 786 446 776 z"></path>
+</g>
+</svg>

@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realm operator dashboard</title>
+<style>
+  :root {
+    --bg: #101216; --panel: #181b21; --panel2: #1e222a; --line: #2a2f39; --text: #d8dde6;
+    --dim: #8a93a3; --ok: #4cc38a; --warn: #e2b04a; --bad: #e5604f; --accent: #5aa0ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 18px;
+           background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .spacer { flex: 1; }
+  main { padding: 16px 18px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  tr.click { cursor: pointer; }
+  tr.click:hover td { background: var(--panel2); }
+  tr.sel td { background: #20283a; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: var(--panel2); border: 1px solid var(--line); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--dim); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; }
+  .kv > div:nth-child(odd) { color: var(--dim); }
+  .bar { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; min-width: 70px; margin-top: 3px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .bar.hp > i { background: var(--ok); }
+  .cols { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.2fr); gap: 16px; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .scroll { max-height: 260px; overflow: auto; }
+  svg { width: 100%; height: auto; background: #0c0e12; border: 1px solid var(--line); border-radius: 6px; display: block; }
+  .legend span { margin-right: 14px; font-size: 12px; color: var(--dim); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  input, button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  button.primary { background: #26427a; border-color: #3b64b8; }
+  #login { max-width: 460px; margin: 10vh auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 22px; }
+  #login h1 { margin-top: 0; font-size: 18px; }
+  #login label { display: block; margin: 12px 0 4px; color: var(--dim); font-size: 12px; }
+  #login input { width: 100%; }
+  #login .row { display: flex; gap: 8px; margin-top: 14px; }
+  .err { color: var(--bad); margin-top: 10px; min-height: 1.3em; }
+  .tag { font-size: 11px; padding: 0 6px; border-radius: 4px; background: #3a2a2a; color: #f0a79d; margin-left: 4px; }
+  details summary { cursor: pointer; color: var(--dim); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="login" class="hidden">
+  <h1>Realm operator dashboard</h1>
+  <div class="dim">Sign in as an account with the <code>ops.view</code> permission, or paste an access token.</div>
+  <label for="email">Email</label>
+  <input id="email" type="email" autocomplete="username">
+  <label for="password">Password</label>
+  <input id="password" type="password" autocomplete="current-password">
+  <div class="row"><button class="primary" id="signin">Sign in</button></div>
+  <label for="token">...or an access token</label>
+  <input id="token" type="password" autocomplete="off" placeholder="eyJ...">
+  <div class="row"><button id="usetoken">Use token</button></div>
+  <div class="err" id="loginerr"></div>
+</div>
+
+<div id="app" class="hidden">
+<header>
+  <h1>Realm operator dashboard</h1>
+  <span id="hdr-health"></span>
+  <span class="spacer"></span>
+  <span class="dim" id="hdr-updated"></span>
+  <button id="signout">Sign out</button>
+</header>
+<main>
+  <section id="p-status">
+    <h2>Server status</h2>
+    <div id="status-body" class="dim">Loading...</div>
+  </section>
+  <section id="p-players">
+    <h2>Players and queue</h2>
+    <div id="players-body" class="dim">Loading...</div>
+  </section>
+  <section class="wide" id="p-errors">
+    <h2>Recent errors</h2>
+    <div id="errors-body" class="dim">None.</div>
+  </section>
+  <section class="wide" id="p-instances">
+    <h2>Active instances</h2>
+    <div id="instances-body" class="dim">Loading...</div>
+  </section>
+  <section class="wide hidden" id="p-detail">
+    <h2>Instance <span id="detail-id"></span> <button id="detail-close" style="float:right">Close</button></h2>
+    <div id="detail-body"></div>
+  </section>
+  <section class="wide" id="p-anomalies">
+    <h2>Anomalies</h2>
+    <div id="anomalies-body" class="dim">Loading...</div>
+  </section>
+</main>
+</div>
+
+<script>
+"use strict";
+(function () {
+  var API = "/api/v1";
+  var KEY = "ops.token";
+  var token = sessionStorage.getItem(KEY) || "";
+  var selected = null;
+  var timers = [];
+  var fetching = {};
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function fmtDur(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    return (h ? h + "h " : "") + (h || m ? m + "m " : "") + s + "s";
+  }
+  function fmtBytes(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GiB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MiB";
+    return Math.round(n / 1024) + " KiB";
+  }
+  function fmtAgo(unix) {
+    if (!unix) return "never";
+    return fmtDur(Date.now() / 1000 - unix) + " ago";
+  }
+  function fmtTime(unix) { return unix ? new Date(unix * 1000).toLocaleString() : ""; }
+  function pct(a, b) { return b > 0 ? Math.max(0, Math.min(100, a / b * 100)) : 0; }
+  function bar(value, max, cls) {
+    return '<div class="bar ' + (cls || "") + '"><i style="width:' + pct(value, max).toFixed(0) + '%"></i></div>';
+  }
+  function dot(level) { return '<span class="dot ' + level + '"></span>'; }
+  function kv(rows) {
+    return '<div class="kv">' + rows.map(function (r) { return "<div>" + esc(r[0]) + "</div><div>" + r[1] + "</div>"; }).join("") + "</div>";
+  }
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ") : ""; }
+
+  // ---- auth -------------------------------------------------------------------------
+  function showLogin(message) {
+    stopTimers();
+    $("app").classList.add("hidden");
+    $("login").classList.remove("hidden");
+    $("loginerr").textContent = message || "";
+  }
+  function showApp() {
+    $("login").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    startTimers();
+  }
+  function setToken(t) {
+    token = t;
+    if (t) sessionStorage.setItem(KEY, t); else sessionStorage.removeItem(KEY);
+  }
+  function api(path) {
+    return fetch(API + path, { headers: { Authorization: "Bearer " + token }, cache: "no-store" }).then(function (r) {
+      if (r.status === 401) { setToken(""); showLogin("Session expired. Sign in again."); throw new Error("unauthorized"); }
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok) {
+          var e = new Error((body.error && body.error.message) || ("HTTP " + r.status));
+          e.status = r.status; e.code = body.error && body.error.code;
+          throw e;
+        }
+        return body;
+      });
+    });
+  }
+  function probe() {
+    return api("/admin/ops/status").then(function () { showApp(); }).catch(function (e) {
+      if (e.message === "unauthorized") return;
+      if (e.status === 403) { setToken(""); showLogin("That account does not have the ops.view permission."); }
+      else showLogin("Could not reach the API: " + e.message);
+    });
+  }
+  $("signin").onclick = function () {
+    $("loginerr").textContent = "";
+    fetch(API + "/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: $("email").value.trim(), password: $("password").value })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        if (!r.ok) throw new Error((b.error && b.error.message) || ("HTTP " + r.status));
+        return b;
+      });
+    }).then(function (b) {
+      $("password").value = "";
+      setToken(b.access_token);
+      return probe();
+    }).catch(function (e) { $("loginerr").textContent = e.message; });
+  };
+  $("usetoken").onclick = function () {
+    var t = $("token").value.trim();
+    if (!t) return;
+    $("token").value = "";
+    setToken(t);
+    probe();
+  };
+  $("signout").onclick = function () { setToken(""); showLogin(""); };
+  ["email", "password"].forEach(function (id) {
+    $(id).addEventListener("keydown", function (e) { if (e.key === "Enter") $("signin").click(); });
+  });
+
+  // ---- polling ----------------------------------------------------------------------
+  function every(ms, fn) { fn(); timers.push(setInterval(fn, ms)); }
+  function stopTimers() { timers.forEach(clearInterval); timers = []; }
+  function startTimers() {
+    stopTimers();
+    every(2000, refreshFast);
+    every(15000, refreshAnomalies);
+  }
+  // One request of a kind at a time: a slow answer never queues behind itself.
+  function once(name, fn) {
+    if (fetching[name]) return;
+    fetching[name] = true;
+    Promise.resolve().then(fn).catch(function () {}).then(function () { fetching[name] = false; });
+  }
+  function refreshFast() {
+    once("status", function () { return api("/admin/ops/status").then(renderStatus).catch(function (e) { renderError("status-body", e); }); });
+    once("realm", function () {
+      return api("/admin/ops/realm").then(renderRealm).catch(function (e) {
+        renderError("players-body", e); renderError("instances-body", e);
+      });
+    });
+    if (selected !== null) {
+      once("detail", function () {
+        return api("/admin/ops/instances/" + selected).then(renderDetail).catch(function (e) {
+          $("detail-body").innerHTML = '<span class="bad">' + esc(e.status === 404 ? "This instance no longer exists." : e.message) + "</span>";
+        });
+      });
+    }
+    $("hdr-updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  }
+  function refreshAnomalies() {
+    once("anomalies", function () { return api("/admin/ops/anomalies").then(renderAnomalies).catch(function (e) { renderError("anomalies-body", e); }); });
+  }
+  function renderError(id, e) {
+    if (e.message === "unauthorized") return;
+    $(id).innerHTML = '<span class="bad">' + esc(e.message) + "</span>";
+  }
+
+  // ---- status -----------------------------------------------------------------------
+  function renderStatus(s) {
+    var realmLevel = s.realm.reachable ? (s.realm.max_ticks_behind > 60 ? "warn" : "ok") : (s.realm.enabled ? "bad" : "warn");
+    var dbLevel = s.db.ok ? (s.db.latency_ms > 200 ? "warn" : "ok") : "bad";
+    var bridgeFail = s.bridge.last_failure_at && (!s.bridge.last_success_at || s.bridge.last_failure_at >= s.bridge.last_success_at);
+    var bridgeLevel = !s.bridge.enabled ? "warn" : (bridgeFail ? "bad" : "ok");
+    $("hdr-health").innerHTML = dot("ok") + "API &nbsp;" + dot(dbLevel) + "DB &nbsp;" + dot(realmLevel) + "Realm &nbsp;" + dot(bridgeLevel) + "Bridge";
+    var sys = s.system;
+    $("status-body").innerHTML = kv([
+      ["API", dot("ok") + "v" + esc(s.api.version) + " (" + esc(s.api.environment) + "), up " + fmtDur(s.api.uptime_seconds)],
+      ["Database", dot(dbLevel) + (s.db.ok ? s.db.latency_ms.toFixed(1) + " ms" : esc(s.db.error))],
+      ["Realm", dot(realmLevel) + (s.realm.reachable
+          ? "reachable, snapshot " + s.realm.snapshot_latency_ms.toFixed(0) + " ms, " + s.realm.active_instances + " instance(s), " + s.realm.max_ticks_behind + " ticks behind"
+          : (s.realm.enabled ? "unreachable: " + esc(s.realm.error) : "bridge disabled"))],
+      ["Result bridge", dot(bridgeLevel) + (s.bridge.enabled
+          ? "last ok " + fmtAgo(s.bridge.last_success_at) + "; pending " + s.bridge.pending_results + " result(s), " + s.bridge.pending_loot + " loot; " + s.bridge.failures + " failed of " + s.bridge.passes + " passes"
+          : "disabled") + (s.bridge.last_error ? '<div class="dim">last error: ' + esc(s.bridge.last_error) + "</div>" : "")],
+      ["Process CPU", sys.process_cpu_percent.toFixed(1) + " % of " + sys.cpu_cores + " core(s)" + bar(sys.process_cpu_percent, 100)],
+      ["Process RAM", fmtBytes(sys.process_rss_bytes)],
+      ["System CPU", sys.system_cpu_percent.toFixed(1) + " %" + bar(sys.system_cpu_percent, 100)],
+      ["System RAM", fmtBytes(sys.system_memory_used_bytes) + " / " + fmtBytes(sys.system_memory_total_bytes) + bar(sys.system_memory_used_bytes, sys.system_memory_total_bytes)]
+    ]);
+    if (!s.errors.length) {
+      $("errors-body").innerHTML = '<span class="dim">None since the API started.</span>';
+    } else {
+      $("errors-body").innerHTML = '<div class="scroll"><table><tr><th>When</th><th>Source</th><th>Message</th><th class="num">Count</th></tr>' +
+        s.errors.map(function (e) {
+          return "<tr><td>" + esc(fmtTime(e.at)) + '</td><td class="dim">' + esc(e.source) + "</td><td>" + esc(e.message) + '</td><td class="num">' + e.count + "</td></tr>";
+        }).join("") + "</table></div>";
+    }
+  }
+
+  // ---- realm: players, queue, instances ---------------------------------------------
+  function renderRealm(r) {
+    var inDungeon = 0;
+    r.instances.forEach(function (i) { inDungeon += i.players.length; });
+    var queued = 0;
+    var qrows = r.queue.map(function (q) {
+      queued += q.tanks + q.healers + q.dps;
+      return "<tr><td>" + esc(q.dungeon_id) + '</td><td class="num">' + q.tanks + '</td><td class="num">' + q.healers +
+        '</td><td class="num">' + q.dps + '</td><td class="num">' + q.matched + "</td></tr>";
+    }).join("");
+    var parties = Object.keys(r.parties).map(function (k) { return '<span class="pill">' + esc(cap(k)) + ": " + r.parties[k] + "</span> "; }).join("") || '<span class="dim">No parties.</span>';
+    $("players-body").innerHTML =
+      kv([["Online accounts", "<b>" + r.online_accounts + "</b>"], ["In a dungeon", inDungeon], ["Searching", queued], ["Parties", parties]]) +
+      '<table style="margin-top:10px"><tr><th>Queue</th><th class="num">Tank</th><th class="num">Healer</th><th class="num">DPS</th><th class="num">Matched</th></tr>' +
+      (qrows || '<tr><td colspan="5" class="dim">Nobody is queueing.</td></tr>') + "</table>";
+
+    if (!r.instances.length) {
+      $("instances-body").innerHTML = '<span class="dim">No instances.</span>';
+      return;
+    }
+    $("instances-body").innerHTML = '<table><tr><th>ID</th><th>Dungeon</th><th class="num">Key</th><th>Modifiers</th><th>State</th>' +
+      '<th class="num">Elapsed</th><th>Kills</th><th>Party</th><th>Tick</th></tr>' +
+      r.instances.map(function (i) {
+        var t = i.tick;
+        var tick = t ? (t.ticking ? (t.ticks_behind > 60 ? '<span class="warn">' + t.ticks_behind + " behind</span>" : '<span class="ok">ok</span>') : '<span class="dim">idle</span>') : '<span class="dim">-</span>';
+        var kills = i.kills.total ? i.kills.killed + "/" + i.kills.total + " (" + Math.round(pct(i.kills.killed, i.kills.total)) + "%)" : "-";
+        var party = i.players.map(function (p) {
+          return '<span class="' + (p.presence === "present" ? "" : "bad") + '">' + esc(p.name) + "</span>";
+        }).join(", ");
+        return '<tr class="click' + (i.id === selected ? " sel" : "") + '" data-id="' + i.id + '"><td>' + i.id + "</td><td>" + esc(i.dungeon_id) +
+          '</td><td class="num">' + i.key_level + "</td><td>" + (i.modifiers.length ? esc(i.modifiers.join(", ")) : '<span class="dim">none</span>') +
+          '</td><td><span class="pill">' + esc(cap(i.state)) + '</span></td><td class="num">' + fmtDur(i.elapsed_seconds) + "</td><td>" + kills + "</td><td>" + party + "</td><td>" + tick + "</td></tr>";
+      }).join("") + "</table>";
+    Array.prototype.forEach.call($("instances-body").querySelectorAll("tr.click"), function (tr) {
+      tr.onclick = function () { selectInstance(Number(tr.getAttribute("data-id"))); };
+    });
+  }
+
+  // ---- instance detail --------------------------------------------------------------
+  var CLASS_COLOR = { warrior: "#e0a458", firemage: "#ff7a45", druid: "#6fcf6f" };
+  function classColor(c) {
+    if (CLASS_COLOR[c]) return CLASS_COLOR[c];
+    var h = 0; for (var k = 0; k < c.length; k++) h = (h * 31 + c.charCodeAt(k)) % 360;
+    return "hsl(" + h + ",70%,62%)";
+  }
+  function selectInstance(id) {
+    selected = id;
+    $("p-detail").classList.remove("hidden");
+    $("detail-id").textContent = "#" + id;
+    $("detail-body").innerHTML = '<span class="dim">Loading...</span>';
+    refreshFast();
+    $("p-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  $("detail-close").onclick = function () { selected = null; $("p-detail").classList.add("hidden"); };
+
+  function renderDetail(d) {
+    if (selected === null) return;
+    var i = d.instance;
+    var head = kv([
+      ["Dungeon", esc(d.dungeon_name) + ' <span class="dim">(' + esc(i.dungeon_id) + ")</span>"],
+      ["Key level", i.key_level],
+      ["Modifiers", i.modifiers.length ? esc(i.modifiers.join(", ")) : '<span class="dim">none</span>'],
+      ["State", '<span class="pill">' + esc(cap(i.state)) + "</span>"],
+      ["Started", i.started_at_us ? esc(new Date(i.started_at_us / 1000).toLocaleTimeString()) + " (elapsed " + fmtDur(i.elapsed_seconds) + ")" : '<span class="dim">not yet</span>'],
+      ["Kills", i.kills.killed + " / " + i.kills.total + " (" + Math.round(pct(i.kills.killed, i.kills.total)) + "%)" + bar(i.kills.killed, i.kills.total) +
+        (i.kills.bosses_total ? '<div class="dim">bosses ' + i.kills.bosses_killed + "/" + i.kills.bosses_total + "</div>" : "")],
+      ["Fight clock", i.tick ? (i.tick.ticking ? "tick " + i.tick.tick + ", " + i.tick.ticks_behind + " behind" : "tick " + i.tick.tick + " (not ticking)") + ", last " + esc(new Date(i.tick.last_tick_at_us / 1000).toLocaleTimeString()) : "-"]
+    ]);
+    var players = d.players.map(function (pd, n) {
+      var p = i.players[n];
+      var gear = pd.gear.length ? pd.gear.map(function (g) {
+        var stats = g.stats.map(function (s) { return "+" + Math.round(s.value * 10) / 10 + " " + s.stat.replace(/_/g, " "); }).join(", ");
+        return '<tr><td class="dim">' + esc(g.slot) + "</td><td>" + esc(g.name) +
+          (g.item_level ? ' <span class="dim">ilvl ' + g.item_level + "</span>" : "") + (g.quality ? ' <span class="dim">' + esc(g.quality.toLowerCase()) + "</span>" : "") +
+          '</td><td class="dim">' + esc(stats) + "</td></tr>";
+      }).join("") : '<tr><td class="dim" colspan="3">No gear worn.</td></tr>';
+      var talents = pd.talents.length ? pd.talents.map(function (t) { return '<span class="pill">' + esc(t.name) + "</span>"; }).join(" ") : '<span class="dim">none</span>';
+      return '<tr><td><i class="dot" style="background:' + classColor(p.class) + '"></i><b>' + esc(p.name) + "</b>" +
+        (p.alive ? "" : '<span class="tag">dead</span>') + (p.presence === "present" ? "" : '<span class="tag">disconnected</span>') +
+        '<div class="dim">' + esc(p.class) + " / " + esc(p.role) + ", lvl " + p.level + ", GS " + p.gear_score + "</div></td>" +
+        "<td>" + Math.round(p.health) + " / " + Math.round(p.max_health) + bar(p.health, p.max_health, "hp") + "</td>" +
+        '<td class="num">' + p.x.toFixed(1) + ", " + p.z.toFixed(1) + "</td></tr>" +
+        '<tr><td colspan="3"><details data-k="' + esc(p.account_id) + '"><summary>Gear and talents</summary><div style="margin:6px 0">Talents: ' + talents +
+        "</div><table>" + gear + "</table></details></td></tr>";
+    }).join("");
+    var open = {};
+    Array.prototype.forEach.call($("detail-body").querySelectorAll("details"), function (el) { open[el.getAttribute("data-k")] = el.open; });
+    $("detail-body").innerHTML = '<div class="cols"><div>' + head +
+      '<table style="margin-top:12px"><tr><th>Player</th><th>Health</th><th class="num">X, Z</th></tr>' + players + "</table></div>" +
+      "<div>" + mapSvg(d) + '<div class="legend" style="margin-top:6px"><span><i style="background:#e5604f"></i>monster</span>' +
+      '<span><i style="background:#e5604f;outline:2px solid #ffd2cc"></i>boss</span><span><i style="background:#555"></i>dead</span>' +
+      Object.keys(CLASS_COLOR).map(function (c) { return '<span><i style="background:' + CLASS_COLOR[c] + '"></i>' + c + "</span>"; }).join("") + "</div></div></div>";
+    Array.prototype.forEach.call($("detail-body").querySelectorAll("details"), function (el) { if (open[el.getAttribute("data-k")]) el.open = true; });
+  }
+
+  // Top-down map: X to the right, Z downward. Bounds come from every point on it.
+  function mapSvg(d) {
+    var i = d.instance, pts = [];
+    i.monsters.forEach(function (m) { pts.push([m.x, m.z]); });
+    i.players.forEach(function (p) { pts.push([p.x, p.z]); });
+    d.spawn_points.forEach(function (s) { pts.push(s); });
+    if (!pts.length) return '<div class="dim">Nothing to draw.</div>';
+    var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    pts.forEach(function (p) { minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]); minZ = Math.min(minZ, p[1]); maxZ = Math.max(maxZ, p[1]); });
+    var pad = Math.max(6, (maxX - minX + maxZ - minZ) * 0.04);
+    minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
+    var w = maxX - minX, h = maxZ - minZ, W = 640, H = Math.max(200, Math.min(900, W * h / w));
+    var s = Math.min(W / w, H / h);
+    var ox = (W - w * s) / 2, oz = (H - h * s) / 2;
+    function X(x) { return ox + (x - minX) * s; }
+    function Z(z) { return oz + (z - minZ) * s; }
+    var out = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Instance map">';
+    var step = Math.max(w, h) > 200 ? 50 : 10;
+    for (var gx = Math.ceil(minX / step) * step; gx <= maxX; gx += step) out += '<line x1="' + X(gx).toFixed(1) + '" y1="0" x2="' + X(gx).toFixed(1) + '" y2="' + H + '" stroke="#1a1e26"/>';
+    for (var gz = Math.ceil(minZ / step) * step; gz <= maxZ; gz += step) out += '<line x1="0" y1="' + Z(gz).toFixed(1) + '" x2="' + W + '" y2="' + Z(gz).toFixed(1) + '" stroke="#1a1e26"/>';
+    d.spawn_points.forEach(function (sp) { out += '<rect x="' + (X(sp[0]) - 4).toFixed(1) + '" y="' + (Z(sp[1]) - 4).toFixed(1) + '" width="8" height="8" fill="none" stroke="#3d4757"/>'; });
+    i.monsters.forEach(function (m) {
+      var r = m.is_boss ? 8 : 3.5;
+      out += '<circle cx="' + X(m.x).toFixed(1) + '" cy="' + Z(m.z).toFixed(1) + '" r="' + r + '" fill="' + (m.alive ? "#e5604f" : "#4a4f58") + '"' +
+        (m.is_boss ? ' stroke="' + (m.alive ? "#ffd2cc" : "#777") + '" stroke-width="2"' : "") + "><title>" +
+        esc(m.name + " (" + m.kind + ")" + (m.alive ? "" : " - dead")) + "</title></circle>";
+    });
+    i.players.forEach(function (p) {
+      var col = p.alive ? classColor(p.class) : "#6b6f78";
+      out += '<circle cx="' + X(p.x).toFixed(1) + '" cy="' + Z(p.z).toFixed(1) + '" r="6" fill="' + col + '" stroke="#fff" stroke-width="1.5"' +
+        (p.presence === "present" ? "" : ' stroke-dasharray="2 2" opacity="0.7"') + "><title>" + esc(p.name + " (" + p.class + ")") + "</title></circle>" +
+        '<text x="' + (X(p.x) + 9).toFixed(1) + '" y="' + (Z(p.z) + 4).toFixed(1) + '" fill="#d8dde6" font-size="11">' + esc(p.name) + "</text>";
+    });
+    return out + "</svg>";
+  }
+
+  // ---- anomalies --------------------------------------------------------------------
+  function renderAnomalies(a) {
+    var t = a.thresholds;
+    var html = '<div class="dim" style="margin-bottom:8px">Thresholds: under ' + t.min_completion_seconds + " s, or under " + t.relative_fast_percent +
+      "% of the dungeon median (needs " + t.relative_min_samples + " runs). DPS over " + t.max_dps + ", damage over " + t.max_total_damage +
+      ", boss kill under " + t.min_boss_kill_seconds + " s. " + a.runs.runs_considered + " completed run(s) considered.</div>";
+    html += '<div class="cols"><div><h2>Fastest and slowest runs</h2>';
+    if (!a.runs.extremes.length) html += '<span class="dim">No completed runs yet.</span>';
+    else html += '<div class="scroll"><table><tr><th>Dungeon</th><th class="num">Key</th><th class="num">Runs</th><th class="num">Fastest</th><th class="num">Slowest</th></tr>' +
+      a.runs.extremes.map(function (e) {
+        return "<tr><td>" + esc(e.dungeon_id) + '</td><td class="num">' + e.key_level + '</td><td class="num">' + e.runs +
+          '</td><td class="num" title="' + esc(e.fastest.result_id) + '">' + fmtDur(e.fastest.duration_seconds) + '</td><td class="num" title="' + esc(e.slowest.result_id) + '">' + fmtDur(e.slowest.duration_seconds) + "</td></tr>";
+      }).join("") + "</table></div>";
+    html += "</div><div><h2>Suspiciously fast runs</h2>";
+    if (!a.runs.too_fast.length) html += '<span class="ok">None flagged.</span>';
+    else html += '<div class="scroll"><table><tr><th>Run</th><th class="num">Time</th><th>Why</th></tr>' +
+      a.runs.too_fast.map(function (f) {
+        return "<tr><td>" + esc(f.run.dungeon_id) + " key " + f.run.key_level + '<div class="dim">' + esc(f.run.result_id) + " " + esc(fmtTime(f.run.completed_at)) +
+          '</div></td><td class="num">' + f.run.duration_seconds.toFixed(1) + " s</td><td>" + f.reasons.map(esc).join("<br>") + "</td></tr>";
+      }).join("") + "</table></div>";
+    html += "</div></div>";
+
+    var dm = a.damage;
+    html += '<h2 style="margin-top:14px">Damage</h2>';
+    if (!dm.available) html += '<span class="warn">' + esc(dm.note || "unavailable") + "</span>";
+    else if (!dm.reports_considered) html += '<span class="dim">No damage reports have been written yet.</span>';
+    else {
+      var rows = function (list) {
+        if (!list.length) return '<tr><td colspan="5" class="ok">None flagged.</td></tr>';
+        return list.map(function (r) {
+          return "<tr><td>" + esc(r.class) + '<div class="dim">' + esc(r.dungeon_id) + " key " + r.key_level + '</div></td><td class="num">' + r.dps.toFixed(0) +
+            '</td><td class="num">' + r.total_damage + '</td><td class="num">' + (r.boss_kill_seconds === null ? "-" : r.boss_kill_seconds.toFixed(1) + " s") +
+            '</td><td class="dim">' + esc(r.account_id) + "</td></tr>";
+        }).join("");
+      };
+      var th = '<tr><th>Class</th><th class="num">DPS</th><th class="num">Total</th><th class="num">Boss kill</th><th>Account</th></tr>';
+      html += '<div class="cols"><div><div class="dim">Highest DPS</div><table>' + th + rows(dm.highest_dps) + "</table></div>" +
+        '<div><div class="dim">Over the damage thresholds</div><table>' + th + rows(dm.suspicious_damage) +
+        '</table><div class="dim" style="margin-top:8px">Abnormally fast boss kills</div><table>' + th + rows(dm.fast_boss_kills) + "</table></div></div>";
+    }
+    $("anomalies-body").innerHTML = html;
+  }
+
+  // ---- start ------------------------------------------------------------------------
+  if (token) probe(); else showLogin("");
+})();
+</script>
+</body>
+</html>

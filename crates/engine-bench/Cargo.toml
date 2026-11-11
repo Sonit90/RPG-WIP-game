@@ -35,6 +35,12 @@ path = "src/game_bench.rs"
 # The user interface on its own: layout, batching and drawing. Separate from the gameplay
 # benchmark because "is the UI fast enough?" is a question about a different pass, and the
 # Phase 3 audit showed it is the one that moves the frame's tail.
+# The dungeon map: the bake's CPU half, and the minimap's and full-screen map's per-frame
+# cost as the marker count grows. No device.
+[[bin]]
+name = "map_bench"
+path = "src/map_bench.rs"
+
 [[bin]]
 name = "ui_bench"
 path = "src/ui_bench.rs"
@@ -46,20 +52,70 @@ path = "src/ui_bench.rs"
 name = "collision_bench"
 path = "src/collision_bench.rs"
 
+# The environment on its own: placement, level-of-detail selection, culling and batching,
+# plus the draw-call and triangle counts the environment submits. Separate from game_bench
+# because "what does the level cost?" and "what does the fight cost?" are different
+# questions, and the scenarios that answer the first hold the fight constant.
+[[bin]]
+name = "env_bench"
+path = "src/env_bench.rs"
+
+# Combat's effects on their own: event observation, the VFX update, and what the effects add
+# to extraction, culling and batching. Separate from game_bench because "what does the fight
+# cost?" and "what do its effects cost?" are different questions, and the scenarios that
+# answer the second run the first one twice — once with effects and once without.
+# Combat's audio on its own: event observation, the director's update, and the mix itself,
+# with no device. Separate from vfx_bench because the two answer different questions and the
+# audio one is the only benchmark in the workspace that measures a second thread's work.
+# A fight on its own: every enemy's brain, the simulation around it, and - in the paired
+# runs - the extraction, culling, effects and audio a real frame does on top. Separate from
+# game_bench because "what does the class cost" and "what does the fight cost" are different
+# questions, and the second one scales with something the first one does not have.
+[[bin]]
+name = "ai_bench"
+path = "src/ai_bench.rs"
+
+[[bin]]
+name = "audio_bench"
+path = "src/audio_bench.rs"
+
+[[bin]]
+name = "vfx_bench"
+path = "src/vfx_bench.rs"
+
+# The first dungeon end to end: one pack, three, five, all eight, the boss encounter, and the
+# worst case the boss can produce. Separate from ai_bench because "what does a fight cost"
+# and "what does a dungeon cost" are different questions - a dungeon holds every pack from
+# the moment it is built, and whether the ones nobody is fighting are free is exactly what
+# has to be measured.
+[[bin]]
+name = "dungeon_bench"
+path = "src/dungeon_bench.rs"
+
 [dependencies]
 engine-collision = { workspace = true }
+engine-assets = { workspace = true }
 engine-core = { workspace = true }
+engine-environment = { workspace = true }
 engine-game = { workspace = true }
 engine-presentation = { workspace = true }
 # Only to open the hidden window the GPU phase renders into. No message pump beyond
 # creation, and the CPU phase needs none of it.
 engine-platform = { workspace = true }
 engine-render-data = { workspace = true }
+engine-vfx = { workspace = true }
+# The audio runtime the benchmark mixes with. No device: the benchmark asks for the block a
+# device would have asked for, which is what makes the mix measurable on a machine with no
+# speakers and inside CI.
+engine-audio = { workspace = true }
 engine-renderer = { workspace = true, default-features = false }
+log = { workspace = true }
+
+# Windows only: the D3D12 benchmarks. On macOS those binaries are stubs.
 # Only for the descriptor-heap type constants the benchmark passes through to the
 # renderer's API. No D3D12 calls are made here.
+[target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Graphics_Direct3D12"] }
-log = { workspace = true }
 
 [lints]
 workspace = true

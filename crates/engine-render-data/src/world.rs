@@ -16,8 +16,10 @@ use engine_core::transform::Transform;
 /// comparison instead of silently addressing someone else's object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handle {
-    index: u32,
-    generation: u32,
+    /// `pub(crate)` rather than private so [`declare_handle`] can be invoked from another
+    /// module in this crate. Still not public: outside the crate a handle stays opaque.
+    pub(crate) index: u32,
+    pub(crate) generation: u32,
 }
 
 impl Handle {
@@ -35,6 +37,9 @@ impl Handle {
 }
 
 /// Declares a distinct handle type, so one kind cannot be passed where another belongs.
+///
+/// `pub(crate)`-exported below so `skinning.rs` can declare its own handle with the same
+/// generation semantics rather than writing a second, subtly different one.
 macro_rules! declare_handle {
     ($name:ident, $what:literal) => {
         #[doc = concat!("A handle to ", $what, ".")]
@@ -77,6 +82,8 @@ macro_rules! declare_handle {
     };
 }
 
+pub(crate) use declare_handle;
+
 declare_handle!(MeshHandle, "an uploaded mesh");
 declare_handle!(MaterialHandle, "an uploaded material");
 declare_handle!(RenderEntity, "one drawable in a `RenderWorld`");
@@ -89,9 +96,21 @@ declare_handle!(RenderEntity, "one drawable in a `RenderWorld`");
 /// extractor expressed "this one died" by despawning the render entity and respawning it
 /// with a different material handle, which churned a slot for a colour change.
 ///
-/// Deliberately small: five floats, sixteen of a 96-byte instance record. It is not a
-/// second material system and must not become one — no textures, no shader selection, no
-/// parameters the lighting model does not already read.
+/// Deliberately small: seven floats, in a 96-byte instance record that had room for them. It
+/// is not a second material system and must not become one — no textures, no shader
+/// selection, no parameters the lighting model does not already read.
+///
+/// # Fading
+///
+/// [`InstanceStyle::opacity`] fades an entity, and how depends on what it is:
+///
+/// * **A skinned character is see-through.** Below opacity one it is drawn after the whole
+///   world, blended over it, in two passes — its depth first, then its colour tested
+///   against that depth — so the world shows through it while its own far arm and the back
+///   of its body do not. Its shadow stays whole.
+/// * **A rigid entity is dithered.** The pixel shader discards a screen-door share of its
+///   pixels, so it stays in its batch, writes depth and needs no sorting. That is also how
+///   [`InstanceStyle::see_through`] entities are faded by the frame's [`CameraFade`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InstanceStyle {
     /// Multiplied with the material's base colour. `[1, 1, 1, 1]` changes nothing.
@@ -104,6 +123,45 @@ pub struct InstanceStyle {
     /// What a hit flash and a selection glow are made of: a surface that briefly ignores
     /// the lighting, without a second material or a second draw.
     pub emissive: f32,
+    /// How much of the entity is drawn, from 1 (all of it) to 0 (none). Blended for a
+    /// skinned character, dithered for anything rigid; see the type's own notes.
+    ///
+    /// The tint's alpha is a different thing: it is what a *transparent material* blends
+    /// with, and an opaque material ignores it.
+    pub opacity: f32,
+    /// Whether the camera may fade this entity when it gets in the way: when it is right in
+    /// front of the eye, or between the eye and the character the camera follows.
+    ///
+    /// Off for anything solid — walls, floors, terrain — which the camera keeps out of
+    /// instead; on for what the camera can pass through, which is otherwise the thing that
+    /// fills the screen. What "in the way" means is the frame's [`CameraFade`].
+    pub see_through: bool,
+}
+
+/// Where the camera is looking from and at, for fading what stands in the way.
+///
+/// ```text
+///   eye o ---------------------------------> target (the character's chest)
+///        \__ near zone: anything closer than `near_end` fades, gone by `near_start`
+///         \_________ tube: anything inside `radius` of the line, in front of the
+///                     target, fades towards `min_opacity`
+/// ```
+///
+/// Applies only to entities whose style is [`InstanceStyle::see_through`]. A frame with no
+/// fade — the default, every offscreen path, the editor's free camera — fades nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraFade {
+    /// What the camera is looking at and must be able to see: the character's chest.
+    pub target: engine_core::math::Vec3,
+    /// Distance from the eye, in metres, at and below which a see-through surface is gone.
+    pub near_start: f32,
+    /// Distance from the eye, in metres, from which a see-through surface is whole.
+    pub near_end: f32,
+    /// Radius of the clear tube around the eye-to-target line at the target, in metres. It
+    /// narrows towards the eye.
+    pub radius: f32,
+    /// How much of a see-through surface inside the tube is still drawn.
+    pub min_opacity: f32,
 }
 
 impl Default for InstanceStyle {
@@ -117,6 +175,8 @@ impl InstanceStyle {
     pub const NEUTRAL: Self = Self {
         tint: [1.0, 1.0, 1.0, 1.0],
         emissive: 0.0,
+        opacity: 1.0,
+        see_through: false,
     };
 
     /// A style that multiplies the surface by `tint`.
@@ -137,6 +197,43 @@ impl InstanceStyle {
         }
     }
 
+    /// The same style, drawn at `opacity` (clamped to 0..=1; anything not a number is whole).
+    #[must_use]
+    pub fn with_opacity(self, opacity: f32) -> Self {
+        Self {
+            opacity: if opacity.is_nan() {
+                1.0
+            } else {
+                opacity.clamp(0.0, 1.0)
+            },
+            ..self
+        }
+    }
+
+    /// The same style, fadeable by the camera when it gets in the way.
+    #[must_use]
+    pub fn see_through(self) -> Self {
+        Self {
+            see_through: true,
+            ..self
+        }
+    }
+
+    /// Below this opacity an entity counts as faded; at or above it, as whole.
+    ///
+    /// A threshold rather than `< 1.0`, so a value a rounding error short of one — which an
+    /// eased fade produces — can never put an entity on a fading path.
+    pub const FADED_BELOW: f32 = 0.999;
+
+    /// Whether this style fades its entity at all.
+    ///
+    /// What decides whether a skinned character is drawn see-through, in its own and more
+    /// expensive passes, rather than with the other characters.
+    #[must_use]
+    pub fn is_faded(self) -> bool {
+        self.opacity < Self::FADED_BELOW
+    }
+
     /// Whether this style leaves the material untouched.
     ///
     /// Lets a caller count how many entities are actually styled, which is what makes "the
@@ -150,6 +247,102 @@ impl InstanceStyle {
 /// What a `RenderWorld` slot holds, in parallel arrays.
 ///
 /// Structure-of-arrays because culling reads `bounds` and `visible` and nothing else:
+/// How many coarser meshes an entity may offer the shadow pass.
+///
+/// Two, matching the two levels below LOD0 that the shadow LOD policy can select. A third
+/// would be geometry nothing authors: the asset library's models carry three levels, and
+/// the coarsest of them is already what a distant cascade wants.
+pub const SHADOW_LOD_MESHES: usize = 2;
+
+/// Whether an entity takes part in shadowing, and what geometry it offers when it does.
+///
+/// Explicit per entity rather than derived from the material, because the two questions are
+/// different: a material says what a surface *looks* like, and this says whether the surface
+/// exists as far as the light is concerned. A decal, a targeting ring and a debug box are
+/// all ordinary opaque geometry that must not be extruded into a shadow map.
+///
+/// ```text
+/// casts    -> the depth pass renders it into the cascades and the local maps
+/// receives -> the lighting pass applies a shadow factor to it
+/// ```
+///
+/// Both default to true for scene geometry, which is what makes a newly placed prop shadow
+/// correctly without anybody having said so. Particles, the UI and the developer overlay
+/// never become a `RenderWorld` entity at all, so there is nothing to switch off for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShadowCasting {
+    /// Whether the shadow passes render this entity's depth.
+    pub casts: bool,
+    /// Whether the lighting pass darkens this entity where a shadow falls on it.
+    pub receives: bool,
+    /// Coarser stand-ins the shadow pass may draw instead, finest first.
+    ///
+    /// [`MeshHandle::INVALID`] means "there is nothing coarser than the main mesh", which is
+    /// the ordinary case: a box has no simpler form. Filled in by whoever spawned the entity
+    /// from a model that already carries levels of detail — the shadow renderer never asks
+    /// for a special shadow mesh, it only reuses a level the asset already has.
+    pub lod_meshes: [MeshHandle; SHADOW_LOD_MESHES],
+}
+
+impl Default for ShadowCasting {
+    fn default() -> Self {
+        Self::CASTS_AND_RECEIVES
+    }
+}
+
+impl ShadowCasting {
+    /// Ordinary scene geometry: casts and receives, with no coarser stand-in.
+    pub const CASTS_AND_RECEIVES: Self = Self {
+        casts: true,
+        receives: true,
+        lod_meshes: [MeshHandle::INVALID; SHADOW_LOD_MESHES],
+    };
+
+    /// Geometry that takes no part in shadowing at all.
+    ///
+    /// What a decal, a targeting indicator or a debug volume wants: it is drawn, it is lit,
+    /// and it neither blocks the sun nor is darkened by it.
+    pub const NONE: Self = Self {
+        casts: false,
+        receives: false,
+        lod_meshes: [MeshHandle::INVALID; SHADOW_LOD_MESHES],
+    };
+
+    /// Geometry that is shadowed but casts nothing.
+    pub const RECEIVES_ONLY: Self = Self {
+        casts: false,
+        receives: true,
+        lod_meshes: [MeshHandle::INVALID; SHADOW_LOD_MESHES],
+    };
+
+    /// The same, with coarser shadow geometry the shadow LOD policy may substitute.
+    #[must_use]
+    pub fn with_lod_meshes(mut self, meshes: [MeshHandle; SHADOW_LOD_MESHES]) -> Self {
+        self.lod_meshes = meshes;
+        self
+    }
+
+    /// The mesh to render at shadow level `level`, falling back to `main`.
+    ///
+    /// Level 0 is always the main mesh. A level with no coarser stand-in falls back to the
+    /// coarsest one that does exist, so a policy that asks for level 2 on a model with one
+    /// stand-in draws that one — which is coarser than nothing, and is what the same object
+    /// would have drawn a metre closer anyway.
+    #[must_use]
+    pub fn mesh_for_level(&self, main: MeshHandle, level: usize) -> MeshHandle {
+        if level == 0 {
+            return main;
+        }
+        for candidate in (1..=level.min(SHADOW_LOD_MESHES)).rev() {
+            let mesh = self.lod_meshes[candidate - 1];
+            if mesh != MeshHandle::INVALID {
+                return mesh;
+            }
+        }
+        main
+    }
+}
+
 /// streaming mesh handles and materials it does not look at would waste the cache line it
 /// is reading through.
 #[derive(Debug, Default, Clone)]
@@ -162,10 +355,28 @@ pub struct RenderWorld {
     /// World-space bounding spheres, refreshed whenever a transform changes.
     bounds: Vec<Sphere>,
     visible: Vec<bool>,
+    /// Whether each slot casts and receives shadows, and what it offers the shadow pass.
+    shadow: Vec<ShadowCasting>,
+    /// Whether each slot was spawned as part of the static scene: placed once and never
+    /// moved, so what the shadow passes draw for it can be kept across frames.
+    is_static: Vec<bool>,
+    /// Bumped by every change to a static slot. Anything cached from the static slots is
+    /// valid exactly as long as this has not moved.
+    static_generation: u64,
     generations: Vec<u32>,
     /// Slots whose entity was despawned, most recent first.
     free_slots: Vec<u32>,
     live: usize,
+    /// This frame's skinned draws. Rebuilt every frame rather than slot-managed — see
+    /// [`crate::skinning`] for why the two kinds of drawable are stored differently.
+    skinned: crate::skinning::SkinnedDrawList,
+    /// This frame's local lights: torches, braziers, spell effects.
+    ///
+    /// Rebuilt every frame for the same reason the skinned list is — a light follows
+    /// something that moves — and kept here rather than on [`crate::Lighting`] because that
+    /// type is the *scene's* sun and ambient, which a whole area shares and which nothing
+    /// per-frame writes.
+    lights: Vec<crate::lighting::LocalLight>,
 }
 
 /// What a caller must supply to add something drawable.
@@ -183,6 +394,9 @@ pub struct RenderEntityDesc {
     pub visible: bool,
     /// Per-entity visual state. [`InstanceStyle::NEUTRAL`] for an ordinary object.
     pub style: InstanceStyle,
+    /// Whether it takes part in shadowing. [`ShadowCasting::CASTS_AND_RECEIVES`] for
+    /// ordinary scene geometry, which is the default.
+    pub shadow: ShadowCasting,
 }
 
 impl Default for RenderEntityDesc {
@@ -194,6 +408,7 @@ impl Default for RenderEntityDesc {
             bounds: Sphere::new(engine_core::math::Vec3::ZERO, 1.0),
             visible: true,
             style: InstanceStyle::NEUTRAL,
+            shadow: ShadowCasting::CASTS_AND_RECEIVES,
         }
     }
 }
@@ -215,9 +430,14 @@ impl RenderWorld {
             styles: Vec::with_capacity(capacity),
             bounds: Vec::with_capacity(capacity),
             visible: Vec::with_capacity(capacity),
+            shadow: Vec::with_capacity(capacity),
+            is_static: Vec::with_capacity(capacity),
+            static_generation: 0,
             generations: Vec::with_capacity(capacity),
             free_slots: Vec::new(),
             live: 0,
+            skinned: crate::skinning::SkinnedDrawList::new(),
+            lights: Vec::new(),
         }
     }
 
@@ -234,6 +454,8 @@ impl RenderWorld {
             self.styles[slot] = desc.style;
             self.bounds[slot] = world_bounds;
             self.visible[slot] = desc.visible;
+            self.shadow[slot] = desc.shadow;
+            self.is_static[slot] = false;
             return RenderEntity::new(index, self.generations[slot]);
         }
 
@@ -244,10 +466,28 @@ impl RenderWorld {
         self.styles.push(desc.style);
         self.bounds.push(world_bounds);
         self.visible.push(desc.visible);
+        self.shadow.push(desc.shadow);
+        self.is_static.push(false);
         // Generation 1, not 0: a default-constructed handle has generation 0 and must not
         // accidentally address a live slot.
         self.generations.push(1);
         RenderEntity::new(index, 1)
+    }
+
+    /// Adds an entity that is part of the static scene: placed once and then left alone.
+    ///
+    /// What the level's own geometry is spawned with — the environment, the terrain, the
+    /// water. The renderer may keep what it draws for a static entity across frames (the
+    /// shadow views record their static casters once, not every frame), so every later
+    /// change to one — moving it, hiding it, despawning it — bumps
+    /// [`RenderWorld::static_generation`], which is what invalidates those caches. Anything
+    /// that moves every frame is spawned with [`RenderWorld::spawn`] instead; a static entity
+    /// moved every frame would be correct, and would rebuild the caches every frame.
+    pub fn spawn_static(&mut self, desc: RenderEntityDesc) -> RenderEntity {
+        let entity = self.spawn(desc);
+        self.is_static[entity.index()] = true;
+        self.static_generation += 1;
+        entity
     }
 
     /// Removes an entity. A stale handle is ignored and reported.
@@ -257,6 +497,7 @@ impl RenderWorld {
         }
         let slot = entity.index();
         // Bumping the generation is what makes every outstanding handle to this slot stale.
+        self.touch_static(slot);
         self.generations[slot] = self.generations[slot].wrapping_add(1).max(1);
         self.visible[slot] = false;
         self.free_slots.push(entity.raw().index());
@@ -287,6 +528,7 @@ impl RenderWorld {
             return false;
         }
         let slot = entity.index();
+        self.touch_static(slot);
         self.bounds[slot] = world_bounds(local, &transform);
         self.transforms[slot] = transform;
         true
@@ -314,7 +556,22 @@ impl RenderWorld {
         if !self.contains(entity) {
             return false;
         }
+        self.touch_static(entity.index());
         self.materials[entity.index()] = material;
+        true
+    }
+
+    /// Replaces an entity's shadow behaviour.
+    ///
+    /// Cheap for the same reason [`RenderWorld::set_style`] is: it writes one slot and
+    /// changes nothing about which batch the entity belongs to. What it *does* change is
+    /// whether the shadow passes gather it, which they decide afresh every frame.
+    pub fn set_shadow_casting(&mut self, entity: RenderEntity, shadow: ShadowCasting) -> bool {
+        if !self.contains(entity) {
+            return false;
+        }
+        self.touch_static(entity.index());
+        self.shadow[entity.index()] = shadow;
         true
     }
 
@@ -322,6 +579,9 @@ impl RenderWorld {
     pub fn set_visible(&mut self, entity: RenderEntity, visible: bool) -> bool {
         if !self.contains(entity) {
             return false;
+        }
+        if self.visible[entity.index()] != visible {
+            self.touch_static(entity.index());
         }
         self.visible[entity.index()] = visible;
         true
@@ -381,6 +641,38 @@ impl RenderWorld {
         &self.visible
     }
 
+    /// Per-slot: whether the slot was spawned with [`RenderWorld::spawn_static`].
+    #[must_use]
+    pub fn static_flags(&self) -> &[bool] {
+        &self.is_static
+    }
+
+    /// How many times the static scene has changed: bumped by every spawn, despawn, move,
+    /// hide or re-shade of a static slot, and by [`RenderWorld::clear`].
+    ///
+    /// A cache built from the static slots is valid while this reads what it read when the
+    /// cache was built, and not a frame longer.
+    #[must_use]
+    pub fn static_generation(&self) -> u64 {
+        self.static_generation
+    }
+
+    /// Records that a static slot is about to change.
+    fn touch_static(&mut self, slot: usize) {
+        if self.is_static.get(slot).copied().unwrap_or(false) {
+            self.static_generation += 1;
+        }
+    }
+
+    /// Per-slot shadow behaviour.
+    ///
+    /// Read by the shadow passes exactly the way [`RenderWorld::bounds`] is read by the
+    /// camera cull: one flat array, one slot per entity, no branching on what an entity is.
+    #[must_use]
+    pub fn shadow_casting(&self) -> &[ShadowCasting] {
+        &self.shadow
+    }
+
     /// The handle addressing slot `slot`.
     ///
     /// The inverse of [`RenderEntity::index`]: a consumer walking the parallel arrays by
@@ -406,14 +698,57 @@ impl RenderWorld {
         self.visible.get(slot).copied().unwrap_or(false)
     }
 
+    /// This frame's skinned draws.
+    #[must_use]
+    pub fn skinned(&self) -> &crate::skinning::SkinnedDrawList {
+        &self.skinned
+    }
+
+    /// This frame's skinned draws, for the extractor to refill.
+    #[must_use]
+    pub fn skinned_mut(&mut self) -> &mut crate::skinning::SkinnedDrawList {
+        &mut self.skinned
+    }
+
+    /// This frame's local lights.
+    #[must_use]
+    pub fn lights(&self) -> &[crate::lighting::LocalLight] {
+        &self.lights
+    }
+
+    /// Adds a local light for this frame.
+    ///
+    /// Dropped silently if it cannot contribute anything — see
+    /// [`LocalLight::is_significant`](crate::lighting::LocalLight::is_significant). A light
+    /// fading to nothing is ordinary, and the alternative is every consumer re-checking.
+    pub fn push_light(&mut self, light: crate::lighting::LocalLight) {
+        if light.is_significant() {
+            self.lights.push(light);
+        }
+    }
+
+    /// Removes this frame's local lights, keeping the allocation.
+    ///
+    /// Called by whoever rebuilds them, at the point it starts rebuilding. The world does
+    /// not clear them itself: a scene whose lights never move sets them once and would
+    /// otherwise lose them on the next frame.
+    pub fn clear_lights(&mut self) {
+        self.lights.clear();
+    }
+
     /// Removes every entity, keeping the allocated capacity.
     pub fn clear(&mut self) {
+        self.skinned.clear();
+        self.lights.clear();
         self.transforms.clear();
         self.meshes.clear();
         self.materials.clear();
         self.styles.clear();
         self.bounds.clear();
         self.visible.clear();
+        self.shadow.clear();
+        self.is_static.clear();
+        self.static_generation += 1;
         self.generations.clear();
         self.free_slots.clear();
         self.live = 0;
@@ -438,6 +773,87 @@ mod tests {
     use super::*;
     use engine_core::math::{Quat, Vec3};
 
+    fn prop() -> RenderEntityDesc {
+        RenderEntityDesc {
+            mesh: MeshHandle::new(0, 1),
+            material: MaterialHandle::new(0, 1),
+            ..RenderEntityDesc::default()
+        }
+    }
+
+    #[test]
+    fn only_changes_to_the_static_scene_move_its_generation() {
+        let mut world = RenderWorld::new();
+        let start = world.static_generation();
+        let mover = world.spawn(prop());
+        assert_eq!(
+            world.static_generation(),
+            start,
+            "a mover is not the static scene"
+        );
+        let wall = world.spawn_static(prop());
+        assert!(world.static_flags()[wall.index()]);
+        assert!(!world.static_flags()[mover.index()]);
+        let after_spawn = world.static_generation();
+        assert!(after_spawn > start);
+
+        // What a dummy does every frame must not touch it.
+        for _ in 0..10 {
+            world.set_transform(
+                mover,
+                Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+                Sphere::new(Vec3::ZERO, 1.0),
+            );
+            world.set_style(mover, InstanceStyle::tinted(1.0, 0.0, 0.0));
+            world.set_visible(mover, false);
+        }
+        // A static entity's style is never read by the depth passes either.
+        world.set_style(wall, InstanceStyle::NEUTRAL.see_through());
+        // Neither is showing what is already shown.
+        world.set_visible(wall, true);
+        assert_eq!(world.static_generation(), after_spawn);
+
+        let mut last = after_spawn;
+        let mut changed = |world: &RenderWorld, what: &str| {
+            assert!(world.static_generation() > last, "{what} must invalidate");
+            last = world.static_generation();
+        };
+        world.set_transform(wall, Transform::IDENTITY, Sphere::new(Vec3::ZERO, 1.0));
+        changed(&world, "moving a static entity");
+        world.set_material(wall, MaterialHandle::new(1, 1));
+        changed(&world, "re-shading one");
+        world.set_shadow_casting(wall, ShadowCasting::RECEIVES_ONLY);
+        changed(&world, "changing its shadow");
+        world.set_visible(wall, false);
+        changed(&world, "hiding one");
+        world.despawn(wall);
+        changed(&world, "despawning one");
+        world.clear();
+        changed(&world, "clearing the world");
+    }
+
+    #[test]
+    fn a_reused_slot_forgets_it_was_static() {
+        let mut world = RenderWorld::new();
+        let wall = world.spawn_static(prop());
+        world.despawn(wall);
+        let mover = world.spawn(prop());
+        assert_eq!(mover.index(), wall.index(), "the freed slot is reused");
+        assert!(!world.static_flags()[mover.index()]);
+        let generation = world.static_generation();
+        world.set_transform(mover, Transform::IDENTITY, Sphere::new(Vec3::ZERO, 1.0));
+        assert_eq!(world.static_generation(), generation);
+    }
+
+    #[test]
+    fn a_style_is_faded_only_when_it_is_visibly_faded() {
+        assert!(!InstanceStyle::NEUTRAL.is_faded());
+        // What an eased fade stalls at: one f32 step under one. Whole, not faded.
+        assert!(!InstanceStyle::NEUTRAL.with_opacity(0.999_999_94).is_faded());
+        assert!(InstanceStyle::NEUTRAL.with_opacity(0.5).is_faded());
+        assert!(InstanceStyle::NEUTRAL.with_opacity(0.0).is_faded());
+    }
+
     fn desc(mesh: u32, material: u32) -> RenderEntityDesc {
         RenderEntityDesc {
             transform: Transform::IDENTITY,
@@ -446,6 +862,7 @@ mod tests {
             bounds: Sphere::new(Vec3::ZERO, 1.0),
             visible: true,
             style: InstanceStyle::NEUTRAL,
+            shadow: ShadowCasting::CASTS_AND_RECEIVES,
         }
     }
 

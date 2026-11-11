@@ -68,8 +68,10 @@
 pub mod broad;
 pub mod contact;
 pub mod controller;
+pub mod heightfield;
 pub mod layer;
 pub mod narrow;
+pub mod ray;
 pub mod shape;
 pub mod world;
 
@@ -79,8 +81,12 @@ pub use controller::{
     CharacterConfig, CharacterState, MoveResult, move_character, resolve_overlaps,
 };
 pub use layer::{CollisionFilter, CollisionLayer, CollisionMask};
+pub use ray::{Ray, RayHit, ray_vs_shape};
 pub use shape::{Capsule, Obb, Segment, Shape};
-pub use world::{CollisionWorld, QueryBuffers, StaticDesc, StaticId};
+pub use world::{
+    CollisionWorld, QueryBuffers, SPHERE_SWEEP_TOLERANCE, SphereSweepHit, StaticDesc, StaticId,
+    StaticRayHit,
+};
 
 /// Everything a caller normally wants, in one `use`.
 ///
@@ -93,6 +99,9 @@ pub mod prelude {
         CharacterConfig, CharacterState, MoveResult, move_character, resolve_overlaps,
     };
     pub use crate::layer::{CollisionFilter, CollisionLayer, CollisionMask};
+    pub use crate::ray::{Ray, RayHit};
     pub use crate::shape::{Capsule, Obb, Shape};
-    pub use crate::world::{CollisionWorld, QueryBuffers, StaticDesc, StaticId};
+    pub use crate::world::{
+        CollisionWorld, QueryBuffers, SphereSweepHit, StaticDesc, StaticId, StaticRayHit,
+    };
 }

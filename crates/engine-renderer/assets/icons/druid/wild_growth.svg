@@ -1,0 +1,74 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="wild_growth_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="wild_growth_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(120,200,150)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="wild_growth_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_growth_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_growth_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_growth_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_growth_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_growth_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="wild_growth_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="wild_growth_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#wild_growth_tile)">
+	<path fill="url(#wild_growth_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#wild_growth_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The ring it lands in: the party, not one target. -->
+	<path fill="url(#wild_growth_leaf)" fill-opacity="0.65" d="M 338 700 C 448 700 538 736 538 780 C 538 824 448 860 338 860 C 228 860 138 824 138 780 C 138 736 228 700 338 700 z"></path>
+	<path fill="rgb(18,20,26)" d="M 338 726 C 428 726 500 750 500 780 C 500 810 428 834 338 834 C 248 834 176 810 176 780 C 176 750 248 726 338 726 z"></path>
+	<path fill="url(#wild_growth_deep)" fill-opacity="0.7" d="M 338 744 C 412 744 472 760 472 780 C 472 800 412 816 338 816 C 264 816 204 800 204 780 C 204 760 264 744 338 744 z"></path>
+
+	<!-- Three shoots out of it, each further along than the last. -->
+	<path fill="url(#wild_growth_bark)" d="M 194 786 C 190 700 196 640 212 592 L 238 600 C 226 646 220 704 222 786 z"></path>
+	<path fill="url(#wild_growth_leaf)" d="M 216 546 C 168 556 144 600 154 656 C 202 646 226 602 216 546 z"></path>
+	<path fill="url(#wild_growth_leaf)" fill-opacity="0.85" d="M 228 592 C 274 598 298 638 290 686 C 244 680 220 640 228 592 z"></path>
+
+	<path fill="url(#wild_growth_bark)" d="M 324 800 C 316 660 322 552 344 466 L 372 476 C 354 558 346 662 352 800 z"></path>
+	<path fill="url(#wild_growth_leaf)" d="M 346 404 C 282 416 250 476 264 550 C 328 538 360 480 346 404 z"></path>
+	<path fill="url(#wild_growth_deep)" d="M 346 404 C 314 448 292 494 272 546 C 310 534 340 484 346 404 z"></path>
+	<path fill="url(#wild_growth_leaf)" d="M 362 480 C 424 490 456 542 444 606 C 384 596 352 544 362 480 z"></path>
+
+	<path fill="url(#wild_growth_bark)" d="M 456 786 C 452 706 458 650 474 606 L 500 614 C 488 656 482 710 484 786 z"></path>
+	<path fill="url(#wild_growth_leaf)" d="M 478 562 C 430 572 406 616 416 672 C 464 662 488 618 478 562 z"></path>
+	<path fill="url(#wild_growth_leaf)" fill-opacity="0.85" d="M 490 608 C 536 614 560 654 552 702 C 506 696 482 656 490 608 z"></path>
+
+	<path fill="rgb(214,250,190)" fill-opacity="0.85" d="M 358 344 C 368 350 372 360 370 372 C 358 364 352 354 352 344 z"></path>
+</g>
+</svg>

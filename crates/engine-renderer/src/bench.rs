@@ -17,10 +17,15 @@
 //!   renderer achieves. It is reported as such and never called "FPS" without that
 //!   qualification.
 
+#[cfg(windows)]
 use std::time::Instant;
 
-use engine_core::time::{FrameStats, FrameStatsWindow, duration_to_ms};
+use engine_core::time::FrameStats;
+#[cfg(windows)]
+use engine_core::time::{FrameStatsWindow, duration_to_ms};
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
     D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
@@ -33,17 +38,28 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandAllocator, ID3D12CommandList,
     ID3D12DescriptorHeap, ID3D12GraphicsCommandList, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+#[cfg(windows)]
 use windows::core::Interface;
 
+#[cfg(windows)]
 use crate::command::{scissor_for, transition_barrier, viewport_for};
+#[cfg(windows)]
 use crate::device::RenderDevice;
+#[cfg(windows)]
 use crate::error::RendererError;
+#[cfg(windows)]
 use crate::gpu_timer::GpuTimer;
+#[cfg(windows)]
 use crate::instancing::{InstanceData, InstancedPipeline, UNIT_TRIANGLE, build_instance_grid};
+#[cfg(windows)]
 use crate::mesh::VertexStream;
+#[cfg(windows)]
 use crate::offscreen::{BYTES_PER_PIXEL, CapturedImage};
+#[cfg(windows)]
 use crate::swapchain::BACK_BUFFER_FORMAT;
+#[cfg(windows)]
 use crate::sync::GpuFence;
 
 /// How the instances are submitted.
@@ -104,6 +120,7 @@ impl BenchResult {
     }
 }
 
+#[cfg(windows)]
 /// Offscreen device, render target and pipeline for the instancing benchmark.
 ///
 /// Field order matters: `context` owns the device and is declared last so everything it
@@ -133,6 +150,7 @@ pub struct BenchHarness {
     context: RenderDevice,
 }
 
+#[cfg(windows)]
 impl BenchHarness {
     /// Creates the offscreen device and everything the benchmark draws with.
     ///
@@ -286,6 +304,7 @@ impl BenchHarness {
             p50_ms: 0.0,
             p95_ms: 0.0,
             p99_ms: 0.0,
+            p999_ms: 0.0,
         };
 
         Ok(BenchResult {
@@ -482,6 +501,7 @@ impl BenchHarness {
     }
 }
 
+#[cfg(windows)]
 /// Creates a readback buffer of `bytes` bytes.
 fn create_readback_buffer(
     device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
@@ -526,6 +546,7 @@ fn create_readback_buffer(
     })
 }
 
+#[cfg(windows)]
 /// Maps the readback buffer and strips its row padding.
 fn read_back_pixels(
     readback: &ID3D12Resource,
@@ -565,6 +586,7 @@ fn read_back_pixels(
     Ok(pixels)
 }
 
+#[cfg(windows)]
 /// Creates the offscreen colour target.
 fn create_render_target(
     context: &RenderDevice,

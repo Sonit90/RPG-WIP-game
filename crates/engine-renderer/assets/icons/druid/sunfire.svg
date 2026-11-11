@@ -1,0 +1,76 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="sunfire_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="sunfire_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(232,168,70)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="sunfire_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="sunfire_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="sunfire_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="sunfire_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="sunfire_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="sunfire_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="sunfire_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="sunfire_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#sunfire_tile)">
+	<path fill="url(#sunfire_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#sunfire_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The rays, longest on the diagonals so the disc reads as spreading. -->
+	<path fill="url(#sunfire_sun)" fill-opacity="0.55" d="M 338 244 L 366 372 L 310 372 z"></path>
+	<path fill="url(#sunfire_sun)" fill-opacity="0.55" d="M 520 316 L 424 402 L 396 358 z"></path>
+	<path fill="url(#sunfire_sun)" fill-opacity="0.55" d="M 156 316 L 280 358 L 252 402 z"></path>
+	<path fill="url(#sunfire_sun)" fill-opacity="0.45" d="M 566 488 L 442 488 L 442 444 z"></path>
+	<path fill="url(#sunfire_sun)" fill-opacity="0.45" d="M 110 488 L 234 444 L 234 488 z"></path>
+	<path fill="url(#sunfire_sun)" fill-opacity="0.35" d="M 512 636 L 420 560 L 448 530 z"></path>
+	<path fill="url(#sunfire_sun)" fill-opacity="0.35" d="M 164 636 L 228 530 L 256 560 z"></path>
+
+	<!-- The disc. -->
+	<path fill="url(#sunfire_sun)" fill-opacity="0.30" d="M 338 328 C 424 328 494 398 494 484 C 494 570 424 640 338 640 C 252 640 182 570 182 484 C 182 398 252 328 338 328 z"></path>
+	<path fill="url(#sunfire_sun)" d="M 338 362 C 406 362 460 416 460 484 C 460 552 406 606 338 606 C 270 606 216 552 216 484 C 216 416 270 362 338 362 z"></path>
+	<path fill="rgb(255,236,168)" fill-opacity="0.65" d="M 300 396 C 336 384 372 390 396 410 C 356 402 322 406 300 396 z"></path>
+	<path fill="rgb(148,90,22)" fill-opacity="0.45" d="M 338 606 C 396 606 444 566 456 514 C 460 570 406 612 338 612 C 270 612 216 570 220 514 C 232 566 280 606 338 606 z"></path>
+
+	<!-- What it is burning: three of them, not one. -->
+	<path fill="url(#sunfire_sun)" fill-opacity="0.7" d="M 338 700 C 434 700 512 730 512 766 C 512 802 434 832 338 832 C 242 832 164 802 164 766 C 164 730 242 700 338 700 z"></path>
+	<path fill="rgb(18,20,26)" d="M 338 722 C 418 722 476 742 476 766 C 476 790 418 810 338 810 C 258 810 200 790 200 766 C 200 742 258 722 338 722 z"></path>
+	<path fill="url(#sunfire_sun)" d="M 240 812 C 232 786 240 762 258 744 C 254 772 268 786 276 800 C 280 812 274 824 262 828 C 252 830 244 824 240 812 z"></path>
+	<path fill="url(#sunfire_sun)" d="M 320 828 C 310 798 320 770 342 750 C 336 784 354 800 364 816 C 370 830 362 844 348 848 C 336 850 326 842 320 828 z"></path>
+	<path fill="url(#sunfire_sun)" d="M 414 812 C 406 786 414 762 432 744 C 428 772 442 786 450 800 C 454 812 448 824 436 828 C 426 830 418 824 414 812 z"></path>
+	<path fill="rgb(255,236,168)" fill-opacity="0.85" d="M 336 792 C 344 806 350 816 346 828 C 340 834 332 832 328 824 C 324 812 330 802 336 792 z"></path>
+</g>
+</svg>

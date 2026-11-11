@@ -7,6 +7,7 @@
 //!
 //! Takes the same process-wide GPU lock as `d3d12_init.rs` — see that file for why.
 
+#![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

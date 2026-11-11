@@ -868,6 +868,67 @@ Honest list of what this is not.
 
 ---
 
+## Camera collision
+
+The third-person camera keeps out of solid geometry by asking the collision world, not by
+hiding, fading or re-ordering anything it draws. The world stays fully opaque.
+
+```text
+anchor (character chest, unsmoothed)
+  |  sweep 1: anchor -> smoothed focus   (the lagging focus may not cut behind a wall)
+pivot
+  |  sweep 2: pivot -> desired eye, as a sphere of COLLISION_RADIUS
+  o  eye, COLLISION_PADDING short of the hit
+  X  wall
+```
+
+* **The query** is `CollisionWorld::sweep_sphere` (`engine-collision`), a general swept-sphere
+  test built from what the crate already had: the exact centre ray bounds it, a bisection over
+  capsule overlaps finds the touch (a capsule along the ray *is* the swept volume, and it only
+  grows, so the test is monotone), and a final exact sphere test backs the answer off if it
+  still overlaps. Allocation-free and `&self`, like `raycast`; within 1 mm of the true
+  distance.
+* **The camera** is `ThirdPersonCamera::avoid_obstructions` (`engine-presentation`), called
+  every frame after `follow`. It moves in instantly and eases back out at
+  `COLLISION_RECOVERY_RATE`; the wheel zoom (`distance`), yaw and pitch are never changed.
+  When even `COLLISION_MIN_DISTANCE` has no room for the sphere, the eye still stops in front
+  of the surface along the centre ray.
+* **What counts as solid** is `CollisionMask::WORLD`: what the character collides with.
+  Sight-only barriers and dummies are not walls to the camera.
+* **Tuning** lives in `tuning::camera` (`COLLISION_RADIUS`, `COLLISION_PADDING`,
+  `COLLISION_MIN_DISTANCE`, `COLLISION_RECOVERY_RATE`).
+* **Debug**: F3 (the collision view) draws the anchor, pivot, sweep, hit point and normal,
+  and the desired and actual eye, and the overlay prints `CAMERA` / `BLOCKER` lines.
+* **Cost**: under a microsecond a frame in `collision_bench`, at the 25 m maximum zoom.
+* **Limit**: the camera only knows what the collision world knows. Geometry drawn without
+  collision (decor, foliage) is not an obstruction to it — which is what the fade below is
+  for.
+
+### Fading what the camera cannot avoid
+
+Two things the collision cannot fix are faded instead (`InstanceStyle::opacity` /
+`see_through`, `CameraFade`; see `crates/engine-renderer/src/transparency.rs`).
+
+* **The player's character** becomes see-through as the eye closes on its body
+  (`character_opacity_at`), which only happens when a wall has pushed the camera in: whole
+  at 1 m from the capsule, gone at 0.15 m, eased at `CHARACTER_FADE_RATE`. It is truly
+  blended: drawn after the world, depth first and then colour tested against that depth, so
+  the world shows through it and its own far side does not. It is left out of the
+  contact-shadow depth prepass (which would hide the world behind it) and keeps its full
+  shadow. A particle behind a see-through character is hidden by it. The depth pass has no
+  pixel shader, so a see-through character costs about what a solid one does; a fade that
+  has eased back snaps to exactly 1.0, so a solid character never stays on this path.
+* **See-through things** — decoration with `EnvironmentCollision::None`, monsters, dummies —
+  fade when they come within `NEAR_FADE_END` of the eye (gone by `NEAR_FADE_START`, so the
+  near plane never cuts one open) or stand inside the tube between the eye and the
+  character's chest (`OCCLUDER_FADE_RADIUS`, down to `OCCLUDER_MIN_OPACITY`). Anything with
+  collision is never see-through: the camera keeps out of it instead, so walls, floors and
+  terrain stay fully opaque. These are dithered (a screen-door share of pixels discarded in
+  the opaque pass), not blended.
+* The editor's free camera turns the fade off.
+
+---
+
 ## Future improvements
 
 Recommended, not implemented.

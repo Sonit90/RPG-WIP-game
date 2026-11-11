@@ -1,0 +1,14 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<defs>
+<linearGradient id="heal_panel" gradientUnits="userSpaceOnUse" x1="40" y1="472" x2="472" y2="40">
+<stop offset="0" stop-color="rgb(14,40,26)"></stop>
+<stop offset="1" stop-color="rgb(40,110,70)"></stop>
+</linearGradient>
+<clipPath id="heal_tile"><path d="M 40 120 C 40 76 76 40 120 40 L 392 40 C 436 40 472 76 472 120 L 472 392 C 472 436 436 472 392 472 L 120 472 C 76 472 40 436 40 392 Z"></path></clipPath>
+</defs>
+<g clip-path="url(#heal_tile)">
+<path fill="url(#heal_panel)" d="M 40 40 L 472 40 L 472 472 L 40 472 Z"></path>
+<path fill="rgb(200,255,200)" d="M 206 100 L 306 100 L 306 206 L 412 206 L 412 306 L 306 306 L 306 412 L 206 412 L 206 306 L 100 306 L 100 206 L 206 206 Z"></path>
+<path fill="rgb(120,230,140)" d="M 226 120 L 286 120 L 286 226 L 392 226 L 392 286 L 286 286 L 286 392 L 226 392 L 226 286 L 120 286 L 120 226 L 226 226 Z"></path>
+</g>
+</svg>

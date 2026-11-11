@@ -1,0 +1,72 @@
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" style="display: block;" viewBox="0 189.333 682.667 762.667" width="682.667" height="762.667" preserveAspectRatio="none">
+<defs>
+	<linearGradient id="moonfire_panel" gradientUnits="userSpaceOnUse" x1="23.848" y1="789.072" x2="653.072" y2="323.171">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(24,28,35)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(11,13,17)"></stop>
+	</linearGradient>
+	<radialGradient id="moonfire_grove" gradientUnits="userSpaceOnUse" cx="338" cy="560" r="340">
+		<stop offset="0" stop-opacity="0.42" stop-color="rgb(138,158,236)"></stop>
+		<stop offset="0.55" stop-opacity="0.14" stop-color="rgb(46,66,58)"></stop>
+		<stop offset="1" stop-opacity="0" stop-color="rgb(11,13,17)"></stop>
+	</radialGradient>
+	<linearGradient id="moonfire_leaf" gradientUnits="userSpaceOnUse" x1="170" y1="300" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(186,236,152)"></stop>
+		<stop offset="0.45" stop-opacity="1" stop-color="rgb(96,180,96)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(30,84,52)"></stop>
+	</linearGradient>
+	<linearGradient id="moonfire_deep" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(52,102,74)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(20,40,32)"></stop>
+	</linearGradient>
+	<linearGradient id="moonfire_bark" gradientUnits="userSpaceOnUse" x1="240" y1="380" x2="440" y2="860">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(146,114,78)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(60,44,32)"></stop>
+	</linearGradient>
+	<linearGradient id="moonfire_moon" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,234,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(146,164,232)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(64,76,132)"></stop>
+	</linearGradient>
+	<linearGradient id="moonfire_astral" gradientUnits="userSpaceOnUse" x1="180" y1="320" x2="500" y2="840">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(226,196,255)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(158,104,230)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(72,40,122)"></stop>
+	</linearGradient>
+	<linearGradient id="moonfire_sun" gradientUnits="userSpaceOnUse" x1="150" y1="330" x2="520" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,236,168)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(240,182,62)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(148,90,22)"></stop>
+	</linearGradient>
+	<linearGradient id="moonfire_bloom" gradientUnits="userSpaceOnUse" x1="200" y1="340" x2="470" y2="830">
+		<stop offset="0" stop-opacity="1" stop-color="rgb(255,214,230)"></stop>
+		<stop offset="0.5" stop-opacity="1" stop-color="rgb(228,124,170)"></stop>
+		<stop offset="1" stop-opacity="1" stop-color="rgb(122,40,84)"></stop>
+	</linearGradient>
+	<clipPath id="moonfire_tile">
+		<path d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	</clipPath>
+</defs>
+<g clip-path="url(#moonfire_tile)">
+	<path fill="url(#moonfire_panel)" d="M 17.7 340 C 17.7 279.2 66.9 230 127.7 230 L 549.4 230 C 610.2 230 659.4 279.2 659.4 340 L 659.4 801 C 659.4 861.8 610.2 911 549.4 911 L 127.7 911 C 66.9 911 17.7 861.8 17.7 801 Z"></path>
+	<path fill="url(#moonfire_grove)" d="M 17.7 230 L 659.4 230 L 659.4 911 L 17.7 911 Z"></path>
+
+	<!-- The moon itself: one disc with a second cut out of it. -->
+	<path fill="url(#moonfire_moon)" fill-opacity="0.20" fill-rule="evenodd" d="M 320 254 C 424 254 508 338 508 442 C 508 546 424 630 320 630 C 216 630 132 546 132 442 C 132 338 216 254 320 254 z M 406 300 C 344 300 294 364 294 442 C 294 520 344 584 406 584 C 468 584 518 520 518 442 C 518 364 468 300 406 300 z"></path>
+	<path fill="url(#moonfire_moon)" fill-rule="evenodd" d="M 320 282 C 408 282 480 354 480 442 C 480 530 408 602 320 602 C 232 602 160 530 160 442 C 160 354 232 282 320 282 z M 398 316 C 344 316 300 372 300 442 C 300 512 344 568 398 568 C 452 568 496 512 496 442 C 496 372 452 316 398 316 z"></path>
+	<path fill="rgb(236,242,255)" fill-opacity="0.5" d="M 250 330 C 206 358 180 400 182 448 C 168 400 194 350 250 330 z"></path>
+
+	<!-- The light coming down off it onto the one target. -->
+	<path fill="url(#moonfire_moon)" fill-opacity="0.20" d="M 286 566 L 392 566 L 458 806 L 220 806 z"></path>
+	<path fill="url(#moonfire_moon)" fill-opacity="0.30" d="M 310 574 L 368 574 L 404 806 L 274 806 z"></path>
+
+	<!-- The mark it leaves burning, one ring on the ground. -->
+	<path fill="url(#moonfire_astral)" fill-opacity="0.75" d="M 338 762 C 424 762 494 786 494 816 C 494 846 424 870 338 870 C 252 870 182 846 182 816 C 182 786 252 762 338 762 z"></path>
+	<path fill="rgb(18,20,26)" d="M 338 782 C 404 782 458 798 458 816 C 458 834 404 850 338 850 C 272 850 218 834 218 816 C 218 798 272 782 338 782 z"></path>
+	<path fill="rgb(226,196,255)" fill-opacity="0.9" d="M 338 796 C 380 796 414 806 414 816 C 414 826 380 836 338 836 C 296 836 262 826 262 816 C 262 806 296 796 338 796 z"></path>
+
+	<!-- Motes lifting off the burn. -->
+	<path fill="rgb(226,234,255)" d="M 520 470 C 530 476 534 486 532 498 C 520 490 514 480 514 470 z"></path>
+	<path fill="rgb(226,196,255)" d="M 152 630 C 162 636 166 646 164 656 C 152 650 146 640 146 630 z"></path>
+	<path fill="rgb(226,234,255)" d="M 486 686 C 494 692 498 700 496 710 C 486 704 480 696 480 686 z"></path>
+</g>
+</svg>

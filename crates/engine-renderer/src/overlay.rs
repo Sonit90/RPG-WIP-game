@@ -13,13 +13,16 @@
 //! once. Building a frame's geometry reuses the scratch, so the frame path allocates
 //! nothing as long as the text fits the reserved capacity.
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_UPLOAD, D3D12_RANGE,
     D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_STATE_GENERIC_READ,
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_VERTEX_BUFFER_VIEW, ID3D12Device, ID3D12Resource,
 };
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
+#[cfg(windows)]
 use crate::error::RendererError;
 use crate::font::{GLYPH_ADVANCE, GLYPH_HEIGHT, GLYPH_WIDTH, LINE_ADVANCE, glyph};
 use crate::pipeline::Vertex;
@@ -413,6 +416,7 @@ impl Default for OverlayGeometry {
     }
 }
 
+#[cfg(windows)]
 /// One upload-heap vertex buffer per frame slot, mapped for the whole lifetime.
 ///
 /// A frame slot's buffer may still be read by the GPU while the next frame is recorded,
@@ -421,6 +425,7 @@ pub struct OverlayBuffers {
     buffers: Vec<MappedVertexBuffer>,
 }
 
+#[cfg(windows)]
 impl OverlayBuffers {
     /// Creates `slot_count` buffers, each holding [`MAX_QUADS`] quads.
     ///
@@ -446,6 +451,7 @@ impl OverlayBuffers {
     }
 }
 
+#[cfg(windows)]
 /// An upload-heap vertex buffer that stays mapped.
 ///
 /// Upload heaps are CPU-write-combined and GPU-readable, and D3D12 permits a mapping to
@@ -453,11 +459,12 @@ impl OverlayBuffers {
 /// ever written, never read back, so no cache invalidation is required.
 struct MappedVertexBuffer {
     resource: ID3D12Resource,
-    mapped: *mut u8,
+    mapped: crate::resource::MappedPtr,
     capacity_vertices: usize,
     gpu_address: u64,
 }
 
+#[cfg(windows)]
 impl MappedVertexBuffer {
     fn new(device: &ID3D12Device, capacity_vertices: usize) -> Result<Self, RendererError> {
         let byte_size = capacity_vertices * size_of::<Vertex>();
@@ -515,7 +522,19 @@ impl MappedVertexBuffer {
 
         Ok(Self {
             resource,
-            mapped: mapped.cast::<u8>(),
+            // SAFETY: the address was just returned by `Map` on `resource`, which this
+            // struct owns and unmaps only in its own `Drop`. That is the invariant
+            // `MappedPtr` documents.
+            mapped: unsafe {
+                crate::resource::MappedPtr::new(
+                    std::ptr::NonNull::new(mapped.cast::<u8>()).ok_or_else(|| {
+                        RendererError::InvalidConfig {
+                            reason: "mapping the overlay vertex buffer produced a null pointer"
+                                .to_owned(),
+                        }
+                    })?,
+                )
+            },
             capacity_vertices,
             gpu_address,
         })
@@ -534,7 +553,11 @@ impl MappedVertexBuffer {
         // distinct allocations, and the GPU is not reading this slot's buffer — the
         // renderer waited on that slot's fence before recording this frame.
         unsafe {
-            std::ptr::copy_nonoverlapping(vertices.as_ptr().cast::<u8>(), self.mapped, bytes);
+            std::ptr::copy_nonoverlapping(
+                vertices.as_ptr().cast::<u8>(),
+                self.mapped.as_ptr(),
+                bytes,
+            );
         }
 
         Some(D3D12_VERTEX_BUFFER_VIEW {
@@ -545,6 +568,7 @@ impl MappedVertexBuffer {
     }
 }
 
+#[cfg(windows)]
 impl Drop for MappedVertexBuffer {
     fn drop(&mut self) {
         // SAFETY: FFI call unmapping the subresource mapped in `new`. A written range of

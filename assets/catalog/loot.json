@@ -1,0 +1,824 @@
+{
+  "version": 1,
+  "_comment": "Dungeon loot for the Graveyard Crypt. Item ids are stable keys; their numeric ids are assigned by position in this file (never reorder, only append). Stat names are engine-game Stat keys. Rares are item level 8; epics are item level 12 with roughly 1.5x a rare's stats.",
+  "items": [
+    {
+      "id": "gravewardens_cowl",
+      "name": "Gravewarden's Cowl",
+      "slot": "head",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "head",
+      "stats": {
+        "stamina": 6,
+        "main_stat": 5,
+        "critical_strike": 4
+      }
+    },
+    {
+      "id": "gate_wardens_helm",
+      "name": "Helm of the Gate Warden",
+      "slot": "head",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "head",
+      "stats": {
+        "stamina": 7,
+        "armor": 10,
+        "main_stat": 4
+      }
+    },
+    {
+      "id": "mourners_pauldrons",
+      "name": "Mourner's Pauldrons",
+      "slot": "shoulder",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "shoulder",
+      "stats": {
+        "stamina": 5,
+        "main_stat": 4,
+        "haste": 4
+      }
+    },
+    {
+      "id": "ossuary_vestment",
+      "name": "Ossuary Vestment",
+      "slot": "chest",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "chest",
+      "stats": {
+        "stamina": 8,
+        "main_stat": 6,
+        "versatility": 4
+      }
+    },
+    {
+      "id": "gate_wardens_cuirass",
+      "name": "Gate Warden's Cuirass",
+      "slot": "chest",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "chest",
+      "stats": {
+        "stamina": 8,
+        "armor": 12,
+        "main_stat": 4
+      }
+    },
+    {
+      "id": "shroud_of_quiet_vigil",
+      "name": "Shroud of Quiet Vigil",
+      "slot": "back",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "back",
+      "stats": {
+        "stamina": 4,
+        "main_stat": 3,
+        "spirit": 4
+      }
+    },
+    {
+      "id": "gravediggers_grips",
+      "name": "Gravedigger's Grips",
+      "slot": "hands",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "hands",
+      "stats": {
+        "main_stat": 5,
+        "critical_strike": 5
+      }
+    },
+    {
+      "id": "crypt_stitched_leggings",
+      "name": "Crypt-Stitched Leggings",
+      "slot": "legs",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "legs",
+      "stats": {
+        "stamina": 7,
+        "main_stat": 5,
+        "haste": 4
+      }
+    },
+    {
+      "id": "treads_of_the_still_hour",
+      "name": "Treads of the Still Hour",
+      "slot": "feet",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "feet",
+      "stats": {
+        "stamina": 5,
+        "haste": 5
+      }
+    },
+    {
+      "id": "bone_bound_bracers",
+      "name": "Bone-Bound Bracers",
+      "slot": "wrist",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "wrist",
+      "stats": {
+        "stamina": 4,
+        "versatility": 4,
+        "main_stat": 3
+      }
+    },
+    {
+      "id": "candlewick_pendant",
+      "name": "Candlewick Pendant",
+      "slot": "necklace",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "necklace",
+      "stats": {
+        "stamina": 4,
+        "spirit": 5,
+        "main_stat": 3
+      }
+    },
+    {
+      "id": "band_of_faded_vows",
+      "name": "Band of Faded Vows",
+      "slot": "ring",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "ring",
+      "stats": {
+        "main_stat": 4,
+        "critical_strike": 5
+      }
+    },
+    {
+      "id": "signet_of_the_cloister",
+      "name": "Signet of the Cloister",
+      "slot": "ring",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "ring",
+      "stats": {
+        "stamina": 5,
+        "versatility": 5
+      }
+    },
+    {
+      "id": "hollow_lantern_charm",
+      "name": "Hollow Lantern Charm",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket",
+      "stats": {
+        "haste": 6,
+        "main_stat": 4
+      }
+    },
+    {
+      "id": "ossified_heart",
+      "name": "Ossified Heart",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket",
+      "stats": {
+        "stamina": 6,
+        "spirit": 6
+      }
+    },
+    {
+      "id": "crown_of_the_hollow_steward",
+      "name": "Crown of the Hollow Steward",
+      "slot": "head",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 2,
+      "icon": "head",
+      "stats": {
+        "stamina": 9,
+        "main_stat": 8,
+        "critical_strike": 6,
+        "haste": 4
+      }
+    },
+    {
+      "id": "stewards_funerary_raiment",
+      "name": "Steward's Funerary Raiment",
+      "slot": "chest",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 2,
+      "icon": "chest",
+      "stats": {
+        "stamina": 12,
+        "main_stat": 9,
+        "versatility": 6,
+        "spirit": 4
+      }
+    },
+    {
+      "id": "ember_of_the_last_lantern",
+      "name": "Ember of the Last Lantern",
+      "slot": "necklace",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "necklace",
+      "stats": {
+        "stamina": 6,
+        "main_stat": 5,
+        "haste": 8
+      }
+    },
+    {
+      "id": "ashgraves_seal",
+      "name": "Ashgrave's Seal",
+      "slot": "ring",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "ring",
+      "stats": {
+        "main_stat": 7,
+        "critical_strike": 8,
+        "versatility": 4
+      }
+    },
+    {
+      "id": "heart_of_the_crypt",
+      "name": "Heart of the Crypt",
+      "slot": "trinket",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "trinket",
+      "stats": {
+        "main_stat": 7,
+        "haste": 9,
+        "spirit": 4
+      }
+    },
+    {
+      "id": "wardens_rallying_bell",
+      "name": "Warden's Rallying Bell",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket_ward",
+      "stats": { "stamina": 5, "versatility": 3 },
+      "active": { "effect": "group_damage_reduction", "cooldown_s": 120, "radius_m": 30, "duration_s": 8, "magnitude": 0.15 }
+    },
+    {
+      "id": "censer_of_cleansing_ash",
+      "name": "Censer of Cleansing Ash",
+      "slot": "trinket",
+      "rarity": "rare",
+      "item_level": 8,
+      "icon": "trinket_dispel",
+      "stats": { "spirit": 4, "main_stat": 3 },
+      "active": { "effect": "mass_dispel", "cooldown_s": 90, "radius_m": 12 }
+    },
+    {
+      "id": "hourglass_of_the_patient_dead",
+      "name": "Hourglass of the Patient Dead",
+      "slot": "trinket",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "trinket_haste",
+      "stats": { "haste": 6, "main_stat": 5 },
+      "active": { "effect": "group_cooldown_reduction", "cooldown_s": 120, "radius_m": 30, "magnitude": 0.10 }
+    },
+    {
+      "id": "aegis_of_the_last_vigil",
+      "name": "Aegis of the Last Vigil",
+      "slot": "trinket",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "trinket_absorb",
+      "stats": { "stamina": 8, "versatility": 5 },
+      "active": { "effect": "group_absorb", "cooldown_s": 120, "radius_m": 30, "duration_s": 10, "magnitude": 0.20 }
+    },
+    {
+      "id": "abbess_tidewrap_mantle",
+      "name": "Tidewrap Mantle of the Abbess",
+      "slot": "shoulder",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "shoulder",
+      "stats": { "stamina": 8, "main_stat": 7, "haste": 6, "versatility": 3 }
+    },
+    {
+      "id": "drowned_pilgrims_greaves",
+      "name": "Drowned Pilgrim's Greaves",
+      "slot": "legs",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "legs",
+      "stats": { "stamina": 10, "main_stat": 8, "critical_strike": 6, "spirit": 3 }
+    },
+    {
+      "id": "gloves_of_the_salt_psalm",
+      "name": "Gloves of the Salt Psalm",
+      "slot": "hands",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "hands",
+      "stats": { "main_stat": 8, "critical_strike": 7, "versatility": 4 }
+    },
+    {
+      "id": "tideworn_sabatons",
+      "name": "Tideworn Sabatons",
+      "slot": "feet",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "feet",
+      "stats": { "stamina": 7, "main_stat": 5, "haste": 7 }
+    },
+    {
+      "id": "abbess_signet_of_the_deep",
+      "name": "Signet of the Deep",
+      "slot": "ring",
+      "rarity": "epic",
+      "item_level": 12,
+      "sockets": 1,
+      "icon": "ring",
+      "stats": { "stamina": 5, "main_stat": 6, "versatility": 8 }
+    },
+    {
+      "id": "foundry_cinder_cloak",
+      "name": "Cloak of Banked Cinders",
+      "slot": "back",
+      "rarity": "epic",
+      "item_level": 13,
+      "sockets": 1,
+      "icon": "back",
+      "stats": { "stamina": 7, "main_stat": 7, "haste": 5, "versatility": 4 }
+    },
+    {
+      "id": "slagproof_bracers",
+      "name": "Slagproof Bracers",
+      "slot": "wrist",
+      "rarity": "epic",
+      "item_level": 13,
+      "sockets": 1,
+      "icon": "wrist",
+      "stats": { "stamina": 6, "main_stat": 6, "critical_strike": 6, "spirit": 3 }
+    },
+    {
+      "id": "overseers_ironclad_helm",
+      "name": "Overseer's Ironclad Helm",
+      "slot": "head",
+      "rarity": "epic",
+      "item_level": 13,
+      "sockets": 2,
+      "icon": "head",
+      "stats": { "stamina": 9, "armor": 12, "main_stat": 5, "versatility": 3 }
+    },
+    {
+      "id": "furnace_wardens_cuirass",
+      "name": "Furnace Warden's Cuirass",
+      "slot": "chest",
+      "rarity": "epic",
+      "item_level": 13,
+      "sockets": 2,
+      "icon": "chest",
+      "stats": { "stamina": 11, "armor": 14, "main_stat": 6, "haste": 3 }
+    },
+    {
+      "id": "emberlink_chain",
+      "name": "Emberlink Chain",
+      "slot": "necklace",
+      "rarity": "epic",
+      "item_level": 13,
+      "sockets": 1,
+      "icon": "necklace",
+      "stats": { "stamina": 5, "main_stat": 7, "critical_strike": 6, "versatility": 6 }
+    },
+    { "id": "emberwake_hood", "name": "Emberwake Hood", "slot": "head", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "head", "set": "emberwake_regalia", "stats": { "stamina": 8, "main_stat": 8, "haste": 6, "critical_strike": 4 } },
+    { "id": "emberwake_mantle", "name": "Emberwake Mantle", "slot": "shoulder", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "shoulder", "set": "emberwake_regalia", "stats": { "stamina": 7, "main_stat": 7, "haste": 6, "critical_strike": 3 } },
+    { "id": "emberwake_shroud", "name": "Emberwake Shroud", "slot": "back", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "back", "set": "emberwake_regalia", "stats": { "stamina": 5, "main_stat": 6, "critical_strike": 6, "haste": 3 } },
+    { "id": "emberwake_cuffs", "name": "Emberwake Cuffs", "slot": "wrist", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "wrist", "set": "emberwake_regalia", "stats": { "stamina": 4, "main_stat": 5, "haste": 5, "versatility": 3 } },
+    { "id": "emberwake_gauntlets", "name": "Emberwake Gauntlets", "slot": "hands", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "hands", "set": "emberwake_regalia", "stats": { "main_stat": 8, "critical_strike": 6, "haste": 4 } },
+    { "id": "gravewarden_greathelm", "name": "Gravewarden's Greathelm", "slot": "head", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "head", "set": "gravewarden_panoply", "stats": { "stamina": 9, "armor": 14, "main_stat": 6, "versatility": 4 } },
+    { "id": "gravewarden_hauberk", "name": "Gravewarden's Hauberk", "slot": "chest", "rarity": "epic", "item_level": 12, "sockets": 2, "icon": "chest", "set": "gravewarden_panoply", "stats": { "stamina": 12, "armor": 16, "main_stat": 7, "critical_strike": 4 } },
+    { "id": "gravewarden_cloak", "name": "Gravewarden's Cloak", "slot": "back", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "back", "set": "gravewarden_panoply", "stats": { "stamina": 6, "armor": 8, "main_stat": 7, "haste": 5 } },
+    { "id": "gravewarden_vambraces", "name": "Gravewarden's Vambraces", "slot": "wrist", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "wrist", "set": "gravewarden_panoply", "stats": { "stamina": 5, "armor": 8, "main_stat": 6, "versatility": 5 } },
+    { "id": "gravewarden_sollerets", "name": "Gravewarden's Sollerets", "slot": "feet", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "feet", "set": "gravewarden_panoply", "stats": { "stamina": 7, "armor": 10, "main_stat": 6, "haste": 5 } },
+    { "id": "tidebloom_circlet", "name": "Tidebloom Circlet", "slot": "head", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "head", "set": "tidebloom_vestments", "stats": { "stamina": 8, "main_stat": 8, "haste": 5, "versatility": 4 } },
+    { "id": "tidebloom_robe", "name": "Tidebloom Robe", "slot": "chest", "rarity": "epic", "item_level": 12, "sockets": 2, "icon": "chest", "set": "tidebloom_vestments", "stats": { "stamina": 11, "main_stat": 8, "haste": 5, "spirit": 4 } },
+    { "id": "tidebloom_veil", "name": "Tidebloom Veil", "slot": "back", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "back", "set": "tidebloom_vestments", "stats": { "stamina": 5, "main_stat": 6, "haste": 4, "spirit": 4 } },
+    { "id": "tidebloom_bindings", "name": "Tidebloom Bindings", "slot": "wrist", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "wrist", "set": "tidebloom_vestments", "stats": { "stamina": 4, "main_stat": 5, "versatility": 4, "haste": 3 } },
+    { "id": "tidebloom_leggings", "name": "Tidebloom Leggings", "slot": "legs", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "legs", "set": "tidebloom_vestments", "stats": { "stamina": 9, "main_stat": 7, "critical_strike": 5, "haste": 4 } },
+    { "id": "candlelit_vow_band", "name": "Candlelit Vow Band", "slot": "ring", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "ring", "set": "candlelit_vows", "stats": { "main_stat": 6, "haste": 6, "critical_strike": 3 } },
+    { "id": "candlelit_vow_locket", "name": "Candlelit Vow Locket", "slot": "necklace", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "necklace", "set": "candlelit_vows", "stats": { "stamina": 6, "main_stat": 5, "haste": 5, "critical_strike": 3 } },
+    { "id": "ossuary_pauldrons", "name": "Ossuary Pauldrons", "slot": "shoulder", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "shoulder", "set": "ossuary_wardplate", "stats": { "stamina": 9, "armor": 8, "main_stat": 5, "versatility": 3 } },
+    { "id": "ossuary_greaves", "name": "Ossuary Greaves", "slot": "legs", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "legs", "set": "ossuary_wardplate", "stats": { "stamina": 10, "armor": 10, "main_stat": 5, "versatility": 3 } },
+    { "id": "brinesung_band", "name": "Brinesung Band", "slot": "ring", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "ring", "set": "brinesung_chorus", "stats": { "stamina": 4, "main_stat": 6, "spirit": 5, "haste": 4 } },
+    { "id": "brinesung_idol", "name": "Brinesung Idol", "slot": "trinket", "rarity": "epic", "item_level": 12, "sockets": 1, "icon": "trinket", "set": "brinesung_chorus", "stats": { "main_stat": 6, "haste": 6, "spirit": 4 } },
+    {
+      "id": "pontiffs_ashplate_pauldrons",
+      "name": "Pontiff's Ashplate Pauldrons",
+      "slot": "shoulder",
+      "rarity": "epic",
+      "item_level": 14, "sockets": 1,
+      "icon": "shoulder",
+      "stats": { "stamina": 9, "armor": 11, "main_stat": 6, "haste": 4 }
+    },
+    {
+      "id": "cinderforged_greaves",
+      "name": "Cinderforged Greaves",
+      "slot": "legs",
+      "rarity": "epic",
+      "item_level": 14, "sockets": 1,
+      "icon": "legs",
+      "stats": { "stamina": 11, "armor": 13, "main_stat": 6, "critical_strike": 4 }
+    },
+    {
+      "id": "gauntlets_of_the_last_rite",
+      "name": "Gauntlets of the Last Rite",
+      "slot": "hands",
+      "rarity": "epic",
+      "item_level": 14, "sockets": 1,
+      "icon": "hands",
+      "stats": { "stamina": 7, "armor": 9, "main_stat": 6, "versatility": 5 }
+    },
+    {
+      "id": "ashwalker_sabatons",
+      "name": "Ashwalker Sabatons",
+      "slot": "feet",
+      "rarity": "epic",
+      "item_level": 14, "sockets": 1,
+      "icon": "feet",
+      "stats": { "stamina": 8, "armor": 10, "main_stat": 5, "haste": 5 }
+    },
+    {
+      "id": "censer_wardens_bracers",
+      "name": "Censer Warden's Bracers",
+      "slot": "wrist",
+      "rarity": "epic",
+      "item_level": 13, "sockets": 1,
+      "icon": "wrist",
+      "stats": { "stamina": 6, "armor": 8, "main_stat": 5, "versatility": 4 }
+    },
+    {
+      "id": "smouldering_censer_pendant",
+      "name": "Smouldering Censer Pendant",
+      "slot": "necklace",
+      "rarity": "epic",
+      "item_level": 13, "sockets": 1,
+      "icon": "necklace",
+      "stats": { "stamina": 5, "main_stat": 7, "versatility": 5, "spirit": 3 }
+    }
+  ],
+  "boss_tables": {
+    "lord_ashgrave": [
+      {
+        "item": "gravewardens_cowl",
+        "weight": 10
+      },
+      {
+        "item": "gate_wardens_helm",
+        "weight": 10
+      },
+      {
+        "item": "mourners_pauldrons",
+        "weight": 10
+      },
+      {
+        "item": "ossuary_vestment",
+        "weight": 10
+      },
+      {
+        "item": "gate_wardens_cuirass",
+        "weight": 10
+      },
+      {
+        "item": "shroud_of_quiet_vigil",
+        "weight": 10
+      },
+      {
+        "item": "gravediggers_grips",
+        "weight": 10
+      },
+      {
+        "item": "crypt_stitched_leggings",
+        "weight": 10
+      },
+      {
+        "item": "treads_of_the_still_hour",
+        "weight": 10
+      },
+      {
+        "item": "bone_bound_bracers",
+        "weight": 10
+      },
+      {
+        "item": "candlewick_pendant",
+        "weight": 10
+      },
+      {
+        "item": "band_of_faded_vows",
+        "weight": 10
+      },
+      {
+        "item": "signet_of_the_cloister",
+        "weight": 10
+      },
+      {
+        "item": "hollow_lantern_charm",
+        "weight": 10
+      },
+      {
+        "item": "ossified_heart",
+        "weight": 10
+      },
+      {
+        "item": "crown_of_the_hollow_steward",
+        "weight": 14
+      },
+      {
+        "item": "stewards_funerary_raiment",
+        "weight": 10
+      },
+      {
+        "item": "ember_of_the_last_lantern",
+        "weight": 10
+      },
+      {
+        "item": "ashgraves_seal",
+        "weight": 10
+      },
+      {
+        "item": "heart_of_the_crypt",
+        "weight": 10
+      },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "gravewarden_greathelm", "weight": 24 },
+      { "item": "gravewarden_hauberk", "weight": 24 },
+      { "item": "gravewarden_cloak", "weight": 24 },
+      { "item": "gravewarden_vambraces", "weight": 24 },
+      { "item": "gravewarden_sollerets", "weight": 24 }
+    ],
+    "drowned_abbess": [
+      { "item": "gravewardens_cowl", "weight": 10 },
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "mourners_pauldrons", "weight": 10 },
+      { "item": "ossuary_vestment", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "shroud_of_quiet_vigil", "weight": 10 },
+      { "item": "gravediggers_grips", "weight": 10 },
+      { "item": "crypt_stitched_leggings", "weight": 10 },
+      { "item": "treads_of_the_still_hour", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "band_of_faded_vows", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "hollow_lantern_charm", "weight": 10 },
+      { "item": "ossified_heart", "weight": 10 },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "abbess_tidewrap_mantle", "weight": 12 },
+      { "item": "drowned_pilgrims_greaves", "weight": 12 },
+      { "item": "gloves_of_the_salt_psalm", "weight": 12 },
+      { "item": "tideworn_sabatons", "weight": 12 },
+      { "item": "abbess_signet_of_the_deep", "weight": 12 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "tidebloom_circlet", "weight": 24 },
+      { "item": "tidebloom_robe", "weight": 24 },
+      { "item": "tidebloom_veil", "weight": 24 },
+      { "item": "tidebloom_bindings", "weight": 24 },
+      { "item": "tidebloom_leggings", "weight": 24 },
+      { "item": "brinesung_band", "weight": 12 },
+      { "item": "brinesung_idol", "weight": 12 }
+    ],
+    "foundry_overseer": [
+      { "item": "gravewardens_cowl", "weight": 10 },
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "mourners_pauldrons", "weight": 10 },
+      { "item": "ossuary_vestment", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "shroud_of_quiet_vigil", "weight": 10 },
+      { "item": "gravediggers_grips", "weight": 10 },
+      { "item": "crypt_stitched_leggings", "weight": 10 },
+      { "item": "treads_of_the_still_hour", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "band_of_faded_vows", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "hollow_lantern_charm", "weight": 10 },
+      { "item": "ossified_heart", "weight": 10 },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "foundry_cinder_cloak", "weight": 12 },
+      { "item": "slagproof_bracers", "weight": 12 },
+      { "item": "overseers_ironclad_helm", "weight": 12 },
+      { "item": "furnace_wardens_cuirass", "weight": 12 },
+      { "item": "emberlink_chain", "weight": 12 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "emberwake_hood", "weight": 24 },
+      { "item": "emberwake_mantle", "weight": 24 },
+      { "item": "emberwake_shroud", "weight": 24 },
+      { "item": "emberwake_cuffs", "weight": 24 },
+      { "item": "emberwake_gauntlets", "weight": 24 }
+    ],
+    "ashen_pontiff": [
+      { "item": "gravewardens_cowl", "weight": 10 },
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "mourners_pauldrons", "weight": 10 },
+      { "item": "ossuary_vestment", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "shroud_of_quiet_vigil", "weight": 10 },
+      { "item": "gravediggers_grips", "weight": 10 },
+      { "item": "crypt_stitched_leggings", "weight": 10 },
+      { "item": "treads_of_the_still_hour", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "band_of_faded_vows", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "hollow_lantern_charm", "weight": 10 },
+      { "item": "ossified_heart", "weight": 10 },
+      { "item": "wardens_rallying_bell", "weight": 7 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "pontiffs_ashplate_pauldrons", "weight": 12 },
+      { "item": "cinderforged_greaves", "weight": 12 },
+      { "item": "gauntlets_of_the_last_rite", "weight": 12 },
+      { "item": "ashwalker_sabatons", "weight": 12 },
+      { "item": "hourglass_of_the_patient_dead", "weight": 7 },
+      { "item": "aegis_of_the_last_vigil", "weight": 7 },
+      { "item": "candlelit_vow_band", "weight": 12 },
+      { "item": "candlelit_vow_locket", "weight": 12 },
+      { "item": "ossuary_pauldrons", "weight": 12 },
+      { "item": "ossuary_greaves", "weight": 12 }
+    ],
+    "censer_warden": [
+      { "item": "gate_wardens_helm", "weight": 10 },
+      { "item": "gate_wardens_cuirass", "weight": 10 },
+      { "item": "bone_bound_bracers", "weight": 10 },
+      { "item": "candlewick_pendant", "weight": 10 },
+      { "item": "signet_of_the_cloister", "weight": 10 },
+      { "item": "censer_of_cleansing_ash", "weight": 7 },
+      { "item": "censer_wardens_bracers", "weight": 14 },
+      { "item": "smouldering_censer_pendant", "weight": 14 }
+    ]
+  },
+  "mob_table": {
+    "equipment_chance": 0.002,
+    "entries": [
+      {
+        "item": "gravewardens_cowl",
+        "weight": 10
+      },
+      {
+        "item": "mourners_pauldrons",
+        "weight": 10
+      },
+      {
+        "item": "shroud_of_quiet_vigil",
+        "weight": 10
+      },
+      {
+        "item": "gravediggers_grips",
+        "weight": 10
+      },
+      {
+        "item": "crypt_stitched_leggings",
+        "weight": 10
+      },
+      {
+        "item": "treads_of_the_still_hour",
+        "weight": 10
+      },
+      {
+        "item": "bone_bound_bracers",
+        "weight": 10
+      },
+      {
+        "item": "candlewick_pendant",
+        "weight": 10
+      },
+      {
+        "item": "band_of_faded_vows",
+        "weight": 10
+      },
+      {
+        "item": "hollow_lantern_charm",
+        "weight": 10
+      },
+      {
+        "item": "ember_of_the_last_lantern",
+        "weight": 6
+      }
+    ]
+  },
+  "rewards": {
+    "equipment_per_completion": 2
+  },
+  "quality": {
+    "_comment": "Percent of an item's base stats. Low qualities are common; 110 is a jackpot (0.05% at key level 1). Buckets whose min is at least high_bucket_from have their weight multiplied by 1 + high_bucket_weight_per_key_level x (key level - 1), so higher keys raise the odds of a good roll. Within a bucket every whole percent is equally likely.",
+    "high_bucket_from": 95,
+    "high_bucket_weight_per_key_level": 0.1,
+    "buckets": [
+      {
+        "min": 50,
+        "max": 59,
+        "weight": 22.0
+      },
+      {
+        "min": 60,
+        "max": 69,
+        "weight": 24.0
+      },
+      {
+        "min": 70,
+        "max": 79,
+        "weight": 22.0
+      },
+      {
+        "min": 80,
+        "max": 89,
+        "weight": 16.0
+      },
+      {
+        "min": 90,
+        "max": 94,
+        "weight": 7.0
+      },
+      {
+        "min": 95,
+        "max": 99,
+        "weight": 5.55
+      },
+      {
+        "min": 100,
+        "max": 104,
+        "weight": 2.5
+      },
+      {
+        "min": 105,
+        "max": 109,
+        "weight": 0.9
+      },
+      {
+        "min": 110,
+        "max": 110,
+        "weight": 0.05
+      }
+    ]
+  },
+  "epic": {
+    "_comment": "Chance that one equipment roll is an epic: base_chance + per_key_level x (key level - 1), capped at max_chance. On an epic the item is picked among the table's epics, otherwise among the rest. Tuned with the set piece weights (a major set piece is 24, other epics 7-14) so that a player farming the right dungeon completes a class's set in about 70-95 runs and has all thirteen best-in-slot pieces in about 250: docs/balance/economy.md.",
+    "base_chance": 0.06,
+    "per_key_level": 0.005,
+    "max_chance": 0.2
+  },
+  "currency": {
+    "_comment": "Aether Shards, the modifier reroll currency. The Graveyard Crypt places 36 ordinary monsters and the boss calls 2 more (38 kills in a full clear, no elites), so per_mob_chance 0.033 x 38 = 1.25 shards per player per run. elite_chance applies to elite monsters (none in the crypt).",
+    "resource": "aether_shard",
+    "per_mob_chance": 0.033,
+    "elite_chance": 0.25,
+    "amount": 1
+  },
+  "gold": {
+    "_comment": "Gold per player: every monster kill pays a whole number in [per_mob_min, per_mob_max], and the boss pays boss_amount.",
+    "resource": "gold",
+    "per_mob_min": 1,
+    "per_mob_max": 3,
+    "boss_amount": 50
+  },
+  "sharpening_drops": {
+    "_comment": "Pre-sharpened drops. After an item and its base quality are rolled, its sharpening level is a separate draw from a curve of weights (index = level, +0 first). Every curve must be strictly decreasing and at most economy sharpening.max_level + 1 long. A drop uses the most specific matching curve: one naming its dungeon, then the highest min_key_level, then the source-only curve, then default. key_shift: at key level k, level i's weight is multiplied by step^i with step = min(1 + per_level x (k - 1), max, the largest step that keeps the curve strictly decreasing); the step only grows with the key, so every tail P(>= +n) is non-decreasing in the key level and plateaus once max is reached. highlight_from: the level from which an item is marked as highly sharpened. Roughly: a mob drop is +0 78% of the time and almost never above +3; boss and chest drops reach +9 with a tiny tail (+8 is about 0.1% per item at key 1).",
+    "highlight_from": 5,
+    "default": { "weights": [1000, 220, 45, 8, 1.2] },
+    "curves": [
+      { "source": "mob", "weights": [1000, 220, 45, 8, 1.2] },
+      { "source": "elite", "weights": [1000, 300, 90, 25, 6, 1.2, 0.2] },
+      { "source": "boss", "weights": [1000, 450, 210, 100, 48, 22, 10, 4.5, 1.8, 0.5] },
+      { "source": "chest", "weights": [1000, 420, 180, 78, 34, 14, 6, 2.4, 0.9, 0.25] },
+      { "source": "special", "weights": [1000, 480, 240, 120, 58, 28, 13, 6, 2.6, 1.0, 0.3] }
+    ],
+    "key_shift": { "per_level": 0.02, "max": 1.4 }
+  },
+  "book_drops": {
+    "_comment": "Books a boss chest can hold, per player: the chance of a talent-point book and of an enhancement book. A boss without its own row uses default. One book at most per chest share. A book drops only at or above its own min_key_level (talents.json); the gate applies to the drop, not to reading it.",
+    "default": { "talent_point": 0.06, "enhancement": 0.05 },
+    "bosses": {
+      "lord_ashgrave": { "talent_point": 0.04, "enhancement": 0.03 }
+    }
+  }
+}
